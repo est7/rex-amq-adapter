@@ -125,6 +125,12 @@ REX_AMQ_LIVE=1 go test ./internal/rex/     # inside a Rex terminal: the rex CLI 
 (`internal/store`). `internal/screen` is the input-box classifier ported from
 [herdr-amq-adapter](https://github.com/est7/herdr-amq-adapter).
 
+## Adding another agent
+
+[docs/adding-an-agent-kind.md](docs/adding-an-agent-kind.md) is the procedure:
+what to probe in the new agent, which of its hooks map onto the adapter's
+duties, the code to change, and the end-to-end checks to pass.
+
 ## Known gaps
 
 - OpenCode is not supported.

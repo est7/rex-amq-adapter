@@ -366,6 +366,8 @@ are thin shells. Tests cover the core directly and the shells against fakes and
 temporary directories. An end-to-end script drives real agents in scratch Rex
 tabs.
 
+Connecting a further agent follows [adding-an-agent-kind.md](adding-an-agent-kind.md).
+
 ## 10. Out of scope (first version)
 
 - OpenCode.
