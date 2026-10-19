@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
@@ -38,7 +37,7 @@ type Env struct {
 	Rex     Terminal
 	RexOn   func(server string) Terminal
 	AmqBin  string
-	SelfBin string // absolute, symlink-free: amq refuses a symlinked --inject-via
+	SelfBin string // SelfPath(): absolute, stable across Homebrew upgrades
 	Now     func() time.Time
 }
 
@@ -62,11 +61,8 @@ func NewEnvAt(server string, paths store.Paths) (Env, error) {
 	if err != nil {
 		return Env{}, err
 	}
-	self, err := os.Executable()
+	self, err := SelfPath()
 	if err != nil {
-		return Env{}, err
-	}
-	if self, err = filepath.EvalSymlinks(self); err != nil {
 		return Env{}, err
 	}
 	return Env{

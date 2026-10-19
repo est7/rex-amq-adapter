@@ -46,10 +46,15 @@ Go to build, and Claude Code (2.1.303), Codex (0.163.0), Antigravity CLI
 (1.4.2), or Pi (0.84.2) — the versions tested.
 
 ```bash
-go install github.com/est7/rex-amq-adapter/cmd/rex-amq-adapter@latest   # or, in a checkout:
-# go build -o ~/.local/bin/rex-amq-adapter ./cmd/rex-amq-adapter
-rex-amq-adapter setup        # skill + hooks for every agent found; --dry-run to preview
+brew install est7/tap/rex-amq-adapter      # macOS / Linux; pulls in amq
+rex-amq-adapter setup                       # skill + hooks for every agent found; --dry-run to preview
 ```
+
+Or with Go: `go install github.com/est7/rex-amq-adapter/cmd/rex-amq-adapter@latest`
+(install `amq` yourself). Under Homebrew the hooks run the stable
+`$(brew --prefix)/opt/rex-amq-adapter/bin` path, so `brew upgrade` needs no
+second `setup`; a waker started before the upgrade is replaced at its agent's
+next turn end.
 
 The hooks run the binary at the absolute path `setup` was run from.
 

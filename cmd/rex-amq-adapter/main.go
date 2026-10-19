@@ -277,7 +277,13 @@ func runCollect() int {
 	return 0
 }
 
+// buildVersion is set at release builds: -ldflags "-X main.buildVersion=v0.1.0".
+var buildVersion string
+
 func version() string {
+	if buildVersion != "" {
+		return buildVersion
+	}
 	bi, ok := debug.ReadBuildInfo()
 	if !ok {
 		return "unknown"

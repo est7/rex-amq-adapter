@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/est7/rex-amq-adapter/internal/app"
 	"github.com/est7/rex-amq-adapter/internal/core"
 	"github.com/est7/rex-amq-adapter/internal/guide"
 	"github.com/est7/rex-amq-adapter/internal/install"
@@ -96,11 +97,8 @@ func foundOnly(agents []install.Agent) []install.Agent {
 // selfPath is the binary the hooks will run. A `go run` build lives in a
 // temporary directory that disappears, so it is refused.
 func selfPath() (string, error) {
-	self, err := os.Executable()
+	self, err := app.SelfPath()
 	if err != nil {
-		return "", err
-	}
-	if self, err = filepath.EvalSymlinks(self); err != nil {
 		return "", err
 	}
 	if strings.Contains(self, string(filepath.Separator)+"go-build") {
