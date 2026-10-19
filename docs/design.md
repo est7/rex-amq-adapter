@@ -50,6 +50,7 @@ uses them so that typing is the last resort, not the only channel.
 | `SessionEnd`, `UserPromptSubmit` hooks | Lifecycle and user-turn entry points | executed (adapter e2e on both agents) |
 | Codex hook approval | New or changed hooks run only after the user approves them in a review screen; trust is keyed by source, event, position, and content hash | executed |
 | Codex `SessionEnd` timeout | Clamped to 3 s | executed (startup warning) |
+| Codex approval dialog | Program status `blocked` with no `kind`; the screen classifier reads the box as `typed`; both defer a doorbell | reproduced (independent review, hook-less Codex in a scratch tab) |
 | Antigravity (`agy` 1.4.2) program status | `app=antigravity`; `working` / `done` / `idle`, and `blocked kind=permission` with the command while it asks to run one | executed |
 | Antigravity hooks | `~/.gemini/config/hooks.json` (or a project's `.agents/hooks.json`) maps a hook name to events `SessionStart`, `PreInvocation` (before each model call), `PostToolUse`, `Stop`; camelCase JSON in and out; `injectSteps` adds context, Stop `{"decision":"continue","reason":…}` keeps the turn going; no `SessionEnd`, no `stop_hook_active`; Stop also runs on cancel and errors (`terminationReason`) | located (agy's bundled `agy-customizations/docs/hooks.md`); SessionStart, PreInvocation, and Stop executed |
 | Pi (0.84.2) extensions | A JavaScript or TypeScript file in `~/.pi/agent/extensions/` (or `pi -e <file>`) runs in Pi's process: `pi.on("session_start" / "agent_start" / "agent_before_settle" / "agent_settled" / "session_shutdown")`, `pi.sendMessage(msg, { triggerTurn })` starts a turn when idle, `{ deliverAs: "steer" }` lands in a running turn, `agent_before_settle` may return `{ entries, continue: true }`; `session_shutdown.reason` is `quit`, `reload`, `new`, `resume`, or `fork`; Pi reports OSC 7501 (`app=pi`) | located (bundled docs and `types.d.ts`); every path the adapter uses executed |
@@ -218,7 +219,7 @@ with a timeout (both harnesses run hook commands through a shell). Outside Rex
 |---|---|---|
 | `SessionStart` | Garbage-collect, adopt this block (handle, mailbox, record, waker), print identity and unread count as context | 5 s / 4.5 s |
 | `UserPromptSubmit`, `PostToolUse` | Announce new ids from the ledger; filesystem only, no subprocess (measured p50 6.8 ms, max 16.7 ms over 30 runs) | 3 s / 2.5 s |
-| `Stop` | Block once per section 3 | 3 s / 2.5 s |
+| `Stop` | Block once per section 3, then supervise the waker: one `amq wake check` (about 60 ms), and `Ensure` when it is dead or runs an older binary | 3 s / 2.5 s (supervision bounded to 1.5 s) |
 | `SessionEnd` | Retire the block's waker (identified by amq's saved target), set `departed_at` | 3 s / 2.5 s (Codex clamps to 3 s) |
 
 **Antigravity** has no `SessionEnd` hook and no `stop_hook_active`. Its agents
@@ -271,6 +272,25 @@ collection of old mailboxes is out of scope for the first version.
 The injector never retires its own waker. A waker whose agent is gone keeps
 reporting `failed` until the next `SessionStart` collects it; the cost is one
 idle process per departed agent until then.
+
+**Waker supervision.** `amq wake` has no supervisor, and nothing in Rex
+reports its death. Every `Stop` (the moment an agent starts depending on its
+waker) checks it and brings back a dead one; an independent review killed a
+waker, delivered mail to the idle agent, and saw nothing ring until this was
+added (executed). A waker that dies mid-turn is revived at that turn's end; one
+that dies while the agent sits idle for a long time is revived at the agent's
+next turn or session start. The hook timeouts and the adapter's budgets come
+from one table (`install.hookTimeouts`).
+
+**The injector depends on no environment.** A dead waker revived with
+`amq wake repair` runs the injector in amq's own environment, which carries
+neither `REX_AMQ_ADAPTER_HOME` nor anything else the adapter set; the first
+end-to-end run of supervision failed `not_adopted` for that reason (executed).
+The injector therefore derives the state directory from the root amq passes it
+(`store.PathsForRoot`). After a `failed` outcome amq holds that waker's next
+attempts for roughly 30–50 s (measured), so a spurious `failed` costs a
+delivery delay, not mail. `amq wake repair` does not carry `--no-self-upgrade`
+over, so a repaired waker may self-upgrade its amq image.
 
 ## 7. Installation
 
@@ -344,10 +364,11 @@ tabs.
 - Cross-machine delivery. Rex can reach other servers (`rex -S host`); whether
   that can replace amq-bridge is a separate investigation.
 - Mailbox archival for departed handles.
-- Pi has no retry ladder. Mail announced to Pi but left undrained is reminded
-  once, when the run ends (`agent_before_settle`); if Pi then sits idle, nothing
-  reminds it again until new mail arrives or the user writes. The `amq wake`
-  agents get the ladder (up to 2 min between doorbells) instead.
+- Pi has no amq retry ladder. Mail announced to Pi but left undrained is
+  reminded when the run ends (`agent_before_settle`), and again every 5 minutes
+  while Pi sits idle (`core.RemindAfter`, from the extension's 30 s rescan);
+  the `amq wake` agents get amq's ladder (up to 2 min between doorbells)
+  instead.
 - A status view. A `rex.action` in `init.lua` can open one later; Rex already
   shows blocked/done indicators from program status.
 
@@ -393,4 +414,5 @@ file written by `setup`, Codex hooks passed inline with `-c`.
 | A new agent inherits stale mail | Automatic names skip mailboxes with undrained mail and reserved handles |
 | Two agents claim one handle | Adoption holds the lifecycle lock; mailbox registration holds the root registry lock |
 | Installing hooks invalidates Codex trust | Append-only placement |
-| Pi's notice is lost after the ledger marks it announced | The ledger is written before `pi.sendMessage` returns; if delivery fails there, `agent_before_settle` still reminds at the end of the next run. While a Pi dialog is open (`ui_prompt_start` … `ui_prompt_end`) the extension asks the adapter nothing, so no mail is marked announced; it delivers when the dialog closes (not yet exercised end to end) |
+| A waker dies and an idle agent never hears of mail | Every `Stop` checks the waker and revives a dead one; nothing else in Rex would notice (executed by the independent review, fixed and tested) |
+| Pi's notice is lost after the ledger marks it announced | The ledger is written before `pi.sendMessage` returns; if delivery fails there, an idle Pi is reminded after 5 minutes, and `agent_before_settle` reminds at the end of the next run. While a Pi dialog is open (`ui_prompt_start` … `ui_prompt_end`) the extension asks the adapter nothing, so no mail is marked announced; it delivers when the dialog closes (not yet exercised end to end) |
