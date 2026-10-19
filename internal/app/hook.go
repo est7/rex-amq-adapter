@@ -51,7 +51,15 @@ func (e Env) Hook(ctx context.Context, event string, kind core.Kind, loc Locatio
 		if !in.NormalStop() {
 			return Reply{}, nil
 		}
-		return e.announce(ctx, kind, loc, in, core.TurnEnding)
+		r, err := e.announce(ctx, kind, loc, in, core.TurnEnding)
+		if err != nil {
+			return r, err
+		}
+		// Supervision is housekeeping: its failure must not change the reply.
+		if err := e.SuperviseWaker(ctx, loc); err != nil {
+			fmt.Fprintf(Diagnostics, "supervise waker: %v\n", err)
+		}
+		return r, nil
 	case EventSessionEnd:
 		return Reply{}, e.Depart(ctx, loc, in)
 	case EventMail:
@@ -137,7 +145,7 @@ func (e Env) announceMail(ctx context.Context, rec store.Record, in HookInput, e
 		return Reply{}, err
 	}
 	defer unlock()
-	announced, err := e.Store.Announced(rec.Handle)
+	ledger, err := e.Store.Announced(rec.Handle)
 	if err != nil {
 		return Reply{}, err
 	}
@@ -145,7 +153,12 @@ func (e Env) announceMail(ctx context.Context, rec store.Record, in HookInput, e
 	if err != nil {
 		return Reply{}, err
 	}
-	a := core.DecideAnnounce(core.AnnounceInput{Event: event, Unread: unread, Announced: announced, StopHookActive: in.StopHookActive})
+	now := e.Now()
+	in2 := core.AnnounceInput{Event: event, Unread: unread, Announced: ledger.IDs, StopHookActive: in.StopHookActive, Idle: in.Idle}
+	if !ledger.At.IsZero() {
+		in2.Since = now.Sub(ledger.At)
+	}
+	a := core.DecideAnnounce(in2)
 	if !a.Speak {
 		// A Stop hook never blocks only to state the identity.
 		if event == core.TurnEnding {
@@ -153,7 +166,7 @@ func (e Env) announceMail(ctx context.Context, rec store.Record, in HookInput, e
 		}
 		return Reply{Notice: identity}, nil
 	}
-	if err := e.Store.SetAnnounced(rec.Handle, core.MergeAnnounced(announced, unread, unread)); err != nil {
+	if err := e.Store.SetAnnounced(rec.Handle, core.MergeAnnounced(ledger.IDs, unread, unread), now); err != nil {
 		return Reply{}, err
 	}
 	notice := core.HookNotice(a, rec.Handle, e.EnvCommand(), event)

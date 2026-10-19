@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
 )
@@ -346,5 +347,26 @@ func TestPiExtension(t *testing.T) {
 	}
 	if items, _ := Remove(agents[1:], Options{SelfBin: "/x/rex-amq-adapter"}); items[1].Change != "kept" || !exists(ext) {
 		t.Fatalf("remove of a foreign extension: %+v", items)
+	}
+}
+
+// Every hook the adapter answers has one installed timeout, and the adapter's
+// budget stays inside it.
+func TestEveryHookHasOneTimeoutAndABudgetInsideIt(t *testing.T) {
+	for _, list := range [][]hookEvent{hookEvents, agyHookEvents} {
+		for _, ev := range list {
+			if ev.Timeout == 0 {
+				t.Errorf("%s has no timeout", ev.Event)
+			}
+		}
+	}
+	for event, secs := range hookTimeouts {
+		b, ok := Budget(event)
+		if !ok || b <= 0 || b >= time.Duration(secs)*time.Second {
+			t.Errorf("%s: budget %v not inside %ds", event, b, secs)
+		}
+	}
+	if _, ok := Budget("unknown"); ok {
+		t.Error("unknown event has a budget")
 	}
 }

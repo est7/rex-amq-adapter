@@ -3,6 +3,7 @@ package store
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -66,32 +67,31 @@ func TestPutRecordNeedsIdentity(t *testing.T) {
 func TestLedger(t *testing.T) {
 	s := Store{P: Paths{Home: t.TempDir()}}
 	got, err := s.Announced("bob")
-	if err != nil || len(got) != 0 {
-		t.Fatalf("empty ledger: %v %v", got, err)
+	if err != nil || len(got.IDs) != 0 || !got.At.IsZero() {
+		t.Fatalf("empty ledger: %+v %v", got, err)
 	}
-	if err := s.SetAnnounced("bob", []string{"m2", "m1"}); err != nil {
+	at := time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC)
+	if err := s.SetAnnounced("bob", []string{"m2", "m1"}, at); err != nil {
 		t.Fatal(err)
 	}
 	got, err = s.Announced("bob")
-	if err != nil || len(got) != 2 || !got["m1"] || !got["m2"] {
-		t.Fatalf("ledger: %v %v", got, err)
+	if err != nil || len(got.IDs) != 2 || !got.IDs["m1"] || !got.IDs["m2"] || !got.At.Equal(at) {
+		t.Fatalf("ledger: %+v %v", got, err)
 	}
-	if other, _ := s.Announced("alice"); len(other) != 0 {
-		t.Fatalf("ledgers must be per handle: %v", other)
+	if other, _ := s.Announced("alice"); len(other.IDs) != 0 {
+		t.Fatalf("ledgers must be per handle: %+v", other)
 	}
 }
 
-func TestInjectLogReturnsTheLatest(t *testing.T) {
+func TestInjectLogAppends(t *testing.T) {
 	s := Store{P: Paths{Home: t.TempDir()}}
-	if _, ok, err := s.LastInject("bob"); ok || err != nil {
-		t.Fatalf("empty log: %v %v", ok, err)
-	}
 	t0 := time.Now()
 	_ = s.RecordInject("bob", core.Outcome{Progress: core.Deferred, Code: "draft_in_box"}, t0)
 	_ = s.RecordInject("bob", core.Outcome{Progress: core.Accepted}, t0.Add(time.Second))
-	e, ok, err := s.LastInject("bob")
-	if err != nil || !ok || e.Progress != core.Accepted {
-		t.Fatalf("last: %+v %v %v", e, ok, err)
+	b, err := os.ReadFile(filepath.Join(s.P.injects(), "bob.jsonl"))
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	if err != nil || len(lines) != 2 || !strings.Contains(lines[0], "draft_in_box") || !strings.Contains(lines[1], `"accepted"`) {
+		t.Fatalf("inject log: %q %v", b, err)
 	}
 }
 
@@ -127,5 +127,18 @@ func TestPendingAndAdoptionFailures(t *testing.T) {
 	}
 	if _, ok, _ := s.AdoptFailedAt("block:a"); ok {
 		t.Fatal("cleared failure still present")
+	}
+}
+
+func TestPathsForRootRoundTrips(t *testing.T) {
+	p := Paths{Home: "/var/state/rex-amq-adapter"}
+	got, err := PathsForRoot(p.Root())
+	if err != nil || got != p {
+		t.Fatalf("got %+v %v", got, err)
+	}
+	for _, bad := range []string{"relative/amq-root", "/var/state/other", ""} {
+		if _, err := PathsForRoot(bad); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
 	}
 }

@@ -20,6 +20,36 @@ var Diagnostics io.Writer = os.Stderr
 // ReserveFor is how long a departed agent's handle stays reserved.
 const ReserveFor = 24 * time.Hour
 
+// superviseFor bounds waker supervision inside a Stop hook, leaving the rest
+// of the hook's budget when another agent's adoption holds the lifecycle lock.
+const superviseFor = 1500 * time.Millisecond
+
+// waker is the amq waker that wakes rec's agent.
+func (e Env) waker(rec store.Record) amq.Waker {
+	return amq.Waker{SelfBin: e.SelfBin, Server: rec.Server, Block: rec.BlockID, Handle: string(rec.Handle), Root: e.Paths.Root()}
+}
+
+// SuperviseWaker keeps the waker of the agent in loc alive. amq wake has no
+// supervisor of its own, and an agent ending its turn is the moment it starts
+// depending on its waker: a dead one would leave it deaf until it restarts.
+// Keeping a live waker costs one amq wake check. A waker running an older
+// adapter or amq binary is replaced on the way.
+func (e Env) SuperviseWaker(ctx context.Context, loc Location) error {
+	ctx, cancel := context.WithTimeout(ctx, superviseFor)
+	defer cancel()
+	unlock, err := e.Store.LockLifecycle(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	rec, ok, err := e.Store.Record(loc.Block)
+	if err != nil || !ok || !rec.Live() || rec.Kind.InProcess() {
+		return err
+	}
+	_, _, err = amq.Ensure(ctx, e.AmqBin, e.waker(rec), e.Paths.Logs())
+	return err
+}
+
 // Depart retires the waker of the agent that ended in loc and keeps its
 // record as a reservation. A SessionEnd from an agent session other than the
 // recorded one (a late hook from a replaced agent) changes nothing.

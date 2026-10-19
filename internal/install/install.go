@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
 	"github.com/est7/rex-amq-adapter/internal/fsutil"
@@ -90,19 +91,49 @@ type Options struct {
 	Force   bool // replace a foreign skill of the same name
 }
 
-// hookEvents are installed for both harnesses, with each hook's timeout in
-// seconds. The adapter's own budgets (cmd/rex-amq-adapter) stay below these.
-// Codex clamps a SessionEnd timeout to 3 s.
-var hookEvents = []struct {
+// hookTimeouts is each hook's installed timeout in seconds, the one source
+// for both what the harness enforces and the adapter's own budget (Budget).
+// SessionStart adopts, so it gets the most; Codex clamps SessionEnd to 3 s.
+// mail and settle come from Pi's extension, which allows 5 s per call.
+var hookTimeouts = map[string]int{
+	"session-start":      5,
+	"user-prompt-submit": 3,
+	"post-tool-use":      3,
+	"pre-invocation":     3,
+	"stop":               3,
+	"session-end":        3,
+	"mail":               3,
+	"settle":             3,
+}
+
+// Budget is how long the adapter may spend in a hook: its installed timeout
+// less a margin for process start and output.
+func Budget(event string) (time.Duration, bool) {
+	t, ok := hookTimeouts[event]
+	return time.Duration(t)*time.Second - 500*time.Millisecond, ok
+}
+
+type hookEvent struct {
 	Name, Event string
 	Timeout     int
-}{
-	{"SessionStart", "session-start", 5},
-	{"UserPromptSubmit", "user-prompt-submit", 3},
-	{"PostToolUse", "post-tool-use", 3},
-	{"Stop", "stop", 3},
-	{"SessionEnd", "session-end", 3},
 }
+
+func events(pairs ...[2]string) []hookEvent {
+	out := make([]hookEvent, len(pairs))
+	for i, p := range pairs {
+		out[i] = hookEvent{Name: p[0], Event: p[1], Timeout: hookTimeouts[p[1]]}
+	}
+	return out
+}
+
+// hookEvents are installed for Claude Code and Codex.
+var hookEvents = events(
+	[2]string{"SessionStart", "session-start"},
+	[2]string{"UserPromptSubmit", "user-prompt-submit"},
+	[2]string{"PostToolUse", "post-tool-use"},
+	[2]string{"Stop", "stop"},
+	[2]string{"SessionEnd", "session-end"},
+)
 
 func hookCommand(self string, event string, kind core.Kind) string {
 	return "'" + self + "' hook " + event + " --agent " + string(kind) + " 2>/dev/null || true"
@@ -560,14 +591,11 @@ func dropHooks(groups []any, drop []ourHook) []any {
 // lists are flat handler arrays for these events. The adapter owns exactly
 // the group named after it, so setup and removal never touch another group.
 
-var agyHookEvents = []struct {
-	Name, Event string
-	Timeout     int
-}{
-	{"SessionStart", "session-start", 5},
-	{"PreInvocation", "pre-invocation", 3},
-	{"Stop", "stop", 3},
-}
+var agyHookEvents = events(
+	[2]string{"SessionStart", "session-start"},
+	[2]string{"PreInvocation", "pre-invocation"},
+	[2]string{"Stop", "stop"},
+)
 
 func agyGroup(self string) *object {
 	g := newObject()

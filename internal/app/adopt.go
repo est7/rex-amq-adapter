@@ -99,8 +99,7 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 			return Adoption{}, err
 		}
 	} else {
-		waker := amq.Waker{SelfBin: e.SelfBin, Server: server, Block: loc.Block, Handle: string(choice.Handle), Root: e.Paths.Root()}
-		if _, decision, err = amq.Ensure(ctx, e.AmqBin, waker, e.Paths.Logs()); err != nil {
+		if _, decision, err = amq.Ensure(ctx, e.AmqBin, e.waker(rec), e.Paths.Logs()); err != nil {
 			return Adoption{}, err
 		}
 	}

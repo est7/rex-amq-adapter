@@ -157,8 +157,8 @@ func TestDoorbellToIdleAgentIsConfirmedByWorking(t *testing.T) {
 		t.Fatalf("doorbell text: %q", f.writes[0])
 	}
 	ann, _ := e.Store.Announced("codex")
-	if !ann["m1"] || !ann["m2"] {
-		t.Fatalf("ledger after accepted doorbell: %v", ann)
+	if !ann.IDs["m1"] || !ann.IDs["m2"] || ann.At.IsZero() {
+		t.Fatalf("ledger after accepted doorbell: %+v", ann)
 	}
 	if _, ok, _ := e.Store.Pending(block); ok {
 		t.Fatal("pending must be cleared after acceptance")
@@ -424,9 +424,23 @@ func TestPiHookFlow(t *testing.T) {
 	if !strings.Contains(out.Notice, "1 unread") {
 		t.Fatalf("first scan must announce waiting mail: %+v", out)
 	}
-	if r, _ := e.Hook(context.Background(), EventMail, core.Pi, Location{Block: block}, HookInput{}); r.Notice != "" {
+	if r, _ := e.Hook(context.Background(), EventMail, core.Pi, Location{Block: block}, HookInput{Idle: true}); r.Notice != "" {
 		t.Fatalf("a second scan repeated the announcement: %q", r.Notice)
 	}
+	// Announced, never drained, Pi idle: after RemindAfter it is told again,
+	// once; a busy Pi is left alone.
+	later := time.Now().Add(core.RemindAfter + time.Minute)
+	e.Now = func() time.Time { return later }
+	if r, _ := e.Hook(context.Background(), EventMail, core.Pi, Location{Block: block}, HookInput{}); r.Notice != "" {
+		t.Fatalf("a busy Pi was reminded: %q", r.Notice)
+	}
+	if r, _ := e.Hook(context.Background(), EventMail, core.Pi, Location{Block: block}, HookInput{Idle: true}); !strings.Contains(r.Notice, "1 unread") {
+		t.Fatalf("an idle Pi with undrained mail was not reminded: %q", r.Notice)
+	}
+	if r, _ := e.Hook(context.Background(), EventMail, core.Pi, Location{Block: block}, HookInput{Idle: true}); r.Notice != "" {
+		t.Fatalf("the reminder repeated at once: %q", r.Notice)
+	}
+	e.Now = time.Now
 	// Settling with the mail still unread continues the run once.
 	if r, _ := e.Hook(context.Background(), EventSettle, core.Pi, Location{Block: block}, HookInput{}); !strings.Contains(r.Notice, "before ending your turn") {
 		t.Fatalf("settle must remind once: %q", r.Notice)

@@ -93,7 +93,11 @@ func DecideWrite(r Readiness) (Outcome, bool) {
 	case r.State == StateWorking:
 		return Outcome{Progress: Deferred, Code: "agent_working", Note: "the agent is working; its hooks announce mail in-band"}, false
 	case r.State == StateBlocked:
-		return Outcome{Progress: Deferred, Code: "agent_blocked", Note: "the agent waits on the user (" + r.BlockedKind + ")"}, false
+		note := "the agent waits on the user"
+		if r.BlockedKind != "" {
+			note += " (" + r.BlockedKind + ")"
+		}
+		return Outcome{Progress: Deferred, Code: "agent_blocked", Note: note}, false
 	case !r.State.AtRest() && r.State != StateAbsent:
 		return Outcome{Progress: Deferred, Code: "agent_state_unknown", Note: "unrecognised program status " + string(r.State)}, false
 	case r.Trust:

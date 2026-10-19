@@ -43,6 +43,17 @@ func (p Paths) lifecycle() string { return filepath.Join(p.Home, "lifecycle.lock
 func (p Paths) pending() string   { return filepath.Join(p.Home, "pending") }
 func (p Paths) failures() string  { return filepath.Join(p.Home, "adopt-failed") }
 
+// PathsForRoot locates the state directory from its AMQ root. The injector
+// uses it: amq wake passes the root explicitly, while the environment a
+// repaired waker runs the injector with carries neither REX_AMQ_ADAPTER_HOME
+// nor anything else the adapter set.
+func PathsForRoot(root string) (Paths, error) {
+	if !filepath.IsAbs(root) || filepath.Base(root) != "amq-root" {
+		return Paths{}, fmt.Errorf("%q is not an adapter AMQ root (an absolute path ending in amq-root)", root)
+	}
+	return Paths{Home: filepath.Dir(root)}, nil
+}
+
 // Record binds an AMQ handle to one agent process in one Rex block. It holds
 // only facts the adapter owns; the waker's identity and liveness belong to
 // amq and are read with `amq wake check` when needed.
@@ -166,59 +177,51 @@ func (s Store) RecordInject(h core.Handle, o core.Outcome, at time.Time) error {
 	return err
 }
 
-// LastInject returns the most recent injector outcome for h.
-func (s Store) LastInject(h core.Handle) (InjectEntry, bool, error) {
-	b, err := os.ReadFile(filepath.Join(s.P.injects(), string(h)+".jsonl"))
-	if errors.Is(err, fs.ErrNotExist) {
-		return InjectEntry{}, false, nil
-	}
-	if err != nil {
-		return InjectEntry{}, false, err
-	}
-	lines := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
-	var e InjectEntry
-	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &e); err != nil {
-		return InjectEntry{}, false, fmt.Errorf("decode inject log for %s: %w", h, err)
-	}
-	return e, true, nil
-}
-
 // LockLedger serialises the read-modify-write of one handle's ledger; hooks
 // and the injector update it concurrently.
 func (s Store) LockLedger(ctx context.Context, h core.Handle) (func(), error) {
 	return fsutil.Flock(ctx, filepath.Join(s.P.ledgers(), "."+string(h)+".lock"))
 }
 
-// Announced returns the message ids already announced to h.
-func (s Store) Announced(h core.Handle) (map[string]bool, error) {
-	b, err := os.ReadFile(filepath.Join(s.P.ledgers(), string(h)+".json"))
-	if errors.Is(err, fs.ErrNotExist) {
-		return map[string]bool{}, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	var doc struct {
-		Announced []string `json:"announced"`
-	}
-	if err := json.Unmarshal(b, &doc); err != nil {
-		return nil, fmt.Errorf("decode ledger for %s: %w", h, err)
-	}
-	out := make(map[string]bool, len(doc.Announced))
-	for _, id := range doc.Announced {
-		out[id] = true
-	}
-	return out, nil
+// Ledger is what h has been told: the ids announced, still unread, and when
+// the last announcement was made.
+type Ledger struct {
+	IDs map[string]bool
+	At  time.Time // zero: never
 }
 
-// SetAnnounced replaces h's ledger. Callers pass only ids still unread, so
-// drained ids fall out on every write.
-func (s Store) SetAnnounced(h core.Handle, ids []string) error {
+// Announced returns h's ledger; a handle never told anything has an empty one.
+func (s Store) Announced(h core.Handle) (Ledger, error) {
+	b, err := os.ReadFile(filepath.Join(s.P.ledgers(), string(h)+".json"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return Ledger{IDs: map[string]bool{}}, nil
+	}
+	if err != nil {
+		return Ledger{}, err
+	}
+	var doc struct {
+		Announced []string  `json:"announced"`
+		At        time.Time `json:"at"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
+		return Ledger{}, fmt.Errorf("decode ledger for %s: %w", h, err)
+	}
+	l := Ledger{IDs: make(map[string]bool, len(doc.Announced)), At: doc.At}
+	for _, id := range doc.Announced {
+		l.IDs[id] = true
+	}
+	return l, nil
+}
+
+// SetAnnounced replaces h's ledger after an announcement made at at. Callers
+// pass only ids still unread, so drained ids fall out on every write.
+func (s Store) SetAnnounced(h core.Handle, ids []string, at time.Time) error {
 	sorted := append([]string{}, ids...)
 	sort.Strings(sorted)
 	b, err := json.Marshal(struct {
-		Announced []string `json:"announced"`
-	}{sorted})
+		Announced []string  `json:"announced"`
+		At        time.Time `json:"at"`
+	}{sorted, at.UTC()})
 	if err != nil {
 		return err
 	}

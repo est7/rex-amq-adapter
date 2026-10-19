@@ -3,6 +3,7 @@ package core
 import (
 	"fmt"
 	"sort"
+	"time"
 )
 
 // HookEvent is the agent hook an announcement is decided for.
@@ -27,7 +28,17 @@ type AnnounceInput struct {
 	// StopHookActive: the agent is already continuing because a Stop hook
 	// blocked it (both harnesses report this on Stop).
 	StopHookActive bool
+	// Idle: the agent sits at rest and only this announcement can start it
+	// (Pi's extension rescanning). Since is the time since the last
+	// announcement; zero when there was none.
+	Idle  bool
+	Since time.Duration
 }
+
+// RemindAfter is how long an idle agent's announced but undrained mail waits
+// before it is announced again. Agents woken by amq wake get amq's own retry
+// ladder instead; this is for the one woken in-process (Pi).
+const RemindAfter = 5 * time.Minute
 
 // Announcement says what a hook emits. Speak: add the notice to the agent's
 // context; for TurnEnding this means blocking the stop. Fresh counts ids not
@@ -42,6 +53,8 @@ type Announcement struct {
 // TurnEnding it also blocks once when the agent would stop with any mail
 // unread, even mail announced earlier in the turn; once that block is active
 // it blocks again only for new mail, so a turn cannot loop on the same mail.
+// An idle agent whose announced mail stays undrained for RemindAfter is told
+// again.
 func DecideAnnounce(in AnnounceInput) Announcement {
 	fresh := 0
 	for _, id := range in.Unread {
@@ -55,6 +68,9 @@ func DecideAnnounce(in AnnounceInput) Announcement {
 	case fresh > 0:
 		a.Speak = true
 	case in.Event == TurnEnding && !in.StopHookActive:
+		a.Speak = true
+	case in.Idle && in.Since >= RemindAfter:
+		// Announced, not drained, and nothing else will tell an idle agent.
 		a.Speak = true
 	}
 	return a

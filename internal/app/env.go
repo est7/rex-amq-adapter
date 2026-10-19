@@ -49,6 +49,11 @@ func NewEnv(server string) (Env, error) {
 	if err != nil {
 		return Env{}, err
 	}
+	return NewEnvAt(server, paths)
+}
+
+// NewEnvAt is NewEnv with an explicit state directory.
+func NewEnvAt(server string, paths store.Paths) (Env, error) {
 	rexBin, err := rex.ResolveBin()
 	if err != nil {
 		return Env{}, err
@@ -95,6 +100,9 @@ type HookInput struct {
 	// integration (Pi's extension); hooks run as children of a shell and
 	// cannot know it, so for them the block's foreground process is used.
 	AgentPID int `json:"agent_pid"`
+	// Idle: the agent is at rest (sent by Pi's extension when it rescans
+	// between runs), so only an announcement can start it.
+	Idle bool `json:"idle"`
 }
 
 // NormalStop reports whether a Stop ends a turn normally. Antigravity also

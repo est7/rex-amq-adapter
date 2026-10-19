@@ -231,7 +231,7 @@ func (e Env) markAnnounced(ctx context.Context, root string, h core.Handle, ids 
 	if err != nil {
 		return
 	}
-	_ = e.Store.SetAnnounced(h, core.MergeAnnounced(prior, ids, still))
+	_ = e.Store.SetAnnounced(h, core.MergeAnnounced(prior.IDs, ids, still), e.Now())
 }
 
 // rexOutcome maps a rex failure: a vanished block is terminal for this

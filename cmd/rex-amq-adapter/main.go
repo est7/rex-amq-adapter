@@ -16,6 +16,7 @@ import (
 	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/app"
 	"github.com/est7/rex-amq-adapter/internal/core"
+	"github.com/est7/rex-amq-adapter/internal/install"
 	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
@@ -77,19 +78,6 @@ func fail(err error) int {
 	return 1
 }
 
-// hookBudget keeps every hook inside the timeout it is installed with.
-var hookBudget = map[string]time.Duration{
-	app.EventSessionStart: 4500 * time.Millisecond,
-	app.EventSessionEnd:   2500 * time.Millisecond, // Codex clamps SessionEnd to 3 s
-	// Usually filesystem-only; the first one may adopt the agent (~1 s).
-	app.EventPrompt:        2500 * time.Millisecond,
-	app.EventPostTool:      2500 * time.Millisecond,
-	app.EventPreInvocation: 2500 * time.Millisecond,
-	app.EventStop:          2500 * time.Millisecond,
-	app.EventMail:          2500 * time.Millisecond,
-	app.EventSettle:        2500 * time.Millisecond,
-}
-
 func runHook(args []string) int {
 	if len(args) == 0 {
 		return fail(errors.New("hook: missing event"))
@@ -98,7 +86,7 @@ func runHook(args []string) int {
 	log := openHookLog(event)
 	defer log.Close()
 	app.Diagnostics = log
-	budget, ok := hookBudget[event]
+	budget, ok := install.Budget(event)
 	if !ok {
 		return hookFail(log, fmt.Errorf("unknown event %q", event))
 	}
@@ -207,7 +195,11 @@ func runInject(args []string) int {
 	if err != nil {
 		return report(core.Outcome{Progress: core.Failed, Code: "usage", Note: err.Error()})
 	}
-	env, err := app.NewEnv(server)
+	paths, err := store.PathsForRoot(root)
+	if err != nil {
+		return report(core.Outcome{Progress: core.Failed, Code: "usage", Note: err.Error()})
+	}
+	env, err := app.NewEnvAt(server, paths)
 	if err != nil {
 		return report(core.Outcome{Progress: core.Deferred, Code: "environment", Note: err.Error()})
 	}

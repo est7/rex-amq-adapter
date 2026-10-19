@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
@@ -147,5 +148,50 @@ func TestPiAdoptionHasNoWaker(t *testing.T) {
 	}
 	if wakerLive(t, e, "codex") {
 		t.Fatal("the previous agent's waker survived; it would type into Pi")
+	}
+}
+
+// amq wake has no supervisor of its own. An agent ending its turn is the
+// moment it starts depending on its waker, so Stop brings a dead one back.
+func TestStopRevivesADeadWaker(t *testing.T) {
+	e := realAmqEnv(t, &fakeTerm{state: "idle"})
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if _, err := e.Adopt(ctx, Location{Block: block}, core.Codex, HookInput{}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = amq.RetireFor(context.Background(), e.AmqBin, e.Paths.Root(), "codex", block) })
+	dead := wakeState(t, e, "codex")
+	if err := syscall.Kill(dead.PID, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 50 && wakerLive(t, e, "codex"); i++ {
+		time.Sleep(100 * time.Millisecond)
+	}
+	if wakerLive(t, e, "codex") {
+		t.Fatal("setup: the killed waker still reports live")
+	}
+	if _, err := e.Hook(ctx, EventStop, core.Codex, Location{Block: block}, HookInput{}); err != nil {
+		t.Fatal(err)
+	}
+	if st := wakeState(t, e, "codex"); !st.Live || st.PID == dead.PID {
+		t.Fatalf("Stop left the waker dead: %+v", st)
+	}
+}
+
+// Pi has no waker; ending its run must not start one.
+func TestStopStartsNoWakerForPi(t *testing.T) {
+	e := realAmqEnv(t, &fakeTerm{state: "idle"})
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if _, err := e.Adopt(ctx, Location{Block: block}, core.Pi, HookInput{AgentPID: os.Getpid()}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Hook(ctx, EventSettle, core.Pi, Location{Block: block}, HookInput{}); err != nil {
+		t.Fatal(err)
+	}
+	if wakerLive(t, e, "pi") {
+		_, _ = amq.RetireFor(context.Background(), e.AmqBin, e.Paths.Root(), "pi", block)
+		t.Fatal("a waker was started for Pi")
 	}
 }

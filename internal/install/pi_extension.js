@@ -2,9 +2,9 @@
 // Installed by "rex-amq-adapter setup". Remove it with "rex-amq-adapter remove".
 //
 // Delivers AMQ mail to this Pi session inside Pi's process: nothing is typed
-// into the terminal. Every decision (identity, what to announce, when) is
-// made by the adapter binary; this file only watches the inbox and passes
-// the binary's notices to Pi.
+// into the terminal. The adapter binary decides identity and what to
+// announce; this file decides only how Pi receives it: a turn of its own when
+// idle, steered into a running turn, held while a dialog waits on the user.
 import { execFile } from "node:child_process";
 import * as fs from "node:fs";
 
@@ -46,7 +46,8 @@ export default function (pi) {
 		// Asking the adapter would mark the mail announced; while a dialog
 		// waits on the user, leave it unannounced and deliver once it closes.
 		if (prompting > 0) return;
-		const r = await hook("mail", input({}));
+		// idle lets the adapter remind of mail announced but never drained.
+		const r = await hook("mail", input({ idle: !busy }));
 		if (!r.notice) return;
 		const message = { customType: "amq", content: r.notice, display: true };
 		pi.sendMessage(message, busy ? { deliverAs: "steer" } : { triggerTurn: true });

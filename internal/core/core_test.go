@@ -3,6 +3,7 @@ package core
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/screen"
 )
@@ -121,6 +122,7 @@ func TestDecideWrite(t *testing.T) {
 		{Readiness{State: StateAbsent, Box: screen.Empty}, true, ""},
 		{Readiness{State: StateWorking, Box: screen.Empty}, false, "agent_working"},
 		{Readiness{State: StateBlocked, BlockedKind: "question", Box: screen.Unknown}, false, "agent_blocked"},
+		{Readiness{State: StateBlocked, Box: screen.Typed}, false, "agent_blocked"}, // Codex approval: no kind
 		{Readiness{State: "paused", Box: screen.Empty}, false, "agent_state_unknown"},
 		{Readiness{State: StateIdle, Box: screen.Typed}, false, "draft_in_box"},
 		{Readiness{State: StateIdle, Box: screen.Unknown}, false, "box_not_found"},
@@ -197,6 +199,10 @@ func TestDecideAnnounce(t *testing.T) {
 		{"an active stop block does not loop on the same mail", AnnounceInput{Event: TurnEnding, Unread: []string{"m1"}, Announced: ann, StopHookActive: true}, false, 0},
 		{"an active stop block still announces new mail", AnnounceInput{Event: TurnEnding, Unread: []string{"m1", "m3"}, Announced: ann, StopHookActive: true}, true, 1},
 		{"stopping with no mail does not block", AnnounceInput{Event: TurnEnding, Announced: ann}, false, 0},
+		{"an idle agent is reminded of undrained mail after RemindAfter", AnnounceInput{Event: PromptSubmitted, Unread: []string{"m1"}, Announced: ann, Idle: true, Since: RemindAfter}, true, 0},
+		{"an idle agent is not reminded sooner", AnnounceInput{Event: PromptSubmitted, Unread: []string{"m1"}, Announced: ann, Idle: true, Since: RemindAfter - time.Second}, false, 0},
+		{"a busy agent is not reminded", AnnounceInput{Event: PromptSubmitted, Unread: []string{"m1"}, Announced: ann, Since: time.Hour}, false, 0},
+		{"no mail, no reminder", AnnounceInput{Event: PromptSubmitted, Announced: ann, Idle: true, Since: time.Hour}, false, 0},
 	}
 	for _, c := range cases {
 		a := DecideAnnounce(c.in)
@@ -243,5 +249,14 @@ func TestOnlyPiDeliversInProcess(t *testing.T) {
 	}
 	if !Pi.InProcess() {
 		t.Error("pi delivers in-process")
+	}
+}
+
+func TestBlockedNoteNamesTheKindOnlyWhenKnown(t *testing.T) {
+	if o, _ := DecideWrite(Readiness{State: StateBlocked}); o.Note != "the agent waits on the user" {
+		t.Errorf("no kind: %q", o.Note)
+	}
+	if o, _ := DecideWrite(Readiness{State: StateBlocked, BlockedKind: "permission"}); o.Note != "the agent waits on the user (permission)" {
+		t.Errorf("with kind: %q", o.Note)
 	}
 }
