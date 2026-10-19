@@ -195,6 +195,14 @@ non-zero (amq treats a deferred marker with exit 0 as `uncertain`).
 6. Record the outcome in `<state>/inject/<handle>.jsonl`; on `accepted`, record
    the announced ids in the ledger.
 
+A doorbell deferred again and again is the one delivery failure that is
+otherwise silent: mail waits durably, the sender waits for a reply, and
+nothing reports that, say, an agent update changed its input box so every
+attempt ends `box_not_found`. `who` therefore shows each agent's latest
+outcome and how long the same outcome has repeated (`core.LastDelivery`), and
+the agent guide tells a sender to read it before writing again. The log is cut
+to its newest entries (at most 1000, half of 1 MB) once it passes 1 MB.
+
 The notice is amq's payload plus
 `(you are <handle> in Rex; first: eval "$(<abs path> env)")`, kept on one line.
 

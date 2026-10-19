@@ -153,28 +153,77 @@ func (s Store) LockLifecycle(ctx context.Context) (func(), error) {
 	return fsutil.Flock(ctx, s.P.lifecycle())
 }
 
-// InjectEntry is one injector outcome.
-type InjectEntry struct {
-	At time.Time `json:"at"`
-	core.Outcome
+// The inject log keeps every doorbell attempt for diagnosis; a retry ladder
+// appends for as long as mail waits, so past maxInjectLog it is cut to its
+// newest lines, at most keepInjectRuns of them and half the cap in bytes, so
+// a trim leaves room and stays rare.
+const (
+	maxInjectLog   = 1 << 20
+	keepInjectRuns = 1000
+)
+
+func (s Store) injectLog(h core.Handle) string {
+	return filepath.Join(s.P.injects(), string(h)+".jsonl")
 }
 
-// RecordInject appends an injector outcome to the handle's log.
+// RecordInject appends an injector outcome to the handle's log. Only the
+// handle's one waker runs the injector, so the log has a single writer.
 func (s Store) RecordInject(h core.Handle, o core.Outcome, at time.Time) error {
 	if err := os.MkdirAll(s.P.injects(), 0o700); err != nil {
 		return err
 	}
-	b, err := json.Marshal(InjectEntry{At: at.UTC(), Outcome: o})
+	b, err := json.Marshal(core.Attempt{At: at.UTC(), Outcome: o})
 	if err != nil {
 		return err
 	}
-	f, err := os.OpenFile(filepath.Join(s.P.injects(), string(h)+".jsonl"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	f, err := os.OpenFile(s.injectLog(h), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	_, err = f.Write(append(b, '\n'))
-	return err
+	_, werr := f.Write(append(b, '\n'))
+	st, serr := f.Stat()
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr != nil || serr != nil || st.Size() <= maxInjectLog {
+		return werr
+	}
+	return s.trimInjectLog(h)
+}
+
+func (s Store) trimInjectLog(h core.Handle) error {
+	b, err := os.ReadFile(s.injectLog(h))
+	if err != nil {
+		return err
+	}
+	lines := strings.SplitAfter(strings.TrimRight(string(b), "\n"), "\n")
+	start, size := len(lines), 0
+	for start > 0 && len(lines)-start < keepInjectRuns && size+len(lines[start-1]) <= maxInjectLog/2 {
+		start--
+		size += len(lines[start])
+	}
+	kept := strings.Join(lines[start:], "")
+	return fsutil.WriteAtomic(s.injectLog(h), []byte(strings.TrimRight(kept, "\n")+"\n"))
+}
+
+// InjectHistory returns h's doorbell attempts, oldest first. A line that
+// cannot be read (a crash mid-append) is skipped: the log is diagnostic.
+func (s Store) InjectHistory(h core.Handle) ([]core.Attempt, error) {
+	b, err := os.ReadFile(s.injectLog(h))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var out []core.Attempt
+	for _, line := range strings.Split(string(b), "\n") {
+		var a core.Attempt
+		if line != "" && json.Unmarshal([]byte(line), &a) == nil {
+			out = append(out, a)
+		}
+	}
+	return out, nil
 }
 
 // LockLedger serialises the read-modify-write of one handle's ledger; hooks

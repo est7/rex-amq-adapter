@@ -65,8 +65,17 @@ eval "$(rex-amq-adapter env)" && amq reply --id <message-id> --body "<answer>"
 ```bash
 eval "$(rex-amq-adapter env)" && amq who --json
 eval "$(rex-amq-adapter env)" && amq send --to codex --subject "<short subject>" --body "<request>"
-rex-amq-adapter who      # handles, kind, live or departed, unread, Rex block
+rex-amq-adapter who      # handles, kind, live or departed, unread, last doorbell, Rex block
 ```
+
+`who` shows each agent's last doorbell and how long that outcome has held:
+`accepted 2m` means the agent was told; `deferred agent_working` for seconds is
+normal. When a peer you wrote to stays silent, check it before writing again:
+`deferred box_not_found` or `deferred rex_error` lasting minutes means the
+adapter cannot deliver (tell the user, quoting the line); `deferred
+draft_in_box` or `agent_blocked` means the user must clear the peer's input
+box or answer its dialog (tell the user which pane); `accepted` means the peer
+was told and has not acted yet.
 
 Send only to a handle `rex-amq-adapter who` lists as `live`. A departed handle
 is reserved for 24 hours and its mail waits unread; start a peer instead. Several

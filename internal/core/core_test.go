@@ -260,3 +260,31 @@ func TestBlockedNoteNamesTheKindOnlyWhenKnown(t *testing.T) {
 		t.Errorf("with kind: %q", o.Note)
 	}
 }
+
+func TestLastDelivery(t *testing.T) {
+	t0 := time.Date(2026, 10, 19, 9, 0, 0, 0, time.UTC)
+	at := func(min int, p Progress, code string) Attempt {
+		return Attempt{At: t0.Add(time.Duration(min) * time.Minute), Outcome: Outcome{Progress: p, Code: code}}
+	}
+	now := t0.Add(30 * time.Minute)
+	cases := []struct {
+		name    string
+		history []Attempt
+		want    string
+	}{
+		{"no doorbell yet", nil, "-"},
+		{"accepted", []Attempt{at(28, Accepted, "")}, "accepted 2m"},
+		// The streak starts at the first of the identical outcomes, not the last.
+		{"stuck on the same reason", []Attempt{at(1, Accepted, ""), at(7, Deferred, "box_not_found"), at(15, Deferred, "box_not_found"), at(29, Deferred, "box_not_found")}, "deferred box_not_found 23m"},
+		{"a different reason restarts the streak", []Attempt{at(2, Deferred, "agent_working"), at(26, Deferred, "draft_in_box")}, "deferred draft_in_box 4m"},
+		{"seconds", []Attempt{{At: now.Add(-40 * time.Second), Outcome: Outcome{Progress: Failed, Code: "block_gone"}}}, "failed block_gone 40s"},
+	}
+	for _, c := range cases {
+		if got := LastDelivery(c.history, now); got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
+		}
+	}
+	if Ago(3*24*time.Hour) != "3d" || Ago(5*time.Hour) != "5h" {
+		t.Errorf("Ago: %s %s", Ago(3*24*time.Hour), Ago(5*time.Hour))
+	}
+}

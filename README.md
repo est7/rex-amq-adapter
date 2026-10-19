@@ -89,7 +89,7 @@ rex split --split=right --focus=false --label reviewer -- codex "Review the diff
 Inspect state:
 
 ```bash
-rex-amq-adapter who          # handles, kind, live/departed, unread, Rex block
+rex-amq-adapter who          # handles, kind, live/departed, unread, last doorbell, Rex block
 eval "$(rex-amq-adapter env)" && amq who --json    # inside an adopted pane
 rex-amq-adapter collect      # retire agents whose pane closed or process died
 ```
@@ -108,7 +108,9 @@ rex-amq-adapter collect      # retire agents whose pane closed or process died
 `~/.local/state/rex-amq-adapter/` (override with `REX_AMQ_ADAPTER_HOME`):
 `amq-root/` (the shared AMQ root), `records/` (one per adopted pane),
 `ledger/` (announced message ids), `inject/<handle>.jsonl` (every doorbell
-attempt and why it waited), `logs/<handle>.log` (amq wake), `logs/hooks.log`
+attempt and why it waited, trimmed past 1 MB; `who` shows the latest as LAST
+DOORBELL, e.g. `deferred box_not_found 23m` when the adapter cannot find an
+agent's input box), `logs/<handle>.log` (amq wake), `logs/hooks.log`
 (hook failures; hooks run with stderr discarded).
 
 ## Development

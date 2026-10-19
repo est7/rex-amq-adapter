@@ -237,7 +237,8 @@ func runWho() int {
 		return fail(err)
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "HANDLE\tKIND\tSTATE\tUNREAD\tBLOCK")
+	fmt.Fprintln(tw, "HANDLE\tKIND\tSTATE\tUNREAD\tLAST DOORBELL\tBLOCK")
+	now := time.Now()
 	for _, r := range recs {
 		state := "live"
 		if !r.Live() {
@@ -247,7 +248,15 @@ func runWho() int {
 		if err != nil {
 			return fail(err)
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\n", r.Handle, r.Kind, state, len(unread), r.BlockID)
+		last := "in-process" // Pi: its extension delivers; no doorbell is typed
+		if !r.Kind.InProcess() {
+			history, err := env.Store.InjectHistory(r.Handle)
+			if err != nil {
+				return fail(err)
+			}
+			last = core.LastDelivery(history, now)
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%s\n", r.Handle, r.Kind, state, len(unread), last, r.BlockID)
 	}
 	if err := tw.Flush(); err != nil {
 		return fail(err)
