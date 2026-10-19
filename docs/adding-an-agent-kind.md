@@ -211,6 +211,7 @@ first. Report residue you could not remove.
   outside Rex (`Render` with an empty `Reply`).
 - **Stop may fire on cancel and errors.** Never hold a turn the user cancelled.
 - **amq refuses an `--inject-via` under a group- or world-writable directory**
-  (`/tmp`); put probe injectors under `$TMPDIR`.
+  (`/tmp`, Homebrew's Cellar). Wakers therefore run the wrapper
+  `<state>/bin/inject`; put probe injectors under `$TMPDIR`.
 - **Fixtures are public.** Scrub emails, account plans, user names, and home
   paths with equal-length replacements before committing.

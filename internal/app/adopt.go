@@ -99,6 +99,9 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 			return Adoption{}, err
 		}
 	} else {
+		if err := e.prepareInjector(); err != nil {
+			return Adoption{}, err
+		}
 		if _, decision, err = amq.Ensure(ctx, e.AmqBin, e.waker(rec), e.Paths.Logs()); err != nil {
 			return Adoption{}, err
 		}

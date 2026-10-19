@@ -34,10 +34,10 @@ func TestParseWakeCheck(t *testing.T) {
 }
 
 func TestDecideWake(t *testing.T) {
-	w := Waker{SelfBin: "/bin/cur/rex-amq-adapter", Server: "unix:///s.sock", Block: "block:a", Handle: "claude-2", Root: "/root"}
+	w := Waker{InjectVia: "/bin/cur/rex-amq-adapter", Server: "unix:///s.sock", Block: "block:a", Handle: "claude-2", Root: "/root"}
 	want := w.Target()
 	old := w
-	old.SelfBin = "/bin/old/rex-amq-adapter"
+	old.InjectVia = "/bin/old/rex-amq-adapter"
 	other := old.Target()
 	elsewhere := w
 	elsewhere.Block = "block:b"
@@ -86,7 +86,7 @@ func TestRetireArgsFromTarget(t *testing.T) {
 			t.Fatalf("arg %d: got %q want %q", i, got[i], want[i])
 		}
 	}
-	w := Waker{SelfBin: "/a/adapter", Server: "unix:///s.sock", Block: "block:a", Handle: "bob", Root: "/root"}
+	w := Waker{InjectVia: "/a/adapter", Server: "unix:///s.sock", Block: "block:a", Handle: "bob", Root: "/root"}
 	if !w.Target().Equal(tgt) {
 		t.Error("Target must equal the target amq saves for WakeArgs")
 	}

@@ -52,7 +52,7 @@ func TestLifecycleAgainstRealAmq(t *testing.T) {
 	if err := os.WriteFile(injector, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	w := Waker{SelfBin: injector, Server: "unix:///tmp/rex.sock", Block: "block:test", Handle: "bob", Root: root}
+	w := Waker{InjectVia: injector, Server: "unix:///tmp/rex.sock", Block: "block:test", Handle: "bob", Root: root}
 
 	st, decision, err := Ensure(ctx, amqBin, w, logs)
 	if err != nil || decision != DecisionStart || !st.Live || st.Generation == "" {

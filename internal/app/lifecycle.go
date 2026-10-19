@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
+	"github.com/est7/rex-amq-adapter/internal/fsutil"
 	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
@@ -26,7 +28,31 @@ const superviseFor = 1500 * time.Millisecond
 
 // waker is the amq waker that wakes rec's agent.
 func (e Env) waker(rec store.Record) amq.Waker {
-	return amq.Waker{SelfBin: e.SelfBin, Server: rec.Server, Block: rec.BlockID, Handle: string(rec.Handle), Root: e.Paths.Root()}
+	return amq.Waker{InjectVia: e.injector(), Server: rec.Server, Block: rec.BlockID, Handle: string(rec.Handle), Root: e.Paths.Root()}
+}
+
+// injector is the --inject-via every waker runs: a wrapper in the private
+// state directory that execs this binary. amq refuses an --inject-via under a
+// group- or world-writable directory, which Homebrew's Cellar is; and the
+// wrapper's path does not change when the binary moves (go install to brew,
+// brew upgrade), so running wakers keep working and need no replacement.
+func (e Env) injector() string { return filepath.Join(e.Paths.Home, "bin", "inject") }
+
+// prepareInjector writes the wrapper for the binary that is running now, when
+// it differs; it is normally a no-op.
+func (e Env) prepareInjector() error {
+	want := "#!/bin/sh\n# Written by rex-amq-adapter: amq wake runs this to deliver a doorbell.\nexec " + shellQuote(e.SelfBin) + " \"$@\"\n"
+	path := e.injector()
+	if b, err := os.ReadFile(path); err == nil && string(b) == want {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	if err := fsutil.WriteAtomic(path, []byte(want)); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o700)
 }
 
 // SuperviseWaker keeps the waker of the agent in loc alive. amq wake has no
@@ -44,6 +70,9 @@ func (e Env) SuperviseWaker(ctx context.Context, loc Location) error {
 	defer unlock()
 	rec, ok, err := e.Store.Record(loc.Block)
 	if err != nil || !ok || !rec.Live() || rec.Kind.InProcess() {
+		return err
+	}
+	if err := e.prepareInjector(); err != nil {
 		return err
 	}
 	_, _, err = amq.Ensure(ctx, e.AmqBin, e.waker(rec), e.Paths.Logs())

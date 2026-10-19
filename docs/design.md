@@ -206,6 +206,14 @@ to its newest entries (at most 1000, half of 1 MB) once it passes 1 MB.
 The notice is amq's payload plus
 `(you are <handle> in Rex; first: eval "$(<abs path> env)")`, kept on one line.
 
+amq runs the injector through a wrapper, `<state>/bin/inject`, which execs the
+adapter binary and is rewritten whenever the binary's path changes. amq refuses
+an `--inject-via` under a group- or world-writable directory, and Homebrew's
+Cellar is group-writable: switching a real install to Homebrew left every
+revived waker unstartable until this wrapper existed (executed). The wrapper's
+path also stays put when the binary moves, so a `brew upgrade` or a switch from
+`go install` replaces no waker.
+
 The rex binary is resolved at run time (`$REX_AMQ_REX`, then `PATH`, then the
 newest `~/Library/Application Support/com.superlogical.rex/RexServer/Versions/*/…/rex`)
 because Rex installs it under a versioned path; it is never part of the waker's
@@ -338,6 +346,7 @@ Overridable with `REX_AMQ_ADAPTER_HOME` (tests use a temporary directory).
 ```
 ~/.local/state/rex-amq-adapter/
 ├── amq-root/                 shared AMQ root (agents/, meta/config.json)
+├── bin/inject                the wrapper amq wake runs as --inject-via
 ├── records/<block>.json      one record per adopted block
 ├── ledger/<handle>.json      announced message ids
 ├── inject/<handle>.jsonl     injector outcomes

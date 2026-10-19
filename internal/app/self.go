@@ -9,9 +9,8 @@ import (
 // SelfPath is the path hooks and wakers run this binary by. It is the
 // symlink-free file, except under Homebrew: there the real file lives in a
 // versioned Cellar directory that `brew upgrade` deletes, so the stable
-// <prefix>/opt/<formula>/bin path is used instead. amq stores an
-// --inject-via path resolved, so a waker started before an upgrade is
-// replaced by the next supervision (its saved target no longer matches).
+// <prefix>/opt/<formula>/bin path is used instead, in the hooks and in the
+// injector wrapper wakers run (see Env.injector).
 func SelfPath() (string, error) {
 	exe, err := os.Executable()
 	if err != nil {

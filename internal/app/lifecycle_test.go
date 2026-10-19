@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -79,7 +80,13 @@ func TestAdoptThenDepartRetiresTheWaker(t *testing.T) {
 // while starting it still leaves the record departure and collection use.
 func TestFailedWakerStartLeavesTheRecord(t *testing.T) {
 	e := realAmqEnv(t, &fakeTerm{})
-	e.SelfBin = filepath.Join(t.TempDir(), "missing-injector")
+	// Make the waker unstartable: the injector wrapper's directory is a file.
+	if err := os.MkdirAll(e.Paths.Home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Dir(e.injector()), []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if _, err := e.Adopt(ctx, Location{Block: block}, core.Codex, HookInput{}); err == nil {
@@ -193,5 +200,55 @@ func TestStopStartsNoWakerForPi(t *testing.T) {
 	if wakerLive(t, e, "pi") {
 		_, _ = amq.RetireFor(context.Background(), e.AmqBin, e.Paths.Root(), "pi", block)
 		t.Fatal("a waker was started for Pi")
+	}
+}
+
+// Homebrew installs into group-writable directories (Cellar is 0775), and
+// amq refuses an --inject-via under one. Adoption must still start a waker:
+// amq runs a wrapper from the private state directory instead.
+func TestWakerStartsWhenTheBinaryLivesInAGroupWritableDir(t *testing.T) {
+	e := realAmqEnv(t, &fakeTerm{})
+	cellar := filepath.Join(t.TempDir(), "Cellar")
+	if err := os.MkdirAll(cellar, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(cellar, 0o775); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(cellar, "inject.sh")
+	script, err := os.ReadFile(e.SelfBin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bin, script, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	e.SelfBin = bin
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if _, err := e.Adopt(ctx, Location{Block: block}, core.Codex, HookInput{}); err != nil {
+		t.Fatalf("adoption with the binary under a group-writable dir: %v", err)
+	}
+	t.Cleanup(func() { _, _ = amq.RetireFor(context.Background(), e.AmqBin, e.Paths.Root(), "codex", block) })
+	st := wakeState(t, e, "codex")
+	if !st.Live {
+		t.Fatalf("waker not live: %+v", st)
+	}
+	// The binary moves (go install to brew, or an upgrade): the waker's
+	// target stays the wrapper, so supervision keeps the same waker.
+	moved := filepath.Join(t.TempDir(), "moved.sh")
+	if err := os.WriteFile(moved, script, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	e.SelfBin = moved
+	if err := e.SuperviseWaker(ctx, Location{Block: block}); err != nil {
+		t.Fatal(err)
+	}
+	if again := wakeState(t, e, "codex"); !again.Live || again.Generation != st.Generation {
+		t.Fatalf("a moved binary replaced the waker: %+v -> %+v", st, again)
+	}
+	w, err := os.ReadFile(e.injector())
+	if err != nil || !strings.Contains(string(w), moved) {
+		t.Fatalf("the wrapper does not run the moved binary: %q %v", w, err)
 	}
 }

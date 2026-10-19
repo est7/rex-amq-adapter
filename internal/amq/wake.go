@@ -32,18 +32,18 @@ type WakeTarget struct {
 
 // Waker names one handle's waker: which block it wakes, on which server.
 type Waker struct {
-	SelfBin string // this adapter binary, run by amq as --inject-via
-	Server  string // Rex server address the block lives on
-	Block   string
-	Handle  string
-	Root    string
+	InjectVia string // what amq runs per notification (the adapter's wrapper)
+	Server    string // Rex server address the block lives on
+	Block     string
+	Handle    string
+	Root      string
 }
 
 // Target is the injector identity amq saves for this waker; it is the same
 // argv WakeArgs passes to `amq wake`.
 func (w Waker) Target() WakeTarget {
 	return WakeTarget{
-		InjectVia:  w.SelfBin,
+		InjectVia:  w.InjectVia,
 		InjectArgs: []string{"inject", w.Server, w.Block, w.Handle, w.Root},
 		RetryUntil: "injected",
 	}

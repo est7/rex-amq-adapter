@@ -53,8 +53,10 @@ rex-amq-adapter setup                       # skill + hooks for every agent foun
 Or with Go: `go install github.com/est7/rex-amq-adapter/cmd/rex-amq-adapter@latest`
 (install `amq` yourself). Under Homebrew the hooks run the stable
 `$(brew --prefix)/opt/rex-amq-adapter/bin` path, so `brew upgrade` needs no
-second `setup`; a waker started before the upgrade is replaced at its agent's
-next turn end.
+second `setup`. Wakers run a small wrapper in the state directory
+(`bin/inject`) that execs the binary: amq refuses an `--inject-via` under a
+group-writable directory such as Homebrew's Cellar, and the wrapper's path
+survives the binary moving.
 
 The hooks run the binary at the absolute path `setup` was run from.
 
@@ -111,7 +113,7 @@ rex-amq-adapter collect      # retire agents whose pane closed or process died
 ## State
 
 `~/.local/state/rex-amq-adapter/` (override with `REX_AMQ_ADAPTER_HOME`):
-`amq-root/` (the shared AMQ root), `records/` (one per adopted pane),
+`amq-root/` (the shared AMQ root), `bin/inject` (the wrapper wakers run), `records/` (one per adopted pane),
 `ledger/` (announced message ids), `inject/<handle>.jsonl` (every doorbell
 attempt and why it waited, trimmed past 1 MB; `who` shows the latest as LAST
 DOORBELL, e.g. `deferred box_not_found 23m` when the adapter cannot find an
