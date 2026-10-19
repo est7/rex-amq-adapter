@@ -1,0 +1,131 @@
+package store
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/est7/rex-amq-adapter/internal/core"
+)
+
+func TestRecordRoundTripAndListing(t *testing.T) {
+	s := Store{P: Paths{Home: t.TempDir()}}
+	if _, ok, err := s.Record("block:none"); ok || err != nil {
+		t.Fatalf("missing record: ok=%v err=%v", ok, err)
+	}
+	gone := time.Date(2026, 10, 18, 1, 2, 3, 0, time.UTC)
+	recs := []Record{
+		{Handle: "codex", Kind: core.Codex, BlockID: "block:b", AgentPID: 2},
+		{Handle: "claude", Kind: core.Claude, BlockID: "block:a", AgentPID: 1, DepartedAt: &gone},
+	}
+	for _, r := range recs {
+		if err := s.PutRecord(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, ok, err := s.Record("block:a")
+	if err != nil || !ok || got.Handle != "claude" || got.Live() || !got.DepartedAt.Equal(gone) {
+		t.Fatalf("record a: %+v ok=%v err=%v", got, ok, err)
+	}
+	all, err := s.Records()
+	if err != nil || len(all) != 2 || all[0].Handle != "claude" || all[1].Handle != "codex" {
+		t.Fatalf("records: %+v %v", all, err)
+	}
+	if err := s.DeleteRecord("block:a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteRecord("block:a"); err != nil {
+		t.Fatalf("deleting twice must be a no-op: %v", err)
+	}
+	if all, _ := s.Records(); len(all) != 1 {
+		t.Fatalf("after delete: %+v", all)
+	}
+}
+
+func TestCorruptRecordIsAnError(t *testing.T) {
+	s := Store{P: Paths{Home: t.TempDir()}}
+	if err := s.PutRecord(Record{Handle: "x", BlockID: "block:x"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s.P.records(), "block_y.json"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Records(); err == nil {
+		t.Fatal("a corrupt record may hold a waker generation; listing must not skip it")
+	}
+}
+
+func TestPutRecordNeedsIdentity(t *testing.T) {
+	s := Store{P: Paths{Home: t.TempDir()}}
+	if err := s.PutRecord(Record{BlockID: "block:x"}); err == nil {
+		t.Fatal("record without handle accepted")
+	}
+}
+
+func TestLedger(t *testing.T) {
+	s := Store{P: Paths{Home: t.TempDir()}}
+	got, err := s.Announced("bob")
+	if err != nil || len(got) != 0 {
+		t.Fatalf("empty ledger: %v %v", got, err)
+	}
+	if err := s.SetAnnounced("bob", []string{"m2", "m1"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.Announced("bob")
+	if err != nil || len(got) != 2 || !got["m1"] || !got["m2"] {
+		t.Fatalf("ledger: %v %v", got, err)
+	}
+	if other, _ := s.Announced("alice"); len(other) != 0 {
+		t.Fatalf("ledgers must be per handle: %v", other)
+	}
+}
+
+func TestInjectLogReturnsTheLatest(t *testing.T) {
+	s := Store{P: Paths{Home: t.TempDir()}}
+	if _, ok, err := s.LastInject("bob"); ok || err != nil {
+		t.Fatalf("empty log: %v %v", ok, err)
+	}
+	t0 := time.Now()
+	_ = s.RecordInject("bob", core.Outcome{Progress: core.Deferred, Code: "draft_in_box"}, t0)
+	_ = s.RecordInject("bob", core.Outcome{Progress: core.Accepted}, t0.Add(time.Second))
+	e, ok, err := s.LastInject("bob")
+	if err != nil || !ok || e.Progress != core.Accepted {
+		t.Fatalf("last: %+v %v %v", e, ok, err)
+	}
+}
+
+func TestPendingAndAdoptionFailures(t *testing.T) {
+	s := Store{P: Paths{Home: t.TempDir()}}
+	if _, ok, err := s.Pending("block:a"); ok || err != nil {
+		t.Fatalf("no pending: %v %v", ok, err)
+	}
+	if err := s.SetPending("block:a", "doorbell"); err != nil {
+		t.Fatal(err)
+	}
+	if d, ok, err := s.Pending("block:a"); !ok || err != nil || d != "doorbell" {
+		t.Fatalf("pending: %q %v %v", d, ok, err)
+	}
+	if _, ok, _ := s.Pending("block:b"); ok {
+		t.Fatal("pending must be per block")
+	}
+	if err := s.ClearPending("block:a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ClearPending("block:a"); err != nil {
+		t.Fatalf("clearing twice: %v", err)
+	}
+	at := time.Date(2026, 10, 18, 3, 4, 5, 6, time.UTC)
+	if err := s.SetAdoptFailed("block:a", at); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok, err := s.AdoptFailedAt("block:a"); !ok || err != nil || !got.Equal(at) {
+		t.Fatalf("failure time: %v %v %v", got, ok, err)
+	}
+	if err := s.ClearAdoptFailed("block:a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := s.AdoptFailedAt("block:a"); ok {
+		t.Fatal("cleared failure still present")
+	}
+}
