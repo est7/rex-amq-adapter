@@ -19,10 +19,18 @@ eval "$(rex-amq-adapter env)" && amq who --json
 ```
 
 That exports `AM_ROOT` and `AM_ME`. Notices from the adapter quote the absolute
-path of `rex-amq-adapter`; use it when the bare command is not on `PATH`. If
-`env` reports no identity, this pane was not adopted (the session started before
-the hooks were installed, or outside Rex): tell the user to restart the agent in
-a Rex terminal and stop.
+path of `rex-amq-adapter`; use it when the bare command is not on `PATH`.
+Codex must run with `--no-daemon` so its hooks and tools inherit the pane's Rex
+environment. Its shared background server can lack that environment even when
+the visible Codex terminal is inside Rex.
+
+If `env` reports no identity, stop AMQ operations. If Codex tools lack
+`REX_BLOCK` / `REX_SESSION`, have the user exit and resume in the same Rex pane
+with `codex --no-daemon resume <session-id>`, using the actual conversation id.
+If the Rex environment is present, check that the adapter's hooks are installed
+and approved; restart the agent in Rex if it started before installation.
+A missing identity does not prevent launching a peer requested by the user;
+its reply over AMQ must wait until your identity is available.
 
 ## When you are told about mail
 
@@ -99,16 +107,18 @@ this needs is below; no other skill is required.
 
    | The peer works on | Place it | Command |
    |---|---|---|
-   | the same task (review, tests, second opinion) | a pane in your window | `rex split -s "$REX_SESSION" -b "$REX_BLOCK" --split=right --focus=false --label reviewer -c "$PWD" --json -- codex "<brief>"` |
+   | the same task (review, tests, second opinion) | a pane in your window | `rex split -s "$REX_SESSION" -b "$REX_BLOCK" --split=right --focus=false --label reviewer -c "$PWD" --json -- codex --no-daemon "<brief>"` |
    | another peer on the same task | a pane in the same window, below the last peer | the same, with `-b <last peer's block> --split=below` |
-   | another task in the same project | a new tab in your session | `rex run -s "$REX_SESSION" --label <handle> -c "$PWD" --focus=false --json -- codex "<brief>"` |
-   | another project (other repository or directory) | a new session | `rex new <project> -c <dir> --json`, then `rex run -s <its .session_id> --label <handle> -c <dir> --focus=false --json -- codex "<brief>"` |
+   | another task in the same project | a new tab in your session | `rex run -s "$REX_SESSION" --label <handle> -c "$PWD" --focus=false --json -- codex --no-daemon "<brief>"` |
+   | another project (other repository or directory) | a new session | `rex new <project> -c <dir> --json`, then `rex run -s <its .session_id> --label <handle> -c <dir> --focus=false --json -- codex --no-daemon "<brief>"` |
 
    Label the pane when you create it (`--label`), never afterwards: the agent
    picks its handle from the label when its first hook runs, which can be
    before a later rename. The program after `--` takes the brief as its first
-   prompt: `codex "<brief>"`, `claude "<brief>"`, `pi "<brief>"`, or
-   `agy -i "<brief>"` (Antigravity needs `-i`). Never take
+   prompt: `codex --no-daemon "<brief>"`, `claude "<brief>"`, `pi "<brief>"`, or
+   `agy -i "<brief>"` (Antigravity needs `-i`). Pass `--no-daemon` explicitly
+   for Codex: Rex launches the binary without expanding fish abbreviations.
+   This mode cannot be combined with `--remote` or `codex agents`. Never take
    focus. Save the returned block id. When unsure whether work is the same task,
    prefer a pane: the user can move it (`rex move`), and an unseen peer is easy
    to forget. Tell the user where the peer is ("opened reviewer in a pane on the
@@ -122,6 +132,12 @@ this needs is below; no other skill is required.
 
 `REX_SESSION` and `REX_BLOCK` name your own session and pane; every Rex terminal
 sets them. In Rex, a window is a tab and a block is a pane.
+
+If these variables are missing from your tools, resolve your pane from verified
+session or process identity before using a placement command. A process name,
+working directory, or captured terminal text alone does not identify your pane.
+If no verified mapping is available, ask the user for the target pane instead
+of choosing among other Codex panes.
 
 | To | Run |
 |---|---|

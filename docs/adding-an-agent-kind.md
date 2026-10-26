@@ -85,7 +85,10 @@ official pages), find and then exercise:
 - **when the first hook fires**: at process start, or only at the first turn.
   If only at the first turn, peers must be launched with their brief as the
   first prompt, and the launch flag goes into the guide;
-- the environment hooks inherit (`REX_BLOCK` must reach them).
+- the environment hooks and tool shells inherit (`REX_BLOCK` must reach both).
+  Probe any shared-background-server mode separately: the terminal frontend's
+  environment does not prove that the backend inherits it. Codex requires
+  `--no-daemon` for this integration.
 
 ### 2.4 In-process alternative
 
@@ -98,7 +101,7 @@ the process), run start / settle, and dialog open / close.
 ### 2.5 Launch and skill
 
 - the flag that starts the agent with an initial prompt (`claude "<brief>"`,
-  `codex "<brief>"`, `pi "<brief>"`, `agy -i "<brief>"`);
+  `codex --no-daemon "<brief>"`, `pi "<brief>"`, `agy -i "<brief>"`);
 - the user-level skill directory the agent reads, and whether it is shared
   with another kind (Pi and Codex share `~/.agents/skills`).
 
@@ -159,7 +162,7 @@ configuration for a probe:
 | Agent | How its hooks were isolated |
 |---|---|
 | Claude Code | `claude --settings <file written by setup in a fake HOME>` |
-| Codex | hooks passed inline: `codex -c 'hooks.<Event>=[{hooks=[{type="command",command="…",timeout=N}]}]'` (approve them in the review screen) |
+| Codex | hooks passed inline: `codex --no-daemon -c 'hooks.<Event>=[{hooks=[{type="command",command="…",timeout=N}]}]'` (approve them in the review screen) |
 | Antigravity | a scratch git project whose `.agents/hooks.json` is copied from a fake-HOME `setup` |
 | Pi | `pi -e <extension written by setup with PI_CODING_AGENT_DIR=<temp>>` |
 

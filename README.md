@@ -68,7 +68,12 @@ leaving every other entry, key, and position as it was; adds a hook group named
 `~/.pi/agent/extensions/`; and installs a skill stub whose guide ships inside
 the binary. Run it again after moving the binary.
 
-- **Codex** runs new hooks only after you approve them: run `/hooks` in Codex, or
+- **Codex** must be started with `codex --no-daemon` (resume:
+  `codex --no-daemon resume <session-id>`). The shared background server can
+  lack the pane's Rex environment even when the frontend runs inside Rex.
+  Pass the flag explicitly when launching through Rex; fish abbreviations do
+  not apply there. This mode cannot be combined with `--remote` or `codex agents`.
+  Codex runs new hooks only after you approve them: run `/hooks` in Codex, or
   accept the review prompt at startup. The first hook that runs adopts the agent.
 - **Claude Code** and **Antigravity** run hooks only in folders you trust.
 - An agent gets its mailbox when its first turn starts; Codex and Antigravity
@@ -90,7 +95,7 @@ label its pane (the label becomes the handle) and give it a first prompt (an
 agent gets its mailbox when its first turn starts):
 
 ```bash
-rex split --split=right --focus=false --label reviewer -- codex "Review the diff; report to claude over AMQ"
+rex split --split=right --focus=false --label reviewer -- codex --no-daemon "Review the diff; report to claude over AMQ"
 ```
 
 Inspect state:

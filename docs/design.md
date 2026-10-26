@@ -40,7 +40,8 @@ uses them so that typing is the last resort, not the only channel.
 | `rex block call -b B process` | Foreground pid, name, argv, cwd of the block | executed |
 | `rex capture --format=vt` | Screen with SGR styling | executed: herdr's `screen.Check` classifies it unchanged (`empty` for placeholder text, `typed` for a draft) |
 | `rex block call -b B write {"data":…}` / `rex send` | Raw bytes to the pty; no bracketed paste is added | executed |
-| `REX_SESSION`, `REX_BLOCK`, `REX_SERVER` | Set in every Rex terminal and inherited by agent tool shells | executed |
+| `REX_SESSION`, `REX_BLOCK`, `REX_SERVER` | Set in every Rex terminal; hooks and tools must inherit the pane's environment | executed; Codex shared-server exception below |
+| Codex `--no-daemon` | Keeps hooks and tools under the terminal-launched Codex process | executed with Codex 0.164.0 (2026-10-25): the shared server was parented by launchd and tool shells lacked `REX_BLOCK` / `REX_SESSION`; a separate Rex probe with `--no-daemon` inherited both, tools were descendants of its Codex process, and adapter `env` returned the assigned handle. This probe verified identity, not a full AMQ round trip |
 | Block label | `shell` by default (also for `rex run -- cmd`); `--label X` sets it | executed |
 | CLI exit status 3 | Target not found or ambiguous | located (`docs/automate/cli`) |
 | Claude/Codex `Stop` hook `{"decision":"block","reason":…}` | Agent continues its turn with `reason` as input | executed on both |
@@ -126,7 +127,7 @@ the ladder cap (2 min); this is accepted.
 ## 4. Identity
 
 **Handle = block label.** A block whose label is not `shell` is named by the
-user or by a peer that launched it (`rex split --label reviewer -- codex`); a
+user or by a peer that launched it (`rex split --label reviewer -- codex --no-daemon`); a
 valid label is used verbatim. A `shell` block gets `<kind>` or `<kind>-N`
 (`claude`, `codex-2`), and the adapter sets the block label to it so the handle
 is visible in Rex. Session labels are left alone; Rex's own skill renames the

@@ -134,7 +134,7 @@ func printSetupNotes(agents []install.Agent, items []install.Item) {
 	}
 	for _, a := range agents {
 		if a.Kind == core.Codex {
-			fmt.Println("\nCodex asks before it runs a new or changed hook. Approve the adapter's hooks with /hooks in Codex; until then Codex skips them and the agent is not adopted.")
+			fmt.Println("\nStart Codex with --no-daemon in Rex so its hooks and tools inherit the pane's Rex environment. Codex asks before it runs a new or changed hook. Approve the adapter's hooks with /hooks in Codex; until then Codex skips them and the agent is not adopted.")
 		}
 	}
 	fmt.Println("\nStart a new agent session in a Rex terminal to use it.")
