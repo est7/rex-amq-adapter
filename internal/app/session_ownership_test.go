@@ -160,3 +160,52 @@ func TestCodexNewProcessCanReplaceSessionInSamePane(t *testing.T) {
 		t.Fatalf("replacement CLI did not acquire its identity: %+v", rec)
 	}
 }
+
+// A failed adoption (two agents starting at once can run SessionStart out of
+// time) holds back only the hooks that run on every tool call. A hook that
+// runs once a turn retries at once: an agent whose first turn ends before the
+// back-off would otherwise idle with no mailbox.
+func TestOncePerTurnHooksRetryAFailedAdoption(t *testing.T) {
+	term := &fakeTerm{state: "idle", gone: true}
+	e := realAmqEnv(t, term)
+	ctx := context.Background()
+	loc := Location{Block: block}
+	in := HookInput{SessionID: "s1", TranscriptPath: []byte(`"/tmp/t.jsonl"`)}
+	if _, err := e.Hook(ctx, EventSessionStart, core.Codex, loc, in); err == nil {
+		t.Fatal("setup: adoption should fail while the block cannot be read")
+	}
+	term.mu.Lock()
+	term.gone = false
+	term.mu.Unlock()
+	t.Cleanup(func() { _ = e.Depart(ctx, loc, HookInput{}) })
+
+	if _, err := e.Hook(ctx, EventPostTool, core.Codex, loc, in); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := e.Store.Record(block); ok {
+		t.Fatal("a tool call retried the failed adoption inside the back-off")
+	}
+	r, err := e.Hook(ctx, EventPrompt, core.Codex, loc, in)
+	if rec, ok, _ := e.Store.Record(block); err != nil || !ok || !rec.Live() || !strings.Contains(r.Notice, "you are codex-01") {
+		t.Fatalf("the next prompt must adopt: %+v %v %q", rec, err, r.Notice)
+	}
+}
+
+func TestTurnEndRetriesAFailedAdoption(t *testing.T) {
+	term := &fakeTerm{state: "idle", gone: true}
+	e := realAmqEnv(t, term)
+	ctx := context.Background()
+	loc := Location{Block: block}
+	in := HookInput{SessionID: "s1", TranscriptPath: []byte(`"/tmp/t.jsonl"`)}
+	_, _ = e.Hook(ctx, EventSessionStart, core.Codex, loc, in)
+	term.mu.Lock()
+	term.gone = false
+	term.mu.Unlock()
+	t.Cleanup(func() { _ = e.Depart(ctx, loc, HookInput{}) })
+	if _, err := e.Hook(ctx, EventStop, core.Codex, loc, in); err != nil {
+		t.Fatal(err)
+	}
+	if rec, ok, _ := e.Store.Record(block); !ok || !rec.Live() {
+		t.Fatal("the end of the first turn must adopt an agent whose start failed")
+	}
+}

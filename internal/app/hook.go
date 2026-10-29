@@ -60,18 +60,18 @@ func (e Env) Hook(ctx context.Context, event string, kind core.Kind, loc Locatio
 	case EventSessionStart:
 		return e.sessionStart(ctx, kind, loc, in)
 	case EventPrompt:
-		return e.announce(ctx, kind, loc, in, core.PromptSubmitted, true)
+		return e.announce(ctx, kind, loc, in, core.PromptSubmitted, onPrompt)
 	case EventPreInvocation:
 		// Antigravity has no prompt hook; its first model call after a
 		// prompt is the nearest point, so window notes ride here too.
-		return e.announce(ctx, kind, loc, in, core.ToolFinished, true)
+		return e.announce(ctx, kind, loc, in, core.ToolFinished, onModelCall)
 	case EventPostTool:
-		return e.announce(ctx, kind, loc, in, core.ToolFinished, false)
+		return e.announce(ctx, kind, loc, in, core.ToolFinished, onToolCall)
 	case EventStop:
 		if !in.NormalStop() {
 			return Reply{}, nil
 		}
-		r, err := e.announce(ctx, kind, loc, in, core.TurnEnding, false)
+		r, err := e.announce(ctx, kind, loc, in, core.TurnEnding, onTurnEnd)
 		if err != nil {
 			return r, err
 		}
@@ -85,9 +85,9 @@ func (e Env) Hook(ctx context.Context, event string, kind core.Kind, loc Locatio
 	case EventMail:
 		// Pi's watcher turns a notice into a turn of its own; window notes
 		// wait for its next prompt instead.
-		return e.announce(ctx, kind, loc, in, core.PromptSubmitted, false)
+		return e.announce(ctx, kind, loc, in, core.PromptSubmitted, onToolCall)
 	case EventSettle:
-		return e.announce(ctx, kind, loc, in, core.TurnEnding, false)
+		return e.announce(ctx, kind, loc, in, core.TurnEnding, onTurnEnd)
 	}
 	return Reply{}, fmt.Errorf("unknown hook event %q", event)
 }
@@ -135,10 +135,7 @@ func (e Env) sessionStart(ctx context.Context, kind core.Kind, loc Location, in 
 // SessionStart never ran the adapter: Codex runs new hooks only after the
 // user approves them, which is usually after the session started, and an
 // adapter installed mid-session misses SessionStart too.
-//
-// window is set on the hooks that run as the agent takes a prompt: they also
-// deliver notes that an agent started beside it.
-func (e Env) announce(ctx context.Context, kind core.Kind, loc Location, in HookInput, event core.HookEvent, window bool) (Reply, error) {
+func (e Env) announce(ctx context.Context, kind core.Kind, loc Location, in HookInput, event core.HookEvent, may announcing) (Reply, error) {
 	rec, ok, err := e.Store.Record(loc.Block)
 	if err != nil {
 		return Reply{}, err
@@ -147,7 +144,7 @@ func (e Env) announce(ctx context.Context, kind core.Kind, loc Location, in Hook
 	if !ok || !rec.Live() {
 		// A failing adoption is not retried on every tool call: each
 		// attempt can take the hook's whole budget.
-		if at, failed, err := e.Store.AdoptFailedAt(loc.Block); err != nil || (failed && e.Now().Sub(at) < AdoptRetryAfter) {
+		if at, failed, err := e.Store.AdoptFailedAt(loc.Block); err != nil || (failed && !may.retry && e.Now().Sub(at) < AdoptRetryAfter) {
 			return Reply{}, err
 		}
 		a, err := e.adopt(ctx, loc, kind, in)
@@ -159,7 +156,7 @@ func (e Env) announce(ctx context.Context, kind core.Kind, loc Location, in Hook
 			identity = e.identityNotice(ctx, a, 0)
 		}
 	}
-	return e.announceMail(ctx, rec, in, event, identity, window)
+	return e.announceMail(ctx, rec, in, event, identity, may.window)
 }
 
 func (e Env) announceMail(ctx context.Context, rec store.Record, in HookInput, event core.HookEvent, identity string, window bool) (Reply, error) {
@@ -270,8 +267,28 @@ func joinNotices(notices ...string) string {
 	return strings.Join(out, " ")
 }
 
-// AdoptRetryAfter is how long hooks wait before adopting again after a
-// failed adoption.
+// announcing is what a hook may do besides announcing mail.
+type announcing struct {
+	// window: deliver notes about agents joining or leaving the window. Set
+	// where the agent takes a prompt, so the news never interrupts a turn.
+	window bool
+	// retry: adopt again at once after a failed adoption. Set on hooks that
+	// run at most once a turn; the frequent ones wait out AdoptRetryAfter so
+	// a failing adoption cannot slow every tool call. Without it an agent
+	// whose start failed (two agents starting at once can run SessionStart
+	// out of time) and whose first turn ends quickly would idle unadopted.
+	retry bool
+}
+
+var (
+	onPrompt    = announcing{window: true, retry: true}
+	onModelCall = announcing{window: true} // Antigravity's PreInvocation: every model call
+	onToolCall  = announcing{}             // PostToolUse; Pi's mail watcher
+	onTurnEnd   = announcing{retry: true}  // Stop; Pi's settle
+)
+
+// AdoptRetryAfter is how long the frequent hooks wait before adopting again
+// after a failed adoption.
 const AdoptRetryAfter = time.Minute
 
 // adopt runs Adopt for a hook: it collects first, so a resumed session finds

@@ -396,6 +396,15 @@ adapter installed mid-session, and heals a record that collection parked by
 mistake. Every adoption collects first, so a resumed session finds the record
 of the pane it left already parked.
 
+A failed adoption is remembered for a minute. The hooks that run on every
+tool or model call (`PostToolUse`, `PreInvocation`, Pi's mail watcher) do not
+retry within it, so a failing adoption cannot slow each call; the hooks that
+run once a turn (`UserPromptSubmit`, `Stop`, Pi's `before_agent_start` and
+settle) retry at once. Agents started together contend for the lifecycle
+lock, and a `SessionStart` can run out of time: in a crew launch (2026-10-29,
+**reproduced**) Codex's start was killed mid-adoption and its first turn
+ended inside the minute, so it idled with no mailbox until the next prompt.
+
 **Adopt** (under the state lifecycle lock): resolve the block's foreground
 process and confirm it is the agent; choose the handle; `amq init --force` with
 the merged agent list under the root registry lock (port from herdr); ensure the
