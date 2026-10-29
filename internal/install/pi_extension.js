@@ -78,6 +78,14 @@ export default function (pi) {
 		schedule(); // mail that arrived before the watch began
 	});
 
+	// A run is starting from a prompt: news meant for the next prompt (an agent
+	// started beside this one) rides along instead of starting a turn itself.
+	pi.on("before_agent_start", async () => {
+		const r = await hook("user-prompt-submit", input({}));
+		if (!r.notice) return;
+		return { message: { customType: "amq", content: r.notice, display: true } };
+	});
+
 	pi.on("agent_start", () => {
 		busy = true;
 		continued = false;

@@ -90,6 +90,37 @@ Start agents in Rex terminals as usual. Then ask one to talk to another:
 
 > ask codex to review the current diff over AMQ
 
+Agents in one Rex tab know each other: an agent learns who is beside it when it
+starts, and the agents already there hear that it joined, or later left,
+with their next prompt. "Ask the one beside you" needs no handle.
+
+A pane label names the agent's role, and a role with a prompt briefs the
+agent when it starts. A tab named after a crew adds the crew's team
+conventions, shared by every agent in it:
+
+| Built in | What it is |
+|---|---|
+| roles `implementer`, `reviewer`, `qa`, `architect`, `writer`, `editor` | work in any tab |
+| crew `pair` | implementer builds, reviewer critiques the working-tree diff, until clean |
+| crew `ship` | `pair`, then QA runs the reviewed candidate and reports a verdict with evidence |
+| crew `dev` | an architect decomposes the goal into tasks for an implementer and reviewer |
+| crew `docs` | writers draft, an editor checks against the code; an optional architect partitions |
+| crew `design` | architects propose independently, critique each other, and report a decision or the crux |
+
+```bash
+rex-amq-adapter tab pair --role implementer -- codex --no-daemon "Fix #42: …"
+rex split -b <its block> --label reviewer -- claude "Review the implementer's fix for #42 when it hands off."
+rex-amq-adapter crews        # every crew and role available in this directory
+```
+
+Your own crews and roles override the built-in ones by name: a crew is a
+directory holding `team-conventions.md` and, optionally, `<role>.md` for a
+role that works differently in it; `roles/<role>.md` holds roles for any tab.
+They are read from `.agents/crews/` in the project (or a parent directory),
+then `~/.config/rex-amq-adapter/crews/`. The format follows
+[Runner](https://github.com/yicheng47/runner)'s crew examples, which the
+built-in prompts are rewritten from.
+
 The agent's skill handles `amq send`, `amq drain`, and `amq reply`, and opens
 peers itself: a pane beside it for the same task, a new tab for another task in
 the same project, a new session for another project. To start one by hand,

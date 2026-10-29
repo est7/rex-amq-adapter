@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -112,5 +114,36 @@ func TestPaneLabelIsTheRole(t *testing.T) {
 	again := adoptIn(t, e, block, "s1", 0)
 	if again.Handle != a.Handle {
 		t.Fatalf("re-adoption renamed %s to %s", a.Handle, again.Handle)
+	}
+}
+
+// A record parked while its agent still runs (collection that could not see
+// the block) is taken back by the agent's next hook. The agent was told its
+// handle when this session first adopted it, so re-adoption says nothing:
+// for Pi an identity-only notice from the mail watcher starts a turn of its
+// own. A different session in the pane does not know its handle and is told.
+func TestReadoptionOfTheSameSessionRepeatsNoIdentity(t *testing.T) {
+	e := realAmqEnv(t, &fakeTerm{state: "idle"})
+	ctx := context.Background()
+	loc := Location{Block: block}
+	pid := os.Getpid()
+	if _, err := e.Hook(ctx, EventSessionStart, core.Pi, loc, HookInput{SessionID: "s1", AgentPID: pid}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = e.Depart(ctx, loc, HookInput{}) })
+	depart(t, e, block, "s1")
+
+	r, err := e.Hook(ctx, EventMail, core.Pi, loc, HookInput{SessionID: "s1", AgentPID: pid, Idle: true})
+	if err != nil || r.Notice != "" {
+		t.Fatalf("re-adopting the same session: notice %q, err %v", r.Notice, err)
+	}
+	if rec := recordOf(t, e, "pi-01"); !rec.Live() || rec.AgentSessionID != "s1" {
+		t.Fatalf("the session did not take pi-01 back: %+v", rec)
+	}
+
+	depart(t, e, block, "s1")
+	r, err = e.Hook(ctx, EventMail, core.Pi, loc, HookInput{SessionID: "s2", AgentPID: pid, Idle: true})
+	if err != nil || !strings.Contains(r.Notice, "you are pi-02") {
+		t.Fatalf("a new session in the pane must learn its handle: notice %q, err %v", r.Notice, err)
 	}
 }

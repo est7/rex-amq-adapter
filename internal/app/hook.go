@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/core"
+	"github.com/est7/rex-amq-adapter/internal/crew"
 	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
@@ -58,14 +60,18 @@ func (e Env) Hook(ctx context.Context, event string, kind core.Kind, loc Locatio
 	case EventSessionStart:
 		return e.sessionStart(ctx, kind, loc, in)
 	case EventPrompt:
-		return e.announce(ctx, kind, loc, in, core.PromptSubmitted)
-	case EventPostTool, EventPreInvocation:
-		return e.announce(ctx, kind, loc, in, core.ToolFinished)
+		return e.announce(ctx, kind, loc, in, core.PromptSubmitted, true)
+	case EventPreInvocation:
+		// Antigravity has no prompt hook; its first model call after a
+		// prompt is the nearest point, so window notes ride here too.
+		return e.announce(ctx, kind, loc, in, core.ToolFinished, true)
+	case EventPostTool:
+		return e.announce(ctx, kind, loc, in, core.ToolFinished, false)
 	case EventStop:
 		if !in.NormalStop() {
 			return Reply{}, nil
 		}
-		r, err := e.announce(ctx, kind, loc, in, core.TurnEnding)
+		r, err := e.announce(ctx, kind, loc, in, core.TurnEnding, false)
 		if err != nil {
 			return r, err
 		}
@@ -77,9 +83,11 @@ func (e Env) Hook(ctx context.Context, event string, kind core.Kind, loc Locatio
 	case EventSessionEnd:
 		return Reply{}, e.Depart(ctx, loc, in)
 	case EventMail:
-		return e.announce(ctx, kind, loc, in, core.PromptSubmitted)
+		// Pi's watcher turns a notice into a turn of its own; window notes
+		// wait for its next prompt instead.
+		return e.announce(ctx, kind, loc, in, core.PromptSubmitted, false)
 	case EventSettle:
-		return e.announce(ctx, kind, loc, in, core.TurnEnding)
+		return e.announce(ctx, kind, loc, in, core.TurnEnding, false)
 	}
 	return Reply{}, fmt.Errorf("unknown hook event %q", event)
 }
@@ -103,7 +111,7 @@ func (e Env) sessionStart(ctx context.Context, kind core.Kind, loc Location, in 
 	if err != nil {
 		return Reply{}, err
 	}
-	r := Reply{Notice: core.SessionNotice(a.Record.Handle, e.EnvCommand(), a.Unread)}
+	r := Reply{Notice: e.identityNotice(ctx, a, a.Unread)}
 	if kind.InProcess() {
 		// The extension delivers waiting mail itself, with a turn of its own,
 		// from the first scan of this inbox; marking it announced here would
@@ -127,7 +135,10 @@ func (e Env) sessionStart(ctx context.Context, kind core.Kind, loc Location, in 
 // SessionStart never ran the adapter: Codex runs new hooks only after the
 // user approves them, which is usually after the session started, and an
 // adapter installed mid-session misses SessionStart too.
-func (e Env) announce(ctx context.Context, kind core.Kind, loc Location, in HookInput, event core.HookEvent) (Reply, error) {
+//
+// window is set on the hooks that run as the agent takes a prompt: they also
+// deliver notes that an agent started beside it.
+func (e Env) announce(ctx context.Context, kind core.Kind, loc Location, in HookInput, event core.HookEvent, window bool) (Reply, error) {
 	rec, ok, err := e.Store.Record(loc.Block)
 	if err != nil {
 		return Reply{}, err
@@ -144,12 +155,14 @@ func (e Env) announce(ctx context.Context, kind core.Kind, loc Location, in Hook
 			return Reply{}, err
 		}
 		rec = a.Record
-		identity = core.SessionNotice(rec.Handle, e.EnvCommand(), 0)
+		if !a.Known {
+			identity = e.identityNotice(ctx, a, 0)
+		}
 	}
-	return e.announceMail(ctx, rec, in, event, identity)
+	return e.announceMail(ctx, rec, in, event, identity, window)
 }
 
-func (e Env) announceMail(ctx context.Context, rec store.Record, in HookInput, event core.HookEvent, identity string) (Reply, error) {
+func (e Env) announceMail(ctx context.Context, rec store.Record, in HookInput, event core.HookEvent, identity string, window bool) (Reply, error) {
 	unlock, err := e.Store.LockLedger(ctx, rec.Handle)
 	if err != nil {
 		return Reply{}, err
@@ -174,16 +187,87 @@ func (e Env) announceMail(ctx context.Context, rec store.Record, in HookInput, e
 		if event == core.TurnEnding {
 			return Reply{}, nil
 		}
-		return Reply{Notice: identity}, nil
+		return e.withWindowNotes(rec.Handle, window, identity, "")
 	}
 	if err := e.Store.SetAnnounced(rec.Handle, core.MergeAnnounced(ledger.IDs, unread, unread), now); err != nil {
 		return Reply{}, err
 	}
-	notice := core.HookNotice(a, rec.Handle, e.EnvCommand(), event)
-	if identity != "" {
-		notice = identity + " " + notice
+	return e.withWindowNotes(rec.Handle, window, identity, core.HookNotice(a, rec.Handle, e.EnvCommand(), event))
+}
+
+// withWindowNotes builds the reply, taking h's queued window notes when
+// window is set. Taking them is the last step that can fail, so a hook that
+// fails earlier leaves them queued for the next prompt. The caller holds h's
+// ledger lock.
+func (e Env) withWindowNotes(h core.Handle, window bool, identity, mail string) (Reply, error) {
+	var notes []string
+	if window {
+		var err error
+		if notes, err = e.Store.TakeWindowNotes(h); err != nil {
+			return Reply{}, err
+		}
 	}
-	return Reply{Notice: notice}, nil
+	return Reply{Notice: joinNotices(append(append([]string{identity}, notes...), mail)...)}, nil
+}
+
+// identityNotice tells a newly adopted agent who it is, who is beside it,
+// and what its crew and role ask of it.
+func (e Env) identityNotice(ctx context.Context, a Adoption, unread int) string {
+	notice := joinNotices(core.SessionNotice(a.Record.Handle, e.EnvCommand(), unread), core.MatesNotice(a.Mates))
+	if brief := core.BriefNotice(e.briefing(ctx, a)); brief != "" {
+		notice += "\n\n" + brief
+	}
+	return notice
+}
+
+// briefing finds the agent's crew (named by its Rex tab) and its role
+// prompt. Like window-mates it is advice: what cannot be read is reported
+// and left out, and the agent keeps its handle.
+func (e Env) briefing(ctx context.Context, a Adoption) core.Briefing {
+	b := core.Briefing{Role: a.Role}
+	if e.Crews == nil {
+		return b
+	}
+	if a.Session != "" && a.Window != "" {
+		s, err := e.Rex.InspectSession(ctx, a.Session)
+		if err != nil {
+			fmt.Fprintf(Diagnostics, "read the tab of %s: %v\n", a.Record.Handle, err)
+		}
+		for _, w := range s.Windows {
+			if w.ID == a.Window {
+				b.Crew = crew.Name(w.Label)
+			}
+		}
+	}
+	dir := ""
+	if p, ok, err := e.Rex.Foreground(ctx, a.Record.BlockID); err != nil {
+		fmt.Fprintf(Diagnostics, "read the directory of %s: %v\n", a.Record.Handle, err)
+	} else if ok {
+		dir = p.Cwd
+	}
+	lib := e.Crews(dir)
+	if p, ok, err := lib.Conventions(b.Crew); err != nil {
+		fmt.Fprintf(Diagnostics, "read the conventions of crew %s: %v\n", b.Crew, err)
+	} else if ok {
+		b.Conventions, b.ConventionsPath = p.Text, p.Path
+	}
+	if p, ok, err := lib.Role(b.Crew, b.Role); err != nil {
+		fmt.Fprintf(Diagnostics, "read the prompt of role %s: %v\n", b.Role, err)
+	} else if ok {
+		b.RolePrompt, b.RolePath = p.Text, p.Path
+	}
+	return b
+}
+
+// joinNotices joins the non-empty notices into one line.
+func joinNotices(notices ...string) string {
+	var out []string
+	for _, n := range notices {
+		if n != "" {
+			out = append(out, n)
+		}
+	}
+	return strings.Join(out, " ")
 }
 
 // AdoptRetryAfter is how long hooks wait before adopting again after a

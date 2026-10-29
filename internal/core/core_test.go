@@ -273,3 +273,46 @@ func TestLastDelivery(t *testing.T) {
 		t.Errorf("Ago: %s %s", Ago(3*24*time.Hour), Ago(5*time.Hour))
 	}
 }
+
+func TestWindowMatesAreTheOtherAgentsInTheSameWindow(t *testing.T) {
+	windowOf := map[string]string{"b:self": "w1", "b:right": "w1", "b:below": "w1", "b:tab2": "w2"}
+	peers := []Peer{
+		{Handle: "codex-01", Kind: Codex, Block: "b:right"},
+		{Handle: "pi-01", Kind: Pi, Block: "b:tab2"},
+		{Handle: "claude-02", Kind: Claude, Block: "b:self"}, // replaced in this block
+		{Handle: "agy-01", Kind: Agy, Block: "b:below"},
+		{Handle: "codex-02", Kind: Codex, Block: "b:other-session"},
+	}
+	got := WindowMates("b:self", "w1", windowOf, peers)
+	if len(got) != 2 || got[0].Handle != "codex-01" || got[1].Handle != "agy-01" {
+		t.Fatalf("got %+v, want codex-01 and agy-01", got)
+	}
+	if got := WindowMates("b:self", "", windowOf, peers); got != nil {
+		t.Fatalf("an unknown window has no mates, got %+v", got)
+	}
+	if s := MatesNotice(got); !strings.Contains(s, "codex-01 (codex), agy-01 (agy)") || !strings.Contains(s, "amq send") {
+		t.Fatalf("mates notice %q", s)
+	}
+	if MatesNotice(nil) != "" {
+		t.Fatal("no mates must say nothing")
+	}
+	if s := JoinedNotice(got[0]); !strings.Contains(s, "codex-01 (codex) joined") || !strings.Contains(s, "amq send --to codex-01") {
+		t.Fatalf("joined notice %q", s)
+	}
+}
+
+func TestBriefNoticeCarriesConventionsThenRole(t *testing.T) {
+	b := Briefing{Crew: "pair", Conventions: "Review before commit.", Role: "reviewer", RolePrompt: "You are the reviewer."}
+	s := BriefNotice(b)
+	conv, role := strings.Index(s, "Review before commit."), strings.Index(s, "You are the reviewer.")
+	if conv < 0 || role < conv || !strings.Contains(s, `crew "pair"`) || !strings.Contains(s, "role here is reviewer") {
+		t.Fatalf("briefing %q", s)
+	}
+	if BriefNotice(Briefing{Role: "reviewer"}) != "" {
+		t.Fatal("a role without a prompt says nothing")
+	}
+	long := strings.Repeat("x", MaxInline+1)
+	if s := BriefNotice(Briefing{Role: "r", RolePrompt: long, RolePath: "/p/r.md"}); strings.Contains(s, long) || !strings.Contains(s, "read /p/r.md") {
+		t.Fatalf("a long file must be named, not inlined: %.80q", s)
+	}
+}

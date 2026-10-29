@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
+	"github.com/est7/rex-amq-adapter/internal/crew"
 	"github.com/est7/rex-amq-adapter/internal/rex"
 	"github.com/est7/rex-amq-adapter/internal/store"
 )
@@ -27,6 +28,7 @@ type Terminal interface {
 	SendKeys(ctx context.Context, block string, keys ...string) error
 	InspectBlock(ctx context.Context, block string) (rex.Block, error)
 	InspectSession(ctx context.Context, session string) (rex.Session, error)
+	ListBlocks(ctx context.Context, session string) ([]rex.Block, error)
 	RenameBlock(ctx context.Context, block, label string) error
 }
 
@@ -35,8 +37,11 @@ type Env struct {
 	Paths store.Paths
 	Store store.Store
 	// Rex talks to the caller's server; RexOn to the server a record names.
-	Rex     Terminal
-	RexOn   func(server string) Terminal
+	Rex   Terminal
+	RexOn func(server string) Terminal
+	// Crews finds crew and role prompts for an agent working in a
+	// directory; nil finds none.
+	Crews   func(dir string) crew.Library
 	AmqBin  string
 	SelfBin string // SelfPath(): absolute, stable across Homebrew upgrades
 	Now     func() time.Time
@@ -71,6 +76,7 @@ func NewEnvAt(server string, paths store.Paths) (Env, error) {
 		Store:   store.Store{P: paths},
 		Rex:     rex.Client{Bin: rexBin, Server: server},
 		RexOn:   func(s string) Terminal { return rex.Client{Bin: rexBin, Server: s} },
+		Crews:   crew.Load,
 		AmqBin:  amqBin,
 		SelfBin: self,
 		Now:     time.Now,

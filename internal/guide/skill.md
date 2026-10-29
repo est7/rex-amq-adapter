@@ -88,6 +88,14 @@ draft_in_box` or `agent_blocked` means the user must clear the peer's input
 box or answer its dialog (tell the user which pane); `accepted` means the peer
 was told and has not acted yet.
 
+Agents in your Rex tab are your window-mates. Your start notice names those
+already there ("Agents beside you in this Rex tab: …"), and a notice with
+your next prompt names each that joins or leaves ("… joined your Rex tab",
+"… left your Rex tab"). Stop waiting for a reply from an agent that left. When the
+user says "the one beside you", "旁边那个", or "隔壁", they mean these. Reach
+them with `amq send`, not with your harness's own agent messaging, which does
+not know AMQ handles. For anyone else, read `rex-amq-adapter who`.
+
 Send only to a handle `rex-amq-adapter who` lists. A departed agent (`who
 --all`) keeps its handle for 7 days so its session can be resumed, and mail to
 it waits unread until then; start a peer instead unless the user is resuming
@@ -102,7 +110,12 @@ this needs is below; no other skill is required.
 1. **Pick a role** for the pane label: a word or two for what the peer does
    (`reviewer`, `test-writer`). The adapter names the peer
    `<kind>-<role>-<NN>` (`codex-reviewer-01`) and relabels the pane; read the
-   handle from `who` (step 4) or from the peer's first message.
+   handle from `who` (step 4) or from the peer's first message. A role with a
+   prompt briefs the peer when it starts: `implementer`, `reviewer`, `qa`,
+   `architect`, `writer`, and `editor` are built in, and
+   `rex-amq-adapter crews` lists every role and crew available here. Prefer
+   one of these names when it fits; the peer then knows its job and how to
+   hand off before it reads your brief, so keep the brief to the task.
 2. **Write the brief** as the peer's first prompt: the task, the files or diff,
    and that it should report back with
    `amq send --to <your handle>` (or `amq reply` to your mail). An agent is
@@ -116,11 +129,16 @@ this needs is below; no other skill is required.
    | the same task (review, tests, second opinion) | a pane in your window | `rex split -s "$REX_SESSION" -b "$REX_BLOCK" --split=right --focus=false --label reviewer -c "$PWD" --json -- codex --no-daemon "<brief>"` |
    | another peer on the same task | a pane in the same window, below the last peer | the same, with `-b <last peer's block> --split=below` |
    | another task in the same project | a new tab in your session | `rex run -s "$REX_SESSION" --label <role> -c "$PWD" --focus=false --json -- codex --no-daemon "<brief>"` |
+   | a team the user asked for by crew ("开个 pair 组", "a ship crew for this fix") | a new tab named after the crew, then the other members as panes in it | `rex-amq-adapter tab <crew> --role <role> -c "$PWD" -- codex --no-daemon "<brief>"` for the first, then `rex split -b <its block> --label <role> …` for each other member |
    | another project (other repository or directory) | a new session | `rex new <project> -c <dir> --json`, then `rex run -s <its .session_id> --label <role> -c <dir> --focus=false --json -- codex --no-daemon "<brief>"` |
 
-   Label the pane when you create it (`--label`), never afterwards: the agent
-   takes its role from the label when its first hook runs, which can be
-   before a later rename. The program after `--` takes the brief as its first
+   A tab named after a crew (`pair`, `ship`, `dev`, `docs`, `design` are
+   built in) gives every agent in it the crew's team conventions: who leads,
+   the order of handoffs, when to stop. Brief the crew's lead, which the
+   conventions name; the others wait for its handoff, so give them a short
+   brief naming the task. Label the pane and name the tab when you create
+   them, never afterwards: the agent takes its role and crew when its first
+   hook runs, which can be before a later rename. The program after `--` takes the brief as its first
    prompt: `codex --no-daemon "<brief>"`, `claude "<brief>"`, `pi "<brief>"`, or
    `agy -i "<brief>"` (Antigravity needs `-i`). Pass `--no-daemon` explicitly
    for Codex: Rex launches the binary without expanding fish abbreviations.

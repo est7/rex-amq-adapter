@@ -218,6 +218,75 @@ the terminal binding or announcement ledger, and that interactive startup,
 `/new`, resume, clear, and fork retain normal delivery. An issue closure alone
 is not sufficient evidence.
 
+**Window-mates.** Agents on one task are placed side by side in a Rex window
+(tab), so the window is where an agent's mates are; the session and the server
+are left to `who`. Rex delivers no layout events, but the moment that matters,
+an agent appearing, is an adoption, so adoption does the work under the
+lifecycle lock, which also serialises agents that start together:
+
+- One `rex block ls -s <session>` maps blocks to windows. The live records in
+  the adopted block's window, other than this block, are its mates; the
+  identity notice names them.
+- An agent that just arrived in its block (a new handle, a session resumed
+  in another block, or one taking its handle back after it departed) queues
+  "`<handle>` joined your Rex tab" for each mate. A live record adopted again
+  in its own block (a repeated start hook, a compaction) tells no one.
+- Departure (`park`: SessionEnd, collection of a crash or a closed pane, a
+  replacement in the block) queues "`<handle>` left your Rex tab" for each
+  live agent recorded in the same window. The record keeps the window its
+  block was in at adoption (`window_id`), because a crashed agent's block is
+  already gone when collection finds it.
+- A queued note is delivered once, at the mate's next prompt:
+  `UserPromptSubmit` (Claude Code, Codex), Pi's `before_agent_start`, or
+  Antigravity's next `PreInvocation`. Tool hooks, Stop, and Pi's mail watcher
+  carry none: they would interrupt a turn or start one for advice that can
+  wait. Antigravity is the accepted exception: it has no prompt hook, and
+  `PreInvocation` runs before every model call, so a mate that joins while it
+  works is announced mid-turn. Departure drops undelivered notes; a hook that
+  fails before it replies leaves them queued.
+- Mates are advice. When the window cannot be listed, adoption stands without
+  them and the failure goes to the hook log. A block moved to another window
+  is not noticed until the next adoption; `who` is always current.
+
+Evidence (2026-10-29, **reproduced**): Claude, Codex, Antigravity, and Pi
+started into one tab and a Claude control in another, each on this
+implementation; every agent named exactly the mates and joins it was due, the
+control none, and the queue ended empty.
+
+**Crews and roles.** The window is the team; two labels say what kind of
+team it is and what each member does. The tab label names a crew, the pane
+label a role (the same `core.Role` that names the handle). An agent learns
+both with its identity, at adoption:
+
+- The crew's `team-conventions.md` (who leads, the order of handoffs, when to
+  stop) and the role's prompt are looked up from the agent's directory (the
+  block's foreground process): `.agents/crews` there or above, then
+  `~/.config/rex-amq-adapter/crews`, then the built-in set. The first file
+  found wins whole; a crew's own `<role>.md` beats the shared
+  `roles/<role>.md`. Conventions win over a role prompt where they differ.
+- A tab that names no crew (Rex's default `Window 82b616eb`, any unknown
+  name) gives role prompts only, so a reviewer split into an ordinary tab is
+  still briefed. An agent without a role in such a tab hears nothing more.
+- Briefings are advice, like mates: a lookup that fails is logged and left
+  out. A prompt over 4 000 bytes is named by path instead of inlined. A
+  session re-adopted in its own block is not briefed again.
+- Built in: roles `implementer`, `reviewer`, `qa`, `architect`, `writer`,
+  `editor`; crews `pair`, `ship`, `dev`, `docs` (with its own `architect`),
+  `design`, rewritten from Runner's examples (MIT, see
+  `internal/crew/builtin/NOTICE.md`). The file layout follows Runner's, so a
+  crew can move between the two once its conventions say who to message
+  rather than how.
+- `rex window new` cannot label the block and `rex run` cannot label the
+  tab, so `rex-amq-adapter tab <crew> --role R -- CMD` opens both in one
+  `session.new_window` call; `crews` lists what an agent in a directory
+  would find.
+
+Evidence (2026-10-29, **reproduced**): `tab pair --role implementer` opened a
+Claude, and a Codex was split beside it with `--label reviewer`. Asked what
+they had been told, the implementer named its role, the crew, its lead, and
+its handoff; the reviewer quoted its role prompt and the conventions and
+stood by.
+
 **How an agent finds its identity.** `rex-amq-adapter env` resolves the record
 from `REX_BLOCK` and prints `export AM_ROOT=… AM_ME=…`. Agents run
 `eval "$(rex-amq-adapter env)"` before each `amq` command. No identity files.
@@ -418,9 +487,10 @@ Overridable with `REX_AMQ_ADAPTER_HOME` (tests use a temporary directory).
 ## 9. Module layout
 
 ```
-cmd/rex-amq-adapter/   subcommands: hook, inject, env, who, collect, setup, status, remove, __internal, version
+cmd/rex-amq-adapter/   subcommands: hook, inject, env, who, collect, crews, tab, setup, status, remove, __internal, version
 internal/app/          entry points: observe, ask core, act (adopt, inject, announce, depart, collect)
-internal/core/         pure policy: handle choice, inject decision, announce decision, notice text
+internal/core/         pure policy: handle choice, inject decision, announce decision, window-mates, notice text
+internal/crew/         crew and role prompt lookup across project, user, and built-in layers; built-in prompts
 internal/fsutil/       flock and atomic replace
 internal/rex/          rex CLI client: process, program_status, capture, write, labels, whoami
 internal/amq/          wake check/start/repair/retire, mailbox registration, inbox listing (ported)
@@ -490,6 +560,8 @@ file written by `setup`, Codex hooks passed inline with `-c`.
 | Doorbell merges with a user's draft | Typed only at rest, after an `empty` box check, and confirmed; leftover text is cleared only when it is exactly ours |
 | Codex swallows Enter | Bracketed paste + CR in one write (executed) |
 | Rex upgrade moves the rex binary | Resolved at run time, never baked into the waker target |
+| A hook in one Rex session sees every agent in another as gone | rex resolves `-b` within `$REX_SESSION`, which hooks inherit; collection then parked live agents, whose next hook re-adopted them and spawned a fresh waker, over and over. Every rex call names its target by id, so the client drops `REX_SESSION` (executed: old and new `collect` on a copy of real state) |
+| A parked record is re-adopted by its own still-running session, and the agent is told its identity again | The identity notice goes only to a session that did not hold the handle before. Pi's mail watcher turns any notice into a turn of its own, so a repeated identity cost Pi a whole turn (reproduced; executed in `resume_test.go`) |
 | A new agent inherits stale mail | New names skip mailboxes with undrained mail and reserved handles |
 | A resumed agent loses its handle, and its peer writes to nobody | The handle belongs to the agent session, not the pane; collection runs before adoption so the closed pane's record is parked and claimable; reservations last 7 days (executed in `resume_test.go`) |
 | A handle names the wrong harness (`codex-…` running Claude) | The kind is never read from a label; a pane that changes kind keeps only its role |

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
+	"github.com/est7/rex-amq-adapter/internal/core"
 	"github.com/est7/rex-amq-adapter/internal/fsutil"
 	"github.com/est7/rex-amq-adapter/internal/store"
 )
@@ -106,7 +107,48 @@ func (e Env) park(ctx context.Context, rec store.Record) error {
 	}
 	now := e.Now().UTC()
 	rec.DepartedAt = &now
-	return e.Store.PutRecord(rec)
+	if err := e.Store.PutRecord(rec); err != nil {
+		return err
+	}
+	// Notes about who joined are about the window it was in; a resume may
+	// be elsewhere, much later.
+	if err := e.clearWindowNotes(ctx, rec.Handle); err != nil {
+		return err
+	}
+	e.leaveWindow(ctx, rec)
+	return nil
+}
+
+func (e Env) clearWindowNotes(ctx context.Context, h core.Handle) error {
+	unlock, err := e.Store.LockLedger(ctx, h)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return e.Store.ClearWindowNotes(h)
+}
+
+// leaveWindow queues, for each live agent recorded in rec's window, a note
+// that rec's agent left. It reads only records, so a crash found by
+// collection, whose block is gone, is told like a SessionEnd. Like a join
+// it is advice: a failure is reported, and the departure stands.
+func (e Env) leaveWindow(ctx context.Context, rec store.Record) {
+	if rec.WindowID == "" {
+		return
+	}
+	recs, err := e.Store.Records()
+	if err != nil {
+		fmt.Fprintf(Diagnostics, "tell the window that %s left: %v\n", rec.Handle, err)
+		return
+	}
+	note := core.LeftNotice(core.Peer{Handle: rec.Handle, Kind: rec.Kind, Block: rec.BlockID})
+	for _, r := range recs {
+		if r.Live() && r.Handle != rec.Handle && r.WindowID == rec.WindowID {
+			if err := e.noteWindow(ctx, r.Handle, note); err != nil {
+				fmt.Fprintf(Diagnostics, "tell %s that %s left: %v\n", r.Handle, rec.Handle, err)
+			}
+		}
+	}
 }
 
 // Collect reconciles records with Rex: an agent whose block is gone or whose

@@ -74,6 +74,10 @@ func (c Client) run(ctx context.Context, stdin []byte, args ...string) ([]byte, 
 	}
 	full = append(full, args...)
 	cmd := exec.CommandContext(ctx, c.Bin, full...)
+	// rex resolves a block within $REX_SESSION when it is set, and the hook
+	// inherits the calling agent's session. Every call here names its target
+	// by id, which is unique on the server, so look it up server-wide.
+	cmd.Env = withoutEnv(os.Environ(), "REX_SESSION")
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if stdin != nil {
@@ -95,6 +99,16 @@ func (c Client) run(ctx context.Context, stdin []byte, args ...string) ([]byte, 
 		return nil, fmt.Errorf("rex %s: exit %d: %s", strings.Join(args, " "), ee.ExitCode(), msg)
 	}
 	return nil, fmt.Errorf("rex %s: %w", strings.Join(args, " "), err)
+}
+
+func withoutEnv(env []string, name string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		if !strings.HasPrefix(kv, name+"=") {
+			out = append(out, kv)
+		}
+	}
+	return out
 }
 
 func (c Client) blockCall(ctx context.Context, block, method string, args any, into any) error {
@@ -213,6 +227,57 @@ func (c Client) InspectBlock(ctx context.Context, block string) (Block, error) {
 	}
 	res.Block.SessionID = res.SessionID
 	return res.Block, nil
+}
+
+// ListBlocks lists every block in session, each with its window.
+func (c Client) ListBlocks(ctx context.Context, session string) ([]Block, error) {
+	out, err := c.run(ctx, nil, "block", "ls", "-s", session, "--json")
+	if err != nil {
+		return nil, err
+	}
+	var res struct {
+		Blocks []Block `json:"blocks"`
+	}
+	if err := json.Unmarshal(out, &res); err != nil {
+		return nil, fmt.Errorf("decode block list: %w", err)
+	}
+	return res.Blocks, nil
+}
+
+// NewWindow opens a tab labelled tab in session, holding one block labelled
+// label that runs command in dir, and returns the window and block ids. The
+// CLI's window new cannot label the block, and run cannot label the tab,
+// so this goes through the API.
+func (c Client) NewWindow(ctx context.Context, session, tab, label, dir string, command []string) (window, block string, err error) {
+	opts := map[string]any{"cwd": dir}
+	if len(command) > 0 {
+		opts["command"] = command
+	}
+	args, err := json.Marshal(map[string]any{
+		"window_label": tab,
+		"focus":        false,
+		"layout": map[string]any{"block": map[string]any{
+			"flavor": "com.superlogical.terminal.shell", "label": label, "options": opts,
+		}},
+	})
+	if err != nil {
+		return "", "", err
+	}
+	out, err := c.run(ctx, nil, "api", "call", "-s", session, "session.new_window", string(args))
+	if err != nil {
+		return "", "", err
+	}
+	var res struct {
+		WindowID string   `json:"window_id"`
+		BlockIDs []string `json:"block_ids"`
+	}
+	if err := json.Unmarshal(out, &res); err != nil {
+		return "", "", fmt.Errorf("decode new window: %w", err)
+	}
+	if res.WindowID == "" || len(res.BlockIDs) != 1 {
+		return "", "", fmt.Errorf("new window returned %s", out)
+	}
+	return res.WindowID, res.BlockIDs[0], nil
 }
 
 // Session is a session's label and its windows (tabs).

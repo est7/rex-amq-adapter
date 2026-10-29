@@ -29,7 +29,11 @@ type fakeTerm struct {
 	statusErr bool // ProgramStatus fails after the first write
 	writes    []string
 	keys      []string
-	label     string // the block label; "" reads as Rex's default
+	label     string            // the block label; "" reads as Rex's default
+	windows   map[string]string // block -> window, all in session:s; nil: none known
+	listErr   error             // ListBlocks fails
+	tabs      map[string]string // window -> tab label
+	cwd       string            // the foreground process's directory
 }
 
 func (f *fakeTerm) Whoami(context.Context) (rex.Server, error) {
@@ -42,7 +46,7 @@ func (f *fakeTerm) Foreground(_ context.Context, block string) (rex.Process, boo
 	if f.gone {
 		return rex.Process{}, false, rex.ErrNotFound
 	}
-	return rex.Process{PID: f.fgPID, Name: "codex"}, true, nil
+	return rex.Process{PID: f.fgPID, Name: "codex", Cwd: f.cwd}, true, nil
 }
 
 func (f *fakeTerm) ProgramStatus(context.Context, string) (rex.Status, bool, error) {
@@ -98,11 +102,34 @@ func (f *fakeTerm) InspectBlock(_ context.Context, id string) (rex.Block, error)
 	if label == "" {
 		label = "shell"
 	}
-	return rex.Block{ID: id, Label: label}, nil
+	b := rex.Block{ID: id, Label: label}
+	if w, ok := f.windows[id]; ok {
+		b.WindowID, b.SessionID = w, "session:s"
+	}
+	return b, nil
+}
+
+func (f *fakeTerm) ListBlocks(context.Context, string) ([]rex.Block, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	var out []rex.Block
+	for b, w := range f.windows {
+		out = append(out, rex.Block{ID: b, WindowID: w, SessionID: "session:s"})
+	}
+	return out, nil
 }
 
 func (f *fakeTerm) InspectSession(_ context.Context, id string) (rex.Session, error) {
-	return rex.Session{ID: id}, nil
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s := rex.Session{ID: id}
+	for w, label := range f.tabs {
+		s.Windows = append(s.Windows, rex.Window{ID: w, Label: label})
+	}
+	return s, nil
 }
 
 func (f *fakeTerm) RenameBlock(_ context.Context, _ string, label string) error {

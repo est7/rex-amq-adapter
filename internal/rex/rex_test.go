@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -53,6 +54,30 @@ func TestLiveClient(t *testing.T) {
 	if !inSession {
 		t.Fatalf("block's window %s not among the session's windows %+v", b.WindowID, s.Windows)
 	}
+	blocks, err := c.ListBlocks(ctx, b.SessionID)
+	listed := false
+	for _, x := range blocks {
+		listed = listed || (x.ID == block && x.WindowID == b.WindowID)
+	}
+	if err != nil || !listed {
+		t.Fatalf("list blocks: %s in %s not among %+v (%v)", block, b.WindowID, blocks, err)
+	}
+	w, nb, err := c.NewWindow(ctx, b.SessionID, "rex-amq-live-test", "probe", os.TempDir(), []string{"sleep", "20"})
+	if err != nil {
+		t.Fatalf("new window: %v", err)
+	}
+	defer func() { _, _ = c.run(context.Background(), nil, "window", "close", "-s", b.SessionID, w) }()
+	nbl, err := c.InspectBlock(ctx, nb)
+	tabs, _ := c.InspectSession(ctx, b.SessionID)
+	tab := ""
+	for _, x := range tabs.Windows {
+		if x.ID == w {
+			tab = x.Label
+		}
+	}
+	if err != nil || nbl.Label != "probe" || nbl.WindowID != w || tab != "rex-amq-live-test" {
+		t.Fatalf("new window: block %+v (%v), tab %q", nbl, err, tab)
+	}
 	p, ok, err := c.Foreground(ctx, block)
 	if err != nil || !ok || p.PID == 0 {
 		t.Fatalf("foreground: %+v %v %v", p, ok, err)
@@ -67,5 +92,27 @@ func TestLiveClient(t *testing.T) {
 	unreachable := Client{Bin: bin, Server: "unix:///nonexistent-rex-amq.sock"}
 	if _, err := unreachable.Whoami(ctx); !errors.Is(err, ErrUnreachable) {
 		t.Fatalf("unreachable server: want ErrUnreachable, got %v", err)
+	}
+}
+
+// TestBlockOutsideCallersSessionIsFound guards against the caller's own
+// REX_SESSION scoping lookups. rex resolves -b within $REX_SESSION when it is
+// set, so a hook running in one session saw every agent in another session as
+// gone (exit 3), and collection parked live agents and retired their wakers.
+// The fake rex answers like a real one asked from a different session.
+func TestBlockOutsideCallersSessionIsFound(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "rex")
+	script := `#!/bin/sh
+if [ -n "$REX_SESSION" ]; then echo "block target not found" >&2; exit 3; fi
+echo '{"foreground":{"pid":4242,"name":"claude"}}'
+`
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("REX_SESSION", "session:caller")
+
+	p, ok, err := Client{Bin: bin}.Foreground(context.Background(), "block:elsewhere")
+	if err != nil || !ok || p.PID != 4242 {
+		t.Fatalf("foreground of a block in another session: %+v %v %v", p, ok, err)
 	}
 }

@@ -6,6 +6,7 @@ import (
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/core"
+	"github.com/est7/rex-amq-adapter/internal/rex"
 	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
@@ -16,6 +17,14 @@ type Adoption struct {
 	// Decision is what happened to the waker; zero for in-process kinds,
 	// which have none.
 	Decision amq.WakeDecision
+	// Known is set when this agent session already held the handle: it was
+	// told the handle when it first took it, so it needs no identity notice.
+	Known bool
+	// Mates are the live agents in the same Rex window.
+	Mates []core.Peer
+	// Role is what the pane label said the agent is for; Window and
+	// Session are where its block is. They choose its briefing.
+	Role, Window, Session string
 	// LabelErr is set when the handle could not be shown as the block
 	// label. The handle works regardless; callers report it.
 	LabelErr error
@@ -87,6 +96,7 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 		Server:         server,
 		SessionID:      loc.Session,
 		BlockID:        loc.Block,
+		WindowID:       blk.WindowID,
 		AgentPID:       agentPID,
 		AgentSessionID: in.SessionID,
 		AdoptedAt:      e.Now().UTC(),
@@ -116,7 +126,13 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 		}
 	}
 
-	out := Adoption{Record: rec, Decision: decision}
+	known := hasOwn && in.SessionID != "" && own.AgentSessionID == in.SessionID
+	out := Adoption{Record: rec, Decision: decision, Known: known, Role: core.Role(blk.Label), Window: blk.WindowID, Session: blk.SessionID}
+	// An agent arrives unless it is the live record of this block again (a
+	// repeated start hook, a compaction). One that departed was announced
+	// as gone, so taking its handle back is news again.
+	arrived := !hasOwn || own.BlockID != loc.Block || !own.Live()
+	out.Mates = e.joinWindow(ctx, rec, blk, recs, arrived)
 	if blk.Label != string(handle) {
 		out.LabelErr = e.Rex.RenameBlock(ctx, loc.Block, string(handle))
 	}
@@ -126,6 +142,52 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	}
 	out.Unread = len(unread)
 	return out, nil
+}
+
+// joinWindow returns the live agents in the window of rec's block and, when
+// the agent has just arrived in its block, queues a note for each of them that
+// it started beside them. The window is advice, not a binding: when
+// Rex cannot list it, adoption stands without mates and the failure is
+// reported.
+func (e Env) joinWindow(ctx context.Context, rec store.Record, blk rex.Block, recs []store.Record, arrived bool) []core.Peer {
+	if blk.WindowID == "" || blk.SessionID == "" {
+		return nil
+	}
+	blocks, err := e.Rex.ListBlocks(ctx, blk.SessionID)
+	if err != nil {
+		fmt.Fprintf(Diagnostics, "list the blocks of %s: %v\n", blk.SessionID, err)
+		return nil
+	}
+	windowOf := make(map[string]string, len(blocks))
+	for _, b := range blocks {
+		windowOf[b.ID] = b.WindowID
+	}
+	var peers []core.Peer
+	for _, r := range recs {
+		if r.Live() && r.Handle != rec.Handle {
+			peers = append(peers, core.Peer{Handle: r.Handle, Kind: r.Kind, Block: r.BlockID})
+		}
+	}
+	mates := core.WindowMates(rec.BlockID, blk.WindowID, windowOf, peers)
+	if !arrived {
+		return mates
+	}
+	note := core.JoinedNotice(core.Peer{Handle: rec.Handle, Kind: rec.Kind, Block: rec.BlockID})
+	for _, m := range mates {
+		if err := e.noteWindow(ctx, m.Handle, note); err != nil {
+			fmt.Fprintf(Diagnostics, "tell %s that %s joined: %v\n", m.Handle, rec.Handle, err)
+		}
+	}
+	return mates
+}
+
+func (e Env) noteWindow(ctx context.Context, h core.Handle, note string) error {
+	unlock, err := e.Store.LockLedger(ctx, h)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return e.Store.AddWindowNote(h, note)
 }
 
 // claim finds the handle this agent already holds, if any:

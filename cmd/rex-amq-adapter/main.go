@@ -10,12 +10,14 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"strings"
 	"text/tabwriter"
 	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/app"
 	"github.com/est7/rex-amq-adapter/internal/core"
+	"github.com/est7/rex-amq-adapter/internal/crew"
 	"github.com/est7/rex-amq-adapter/internal/install"
 	"github.com/est7/rex-amq-adapter/internal/rex"
 	"github.com/est7/rex-amq-adapter/internal/store"
@@ -28,6 +30,11 @@ Agent and user commands:
   who [--all]               list running agents and where their panes are;
                             --all adds departed ones still reserved for a resume
   collect                   reconcile records with Rex now
+  tab <crew> [--role R] [-c DIR] -- COMMAND...
+                            open a Rex tab for a crew, its first pane labelled
+                            with role R, running COMMAND (an agent and its brief)
+  crews [dir]               list the crews (named by a Rex tab) and roles (named
+                            by a pane label) that brief agents working in dir
 
 Installation:
   setup|status|remove       install, inspect, or remove the skill and hooks
@@ -60,6 +67,10 @@ func run(args []string) int {
 		return runWho(rest)
 	case "collect":
 		return runCollect()
+	case "crews":
+		return runCrews(rest)
+	case "tab":
+		return runTab(rest)
 	case "setup", "status", "remove":
 		return runInstall(cmd, rest)
 	case "__internal":
@@ -317,6 +328,78 @@ func (l locator) find(ctx context.Context, r store.Record) (session, tab string)
 		}
 	}
 	return got.s.Label, tab
+}
+
+func runTab(args []string) int {
+	fs := flag.NewFlagSet("tab", flag.ContinueOnError)
+	role := fs.String("role", "", "the role of the first pane's agent")
+	dir := fs.String("c", "", "the working directory (default: the current one)")
+	session := fs.String("s", os.Getenv("REX_SESSION"), "the Rex session (default: $REX_SESSION)")
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		fmt.Fprintln(os.Stderr, "usage: rex-amq-adapter tab <crew> [--role R] [-c DIR] [-s SESSION] -- COMMAND...")
+		return 2
+	}
+	tabName := args[0]
+	if err := fs.Parse(args[1:]); err != nil {
+		return 2
+	}
+	if *session == "" {
+		return fail(errors.New("no Rex session: run inside Rex or pass -s"))
+	}
+	if *dir == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return fail(err)
+		}
+		*dir = wd
+	}
+	bin, err := rex.ResolveBin()
+	if err != nil {
+		return fail(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	c := rex.Client{Bin: bin, Server: os.Getenv("REX_SERVER")}
+	w, b, err := c.NewWindow(ctx, *session, tabName, *role, *dir, fs.Args())
+	if err != nil {
+		return fail(err)
+	}
+	fmt.Printf("{\"window_id\":%q,\"block_ids\":[%q]}\n", w, b)
+	return 0
+}
+
+func runCrews(args []string) int {
+	dir, err := os.Getwd()
+	if len(args) > 0 {
+		dir, err = args[0], nil
+	}
+	if err != nil {
+		return fail(err)
+	}
+	entries, err := crew.Load(dir).List()
+	if err != nil {
+		return fail(err)
+	}
+	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "CREW\tCONVENTIONS\tROLES\tFROM")
+	for _, e := range entries {
+		name, conv := e.Crew, "-"
+		if name == "" {
+			name = "(any tab)"
+		}
+		if e.Conventions {
+			conv = "yes"
+		}
+		roles := strings.Join(e.Roles, ", ")
+		if roles == "" {
+			roles = "-"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", name, conv, roles, e.Layer)
+	}
+	if err := tw.Flush(); err != nil {
+		return fail(err)
+	}
+	return 0
 }
 
 func runCollect() int {

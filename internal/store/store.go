@@ -42,6 +42,7 @@ func (p Paths) injects() string   { return filepath.Join(p.Home, "inject") }
 func (p Paths) lifecycle() string { return filepath.Join(p.Home, "lifecycle.lock") }
 func (p Paths) pending() string   { return filepath.Join(p.Home, "pending") }
 func (p Paths) failures() string  { return filepath.Join(p.Home, "adopt-failed") }
+func (p Paths) window() string    { return filepath.Join(p.Home, "window") }
 
 // PathsForRoot locates the state directory from its AMQ root. The injector
 // uses it: amq wake passes the root explicitly, while the environment a
@@ -61,14 +62,18 @@ func PathsForRoot(root string) (Paths, error) {
 // one record: a departed record keeps the handle for its agent session after
 // the block is gone.
 type Record struct {
-	Handle         core.Handle `json:"handle"`
-	Kind           core.Kind   `json:"kind"`
-	Server         string      `json:"server"`
-	SessionID      string      `json:"session_id"`
-	BlockID        string      `json:"block_id"`
-	AgentPID       int         `json:"agent_pid"`
-	AgentSessionID string      `json:"agent_session_id,omitempty"`
-	AdoptedAt      time.Time   `json:"adopted_at"`
+	Handle    core.Handle `json:"handle"`
+	Kind      core.Kind   `json:"kind"`
+	Server    string      `json:"server"`
+	SessionID string      `json:"session_id"`
+	BlockID   string      `json:"block_id"`
+	// WindowID is the Rex window (tab) the block was in when the agent was
+	// adopted. Departure tells the agents recorded in it; a block moved
+	// to another window later is not followed.
+	WindowID       string    `json:"window_id,omitempty"`
+	AgentPID       int       `json:"agent_pid"`
+	AgentSessionID string    `json:"agent_session_id,omitempty"`
+	AdoptedAt      time.Time `json:"adopted_at"`
 	// DepartedAt is set when the agent ended. A departed record keeps its
 	// handle reserved for its agent session (a resume, in any block) until
 	// collected.
@@ -363,6 +368,57 @@ func (s Store) ClearPending(block string) error {
 		return nil
 	}
 	return err
+}
+
+// AddWindowNote queues note for h's next prompt: an agent started beside it.
+// Callers hold h's ledger lock, which also guards TakeWindowNotes.
+func (s Store) AddWindowNote(h core.Handle, note string) error {
+	if err := os.MkdirAll(s.P.window(), 0o700); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(s.windowPath(h), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return err
+	}
+	_, werr := f.WriteString(note + "\n")
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	return werr
+}
+
+// TakeWindowNotes returns h's queued notes, oldest first, and clears them.
+func (s Store) TakeWindowNotes(h core.Handle) ([]string, error) {
+	b, err := os.ReadFile(s.windowPath(h))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := s.ClearWindowNotes(h); err != nil {
+		return nil, err
+	}
+	var notes []string
+	for _, line := range strings.Split(string(b), "\n") {
+		if line != "" {
+			notes = append(notes, line)
+		}
+	}
+	return notes, nil
+}
+
+// ClearWindowNotes drops h's queued notes.
+func (s Store) ClearWindowNotes(h core.Handle) error {
+	err := os.Remove(s.windowPath(h))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+func (s Store) windowPath(h core.Handle) string {
+	return filepath.Join(s.P.window(), fileKey(string(h)))
 }
 
 // AdoptFailedAt is when adopting the agent in block last failed.
