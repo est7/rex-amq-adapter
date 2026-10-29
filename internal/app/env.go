@@ -83,11 +83,14 @@ func (e Env) EnvCommand() string { return e.SelfBin + " env" }
 // Codex use the snake_case names; Antigravity uses camelCase and different
 // fields (see normalize).
 type HookInput struct {
-	SessionID      string `json:"session_id"`
-	HookEventName  string `json:"hook_event_name"`
-	Source         string `json:"source"`
-	TurnID         string `json:"turn_id"`
-	StopHookActive bool   `json:"stop_hook_active"`
+	SessionID     string `json:"session_id"`
+	HookEventName string `json:"hook_event_name"`
+	Source        string `json:"source"`
+	// Codex internal memory sessions are ephemeral and explicitly send null.
+	// Keep raw JSON to distinguish that from older hooks omitting the field.
+	TranscriptPath json.RawMessage `json:"transcript_path"`
+	TurnID         string          `json:"turn_id"`
+	StopHookActive bool            `json:"stop_hook_active"`
 
 	ConversationID    string `json:"conversationId"`
 	TerminationReason string `json:"terminationReason"`

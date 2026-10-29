@@ -115,6 +115,12 @@ rex-amq-adapter collect      # retire agents whose pane closed or process died
 | Agent crashes or its pane closes | The next `SessionStart` (or `collect`) notices and does the same |
 | Same pane, new agent | Gets its previous handle back |
 
+
+Codex's ephemeral background sessions can inherit the interactive process's
+Rex environment. Hooks that explicitly report `transcript_path: null` do not
+take over the pane's identity or receive its mail. Interactive hooks with a
+transcript keep normal startup, resume, and lazy-adoption behavior. Older
+hooks that omit the field keep their existing behavior.
 ## State
 
 `~/.local/state/rex-amq-adapter/` (override with `REX_AMQ_ADAPTER_HOME`):

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -40,6 +41,19 @@ type Reply struct {
 // Hook runs one agent hook.
 func (e Env) Hook(ctx context.Context, event string, kind core.Kind, loc Location, in HookInput) (Reply, error) {
 	in = normalize(kind, in)
+	// A session with no transcript cannot establish ownership of this pane.
+	// In particular, Codex memory workers inherit Rex's environment and PID
+	// but are ephemeral. Decide from the payload before touching shared state,
+	// independent of which thread starts first or whether startup was missed.
+	// Workaround for https://github.com/openai/codex/issues/52442.
+	// Remove only after supported Codex versions suppress internal-worker hooks
+	// or expose a stable worker discriminator; validate interactive switches too.
+	if kind == core.Codex && bytes.Equal(bytes.TrimSpace(in.TranscriptPath), []byte("null")) {
+		if event == EventSessionStart || event == EventSessionEnd {
+			fmt.Fprintf(Diagnostics, "ignored Codex session without transcript %s (%s)\n", in.SessionID, event)
+		}
+		return Reply{}, nil
+	}
 	switch event {
 	case EventSessionStart:
 		return e.sessionStart(ctx, kind, loc, in)

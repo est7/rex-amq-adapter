@@ -163,6 +163,42 @@ parks them. A different pid in the
 same block is a different agent process; it keeps the handle (sticky per block)
 and gets a fresh binding.
 
+
+Codex can run an ephemeral memory-consolidation session inside the same
+terminal process. It inherits the Rex block but has no persisted transcript.
+Hooks that explicitly send `transcript_path: null` are ignored before any
+adoption, departure, or announcement-ledger effects, regardless of startup
+order or the existing record. A different session ID alone is not evidence of
+a background thread: interactive switches and missed startup hooks retain
+normal behavior. An omitted transcript field preserves older-hook behavior.
+This is separate from `--no-daemon`, which preserves the Rex environment but
+does not isolate hook session ownership. A terminal hook that temporarily
+cannot resolve its transcript is also ignored; the next hook with a valid
+transcript resumes delivery. Existing mailbox and binding state are preserved.
+
+Evidence for this filter: Codex's memory consolidation config sets
+`ephemeral = true`, and `hook_transcript_path` returns no path without a
+rollout (**located**, upstream `memories/write/src/phase2.rs` and
+`core/src/session/mod.rs`). An independent Codex 0.164.0 probe captured 30
+interactive hook payloads with non-empty transcript paths (**executed**,
+2026-10-27). `/new` sends `source=startup` in the same process without ending
+the old thread. Replaying those payloads catches the rejected session-ID/PID
+heuristic's `/new` regression. The actual memory-worker null payload has not
+been captured locally. The upstream reporter independently describes observing
+a memory-worker `SessionStart` with `source=startup`, a different `session_id`,
+and `transcript_path: null` in
+[openai/codex#52442](https://github.com/openai/codex/issues/52442)
+(**reported**, verified 2026-10-27). This corroborates the discriminator but
+does not constitute a local live memory-worker test. Explicitly ephemeral
+Codex runs are not adopted by this contract.
+
+This filter is a workaround for that upstream bug. Remove it only after all
+supported Codex versions suppress internal-worker hooks across the lifecycle,
+or replace it with an upstream documented worker discriminator. Before removal
+or replacement, verify that background start/tool/stop/end hooks cannot change
+the terminal binding or announcement ledger, and that interactive startup,
+`/new`, resume, clear, and fork retain normal delivery. An issue closure alone
+is not sufficient evidence.
 **How an agent finds its identity.** `rex-amq-adapter env` resolves the record
 from `REX_BLOCK` and prints `export AM_ROOT=… AM_ME=…`. Agents run
 `eval "$(rex-amq-adapter env)"` before each `amq` command. No identity files.
