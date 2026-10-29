@@ -31,10 +31,10 @@ func TestCodexBackgroundSessionCannotRetireTerminalIdentity(t *testing.T) {
 	if err != nil || !ok || !after.Live() || after.AgentSessionID != before.AgentSessionID || after.AgentPID != before.AgentPID || !after.AdoptedAt.Equal(before.AdoptedAt) {
 		t.Fatalf("background lifecycle changed terminal identity: before=%+v after=%+v ok=%v err=%v", before, after, ok, err)
 	}
-	if exports, err := e.Exports(loc); err != nil || !strings.Contains(exports, "AM_ME='codex'") {
+	if exports, err := e.Exports(loc); err != nil || !strings.Contains(exports, "AM_ME='codex-01'") {
 		t.Fatalf("terminal lost AMQ identity after background shutdown: %q %v", exports, err)
 	}
-	if !wakerLive(t, e, "codex") {
+	if !wakerLive(t, e, "codex-01") {
 		t.Fatal("background shutdown retired the terminal waker")
 	}
 }

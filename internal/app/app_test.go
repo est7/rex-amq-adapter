@@ -29,6 +29,7 @@ type fakeTerm struct {
 	statusErr bool // ProgramStatus fails after the first write
 	writes    []string
 	keys      []string
+	label     string // the block label; "" reads as Rex's default
 }
 
 func (f *fakeTerm) Whoami(context.Context) (rex.Server, error) {
@@ -90,11 +91,26 @@ func (f *fakeTerm) SendKeys(_ context.Context, _ string, keys ...string) error {
 	return nil
 }
 
-func (f *fakeTerm) InspectBlock(context.Context, string) (rex.Block, error) {
-	return rex.Block{ID: "block:a", Label: "shell"}, nil
+func (f *fakeTerm) InspectBlock(_ context.Context, id string) (rex.Block, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	label := f.label
+	if label == "" {
+		label = "shell"
+	}
+	return rex.Block{ID: id, Label: label}, nil
 }
 
-func (f *fakeTerm) RenameBlock(context.Context, string, string) error { return nil }
+func (f *fakeTerm) InspectSession(_ context.Context, id string) (rex.Session, error) {
+	return rex.Session{ID: id}, nil
+}
+
+func (f *fakeTerm) RenameBlock(_ context.Context, _ string, label string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.label = label
+	return nil
+}
 
 const block = "block:a"
 
@@ -370,7 +386,7 @@ func TestAgyHookOutputShapes(t *testing.T) {
 func TestFailedAdoptionBacksOff(t *testing.T) {
 	f := &fakeTerm{}
 	e := fixture(t, f)
-	if err := e.Store.DeleteRecord(block); err != nil {
+	if err := e.Store.DeleteRecord("codex"); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.Store.SetAdoptFailed(block, time.Now()); err != nil {

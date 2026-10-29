@@ -39,8 +39,19 @@ func TestLiveClient(t *testing.T) {
 		t.Fatalf("whoami: %+v %v", srv, err)
 	}
 	b, err := c.InspectBlock(ctx, block)
-	if err != nil || b.ID != block {
+	if err != nil || b.ID != block || b.SessionID == "" || b.WindowID == "" {
 		t.Fatalf("inspect: %+v %v", b, err)
+	}
+	s, err := c.InspectSession(ctx, b.SessionID)
+	if err != nil || s.ID != b.SessionID || s.Label == "" {
+		t.Fatalf("inspect session: %+v %v", s, err)
+	}
+	inSession := false
+	for _, w := range s.Windows {
+		inSession = inSession || w.ID == b.WindowID
+	}
+	if !inSession {
+		t.Fatalf("block's window %s not among the session's windows %+v", b.WindowID, s.Windows)
 	}
 	p, ok, err := c.Foreground(ctx, block)
 	if err != nil || !ok || p.PID == 0 {

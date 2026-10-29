@@ -26,6 +26,7 @@ type Terminal interface {
 	Write(ctx context.Context, block, data string) error
 	SendKeys(ctx context.Context, block string, keys ...string) error
 	InspectBlock(ctx context.Context, block string) (rex.Block, error)
+	InspectSession(ctx context.Context, session string) (rex.Session, error)
 	RenameBlock(ctx context.Context, block, label string) error
 }
 

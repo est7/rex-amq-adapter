@@ -22,8 +22,9 @@ type Adoption struct {
 }
 
 // Adopt gives the agent running in loc a handle, a mailbox, and a live
-// waker, and records the binding. It is idempotent: a SessionStart for an
-// agent already adopted (resume, clear, compact) keeps everything as is.
+// waker, and records the binding. The handle follows the agent session (see
+// claim): a session resumed in a new pane gets its handle back, and adopting
+// an agent already adopted keeps everything as is.
 func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInput) (Adoption, error) {
 	unlock, err := e.Store.LockLifecycle(ctx)
 	if err != nil {
@@ -50,22 +51,30 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	if err != nil {
 		return Adoption{}, err
 	}
-	prev, hasPrev, err := e.Store.Record(loc.Block)
+	recs, err := e.Store.Records()
 	if err != nil {
 		return Adoption{}, err
 	}
-	req, err := e.handleRequest(kind, blk.Label, loc.Block, prev, hasPrev)
-	if err != nil {
-		return Adoption{}, err
+	own, hasOwn := claim(recs, loc.Block, agentPID, kind, in.SessionID)
+	handle := own.Handle
+	if !hasOwn {
+		taken, err := e.takenHandles(recs)
+		if err != nil {
+			return Adoption{}, err
+		}
+		handle = core.NameHandle(kind, blk.Label, taken)
 	}
-	choice := core.ChooseHandle(req)
-
-	if hasPrev && prev.Handle != choice.Handle {
-		if _, err := amq.RetireFor(ctx, e.AmqBin, e.Paths.Root(), string(prev.Handle), loc.Block); err != nil {
-			return Adoption{}, fmt.Errorf("retire the waker of the block's previous handle %s: %w", prev.Handle, err)
+	// Any other live record of this block is an agent this one replaced, or
+	// the session this process switched away from: it keeps its handle as a
+	// reservation for a resume.
+	for _, r := range recs {
+		if r.BlockID == loc.Block && r.Live() && r.Handle != handle {
+			if err := e.park(ctx, r); err != nil {
+				return Adoption{}, fmt.Errorf("park %s, replaced in this block: %w", r.Handle, err)
+			}
 		}
 	}
-	if err := amq.EnsureMailbox(ctx, e.AmqBin, e.Paths.Root(), string(choice.Handle)); err != nil {
+	if err := amq.EnsureMailbox(ctx, e.AmqBin, e.Paths.Root(), string(handle)); err != nil {
 		return Adoption{}, err
 	}
 	server := srv.Endpoint
@@ -73,7 +82,7 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 		server = loc.Server
 	}
 	rec := store.Record{
-		Handle:         choice.Handle,
+		Handle:         handle,
 		Kind:           kind,
 		Server:         server,
 		SessionID:      loc.Session,
@@ -82,8 +91,8 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 		AgentSessionID: in.SessionID,
 		AdoptedAt:      e.Now().UTC(),
 	}
-	if hasPrev && prev.Live() && prev.AgentPID == agentPID && prev.Handle == choice.Handle {
-		rec.AdoptedAt = prev.AdoptedAt
+	if hasOwn && own.Live() && own.BlockID == loc.Block && own.AgentPID == agentPID {
+		rec.AdoptedAt = own.AdoptedAt
 	}
 	// Recorded before the waker starts: whatever happens next, departure and
 	// collection find this record and retire the block's waker, which amq
@@ -95,7 +104,7 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	if kind.InProcess() {
 		// The agent's own extension delivers. A waker left from an earlier
 		// agent in this block would type doorbells into it: remove it.
-		if _, err := amq.RetireFor(ctx, e.AmqBin, e.Paths.Root(), string(choice.Handle), loc.Block); err != nil {
+		if _, err := amq.RetireFor(ctx, e.AmqBin, e.Paths.Root(), string(handle), loc.Block); err != nil {
 			return Adoption{}, err
 		}
 	} else {
@@ -108,10 +117,10 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	}
 
 	out := Adoption{Record: rec, Decision: decision}
-	if choice.SetLabel && blk.Label != string(choice.Handle) {
-		out.LabelErr = e.Rex.RenameBlock(ctx, loc.Block, string(choice.Handle))
+	if blk.Label != string(handle) {
+		out.LabelErr = e.Rex.RenameBlock(ctx, loc.Block, string(handle))
 	}
-	unread, err := amq.Unread(e.Paths.Root(), string(choice.Handle))
+	unread, err := amq.Unread(e.Paths.Root(), string(handle))
 	if err != nil {
 		return Adoption{}, err
 	}
@@ -119,45 +128,68 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	return out, nil
 }
 
-// handleRequest gathers what handle choice depends on. Live: handles of
-// other blocks' running agents. Encumbered: handles reserved by departed
-// agents, and handles whose mailbox holds undrained mail with no live owner.
-func (e Env) handleRequest(kind core.Kind, label, block string, prev store.Record, hasPrev bool) (core.HandleRequest, error) {
-	req := core.HandleRequest{Kind: kind, Label: label, Live: map[core.Handle]bool{}, Encumbered: map[core.Handle]bool{}}
-	if hasPrev {
-		req.Sticky = prev.Handle
+// claim finds the handle this agent already holds, if any:
+//
+//  1. The record of the same agent session and kind, when no other block's
+//     agent is running it: a resume, in this block or any other, takes its
+//     handle back, so peers' mail and the conversation's references to it
+//     still reach it.
+//  2. Otherwise this block's live record of the same process: a repeated
+//     hook, a compaction, or a new session in the same process (/clear).
+//
+// An agent that claims nothing is named afresh: a new session in a pane
+// does not inherit the handle of the pane's previous session.
+func claim(recs []store.Record, block string, pid int, kind core.Kind, session string) (store.Record, bool) {
+	var resumed store.Record
+	found := false
+	for _, r := range recs {
+		if session == "" || r.AgentSessionID != session || r.Kind != kind {
+			continue
+		}
+		if r.Live() && r.BlockID != block {
+			continue // running in another block: never shared
+		}
+		if !found || r.AdoptedAt.After(resumed.AdoptedAt) {
+			resumed, found = r, true
+		}
 	}
-	recs, err := e.Store.Records()
-	if err != nil {
-		return core.HandleRequest{}, err
+	if found {
+		return resumed, true
 	}
 	for _, r := range recs {
-		switch {
-		case r.BlockID == block:
-		case r.Live():
-			req.Live[r.Handle] = true
-		default:
-			req.Encumbered[r.Handle] = true
+		if r.BlockID == block && r.Live() && r.AgentPID == pid {
+			return r, true
 		}
+	}
+	return store.Record{}, false
+}
+
+// takenHandles are the handles a new name must avoid: every record's (live,
+// or reserved for a departed session), and every mailbox holding undrained
+// mail, so a new agent never inherits someone else's unread messages.
+func (e Env) takenHandles(recs []store.Record) (map[core.Handle]bool, error) {
+	taken := map[core.Handle]bool{}
+	for _, r := range recs {
+		taken[r.Handle] = true
 	}
 	agents, err := amq.Agents(e.Paths.Root())
 	if err != nil {
-		return core.HandleRequest{}, err
+		return nil, err
 	}
 	for _, a := range agents {
 		h := core.Handle(a)
-		if req.Live[h] {
+		if taken[h] {
 			continue
 		}
 		unread, err := amq.Unread(e.Paths.Root(), a)
 		if err != nil {
-			return core.HandleRequest{}, err
+			return nil, err
 		}
 		if len(unread) > 0 {
-			req.Encumbered[h] = true
+			taken[h] = true
 		}
 	}
-	return req, nil
+	return taken, nil
 }
 
 // Exports is the shell text `rex-amq-adapter env` prints for the agent in loc.

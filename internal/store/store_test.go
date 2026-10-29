@@ -33,14 +33,95 @@ func TestRecordRoundTripAndListing(t *testing.T) {
 	if err != nil || len(all) != 2 || all[0].Handle != "claude" || all[1].Handle != "codex" {
 		t.Fatalf("records: %+v %v", all, err)
 	}
-	if err := s.DeleteRecord("block:a"); err != nil {
+	if err := s.DeleteRecord("claude"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DeleteRecord("block:a"); err != nil {
+	if err := s.DeleteRecord("claude"); err != nil {
 		t.Fatalf("deleting twice must be a no-op: %v", err)
 	}
 	if all, _ := s.Records(); len(all) != 1 {
 		t.Fatalf("after delete: %+v", all)
+	}
+}
+
+// A block can hold one live agent and the departed records of earlier
+// sessions; Record returns the live one, else the last to depart.
+func TestRecordPrefersTheLiveAgentOfABlock(t *testing.T) {
+	s := Store{P: Paths{Home: t.TempDir()}}
+	early := time.Date(2026, 10, 18, 1, 0, 0, 0, time.UTC)
+	late := early.Add(time.Hour)
+	for _, r := range []Record{
+		{Handle: "codex-01", BlockID: "block:a", DepartedAt: &early},
+		{Handle: "codex-02", BlockID: "block:a", DepartedAt: &late},
+		{Handle: "codex-03", BlockID: "block:b"},
+	} {
+		if err := s.PutRecord(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, ok, _ := s.Record("block:a"); !ok || got.Handle != "codex-02" {
+		t.Fatalf("departed only: got %+v, want the last to depart", got)
+	}
+	if err := s.PutRecord(Record{Handle: "claude-01", BlockID: "block:a"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok, _ := s.Record("block:a"); !ok || got.Handle != "claude-01" || !got.Live() {
+		t.Fatalf("with a live agent: got %+v", got)
+	}
+}
+
+// Earlier versions stored a record under its block's name. Writing or
+// deleting its handle must not leave that file behind as a second record.
+func TestBlockNamedRecordIsReplaced(t *testing.T) {
+	s := Store{P: Paths{Home: t.TempDir()}}
+	if err := os.MkdirAll(s.P.records(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	legacy := []byte(`{"handle":"codex-2","kind":"codex","block_id":"block:a","agent_pid":7}`)
+	if err := os.WriteFile(filepath.Join(s.P.records(), "block_a.json"), legacy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok, _ := s.Record("block:a"); !ok || got.Handle != "codex-2" {
+		t.Fatalf("legacy record unreadable: %+v", got)
+	}
+	gone := time.Date(2026, 10, 18, 1, 0, 0, 0, time.UTC)
+	if err := s.PutRecord(Record{Handle: "codex-2", BlockID: "block:a", AgentPID: 7, DepartedAt: &gone}); err != nil {
+		t.Fatal(err)
+	}
+	all, err := s.Records()
+	if err != nil || len(all) != 1 || all[0].Live() {
+		t.Fatalf("after rewrite: %+v %v", all, err)
+	}
+	if err := s.DeleteRecord("codex-2"); err != nil {
+		t.Fatal(err)
+	}
+	if all, _ := s.Records(); len(all) != 0 {
+		t.Fatalf("after delete: %+v", all)
+	}
+}
+
+// A handle is reused once its record is collected; the next agent must not
+// inherit the previous one's doorbell history or announcements.
+func TestDeleteRecordForgetsDeliveryHistory(t *testing.T) {
+	s := Store{P: Paths{Home: t.TempDir()}}
+	at := time.Date(2026, 10, 18, 1, 0, 0, 0, time.UTC)
+	if err := s.PutRecord(Record{Handle: "codex-01", BlockID: "block:a"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetAnnounced("codex-01", []string{"m1"}, at); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordInject("codex-01", core.Outcome{Progress: core.Accepted}, at); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteRecord("codex-01"); err != nil {
+		t.Fatal(err)
+	}
+	if l, err := s.Announced("codex-01"); err != nil || len(l.IDs) != 0 {
+		t.Fatalf("ledger survived: %+v %v", l, err)
+	}
+	if h, err := s.InjectHistory("codex-01"); err != nil || len(h) != 0 {
+		t.Fatalf("inject log survived: %+v %v", h, err)
 	}
 }
 

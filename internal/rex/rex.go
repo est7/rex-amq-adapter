@@ -193,9 +193,10 @@ func (c Client) SendKeys(ctx context.Context, block string, keys ...string) erro
 
 // Block is what the adapter needs from `rex block inspect`.
 type Block struct {
-	ID       string `json:"block_id"`
-	Label    string `json:"label"`
-	WindowID string `json:"window_id"`
+	ID        string `json:"block_id"`
+	Label     string `json:"label"`
+	WindowID  string `json:"window_id"`
+	SessionID string `json:"-"` // reported beside the block, not in it
 }
 
 func (c Client) InspectBlock(ctx context.Context, block string) (Block, error) {
@@ -204,12 +205,38 @@ func (c Client) InspectBlock(ctx context.Context, block string) (Block, error) {
 		return Block{}, err
 	}
 	var res struct {
-		Block Block `json:"block"`
+		SessionID string `json:"session_id"`
+		Block     Block  `json:"block"`
 	}
 	if err := json.Unmarshal(out, &res); err != nil {
 		return Block{}, fmt.Errorf("decode block inspect: %w", err)
 	}
+	res.Block.SessionID = res.SessionID
 	return res.Block, nil
+}
+
+// Session is a session's label and its windows (tabs).
+type Session struct {
+	ID      string   `json:"session_id"`
+	Label   string   `json:"label"`
+	Windows []Window `json:"windows"`
+}
+
+type Window struct {
+	ID    string `json:"window_id"`
+	Label string `json:"label"`
+}
+
+func (c Client) InspectSession(ctx context.Context, session string) (Session, error) {
+	out, err := c.run(ctx, nil, "session", "inspect", session, "--json")
+	if err != nil {
+		return Session{}, err
+	}
+	var s Session
+	if err := json.Unmarshal(out, &s); err != nil {
+		return Session{}, fmt.Errorf("decode session inspect: %w", err)
+	}
+	return s, nil
 }
 
 func (c Client) RenameBlock(ctx context.Context, block, label string) error {

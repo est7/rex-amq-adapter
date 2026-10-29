@@ -1,8 +1,10 @@
 # rex-amq-adapter
 
 Every Claude Code, Codex, Antigravity (`agy`), or Pi session started in a Rex terminal is reachable over
-AMQ under a handle: the Rex block (pane) label, such as `claude`, `codex-2`, or a
-name the user or a peer gave the pane. The adapter owns one AMQ root per user,
+AMQ under a handle of its kind, its role, and a number: `codex-reviewer-01`, or
+`claude-01` for a pane with no role. The role comes from the label a peer gave
+the pane; the adapter then relabels the pane with the handle. A resumed session
+gets its handle back, in any pane. The adapter owns one AMQ root per user,
 provisions your mailbox when your session starts, and tells you when mail
 arrives. This is plain AMQ: bare `amq` with your identity loaded is the whole
 protocol. `amq coop`, `--project` / `--session` routing, and AMQ skills written
@@ -72,8 +74,9 @@ eval "$(rex-amq-adapter env)" && amq reply --id <message-id> --body "<answer>"
 
 ```bash
 eval "$(rex-amq-adapter env)" && amq who --json
-eval "$(rex-amq-adapter env)" && amq send --to codex --subject "<short subject>" --body "<request>"
-rex-amq-adapter who      # handles, kind, live or departed, unread, last doorbell, Rex block
+eval "$(rex-amq-adapter env)" && amq send --to codex-reviewer-01 --subject "<short subject>" --body "<request>"
+rex-amq-adapter who      # running agents: handle, kind, unread, last doorbell, Rex session, tab, block
+rex-amq-adapter who --all  # also departed agents whose handle is reserved for a resume
 ```
 
 `who` shows each agent's last doorbell and how long that outcome has held:
@@ -85,9 +88,10 @@ draft_in_box` or `agent_blocked` means the user must clear the peer's input
 box or answer its dialog (tell the user which pane); `accepted` means the peer
 was told and has not acted yet.
 
-Send only to a handle `rex-amq-adapter who` lists as `live`. A departed handle
-is reserved for 24 hours and its mail waits unread; start a peer instead. Several
-recipients: `--to a,b`.
+Send only to a handle `rex-amq-adapter who` lists. A departed agent (`who
+--all`) keeps its handle for 7 days so its session can be resumed, and mail to
+it waits unread until then; start a peer instead unless the user is resuming
+it. Several recipients: `--to a,b`.
 
 ## Start a peer
 
@@ -95,8 +99,10 @@ When the user asks for another agent ("开个 codex 审一下", "spin up a revie
 start it, hand it the brief, and talk to it like any peer. Every Rex command
 this needs is below; no other skill is required.
 
-1. **Pick a handle** `rex-amq-adapter who` does not list. The pane label becomes
-   the handle verbatim.
+1. **Pick a role** for the pane label: a word or two for what the peer does
+   (`reviewer`, `test-writer`). The adapter names the peer
+   `<kind>-<role>-<NN>` (`codex-reviewer-01`) and relabels the pane; read the
+   handle from `who` (step 4) or from the peer's first message.
 2. **Write the brief** as the peer's first prompt: the task, the files or diff,
    and that it should report back with
    `amq send --to <your handle>` (or `amq reply` to your mail). An agent is
@@ -109,11 +115,11 @@ this needs is below; no other skill is required.
    |---|---|---|
    | the same task (review, tests, second opinion) | a pane in your window | `rex split -s "$REX_SESSION" -b "$REX_BLOCK" --split=right --focus=false --label reviewer -c "$PWD" --json -- codex --no-daemon "<brief>"` |
    | another peer on the same task | a pane in the same window, below the last peer | the same, with `-b <last peer's block> --split=below` |
-   | another task in the same project | a new tab in your session | `rex run -s "$REX_SESSION" --label <handle> -c "$PWD" --focus=false --json -- codex --no-daemon "<brief>"` |
-   | another project (other repository or directory) | a new session | `rex new <project> -c <dir> --json`, then `rex run -s <its .session_id> --label <handle> -c <dir> --focus=false --json -- codex --no-daemon "<brief>"` |
+   | another task in the same project | a new tab in your session | `rex run -s "$REX_SESSION" --label <role> -c "$PWD" --focus=false --json -- codex --no-daemon "<brief>"` |
+   | another project (other repository or directory) | a new session | `rex new <project> -c <dir> --json`, then `rex run -s <its .session_id> --label <role> -c <dir> --focus=false --json -- codex --no-daemon "<brief>"` |
 
    Label the pane when you create it (`--label`), never afterwards: the agent
-   picks its handle from the label when its first hook runs, which can be
+   takes its role from the label when its first hook runs, which can be
    before a later rename. The program after `--` takes the brief as its first
    prompt: `codex --no-daemon "<brief>"`, `claude "<brief>"`, `pi "<brief>"`, or
    `agy -i "<brief>"` (Antigravity needs `-i`). Pass `--no-daemon` explicitly
@@ -123,8 +129,8 @@ this needs is below; no other skill is required.
    prefer a pane: the user can move it (`rex move`), and an unseen peer is easy
    to forget. Tell the user where the peer is ("opened reviewer in a pane on the
    right", "started codex in a new session `billing-api`").
-4. **Confirm adoption** before more mail: `rex-amq-adapter who` lists the handle
-   `live` once the peer's first turn starts. A Codex peer whose hooks were never
+4. **Confirm adoption** before more mail: `rex-amq-adapter who` lists the peer
+   under its handle once the peer's first turn starts. A Codex peer whose hooks were never
    approved is never adopted: tell the user to approve them with `/hooks` in that
    pane. Its report arrives as a notice.
 

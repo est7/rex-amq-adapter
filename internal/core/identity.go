@@ -52,69 +52,53 @@ func ParseHandle(s string) (Handle, error) {
 // labeled explicitly, including `rex run -- cmd` blocks.
 const DefaultBlockLabel = "shell"
 
-// HandleRequest is everything handle choice depends on.
-type HandleRequest struct {
-	Kind Kind
-	// Label is the block's current label.
-	Label string
-	// Sticky is the handle this block's previous agent had, or "".
-	Sticky Handle
-	// Live holds handles bound to another live agent. They are never shared.
-	Live map[Handle]bool
-	// Encumbered holds handles an automatic name must avoid: reserved for a
-	// departed agent, or owning a mailbox with undrained mail.
-	Encumbered map[Handle]bool
-}
-
-// HandleChoice is the chosen handle and whether the block label should be
-// set to it so the handle is visible in Rex.
-type HandleChoice struct {
-	Handle   Handle
-	SetLabel bool
-}
-
-// ChooseHandle names an agent:
-//
-//  1. An explicit block label that is a valid handle (case-insensitive) is the
-//     user's choice and is used as is, mail waiting or not. If another live
-//     agent holds it, the first <label>-N that is neither live nor encumbered
-//     is used and the label updated.
-//  2. Otherwise the block's previous handle is kept unless another live agent
-//     took it, so mail addressed to it still reaches this block.
-//  3. Otherwise <kind> or <kind>-N, skipping live and encumbered handles, so a
-//     new agent never inherits someone else's unread mail.
-//
-// The label is only written over Rex's default label, never over a custom
-// label that is not a valid handle.
-func ChooseHandle(r HandleRequest) HandleChoice {
-	defaultLabel := r.Label == "" || r.Label == DefaultBlockLabel
-	if !defaultLabel {
-		if h, err := ParseHandle(strings.ToLower(r.Label)); err == nil {
-			if !r.Live[h] {
-				return HandleChoice{Handle: h}
-			}
-			return HandleChoice{Handle: firstFree(string(h), r.Live, r.Encumbered), SetLabel: true}
-		}
-	}
-	if r.Sticky != "" && !r.Live[r.Sticky] {
-		return HandleChoice{Handle: r.Sticky, SetLabel: defaultLabel}
-	}
-	return HandleChoice{Handle: firstFree(string(r.Kind), r.Live, r.Encumbered), SetLabel: defaultLabel}
-}
-
-// firstFree returns base, base-2, base-3 … whichever is first not in either set.
-func firstFree(base string, a, b map[Handle]bool) Handle {
-	free := func(h Handle) bool { return !a[h] && !b[h] }
-	if h := Handle(base); free(h) {
-		return h
-	}
-	// Keep base-N within the 32-character handle limit.
-	if len(base) > 28 {
-		base = strings.TrimRight(base[:28], "-_")
-	}
-	for i := 2; ; i++ {
-		if h := Handle(fmt.Sprintf("%s-%d", base, i)); free(h) {
+// NameHandle names an agent that holds no handle yet:
+// <kind>-<role>-<NN>, or <kind>-<NN> without a role, with the lowest NN
+// (from 01) not in taken. The role is what the pane label says the agent is
+// for (see Role). The kind is always the agent's own, so a handle never
+// claims a harness it does not run on.
+func NameHandle(kind Kind, label string, taken map[Handle]bool) Handle {
+	role := Role(label)
+	for n := 1; ; n++ {
+		if h := composeHandle(kind, role, n); !taken[h] {
 			return h
 		}
 	}
+}
+
+// Role reads an agent's role from its pane label: lowercased, runs of other
+// characters folded to "-", a leading kind and a trailing number dropped. So
+// "Reviewer", "reviewer-2", and a handle the adapter composed earlier
+// ("codex-reviewer-01") all read as "reviewer", and Rex's default label, a
+// bare kind, or "codex-10" read as no role.
+func Role(label string) string {
+	words := strings.FieldsFunc(strings.ToLower(label), func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9')
+	})
+	if len(words) == 1 && words[0] == DefaultBlockLabel {
+		return ""
+	}
+	if len(words) > 0 {
+		if _, err := ParseKind(words[0]); err == nil {
+			words = words[1:]
+		}
+	}
+	if n := len(words); n > 0 && strings.Trim(words[n-1], "0123456789") == "" {
+		words = words[:n-1]
+	}
+	return strings.Join(words, "-")
+}
+
+// composeHandle is <kind>[-<role>]-<NN>, the role cut to keep the handle
+// within its 32 characters.
+func composeHandle(kind Kind, role string, n int) Handle {
+	num := fmt.Sprintf("%02d", n)
+	base := string(kind)
+	if room := 32 - len(base) - len("-") - len("-") - len(num); role != "" && room > 0 {
+		if len(role) > room {
+			role = strings.TrimRight(role[:room], "-")
+		}
+		base += "-" + role
+	}
+	return Handle(base + "-" + num)
 }

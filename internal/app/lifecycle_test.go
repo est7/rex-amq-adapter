@@ -22,7 +22,7 @@ func realAmqEnv(t *testing.T, term *fakeTerm) Env {
 		t.Skip(err)
 	}
 	e := fixture(t, term)
-	if err := e.Store.DeleteRecord(block); err != nil {
+	if err := e.Store.DeleteRecord("codex"); err != nil {
 		t.Fatal(err)
 	}
 	injector := filepath.Join(t.TempDir(), "inject.sh")
@@ -52,27 +52,27 @@ func TestAdoptThenDepartRetiresTheWaker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = amq.RetireFor(context.Background(), e.AmqBin, e.Paths.Root(), "codex", block) })
-	first := wakeState(t, e, "codex")
-	if a.Record.Handle != "codex" || !first.Live || first.Generation == "" {
+	t.Cleanup(func() { _, _ = amq.RetireFor(context.Background(), e.AmqBin, e.Paths.Root(), "codex-01", block) })
+	first := wakeState(t, e, "codex-01")
+	if a.Record.Handle != "codex-01" || !first.Live || first.Generation == "" {
 		t.Fatalf("adoption: %+v waker %+v", a.Record, first)
 	}
 	again, err := e.Adopt(ctx, Location{Block: block}, core.Codex, HookInput{SessionID: "s1"})
-	if err != nil || again.Decision != amq.DecisionKeep || wakeState(t, e, "codex").Generation != first.Generation {
+	if err != nil || again.Decision != amq.DecisionKeep || wakeState(t, e, "codex-01").Generation != first.Generation {
 		t.Fatalf("re-adopting the same agent must keep its waker: %+v %v", again, err)
 	}
 	if err := e.Depart(ctx, Location{Block: block}, HookInput{SessionID: "another-session"}); err != nil {
 		t.Fatal(err)
 	}
-	if !wakerLive(t, e, "codex") {
+	if !wakerLive(t, e, "codex-01") {
 		t.Fatal("a SessionEnd from another agent session must change nothing")
 	}
 	if err := e.Depart(ctx, Location{Block: block}, HookInput{SessionID: "s1"}); err != nil {
 		t.Fatal(err)
 	}
 	rec, _, _ := e.Store.Record(block)
-	if rec.Live() || wakerLive(t, e, "codex") {
-		t.Fatalf("after departure: live=%v waker live=%v", rec.Live(), wakerLive(t, e, "codex"))
+	if rec.Live() || wakerLive(t, e, "codex-01") {
+		t.Fatalf("after departure: live=%v waker live=%v", rec.Live(), wakerLive(t, e, "codex-01"))
 	}
 }
 
@@ -105,13 +105,13 @@ func TestCollectParksOnlyProvablyGoneAgents(t *testing.T) {
 	if _, err := e.Adopt(ctx, Location{Block: block}, core.Codex, HookInput{}); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = amq.RetireFor(context.Background(), e.AmqBin, e.Paths.Root(), "codex", block) })
+	t.Cleanup(func() { _, _ = amq.RetireFor(context.Background(), e.AmqBin, e.Paths.Root(), "codex-01", block) })
 
 	term.fgPID = 1 // an editor in front of a live agent
 	if err := e.Collect(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if rec, _, _ := e.Store.Record(block); !rec.Live() || !wakerLive(t, e, "codex") {
+	if rec, _, _ := e.Store.Record(block); !rec.Live() || !wakerLive(t, e, "codex-01") {
 		t.Fatal("a live agent behind another process was collected")
 	}
 
@@ -119,7 +119,7 @@ func TestCollectParksOnlyProvablyGoneAgents(t *testing.T) {
 	if err := e.Collect(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if rec, _, _ := e.Store.Record(block); rec.Live() || wakerLive(t, e, "codex") {
+	if rec, _, _ := e.Store.Record(block); rec.Live() || wakerLive(t, e, "codex-01") {
 		t.Fatal("an agent whose block is gone was not collected")
 	}
 
@@ -142,18 +142,18 @@ func TestPiAdoptionHasNoWaker(t *testing.T) {
 	if _, err := e.Adopt(ctx, Location{Block: block}, core.Codex, HookInput{}); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = amq.RetireFor(context.Background(), e.AmqBin, e.Paths.Root(), "codex", block) })
-	if !wakerLive(t, e, "codex") {
+	t.Cleanup(func() { _, _ = amq.RetireFor(context.Background(), e.AmqBin, e.Paths.Root(), "codex-01", block) })
+	if !wakerLive(t, e, "codex-01") {
 		t.Fatal("setup: codex waker not live")
 	}
 	a, err := e.Adopt(ctx, Location{Block: block}, core.Pi, HookInput{AgentPID: 4242})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.Record.Handle != "codex" || a.Record.Kind != core.Pi || a.Record.AgentPID != 4242 {
+	if a.Record.Handle != "pi-01" || a.Record.Kind != core.Pi || a.Record.AgentPID != 4242 {
 		t.Fatalf("pi record: %+v", a.Record)
 	}
-	if wakerLive(t, e, "codex") {
+	if wakerLive(t, e, "codex-01") {
 		t.Fatal("the previous agent's waker survived; it would type into Pi")
 	}
 }
@@ -167,21 +167,21 @@ func TestStopRevivesADeadWaker(t *testing.T) {
 	if _, err := e.Adopt(ctx, Location{Block: block}, core.Codex, HookInput{}); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = amq.RetireFor(context.Background(), e.AmqBin, e.Paths.Root(), "codex", block) })
-	dead := wakeState(t, e, "codex")
+	t.Cleanup(func() { _, _ = amq.RetireFor(context.Background(), e.AmqBin, e.Paths.Root(), "codex-01", block) })
+	dead := wakeState(t, e, "codex-01")
 	if err := syscall.Kill(dead.PID, syscall.SIGKILL); err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 50 && wakerLive(t, e, "codex"); i++ {
+	for i := 0; i < 50 && wakerLive(t, e, "codex-01"); i++ {
 		time.Sleep(100 * time.Millisecond)
 	}
-	if wakerLive(t, e, "codex") {
+	if wakerLive(t, e, "codex-01") {
 		t.Fatal("setup: the killed waker still reports live")
 	}
 	if _, err := e.Hook(ctx, EventStop, core.Codex, Location{Block: block}, HookInput{}); err != nil {
 		t.Fatal(err)
 	}
-	if st := wakeState(t, e, "codex"); !st.Live || st.PID == dead.PID {
+	if st := wakeState(t, e, "codex-01"); !st.Live || st.PID == dead.PID {
 		t.Fatalf("Stop left the waker dead: %+v", st)
 	}
 }
@@ -197,8 +197,8 @@ func TestStopStartsNoWakerForPi(t *testing.T) {
 	if _, err := e.Hook(ctx, EventSettle, core.Pi, Location{Block: block}, HookInput{}); err != nil {
 		t.Fatal(err)
 	}
-	if wakerLive(t, e, "pi") {
-		_, _ = amq.RetireFor(context.Background(), e.AmqBin, e.Paths.Root(), "pi", block)
+	if wakerLive(t, e, "pi-01") {
+		_, _ = amq.RetireFor(context.Background(), e.AmqBin, e.Paths.Root(), "pi-01", block)
 		t.Fatal("a waker was started for Pi")
 	}
 }
@@ -229,8 +229,8 @@ func TestWakerStartsWhenTheBinaryLivesInAGroupWritableDir(t *testing.T) {
 	if _, err := e.Adopt(ctx, Location{Block: block}, core.Codex, HookInput{}); err != nil {
 		t.Fatalf("adoption with the binary under a group-writable dir: %v", err)
 	}
-	t.Cleanup(func() { _, _ = amq.RetireFor(context.Background(), e.AmqBin, e.Paths.Root(), "codex", block) })
-	st := wakeState(t, e, "codex")
+	t.Cleanup(func() { _, _ = amq.RetireFor(context.Background(), e.AmqBin, e.Paths.Root(), "codex-01", block) })
+	st := wakeState(t, e, "codex-01")
 	if !st.Live {
 		t.Fatalf("waker not live: %+v", st)
 	}
@@ -244,7 +244,7 @@ func TestWakerStartsWhenTheBinaryLivesInAGroupWritableDir(t *testing.T) {
 	if err := e.SuperviseWaker(ctx, Location{Block: block}); err != nil {
 		t.Fatal(err)
 	}
-	if again := wakeState(t, e, "codex"); !again.Live || again.Generation != st.Generation {
+	if again := wakeState(t, e, "codex-01"); !again.Live || again.Generation != st.Generation {
 		t.Fatalf("a moved binary replaced the waker: %+v -> %+v", st, again)
 	}
 	w, err := os.ReadFile(e.injector())

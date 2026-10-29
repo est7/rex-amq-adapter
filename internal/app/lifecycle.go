@@ -19,8 +19,9 @@ import (
 // they run with stderr discarded.
 var Diagnostics io.Writer = os.Stderr
 
-// ReserveFor is how long a departed agent's handle stays reserved.
-const ReserveFor = 24 * time.Hour
+// ReserveFor is how long a departed agent's handle stays reserved for its
+// session to resume.
+const ReserveFor = 7 * 24 * time.Hour
 
 // superviseFor bounds waker supervision inside a Stop hook, leaving the rest
 // of the hook's budget when another agent's adoption holds the lifecycle lock.
@@ -80,7 +81,7 @@ func (e Env) SuperviseWaker(ctx context.Context, loc Location) error {
 }
 
 // Depart retires the waker of the agent that ended in loc and keeps its
-// record as a reservation. A SessionEnd from an agent session other than the
+// record as a reservation for its session. A SessionEnd from an agent session other than the
 // recorded one (a late hook from a replaced agent) changes nothing.
 func (e Env) Depart(ctx context.Context, loc Location, in HookInput) error {
 	unlock, err := e.Store.LockLifecycle(ctx)
@@ -136,7 +137,7 @@ func (e Env) Collect(ctx context.Context) error {
 func (e Env) collectOne(ctx context.Context, rec store.Record) error {
 	if !rec.Live() {
 		if e.Now().Sub(*rec.DepartedAt) > ReserveFor {
-			return e.Store.DeleteRecord(rec.BlockID)
+			return e.Store.DeleteRecord(rec.Handle)
 		}
 		return nil
 	}

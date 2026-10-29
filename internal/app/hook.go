@@ -99,10 +99,6 @@ func normalize(kind core.Kind, in HookInput) HookInput {
 }
 
 func (e Env) sessionStart(ctx context.Context, kind core.Kind, loc Location, in HookInput) (Reply, error) {
-	if err := e.Collect(ctx); err != nil {
-		// Collection is housekeeping; adoption must still happen.
-		fmt.Fprintf(Diagnostics, "collect: %v\n", err)
-	}
 	a, err := e.adopt(ctx, loc, kind, in)
 	if err != nil {
 		return Reply{}, err
@@ -194,9 +190,15 @@ func (e Env) announceMail(ctx context.Context, rec store.Record, in HookInput, e
 // failed adoption.
 const AdoptRetryAfter = time.Minute
 
-// adopt runs Adopt for a hook: it records a failure so the fast-path hooks
-// back off, clears it on success, and reports a label that could not be set.
+// adopt runs Adopt for a hook: it collects first, so a resumed session finds
+// the record of the pane it left parked and takes its handle back; it records
+// a failure so the fast-path hooks back off, clears it on success, and
+// reports a label that could not be set.
 func (e Env) adopt(ctx context.Context, loc Location, kind core.Kind, in HookInput) (Adoption, error) {
+	if err := e.Collect(ctx); err != nil {
+		// Collection is housekeeping; adoption must still happen.
+		fmt.Fprintf(Diagnostics, "collect: %v\n", err)
+	}
 	a, err := e.Adopt(ctx, loc, kind, in)
 	if err != nil {
 		_ = e.Store.SetAdoptFailed(loc.Block, e.Now())

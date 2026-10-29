@@ -126,23 +126,42 @@ the ladder cap (2 min); this is accepted.
 
 ## 4. Identity
 
-**Handle = block label.** A block whose label is not `shell` is named by the
-user or by a peer that launched it (`rex split --label reviewer -- codex --no-daemon`); a
-valid label is used verbatim. A `shell` block gets `<kind>` or `<kind>-N`
-(`claude`, `codex-2`), and the adapter sets the block label to it so the handle
-is visible in Rex. Session labels are left alone; Rex's own skill renames the
-session after the task.
+**Handle = `<kind>-<role>-<NN>`, owned by the agent session.** Panes are
+disposable; agent sessions are not. Claude Code and Codex keep their session id
+across a resume (executed 2026-10-28: `claude -p --resume` and `codex exec
+resume` returned the id of the session they resumed; a Codex hook's
+`session_id` is the id in its rollout file name), so the handle is bound to that
+id, not to the pane. Adoption, in order:
 
-Automatic names skip handles that are taken by a live record, reserved, or whose
-mailbox holds undrained mail, so a new agent never inherits someone else's
-unread messages. An explicit label is the user's choice and is used even if
-mail is waiting.
+1. **Resume.** A record of the same agent session and kind takes its handle
+   back, in this pane or any other, unless another pane's agent is running it.
+   Peers' mail and the conversation's own references to the handle still
+   reach it; mail sent while it was closed is waiting as unread. This also
+   covers a process that switches session (`/resume` inside the agent); the
+   session it left keeps its own handle.
+2. **Same process.** This pane's live record of the same process keeps its
+   handle: a repeated hook, a compaction, a new session in the process
+   (`/clear`).
+3. **New name.** `<kind>-<role>-<NN>`, or `<kind>-<NN>` without a role, with
+   the lowest `NN` from `01` that is not taken. The role comes from the pane
+   label a peer set when it launched the agent (`rex split --label reviewer
+   -- codex --no-daemon` → `codex-reviewer-01`): lowercased, other characters
+   folded to `-`, a leading kind and a trailing number dropped, so a label the
+   adapter wrote earlier reads back as the same role. Rex's default label
+   `shell` carries no role. The kind is always the agent's own.
 
-**Record** (one JSON file per block, the single source of truth):
+Taken handles are every record's (live, or reserved for a departed session) and
+every mailbox holding undrained mail, so a new agent never inherits someone
+else's session or unread messages. A new session in a pane is a new identity:
+it does not inherit the handle of the pane's previous session. The adapter
+then sets the pane label to the handle, so it is visible in Rex. Session
+labels are left alone; Rex's own skill renames the session after the task.
+
+**Record** (one JSON file per handle, the single source of truth):
 
 ```json
 {
-  "handle": "codex-2",
+  "handle": "codex-reviewer-01",
   "kind": "codex",
   "server": "unix:///…/rex/server.sock",
   "session_id": "session:…",
@@ -159,10 +178,9 @@ liveness belong to amq: the adapter asks `amq wake check` and retires a waker
 by the block its saved target names, never by a copy of its generation. The
 binding is `(server, block_id, agent_pid)`; block ids are never reused, so a
 restarted Rex server makes old records' blocks unfindable and collection
-parks them. A different pid in the
-same block is a different agent process; it keeps the handle (sticky per block)
-and gets a fresh binding.
-
+parks them. A different pid in the same block is a different agent process: it
+keeps the handle only by resuming the same session, and the record it
+replaces is parked as that session's reservation.
 
 Codex can run an ephemeral memory-consolidation session inside the same
 terminal process. It inherits the Rex block but has no persisted transcript.
@@ -199,6 +217,7 @@ or replacement, verify that background start/tool/stop/end hooks cannot change
 the terminal binding or announcement ledger, and that interactive startup,
 `/new`, resume, clear, and fork retain normal delivery. An issue closure alone
 is not sufficient evidence.
+
 **How an agent finds its identity.** `rex-amq-adapter env` resolves the record
 from `REX_BLOCK` and prints `export AM_ROOT=… AM_ME=…`. Agents run
 `eval "$(rex-amq-adapter env)"` before each `amq` command. No identity files.
@@ -305,7 +324,8 @@ the common path for Codex: its hooks run only after the user approves them,
 which usually happens after the session started, and in the e2e runs the
 adapter's `SessionStart` did not adopt Codex at startup. It also covers an
 adapter installed mid-session, and heals a record that collection parked by
-mistake.
+mistake. Every adoption collects first, so a resumed session finds the record
+of the pane it left already parked.
 
 **Adopt** (under the state lifecycle lock): resolve the block's foreground
 process and confirm it is the agent; choose the handle; `amq init --force` with
@@ -313,14 +333,17 @@ the merged agent list under the root registry lock (port from herdr); ensure the
 waker with herdr's `check` → keep / start / repair / replace decision; write the
 record only after `amq wake check` reports the expected target live.
 
-**Garbage collection** runs at every `SessionStart` and on `rex-amq-adapter
-collect`: a live record whose block is gone or now runs a different foreground
-process is parked like a departure (waker retired, `departed_at` set); a
-departed record older than 24 h is deleted. A server that cannot be reached
-leaves its records alone, since absence cannot be proven. The departed record
-itself is the reservation: while it exists its handle is encumbered for
-automatic names, and its block gets the handle back. Mailboxes are kept;
-collection of old mailboxes is out of scope for the first version.
+**Garbage collection** runs before every adoption, on `rex-amq-adapter who`,
+and on `rex-amq-adapter collect`: a live record whose block is gone or now runs
+a different foreground process is parked like a departure (waker retired,
+`departed_at` set); a departed record older than 7 days is deleted with its
+ledger and inject log, so the handle can be named afresh. A server that cannot
+be reached leaves its records alone, since absence cannot be proven. The
+departed record itself is the reservation: while it exists its handle is taken
+for new names, and its session gets the handle back on resume. Past 7 days a
+resumed session is named afresh, and peers that still address the old handle
+find it missing from `who`. Mailboxes are kept; collection of old mailboxes is
+out of scope for the first version.
 
 The injector never retires its own waker. A waker whose agent is gone keeps
 reporting `failed` until the next `SessionStart` collects it; the cost is one
@@ -384,7 +407,7 @@ Overridable with `REX_AMQ_ADAPTER_HOME` (tests use a temporary directory).
 ~/.local/state/rex-amq-adapter/
 ├── amq-root/                 shared AMQ root (agents/, meta/config.json)
 ├── bin/inject                the wrapper amq wake runs as --inject-via
-├── records/<block>.json      one record per adopted block
+├── records/<handle>.json     one record per handle (earlier versions named it by block)
 ├── ledger/<handle>.json      announced message ids
 ├── inject/<handle>.jsonl     injector outcomes
 ├── logs/<handle>.log         amq wake stdout/stderr
@@ -467,7 +490,9 @@ file written by `setup`, Codex hooks passed inline with `-c`.
 | Doorbell merges with a user's draft | Typed only at rest, after an `empty` box check, and confirmed; leftover text is cleared only when it is exactly ours |
 | Codex swallows Enter | Bracketed paste + CR in one write (executed) |
 | Rex upgrade moves the rex binary | Resolved at run time, never baked into the waker target |
-| A new agent inherits stale mail | Automatic names skip mailboxes with undrained mail and reserved handles |
+| A new agent inherits stale mail | New names skip mailboxes with undrained mail and reserved handles |
+| A resumed agent loses its handle, and its peer writes to nobody | The handle belongs to the agent session, not the pane; collection runs before adoption so the closed pane's record is parked and claimable; reservations last 7 days (executed in `resume_test.go`) |
+| A handle names the wrong harness (`codex-…` running Claude) | The kind is never read from a label; a pane that changes kind keeps only its role |
 | Two agents claim one handle | Adoption holds the lifecycle lock; mailbox registration holds the root registry lock |
 | Installing hooks invalidates Codex trust | Append-only placement |
 | A waker dies and an idle agent never hears of mail | Every `Stop` checks the waker and revives a dead one; nothing else in Rex would notice (executed by the independent review, fixed and tested) |

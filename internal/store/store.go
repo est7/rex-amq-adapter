@@ -54,9 +54,12 @@ func PathsForRoot(root string) (Paths, error) {
 	return Paths{Home: filepath.Dir(root)}, nil
 }
 
-// Record binds an AMQ handle to one agent process in one Rex block. It holds
-// only facts the adapter owns; the waker's identity and liveness belong to
-// amq and are read with `amq wake check` when needed.
+// Record binds an AMQ handle to one agent session, and while that session runs,
+// to its process in one Rex block. It holds only facts the adapter owns; the
+// waker's identity and liveness belong to amq and are read with `amq wake
+// check` when needed. Records are stored by handle, so a handle has at most
+// one record: a departed record keeps the handle for its agent session after
+// the block is gone.
 type Record struct {
 	Handle         core.Handle `json:"handle"`
 	Kind           core.Kind   `json:"kind"`
@@ -67,7 +70,8 @@ type Record struct {
 	AgentSessionID string      `json:"agent_session_id,omitempty"`
 	AdoptedAt      time.Time   `json:"adopted_at"`
 	// DepartedAt is set when the agent ended. A departed record keeps its
-	// handle reserved (and sticky for its block) until collected.
+	// handle reserved for its agent session (a resume, in any block) until
+	// collected.
 	DepartedAt *time.Time `json:"departed_at,omitempty"`
 }
 
@@ -79,26 +83,35 @@ type Store struct{ P Paths }
 
 func fileKey(id string) string { return strings.NewReplacer(":", "_", "/", "_").Replace(id) }
 
-func (s Store) recordPath(block string) string {
-	return filepath.Join(s.P.records(), fileKey(block)+".json")
+func (s Store) recordPath(h core.Handle) string {
+	return filepath.Join(s.P.records(), fileKey(string(h))+".json")
 }
 
-// Record returns the record for block; ok is false when there is none.
+// Record returns the record bound to block: its live one, else the one that
+// departed last. ok is false when there is none.
 func (s Store) Record(block string) (Record, bool, error) {
-	b, err := os.ReadFile(s.recordPath(block))
-	if errors.Is(err, fs.ErrNotExist) {
-		return Record{}, false, nil
-	}
+	files, err := s.recordFiles()
 	if err != nil {
 		return Record{}, false, err
 	}
-	var r Record
-	if err := json.Unmarshal(b, &r); err != nil {
-		return Record{}, false, fmt.Errorf("decode record %s: %w", block, err)
+	var best Record
+	ok := false
+	for _, f := range files {
+		r := f.rec
+		if r.BlockID != block {
+			continue
+		}
+		if !ok || r.Live() || (!best.Live() && r.DepartedAt.After(*best.DepartedAt)) {
+			best, ok = r, true
+		}
+		if r.Live() {
+			break
+		}
 	}
-	return r, true, nil
+	return best, ok, nil
 }
 
+// PutRecord writes r as its handle's only record.
 func (s Store) PutRecord(r Record) error {
 	if r.BlockID == "" || r.Handle == "" {
 		return errors.New("record needs a block id and a handle")
@@ -107,21 +120,52 @@ func (s Store) PutRecord(r Record) error {
 	if err != nil {
 		return err
 	}
-	return fsutil.WriteAtomic(s.recordPath(r.BlockID), append(b, '\n'))
+	if err := fsutil.WriteAtomic(s.recordPath(r.Handle), append(b, '\n')); err != nil {
+		return err
+	}
+	return s.removeRecordFiles(r.Handle, s.recordPath(r.Handle))
 }
 
-func (s Store) DeleteRecord(block string) error {
-	err := os.Remove(s.recordPath(block))
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
+// DeleteRecord forgets handle h: its record and its delivery history (the
+// announcement ledger and the inject log), so a later agent given h starts
+// clean. Its mailbox is amq's and stays.
+func (s Store) DeleteRecord(h core.Handle) error {
+	if err := s.removeRecordFiles(h, ""); err != nil {
+		return err
 	}
-	return err
+	for _, p := range []string{s.ledgerPath(h), s.injectLog(h)} {
+		if err := os.Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
 }
 
 // Records lists every record, sorted by handle. An unreadable record is an
 // error rather than skipped: it may hold the generation needed to retire a
 // waker.
 func (s Store) Records() ([]Record, error) {
+	files, err := s.recordFiles()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Record, 0, len(files))
+	for _, f := range files {
+		out = append(out, f.rec)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Handle < out[j].Handle })
+	return out, nil
+}
+
+type recordFile struct {
+	path string
+	rec  Record
+}
+
+// recordFiles reads every record file. Files are named by handle; earlier
+// versions named them by block, so the name is never trusted for the
+// handle: PutRecord and DeleteRecord match on the content.
+func (s Store) recordFiles() ([]recordFile, error) {
 	entries, err := os.ReadDir(s.P.records())
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
@@ -129,12 +173,13 @@ func (s Store) Records() ([]Record, error) {
 	if err != nil {
 		return nil, err
 	}
-	var out []Record
+	var out []recordFile
 	for _, e := range entries {
 		if !strings.HasSuffix(e.Name(), ".json") || strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
-		b, err := os.ReadFile(filepath.Join(s.P.records(), e.Name()))
+		p := filepath.Join(s.P.records(), e.Name())
+		b, err := os.ReadFile(p)
 		if err != nil {
 			return nil, err
 		}
@@ -142,10 +187,26 @@ func (s Store) Records() ([]Record, error) {
 		if err := json.Unmarshal(b, &r); err != nil {
 			return nil, fmt.Errorf("decode record %s: %w", e.Name(), err)
 		}
-		out = append(out, r)
+		out = append(out, recordFile{path: p, rec: r})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Handle < out[j].Handle })
 	return out, nil
+}
+
+// removeRecordFiles removes every record file for h except keep.
+func (s Store) removeRecordFiles(h core.Handle, keep string) error {
+	files, err := s.recordFiles()
+	if err != nil {
+		return err
+	}
+	for _, f := range files {
+		if f.rec.Handle != h || f.path == keep {
+			continue
+		}
+		if err := os.Remove(f.path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
 }
 
 // LockLifecycle serialises adoption, departure, and collection.
@@ -161,6 +222,10 @@ const (
 	maxInjectLog   = 1 << 20
 	keepInjectRuns = 1000
 )
+
+func (s Store) ledgerPath(h core.Handle) string {
+	return filepath.Join(s.P.ledgers(), string(h)+".json")
+}
 
 func (s Store) injectLog(h core.Handle) string {
 	return filepath.Join(s.P.injects(), string(h)+".jsonl")
@@ -241,7 +306,7 @@ type Ledger struct {
 
 // Announced returns h's ledger; a handle never told anything has an empty one.
 func (s Store) Announced(h core.Handle) (Ledger, error) {
-	b, err := os.ReadFile(filepath.Join(s.P.ledgers(), string(h)+".json"))
+	b, err := os.ReadFile(s.ledgerPath(h))
 	if errors.Is(err, fs.ErrNotExist) {
 		return Ledger{IDs: map[string]bool{}}, nil
 	}
@@ -274,7 +339,7 @@ func (s Store) SetAnnounced(h core.Handle, ids []string, at time.Time) error {
 	if err != nil {
 		return err
 	}
-	return fsutil.WriteAtomic(filepath.Join(s.P.ledgers(), string(h)+".json"), append(b, '\n'))
+	return fsutil.WriteAtomic(s.ledgerPath(h), append(b, '\n'))
 }
 
 // Pending is a doorbell written into a block and not yet known to be

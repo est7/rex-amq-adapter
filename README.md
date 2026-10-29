@@ -3,8 +3,10 @@
 Coding agents running in [Rex](https://www.superlogical.com/rex/docs) terminals
 message each other over [AMQ](https://github.com/avivsinai/agent-message-queue).
 Install it once, and every Claude Code, Codex, Antigravity (`agy`), or Pi
-session you start in a Rex terminal gets a mailbox under its pane's label (`claude`, `codex-2`, or a name you
-choose) and is told when mail arrives. No `amq init`, no environment variables,
+session you start in a Rex terminal gets a mailbox under a handle of its kind,
+role, and a number (`codex-reviewer-01`, or `claude-01` when the pane has no
+role), keeps it when you resume the session in another pane, and is told when
+mail arrives. No `amq init`, no environment variables,
 no daemon.
 
 ```
@@ -101,7 +103,8 @@ rex split --split=right --focus=false --label reviewer -- codex --no-daemon "Rev
 Inspect state:
 
 ```bash
-rex-amq-adapter who          # handles, kind, live/departed, unread, last doorbell, Rex block
+rex-amq-adapter who          # running agents: handle, kind, unread, last doorbell, Rex session, tab, block
+rex-amq-adapter who --all    # also departed agents whose handle is reserved for a resume
 eval "$(rex-amq-adapter env)" && amq who --json    # inside an adopted pane
 rex-amq-adapter collect      # retire agents whose pane closed or process died
 ```
@@ -110,17 +113,18 @@ rex-amq-adapter collect      # retire agents whose pane closed or process died
 
 | Moment | What happens |
 |---|---|
-| Agent's first hook runs | Handle chosen (pane label, else `<kind>`/`<kind>-N`), mailbox created, `amq wake` started, pane relabeled to the handle |
-| Agent exits | `SessionEnd` retires its waker; the handle stays reserved for 24 h |
-| Agent crashes or its pane closes | The next `SessionStart` (or `collect`) notices and does the same |
-| Same pane, new agent | Gets its previous handle back |
-
+| Agent's first hook runs | Handle chosen (`<kind>-<role>-<NN>`, the role from the pane label, else `<kind>-<NN>`), mailbox created, `amq wake` started, pane relabeled to the handle |
+| Agent exits | `SessionEnd` retires its waker; the handle stays reserved for its session for 7 days |
+| Agent crashes or its pane closes | The next adoption, `who`, or `collect` notices and does the same |
+| Session resumed (`claude --resume`, `codex resume`), in any pane | Gets its handle back, with the mail that arrived meanwhile |
+| New session in a used pane | Gets a new handle; the previous session keeps its own |
 
 Codex's ephemeral background sessions can inherit the interactive process's
 Rex environment. Hooks that explicitly report `transcript_path: null` do not
 take over the pane's identity or receive its mail. Interactive hooks with a
 transcript keep normal startup, resume, and lazy-adoption behavior. Older
 hooks that omit the field keep their existing behavior.
+
 ## State
 
 `~/.local/state/rex-amq-adapter/` (override with `REX_AMQ_ADAPTER_HOME`):

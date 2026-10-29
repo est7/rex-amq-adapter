@@ -16,63 +16,48 @@ func set(hs ...Handle) map[Handle]bool {
 	return m
 }
 
-func TestChooseHandle(t *testing.T) {
+func TestNameHandle(t *testing.T) {
 	cases := []struct {
-		name string
-		req  HandleRequest
-		want HandleChoice
+		name  string
+		kind  Kind
+		label string
+		taken map[Handle]bool
+		want  Handle
 	}{
-		{"default label gets the kind and a visible label",
-			HandleRequest{Kind: Codex, Label: "shell"},
-			HandleChoice{Handle: "codex", SetLabel: true}},
-		{"empty label counts as default",
-			HandleRequest{Kind: Claude, Label: ""},
-			HandleChoice{Handle: "claude", SetLabel: true}},
-		{"kind taken by a live agent gets a suffix",
-			HandleRequest{Kind: Codex, Label: "shell", Live: set("codex", "codex-2")},
-			HandleChoice{Handle: "codex-3", SetLabel: true}},
-		{"automatic names skip encumbered handles",
-			HandleRequest{Kind: Claude, Label: "shell", Encumbered: set("claude")},
-			HandleChoice{Handle: "claude-2", SetLabel: true}},
-		{"explicit label wins verbatim, lowercased, even with mail waiting",
-			HandleRequest{Kind: Codex, Label: "Reviewer", Encumbered: set("reviewer")},
-			HandleChoice{Handle: "reviewer"}},
-		{"explicit label held by a live agent is suffixed and relabeled",
-			HandleRequest{Kind: Codex, Label: "reviewer", Live: set("reviewer")},
-			HandleChoice{Handle: "reviewer-2", SetLabel: true}},
-		{"a suffixed explicit label skips handles with someone's unread mail",
-			HandleRequest{Kind: Codex, Label: "reviewer", Live: set("reviewer"), Encumbered: set("reviewer-2")},
-			HandleChoice{Handle: "reviewer-3", SetLabel: true}},
-		{"explicit label beats the block's previous handle",
-			HandleRequest{Kind: Codex, Label: "auditor", Sticky: "codex-2"},
-			HandleChoice{Handle: "auditor"}},
-		{"sticky handle is kept for the same block",
-			HandleRequest{Kind: Claude, Label: "shell", Sticky: "claude-4", Encumbered: set("claude-4")},
-			HandleChoice{Handle: "claude-4", SetLabel: true}},
-		{"sticky handle taken by another live agent is not shared",
-			HandleRequest{Kind: Claude, Label: "shell", Sticky: "claude", Live: set("claude")},
-			HandleChoice{Handle: "claude-2", SetLabel: true}},
-		{"custom label that is not a handle is never overwritten",
-			HandleRequest{Kind: Codex, Label: "my build pane"},
-			HandleChoice{Handle: "codex"}},
+		{"default label gets the kind and a number", Codex, "shell", nil, "codex-01"},
+		{"empty label counts as default", Claude, "", nil, "claude-01"},
+		{"a label is the role", Codex, "reviewer", nil, "codex-reviewer-01"},
+		{"the role is lowercased and folded", Claude, "Lark Impl", nil, "claude-lark-impl-01"},
+		{"taken handles are skipped, never shared", Codex, "reviewer", set("codex-reviewer-01", "codex-reviewer-02"), "codex-reviewer-03"},
+		{"the lowest free number is reused", Claude, "shell", set("claude-02"), "claude-01"},
+		{"a composed handle reads back as its role", Codex, "codex-reviewer-01", nil, "codex-reviewer-01"},
+		{"a pane relabeled for another kind keeps the role, not the kind", Claude, "codex-reviewer-01", nil, "claude-reviewer-01"},
+		{"an old automatic name carries no role", Claude, "codex-10", nil, "claude-01"},
+		{"a bare kind carries no role", Pi, "codex", nil, "pi-01"},
+		{"a peer's own numbering is dropped", Codex, "reviewer-2", nil, "codex-reviewer-01"},
+		{"inner numbers stay part of the role", Agy, "v2-audit", nil, "agy-v2-audit-01"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := ChooseHandle(c.req); got != c.want {
-				t.Fatalf("got %+v, want %+v", got, c.want)
+			if got := NameHandle(c.kind, c.label, c.taken); got != c.want {
+				t.Fatalf("NameHandle(%s, %q) = %q, want %q", c.kind, c.label, got, c.want)
 			}
 		})
 	}
 }
 
-func TestSuffixedHandleStaysValid(t *testing.T) {
-	long := strings.Repeat("a", 32)
-	got := ChooseHandle(HandleRequest{Kind: Codex, Label: long, Live: set(Handle(long))})
-	if _, err := ParseHandle(string(got.Handle)); err != nil {
-		t.Fatalf("suffixed handle %q is invalid: %v", got.Handle, err)
-	}
-	if got.Handle == Handle(long) {
-		t.Fatalf("live handle was shared")
+func TestLongRoleStaysAValidHandle(t *testing.T) {
+	long := strings.Repeat("ab-", 20)
+	taken := map[Handle]bool{}
+	for i := 0; i < 120; i++ {
+		h := NameHandle(Claude, long, taken)
+		if _, err := ParseHandle(string(h)); err != nil {
+			t.Fatalf("handle %q is invalid: %v", h, err)
+		}
+		if !strings.HasPrefix(string(h), "claude-ab-") || taken[h] {
+			t.Fatalf("handle %q lost its role or was shared", h)
+		}
+		taken[h] = true
 	}
 }
 
