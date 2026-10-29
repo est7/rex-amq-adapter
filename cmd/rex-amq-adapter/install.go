@@ -30,7 +30,7 @@ func (k *kindList) Set(s string) error {
 func runInstall(cmd string, args []string) int {
 	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 	var only kindList
-	fs.Var(&only, "agent", "only this agent: claude or codex (repeatable)")
+	fs.Var(&only, "agent", "only this agent: claude, codex, agy, or pi (repeatable)")
 	dryRun := fs.Bool("dry-run", false, "report what would change without changing anything")
 	force := fs.Bool("force", false, "replace a rex-amq-adapter skill that setup did not install")
 	asJSON := fs.Bool("json", false, "print the result as JSON")

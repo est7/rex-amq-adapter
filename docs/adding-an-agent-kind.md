@@ -10,17 +10,18 @@ Read `docs/design.md` first: this document assumes its delivery channels
 
 ## 1. What the adapter needs from an agent
 
-The adapter performs five duties for every agent. Map each onto something the
+The adapter performs six duties for every agent. Map each onto something the
 new agent provides; a duty with no mapping is a gap to document, not to paper
 over.
 
 | Duty | Purpose | Provided today by |
 |---|---|---|
-| **Adopt** | Give the agent a handle, mailbox, record, and (unless in-process) a waker; tell it its identity | `SessionStart` hook; lazily by the first other hook (`announce` in `internal/app/hook.go`) |
+| **Adopt** | Give the agent a handle, mailbox, record, and (unless in-process) a waker; tell it its identity, its window-mates, and its crew and role briefing | `SessionStart` hook; lazily by the first other hook (`announce` in `internal/app/hook.go`) |
 | **Announce in-band** | Tell a *working* agent about new mail without typing into its terminal | Claude/Codex `PostToolUse` + `UserPromptSubmit`; agy `PreInvocation`; Pi extension `sendMessage` |
+| **Tell at the prompt** | Deliver window notes (an agent joined or left the tab) where the agent takes a prompt, never mid-turn and never by starting a turn | Claude/Codex `UserPromptSubmit`; agy `PreInvocation` (no prompt hook: every model call, an accepted exception); Pi `before_agent_start` |
 | **Hold the turn end** | Keep an agent that is about to stop with unread mail going, exactly once (loop guard) | Claude/Codex `Stop` + `stop_hook_active`; agy `Stop` (`decision: continue`, guard emulated in `normalize`); Pi `agent_before_settle` |
 | **Wake at rest** | Reach an *idle* agent | typed doorbell via `amq wake --inject-via` (needs OSC 7501 status + an input-box classifier); Pi: `sendMessage(…, {triggerTurn: true})` |
-| **Depart and supervise** | Retire the waker when the agent ends; revive a dead waker | `SessionEnd`; `collect` when there is none (agy); `Stop` runs `SuperviseWaker` |
+| **Depart and supervise** | Retire the waker when the agent ends and tell its window-mates; revive a dead waker | `SessionEnd`; `collect` when there is none (agy); `Stop` runs `SuperviseWaker` |
 
 ## 2. Probe the agent
 
@@ -134,7 +135,10 @@ Make the changes in this order; each step has tests before the next.
    `StopHookActive = true` (Stop then blocks only for never-announced mail, as
    for agy). Extend `HookInput.NormalStop` if its stop reasons differ.
 4. **Events** — if the agent's in-band event is new, add an `Event…` constant
-   in `internal/app/hook.go`, route it in `Hook`, and add its timeout to
+   in `internal/app/hook.go`, route it in `Hook` with the `announcing` that
+   matches how often it runs (`onPrompt`, `onModelCall`, `onToolCall`,
+   `onTurnEnd`: whether it delivers window notes, and whether it retries a
+   failed adoption at once or waits out the back-off), and add its timeout to
    `hookTimeouts` in `internal/install/install.go` (the adapter's budget is
    derived from it by `install.Budget`; never restate a timeout elsewhere).
 5. **Output** — `internal/app/hook.go` `Render`: one case per (kind, event)

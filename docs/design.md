@@ -54,7 +54,7 @@ uses them so that typing is the last resort, not the only channel.
 | Codex approval dialog | Program status `blocked` with no `kind`; the screen classifier reads the box as `typed`; both defer a doorbell | reproduced (independent review, hook-less Codex in a scratch tab) |
 | Antigravity (`agy` 1.4.2) program status | `app=antigravity`; `working` / `done` / `idle`, and `blocked kind=permission` with the command while it asks to run one | executed |
 | Antigravity hooks | `~/.gemini/config/hooks.json` (or a project's `.agents/hooks.json`) maps a hook name to events `SessionStart`, `PreInvocation` (before each model call), `PostToolUse`, `Stop`; camelCase JSON in and out; `injectSteps` adds context, Stop `{"decision":"continue","reason":…}` keeps the turn going; no `SessionEnd`, no `stop_hook_active`; Stop also runs on cancel and errors (`terminationReason`) | located (agy's bundled `agy-customizations/docs/hooks.md`); SessionStart, PreInvocation, and Stop executed |
-| Pi (0.84.2) extensions | A JavaScript or TypeScript file in `~/.pi/agent/extensions/` (or `pi -e <file>`) runs in Pi's process: `pi.on("session_start" / "agent_start" / "agent_before_settle" / "agent_settled" / "session_shutdown")`, `pi.sendMessage(msg, { triggerTurn })` starts a turn when idle, `{ deliverAs: "steer" }` lands in a running turn, `agent_before_settle` may return `{ entries, continue: true }`; `session_shutdown.reason` is `quit`, `reload`, `new`, `resume`, or `fork`; Pi reports OSC 7501 (`app=pi`) | located (bundled docs and `types.d.ts`); every path the adapter uses executed |
+| Pi (0.84.2) extensions | A JavaScript or TypeScript file in `~/.pi/agent/extensions/` (or `pi -e <file>`) runs in Pi's process: `pi.on("session_start" / "before_agent_start" / "agent_start" / "agent_before_settle" / "agent_settled" / "session_shutdown")`, `before_agent_start` may return a `message` that joins the starting run, `pi.sendMessage(msg, { triggerTurn })` starts a turn when idle, `{ deliverAs: "steer" }` lands in a running turn, `agent_before_settle` may return `{ entries, continue: true }`; `session_shutdown.reason` is `quit`, `reload`, `new`, `resume`, or `fork`; Pi reports OSC 7501 (`app=pi`) | located (bundled docs and `types.d.ts`); every path the adapter uses executed |
 | Antigravity input box | `>` under a rule, continued to the next rule (Claude's layout with another glyph); `ctrl+u` clears it; bracketed paste + CR submits | executed |
 
 Rex has no plugin runtime: no manifest, no lifecycle hooks, and `init.lua`
@@ -166,6 +166,7 @@ labels are left alone; Rex's own skill renames the session after the task.
   "server": "unix:///…/rex/server.sock",
   "session_id": "session:…",
   "block_id": "block:…",
+  "window_id": "window:…",
   "agent_pid": 13318,
   "agent_session_id": "01a1526a-…",
   "adopted_at": "2026-10-18T21:28:15Z",
@@ -358,10 +359,10 @@ with a timeout (both harnesses run hook commands through a shell). Outside Rex
 
 | Hook | Action | Installed timeout / adapter budget |
 |---|---|---|
-| `SessionStart` | Garbage-collect, adopt this block (handle, mailbox, record, waker), print identity and unread count as context | 5 s / 4.5 s |
-| `UserPromptSubmit`, `PostToolUse` | Announce new ids from the ledger; filesystem only, no subprocess (measured p50 6.8 ms, max 16.7 ms over 30 runs) | 3 s / 2.5 s |
+| `SessionStart` | Garbage-collect, adopt this block (handle, mailbox, record, waker, window-mates), print identity, unread count, window-mates, and the crew and role briefing as context | 5 s / 4.5 s |
+| `UserPromptSubmit`, `PostToolUse` | Announce new ids from the ledger; `UserPromptSubmit` also delivers queued window notes. Filesystem only, no subprocess, unless the agent must be adopted first (measured p50 6.8 ms, max 16.7 ms over 30 runs) | 3 s / 2.5 s |
 | `Stop` | Block once per section 3, then supervise the waker: one `amq wake check` (about 60 ms), and `Ensure` when it is dead or runs an older binary | 3 s / 2.5 s (supervision bounded to 1.5 s) |
-| `SessionEnd` | Retire the block's waker (identified by amq's saved target), set `departed_at` | 3 s / 2.5 s (Codex clamps to 3 s) |
+| `SessionEnd` | Retire the block's waker (identified by amq's saved target), set `departed_at`, drop the agent's undelivered window notes, and queue "left" notes for its window-mates | 3 s / 2.5 s (Codex clamps to 3 s) |
 
 **Antigravity** has no `SessionEnd` hook and no `stop_hook_active`. Its agents
 depart through collection, and its Stop hook blocks only for mail never
@@ -375,7 +376,9 @@ has nothing to say. Its peers start with `agy -i "<brief>"`.
 that holds no policy: it runs `rex-amq-adapter hook <event> --agent pi` with a
 JSON payload (`session_id`, `agent_pid` = `process.pid`, `stop_hook_active`) and
 reads `{"notice", "inbox"}` back. Events: `session-start` (adopt; returns the
-inbox path), `mail` (the watcher saw mail: announce new ids), `settle`
+inbox path), `user-prompt-submit` (`before_agent_start`: the notice rides
+along as a message of the starting run; window notes are delivered here),
+`mail` (the watcher saw mail: announce new ids), `settle`
 (`agent_before_settle`: the Stop policy, with the extension's per-run flag as
 `stop_hook_active`), and `session-end` (only when `session_shutdown.reason` is
 `quit`; reload, new, resume, and fork keep the process and pane). Pi is the
@@ -407,14 +410,18 @@ ended inside the minute, so it idled with no mailbox until the next prompt.
 
 **Adopt** (under the state lifecycle lock): resolve the block's foreground
 process and confirm it is the agent; choose the handle; `amq init --force` with
-the merged agent list under the root registry lock (port from herdr); ensure the
-waker with herdr's `check` → keep / start / repair / replace decision; write the
-record only after `amq wake check` reports the expected target live.
+the merged agent list under the root registry lock (port from herdr); write the
+record, with the block's window, before the waker starts, so whatever happens
+next departure and collection find it and retire the block's waker; ensure the
+waker with herdr's `check` → keep / start / repair / replace decision and wait
+until `amq wake check` reports the expected target live; then list the
+session's blocks to find the window-mates and queue join notes for them. The
+crew and role briefing is read after the lock is released.
 
 **Garbage collection** runs before every adoption, on `rex-amq-adapter who`,
 and on `rex-amq-adapter collect`: a live record whose block is gone or now runs
 a different foreground process is parked like a departure (waker retired,
-`departed_at` set); a departed record older than 7 days is deleted with its
+`departed_at` set, window-mates told it left); a departed record older than 7 days is deleted with its
 ledger and inject log, so the handle can be named afresh. A server that cannot
 be reached leaves its records alone, since absence cannot be proven. The
 departed record itself is the reservation: while it exists its handle is taken
@@ -448,7 +455,7 @@ over, so a repaired waker may self-upgrade its amq image.
 
 ## 7. Installation
 
-`rex-amq-adapter setup|status|remove [--agent claude|codex] [--dry-run] [--json]`,
+`rex-amq-adapter setup|status|remove [--agent claude|codex|agy|pi] [--dry-run] [--json]`,
 modeled on `rex skill`:
 
 - **Skill**: a stub `SKILL.md` in `~/.claude/skills/rex-amq-adapter` and
@@ -490,6 +497,9 @@ Overridable with `REX_AMQ_ADAPTER_HOME` (tests use a temporary directory).
 ├── inject/<handle>.jsonl     injector outcomes
 ├── logs/<handle>.log         amq wake stdout/stderr
 ├── logs/hooks.log            hook failures
+├── window/<handle>           window notes (joins, departures) queued for the next prompt
+├── pending/<block>           a doorbell written and not yet known to be submitted
+├── adopt-failed/<block>      when adopting the block's agent last failed (back-off)
 └── lifecycle.lock
 ```
 
@@ -501,10 +511,10 @@ internal/app/          entry points: observe, ask core, act (adopt, inject, anno
 internal/core/         pure policy: handle choice, inject decision, announce decision, window-mates, notice text
 internal/crew/         crew and role prompt lookup across project, user, and built-in layers; built-in prompts
 internal/fsutil/       flock and atomic replace
-internal/rex/          rex CLI client: process, program_status, capture, write, labels, whoami
+internal/rex/          rex CLI client: process, program_status, capture, write, labels, whoami, block list, new window
 internal/amq/          wake check/start/repair/retire, mailbox registration, inbox listing (ported)
 internal/screen/       input-box classifier (ported from herdr-amq-adapter)
-internal/store/        records, ledger, inject log, reservations, locks
+internal/store/        records, ledger, inject log, window notes, reservations, locks
 internal/install/      settings.json / hooks.json merge, stub skills
 internal/guide/        embedded agent guide
 ```

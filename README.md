@@ -146,8 +146,8 @@ rex-amq-adapter collect      # retire agents whose pane closed or process died
 
 | Moment | What happens |
 |---|---|
-| Agent's first hook runs | Handle chosen (`<kind>-<role>-<NN>`, the role from the pane label, else `<kind>-<NN>`), mailbox created, `amq wake` started, pane relabeled to the handle |
-| Agent exits | `SessionEnd` retires its waker; the handle stays reserved for its session for 7 days |
+| Agent's first hook runs | Handle chosen (`<kind>-<role>-<NN>`, the role from the pane label, else `<kind>-<NN>`), mailbox created, `amq wake` started, pane relabeled to the handle; it is told its window-mates and its crew and role briefing, and its window-mates are told it joined |
+| Agent exits | `SessionEnd` retires its waker and tells its window-mates it left; the handle stays reserved for its session for 7 days |
 | Agent crashes or its pane closes | The next adoption, `who`, or `collect` notices and does the same |
 | Session resumed (`claude --resume`, `codex resume`), in any pane | Gets its handle back, with the mail that arrived meanwhile |
 | New session in a used pane | Gets a new handle; the previous session keeps its own |
@@ -161,8 +161,9 @@ hooks that omit the field keep their existing behavior.
 ## State
 
 `~/.local/state/rex-amq-adapter/` (override with `REX_AMQ_ADAPTER_HOME`):
-`amq-root/` (the shared AMQ root), `bin/inject` (the wrapper wakers run), `records/` (one per adopted pane),
-`ledger/` (announced message ids), `inject/<handle>.jsonl` (every doorbell
+`amq-root/` (the shared AMQ root), `bin/inject` (the wrapper wakers run), `records/` (one per handle),
+`ledger/` (announced message ids), `window/` (join and departure notes waiting
+for an agent's next prompt), `inject/<handle>.jsonl` (every doorbell
 attempt and why it waited, trimmed past 1 MB; `who` shows the latest as LAST
 DOORBELL, e.g. `deferred box_not_found 23m` when the adapter cannot find an
 agent's input box), `logs/<handle>.log` (amq wake), `logs/hooks.log`
