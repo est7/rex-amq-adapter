@@ -54,8 +54,10 @@ rex-amq-adapter setup                       # skill + hooks for every agent foun
 
 Or with Go: `go install github.com/est7/rex-amq-adapter/cmd/rex-amq-adapter@latest`
 (install `amq` yourself). Under Homebrew the hooks run the stable
-`$(brew --prefix)/opt/rex-amq-adapter/bin` path, so `brew upgrade` needs no
-second `setup`. Wakers run a small wrapper in the state directory
+`$(brew --prefix)/opt/rex-amq-adapter/bin` path and the agent guide ships in
+the binary, so `brew upgrade` keeps both current. The Pi extension is a copy:
+when `rex-amq-adapter status` reports an item `outdated` after an upgrade, run
+`setup` again. Wakers run a small wrapper in the state directory
 (`bin/inject`) that execs the binary: amq refuses an `--inject-via` under a
 group-writable directory such as Homebrew's Cellar, and the wrapper's path
 survives the binary moving.
