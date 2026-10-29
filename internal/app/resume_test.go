@@ -147,3 +147,25 @@ func TestReadoptionOfTheSameSessionRepeatsNoIdentity(t *testing.T) {
 		t.Fatalf("a new session in the pane must learn its handle: notice %q, err %v", r.Notice, err)
 	}
 }
+
+// Antigravity names its session conversationId; re-adopting the same
+// conversation is the same session and repeats no identity either.
+func TestAgyReadoptionByConversationRepeatsNoIdentity(t *testing.T) {
+	e := realAmqEnv(t, &fakeTerm{state: "idle"})
+	ctx := context.Background()
+	loc := Location{Block: block}
+	if _, err := e.Hook(ctx, EventSessionStart, core.Agy, loc, HookInput{ConversationID: "c1"}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = e.Depart(ctx, loc, HookInput{}) })
+	depart(t, e, block, "c1")
+	r, err := e.Hook(ctx, EventPreInvocation, core.Agy, loc, HookInput{ConversationID: "c1"})
+	if err != nil || r.Notice != "" {
+		t.Fatalf("re-adopting the same conversation: notice %q, err %v", r.Notice, err)
+	}
+	depart(t, e, block, "c1")
+	r, err = e.Hook(ctx, EventPreInvocation, core.Agy, loc, HookInput{ConversationID: "c2"})
+	if err != nil || !strings.Contains(r.Notice, "you are agy-02") {
+		t.Fatalf("a new conversation must learn its handle: notice %q, err %v", r.Notice, err)
+	}
+}
