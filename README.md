@@ -95,6 +95,8 @@ Start agents in Rex terminals as usual. Then ask one to talk to another:
 Agents in one Rex tab know each other: an agent learns who is beside it when it
 starts, and the agents already there hear that it joined, or later left,
 with their next prompt. "Ask the one beside you" needs no handle.
+Other tabs and sessions are outside that awareness boundary: their agents
+do not appear in discovery or join/leave notices.
 
 A pane label names the agent's role, and a role with a prompt briefs the
 agent when it starts. A tab named after a crew adds the crew's team
@@ -136,11 +138,17 @@ rex split --split=right --focus=false --label reviewer -- codex --no-daemon "Rev
 Inspect state:
 
 ```bash
-rex-amq-adapter who          # running agents: handle, kind, unread, last doorbell, Rex session, tab, block
-rex-amq-adapter who --all    # also departed agents whose handle is reserved for a resume
-eval "$(rex-amq-adapter env)" && amq who --json    # inside an adopted pane
+rex-amq-adapter who          # running agents in this Rex tab, including yourself
+rex-amq-adapter who --all    # also this tab's departed agents reserved for a resume
 rex-amq-adapter collect      # retire agents whose pane closed or process died
 ```
+
+`who` resolves the caller's current tab from `REX_BLOCK`; it requires a Rex
+terminal and fails if the tab cannot be resolved. It uses the current layout,
+so moving a block changes which tab discovers it. `--all` includes departed
+agents last recorded in this tab, never agents from other tabs. A failure
+while reconciling the tab is a warning on stderr; the tab is still listed. Use
+the adapter's `who`, not the shared mailbox directory from `amq who`.
 
 ## Lifecycle
 
@@ -148,7 +156,7 @@ rex-amq-adapter collect      # retire agents whose pane closed or process died
 |---|---|
 | Agent's first hook runs | Handle chosen (`<kind>-<role>-<NN>`, the role from the pane label, else `<kind>-<NN>`), mailbox created, `amq wake` started, pane relabeled to the handle; it is told its window-mates and its crew and role briefing, and its window-mates are told it joined |
 | Agent exits | `SessionEnd` retires its waker and tells its window-mates it left; the handle stays reserved for its session for 7 days |
-| Agent crashes or its pane closes | The next adoption, `who`, or `collect` notices and does the same |
+| Agent crashes or its pane closes | The next adoption or `collect` notices and does the same, as does `who` in that tab |
 | Session resumed (`claude --resume`, `codex resume`), in any pane | Gets its handle back, with the mail that arrived meanwhile |
 | New session in a used pane | Gets a new handle; the previous session keeps its own |
 

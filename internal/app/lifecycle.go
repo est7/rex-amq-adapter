@@ -158,6 +158,12 @@ func (e Env) leaveWindow(ctx context.Context, rec store.Record) {
 // (an editor it opened) stays live, and a server that cannot be reached
 // leaves its records alone: absence cannot be proven.
 func (e Env) Collect(ctx context.Context) error {
+	return e.collect(ctx, func(store.Record) bool { return true })
+}
+
+// collect reconciles the records covers selects. A failed record does not
+// stop the rest.
+func (e Env) collect(ctx context.Context, covers func(store.Record) bool) error {
 	unlock, err := e.Store.LockLifecycle(ctx)
 	if err != nil {
 		return err
@@ -169,6 +175,9 @@ func (e Env) Collect(ctx context.Context) error {
 	}
 	var errs []error
 	for _, rec := range recs {
+		if !covers(rec) {
+			continue
+		}
 		if err := e.collectOne(ctx, rec); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", rec.Handle, err))
 		}

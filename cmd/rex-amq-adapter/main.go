@@ -27,8 +27,8 @@ const usage = `rex-amq-adapter: AMQ messaging between coding agents in Rex termi
 
 Agent and user commands:
   env                       print the AMQ identity of this Rex block (eval it)
-  who [--all]               list running agents and where their panes are;
-                            --all adds departed ones still reserved for a resume
+  who [--all]               list agents in this Rex tab only;
+                            --all adds this tab's departed agents reserved for a resume
   collect                   reconcile records with Rex now
   tab <crew> [--role R] [-c DIR] -- COMMAND...
                             open a Rex tab for a crew, its first pane labelled
@@ -242,36 +242,42 @@ func runEnv() int {
 
 func runWho(args []string) int {
 	fs := flag.NewFlagSet("who", flag.ContinueOnError)
-	all := fs.Bool("all", false, "also list departed agents still reserved for a resume")
+	all := fs.Bool("all", false, "also list this tab's departed agents still reserved for a resume")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	env, err := app.NewEnv("")
+	loc, err := app.Here()
+	if err != nil {
+		return fail(err)
+	}
+	env, err := app.NewEnv(loc.Server)
 	if err != nil {
 		return fail(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	window, err := env.FindWindow(ctx, loc.Block)
+	if err != nil {
+		return fail(err)
+	}
 	// Reconcile first, so an agent whose pane closed is listed as departed.
-	if err := env.Collect(ctx); err != nil {
+	// Collection is housekeeping; the listing must still happen.
+	if err := env.CollectWindow(ctx, window); err != nil {
 		fmt.Fprintf(os.Stderr, "rex-amq-adapter: collect: %v\n", err)
 	}
-	recs, err := env.Store.Records()
+	recs, err := env.WindowAgents(window)
 	if err != nil {
 		return fail(err)
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "HANDLE\tKIND\tSTATE\tUNREAD\tLAST DOORBELL\tSESSION\tTAB\tBLOCK")
+	fmt.Fprintln(tw, "HANDLE\tKIND\tSTATE\tUNREAD\tLAST DOORBELL\tBLOCK")
 	now := time.Now()
-	where := locator{env: env, sessions: map[string]sessionLookup{}}
 	for _, r := range recs {
 		if !r.Live() && !*all {
 			continue
 		}
-		state, session, tab := "live", "-", "-"
-		if r.Live() {
-			session, tab = where.find(ctx, r)
-		} else {
+		state := "live"
+		if !r.Live() {
 			state = "departed " + r.DepartedAt.Local().Format("01-02 15:04")
 		}
 		unread, err := amq.Unread(env.Paths.Root(), string(r.Handle))
@@ -286,48 +292,12 @@ func runWho(args []string) int {
 			}
 			last = core.LastDelivery(history, now)
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%s\t%s\t%s\n", r.Handle, r.Kind, state, len(unread), last, session, tab, r.BlockID)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%s\n", r.Handle, r.Kind, state, len(unread), last, r.BlockID)
 	}
 	if err := tw.Flush(); err != nil {
 		return fail(err)
 	}
 	return 0
-}
-
-// locator names the Rex session and tab a live agent's pane is in, asking
-// each server about each session once. "?" marks a pane Rex could not place.
-type locator struct {
-	env      app.Env
-	sessions map[string]sessionLookup
-}
-
-type sessionLookup struct {
-	s   rex.Session
-	err error
-}
-
-func (l locator) find(ctx context.Context, r store.Record) (session, tab string) {
-	term := l.env.RexOn(r.Server)
-	blk, err := term.InspectBlock(ctx, r.BlockID)
-	if err != nil {
-		return "?", "?"
-	}
-	key := r.Server + " " + blk.SessionID
-	got, ok := l.sessions[key]
-	if !ok {
-		got.s, got.err = term.InspectSession(ctx, blk.SessionID)
-		l.sessions[key] = got
-	}
-	if got.err != nil {
-		return "?", "?"
-	}
-	tab = "?"
-	for _, w := range got.s.Windows {
-		if w.ID == blk.WindowID {
-			tab = w.Label
-		}
-	}
-	return got.s.Label, tab
 }
 
 func runTab(args []string) int {

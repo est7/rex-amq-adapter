@@ -220,8 +220,24 @@ the terminal binding or announcement ledger, and that interactive startup,
 is not sufficient evidence.
 
 **Window-mates.** Agents on one task are placed side by side in a Rex window
-(tab), so the window is where an agent's mates are; the session and the server
-are left to `who`. Rex delivers no layout events, but the moment that matters,
+(tab), so the window is the awareness boundary. Discovery through `who` lists
+only agents in the caller's current tab, including itself. It resolves the
+server and the block's current window and session through Rex, then filters
+live records against the current layout; an unresolved tab is an error, never
+a global fallback. `--all` adds departed records last recorded in that tab; the
+record's window is written at adoption, so an agent moved since then is listed
+under the window it was adopted in once it departs.
+Its reconciliation covers that tab too: the agents the layout places there,
+plus agents recorded there whose block left the session's layout, which is
+closed or moved to another session (reconciliation finds which). A failure in
+another tab therefore does not reveal its agents through error output; the one
+exception is an agent recorded here that moved to another session, died, and
+could not be parked. Reconciliation is housekeeping: a failure, including a lifecycle lock that
+cannot be taken, is a warning on stderr and the tab is still listed, with the
+remaining records still reconciled. Only an unresolved tab fails `who`.
+The shared AMQ root is transport, not a discovery scope; the agent guide
+uses the adapter's `who` instead of the global `amq who` directory.
+Rex delivers no layout events, but the moment that matters,
 an agent appearing, is an adoption, so adoption does the work under the
 lifecycle lock, which also serialises agents that start together:
 
@@ -418,8 +434,9 @@ until `amq wake check` reports the expected target live; then list the
 session's blocks to find the window-mates and queue join notes for them. The
 crew and role briefing is read after the lock is released.
 
-**Garbage collection** runs before every adoption, on `rex-amq-adapter who`,
-and on `rex-amq-adapter collect`: a live record whose block is gone or now runs
+**Garbage collection** runs over every record before every adoption and on
+`rex-amq-adapter collect`; `rex-amq-adapter who` runs it only for the caller's
+tab. A live record whose block is gone or now runs
 a different foreground process is parked like a departure (waker retired,
 `departed_at` set, window-mates told it left); a departed record older than 7 days is deleted with its
 ledger and inject log, so the handle can be named afresh. A server that cannot

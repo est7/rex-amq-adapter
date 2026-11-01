@@ -6,8 +6,9 @@ AMQ under a handle of its kind, its role, and a number: `codex-reviewer-01`, or
 the pane; the adapter then relabels the pane with the handle. A resumed session
 gets its handle back, in any pane. The adapter owns one AMQ root per user,
 provisions your mailbox when your session starts, and tells you when mail
-arrives. This is plain AMQ: bare `amq` with your identity loaded is the whole
-protocol. `amq coop`, `--project` / `--session` routing, and AMQ skills written
+arrives. Use `rex-amq-adapter who` to discover agents in your tab and bare
+`amq` with your identity loaded to exchange mail. `amq coop`,
+`--project` / `--session` routing, and AMQ skills written
 for other environments do not apply here: in a Rex terminal ignore
 `herdr-amq-adapter`, `orch`, and `orch-worker`, and their identity files and
 commands.
@@ -17,7 +18,7 @@ commands.
 Each shell needs it; tool calls run in fresh shells:
 
 ```bash
-eval "$(rex-amq-adapter env)" && amq who --json
+eval "$(rex-amq-adapter env)" && rex-amq-adapter who
 ```
 
 That exports `AM_ROOT` and `AM_ME`. Notices from the adapter quote the absolute
@@ -55,7 +56,7 @@ Mid-task, finish the step you are on, then drain. Do not abandon the user's task
 for a message unless the message is part of that task.
 
 Loaded with no notice and no request (the user just invoked this skill): load
-your identity, drain once, run `amq who --json`, report what you found, and ask
+your identity, drain once, run `rex-amq-adapter who`, report what you found, and ask
 whom to message about what.
 
 ## Reply
@@ -73,11 +74,17 @@ eval "$(rex-amq-adapter env)" && amq reply --id <message-id> --body "<answer>"
 ## Find peers and send
 
 ```bash
-eval "$(rex-amq-adapter env)" && amq who --json
+rex-amq-adapter who      # agents in this Rex tab only, including yourself
 eval "$(rex-amq-adapter env)" && amq send --to codex-reviewer-01 --subject "<short subject>" --body "<request>"
-rex-amq-adapter who      # running agents: handle, kind, unread, last doorbell, Rex session, tab, block
-rex-amq-adapter who --all  # also departed agents whose handle is reserved for a resume
+rex-amq-adapter who --all  # also this tab's departed agents reserved for a resume
 ```
+
+The Rex tab is the awareness boundary. Only agents in other blocks of your
+tab are your peers; agents in another tab or session are not discovered or
+announced. If `who` lists only you, report that this tab has no peers. Never
+use `amq who` for discovery: its shared mailbox directory spans tabs. If
+the adapter cannot resolve your tab, report the error instead of using a
+global listing.
 
 `who` shows each agent's last doorbell and how long that outcome has held:
 `accepted 2m` means the agent was told; `deferred agent_working` for seconds is
@@ -94,7 +101,8 @@ your next prompt names each that joins or leaves ("… joined your Rex tab",
 "… left your Rex tab"). Stop waiting for a reply from an agent that left. When the
 user says "the one beside you", "旁边那个", or "隔壁", they mean these. Reach
 them with `amq send`, not with your harness's own agent messaging, which does
-not know AMQ handles. For anyone else, read `rex-amq-adapter who`.
+not know AMQ handles. Use `rex-amq-adapter who` for the current list of your
+tab's agents.
 
 Send only to a handle `rex-amq-adapter who` lists. A departed agent (`who
 --all`) keeps its handle for 7 days so its session can be resumed, and mail to
@@ -110,17 +118,21 @@ this needs is below; no other skill is required.
 1. **Pick a role** for the pane label: a word or two for what the peer does
    (`reviewer`, `test-writer`). The adapter names the peer
    `<kind>-<role>-<NN>` (`codex-reviewer-01`) and relabels the pane; read the
-   handle from `who` (step 4) or from the peer's first message. A role with a
+   handle from `who` (step 4) when the peer is in your tab; `who` cannot see a
+   peer in a new tab, session, or crew tab, so there the only source is the
+   peer's first message. A role with a
    prompt briefs the peer when it starts: `implementer`, `reviewer`, `qa`,
    `architect`, `writer`, and `editor` are built in, and
    `rex-amq-adapter crews` lists every role and crew available here. Prefer
    one of these names when it fits; the peer then knows its job and how to
    hand off before it reads your brief, so keep the brief to the task.
 2. **Write the brief** as the peer's first prompt: the task, the files or diff,
-   and that it should report back with
+   and, for a peer in your tab, that it should report back with
    `amq send --to <your handle>` (or `amq reply` to your mail). An agent is
    adopted when its first turn starts, and Codex does not start a turn on its
    own, so a peer launched without a prompt never gets a mailbox.
+   An independent task in another tab or session reports to its own user;
+   do not pass it the handles from your tab.
 3. **Place it** by how the work relates to yours. The user reads related
    agents side by side, so placement is part of the request:
 
@@ -147,10 +159,13 @@ this needs is below; no other skill is required.
    prefer a pane: the user can move it (`rex move`), and an unseen peer is easy
    to forget. Tell the user where the peer is ("opened reviewer in a pane on the
    right", "started codex in a new session `billing-api`").
-4. **Confirm adoption** before more mail: `rex-amq-adapter who` lists the peer
+4. **Confirm adoption** before more mail: `rex-amq-adapter who` lists a same-tab peer
    under its handle once the peer's first turn starts. A Codex peer whose hooks were never
    approved is never adopted: tell the user to approve them with `/hooks` in that
-   pane. Its report arrives as a notice.
+   pane. Its report arrives as a notice. An agent placed in another tab,
+   session, or crew tab is independent and does not appear in this tab's
+   discovery, so you cannot confirm its adoption or see that its Codex hooks
+   were never approved. When you start one, tell the user to check that pane.
 
 ## Rex commands
 
