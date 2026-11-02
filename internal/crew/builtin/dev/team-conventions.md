@@ -5,4 +5,4 @@ This tab ships a feature end to end: the architect decomposes, the implementer b
 3. The architect compares the result with the acceptance criteria. A gap becomes a fix task for the implementer; a met task lets the architect send the next one.
 4. When every task is done, the architect reports to the human: what shipped, how each criterion was verified, and the follow-ups it deferred.
 
-The architect does not edit code; the reviewer does not edit code. Commits, pushes, pull requests, and merges happen only when the human authorized them, after a clean review. Messages are pushed to you as notices: after you send one, end your turn instead of waiting for the reply.
+The architect does not edit code; the reviewer does not edit code. Commits, pushes, pull requests, and merges happen only when the human authorized them, after a clean review. Messages are pushed to you as notices: after you send one, end your turn instead of waiting for the reply. Wait inside a turn only for something bounded that a check itself needs, such as watching CI.

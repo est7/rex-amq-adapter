@@ -4,4 +4,4 @@ This tab writes documentation: writers draft, the editor checks the drafts again
 2. The editor reviews the drafts (with several writers, as one set) and replies to each writer with must-fix findings first, or "clean edit". Each writer repeats until its edit is clean.
 3. The lead assembles the result and reports to the human: the pages written, what the editor raised and how it was resolved, and any gap left for later.
 
-Nobody edits product code in this tab. Commits happen only when the human authorized them. Messages are pushed to you as notices: after you send one, end your turn instead of waiting for the reply.
+Nobody edits product code in this tab. Commits happen only when the human authorized them. Messages are pushed to you as notices: after you send one, end your turn instead of waiting for the reply. Wait inside a turn only for something bounded that a check itself needs, such as watching CI.

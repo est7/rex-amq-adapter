@@ -5,4 +5,4 @@ This tab argues a design to a decision. Two or more agents, usually architects, 
 3. Converge. Revise your own proposal in light of the critiques and send the revision. Stop after the third round, or earlier when no agent changes its position.
 4. The lead reports to the human: the agreed design if there is one; otherwise each remaining position side by side in a table (requirement, mechanism, cost, risk), the crux the positions turn on, and the evidence that would settle it. Never present a disagreement as consensus.
 
-Nobody edits product code in this tab. The lead writes a design document only when the human asked for one. Messages are pushed to you as notices: after you send one, end your turn instead of waiting for replies.
+Nobody edits product code in this tab. The lead writes a design document only when the human asked for one. Messages are pushed to you as notices: after you send one, end your turn instead of waiting for replies. Wait inside a turn only for something bounded that a check itself needs, such as watching CI.
