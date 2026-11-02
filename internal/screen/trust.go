@@ -46,8 +46,9 @@ func TrustScreen(kind, screen string) (string, bool) {
 	return "", false
 }
 
-// plainText drops escape sequences and joins runs of whitespace, so a
-// phrase drawn with styled or padded words still matches.
+// plainText drops escape sequences, keeps cursor-forward moves as whitespace,
+// and joins runs of whitespace, so a phrase drawn with styled or padded words
+// still matches.
 func plainText(screen string) string {
 	var b strings.Builder
 	space := false
@@ -58,6 +59,11 @@ func plainText(screen string) string {
 		case ch == 0x1b:
 			if i+1 < len(rs) && rs[i+1] == '[' {
 				for i += 2; i < len(rs) && (rs[i] < 0x40 || rs[i] > 0x7e); i++ {
+				}
+				// A VT capture draws the gaps between words as cursor moves.
+				if i < len(rs) && rs[i] == 'C' && !space {
+					b.WriteByte(' ')
+					space = true
 				}
 			} else {
 				i++

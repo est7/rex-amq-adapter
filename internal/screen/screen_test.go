@@ -86,12 +86,14 @@ func TestMenusAndMultiLineDraftsCountAsTyped(t *testing.T) {
 
 func TestEachHarnessTrustScreenIsRecognized(t *testing.T) {
 	for name, tc := range map[string]struct{ kind, screen, want string }{
-		"claude":       {"claude", "╭────╮\n│ Accessing workspace:\n│ Quick safety check: Is this a project you created or one you trust? (Like your own code)\n│ \x1b[1m❯\x1b[0m 1. Yes, I trust this folder\n│   2. No, exit\n╰────╯\n", "Quick safety check: Is this a project you created or one you trust"},
-		"codex folder": {"codex", "  Trust this folder? Codex can read, edit, and run files here.\n\x1b[1m›\x1b[0m 1. Trust and continue\n  2. Open restricted\n", "Trust this folder?"},
-		"codex hooks":  {"codex", "  Hooks need review\n  1 hook is new or changed.\n› 1. Review hooks\n  2. Trust all and continue\n", "Hooks need review"},
-		"old codex":    {"codex", "  Do you trust the contents of this directory?\n\x1b[1m›\x1b[0m 1. Yes, continue\n  2. No, quit\n", "Do you trust the contents of this directory?"},
-		"gemini":       {"gemini", "│ Do you trust this folder?\n│ ● 1. Trust folder (demo)\n", "Do you trust this folder?"},
-		"copilot":      {"copilot", "Confirm folder trust\n❯ 1. Yes\n", "Confirm folder trust"},
+		"claude": {"claude", "╭────╮\n│ Accessing workspace:\n│ Quick safety check: Is this a project you created or one you trust? (Like your own code)\n│ \x1b[1m❯\x1b[0m 1. Yes, I trust this folder\n│   2. No, exit\n╰────╯\n", "Quick safety check: Is this a project you created or one you trust"},
+		// Rex's VT capture draws a space between words as a cursor move.
+		"claude capture": {"", "\x1b[1CQuick\x1b[1Csafety\x1b[1Ccheck:\x1b[1CIs\x1b[1Cthis\x1b[1Ca\x1b[1Cproject\x1b[1Cyou\x1b[1Ccreated\x1b[1Cor\x1b[1Cone\x1b[1Cyou\x1b[1Ctrust?\r\n\x1b[1C\x1b[1m\x1b[38;2;153;153;153m❯\x1b[1CNo,\x1b[1Cexit\x1b[0m\r\n\x1b[3CYes,\x1b[1CI\x1b[1Ctrust\x1b[1Cthis\x1b[1Cfolder\r\n", "Quick safety check: Is this a project you created or one you trust"},
+		"codex folder":   {"codex", "  Trust this folder? Codex can read, edit, and run files here.\n\x1b[1m›\x1b[0m 1. Trust and continue\n  2. Open restricted\n", "Trust this folder?"},
+		"codex hooks":    {"codex", "  Hooks need review\n  1 hook is new or changed.\n› 1. Review hooks\n  2. Trust all and continue\n", "Hooks need review"},
+		"old codex":      {"codex", "  Do you trust the contents of this directory?\n\x1b[1m›\x1b[0m 1. Yes, continue\n  2. No, quit\n", "Do you trust the contents of this directory?"},
+		"gemini":         {"gemini", "│ Do you trust this folder?\n│ ● 1. Trust folder (demo)\n", "Do you trust this folder?"},
+		"copilot":        {"copilot", "Confirm folder trust\n❯ 1. Yes\n", "Confirm folder trust"},
 		// Styling and padding between words do not hide it.
 		"styled": {"kiro", "Hooks \x1b[1mneed\x1b[0m   review\n", "Hooks need review"},
 	} {
