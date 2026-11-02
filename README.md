@@ -123,7 +123,7 @@ yours to notice. Label a pane `goal` and the tab runs unattended instead. That
 agent owns the goal and decides how to recover: it is woken at once when a peer
 quits, crashes, or has its pane closed, with the session to resume, and it
 restarts or replaces the peer itself. If the goal agent is the one that goes, one
-peer is told to report and stop. A small watcher process runs for each goal
+peer is told to report and stop; with no peer left, nobody is told. A small watcher process runs for each goal
 agent and ends with it.
 
 ```bash

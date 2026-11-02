@@ -68,8 +68,8 @@ type Record struct {
 	SessionID string      `json:"session_id"`
 	BlockID   string      `json:"block_id"`
 	// WindowID is the Rex window (tab) the block was in when the agent was
-	// adopted. Departure tells the agents recorded in it; a block moved
-	// to another window later is not followed.
+	// adopted. Departure tells the agents recorded in it. Only a goal watcher
+	// follows a block moved to another window later.
 	WindowID       string    `json:"window_id,omitempty"`
 	AgentPID       int       `json:"agent_pid"`
 	AgentSessionID string    `json:"agent_session_id,omitempty"`

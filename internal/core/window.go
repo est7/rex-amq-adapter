@@ -78,6 +78,37 @@ func GoalAgentLeft(p Peer) (subject, body string) {
 	return fmt.Sprintf("%s left your Rex tab", p.Handle), fmt.Sprintf("%s, which owned this tab's goal, left your Rex tab: it quit, crashed, or its pane closed, and nobody is running the goal. Finish the step you are on, say in your final message that the goal stopped and where the work stands, then end your turn: do not take over the goal. It cannot read a reply to this mail.", p.Handle)
 }
 
+// DepartureMail says who hears at once that left departed: every goal agent
+// among others, the other live agents in its window, or, when left owned the
+// goal, one peer to report that. to is empty when no goal agent is involved.
+func DepartureMail(left Peer, session string, others []Peer) (to []Handle, subject, body string) {
+	for _, p := range others {
+		if IsGoalAgent(p.Handle) {
+			to = append(to, p.Handle)
+		}
+	}
+	switch {
+	case len(to) > 0:
+		subject, body = GoalPeerLeft(left, session)
+	case IsGoalAgent(left.Handle) && len(others) > 0:
+		to = []Handle{reportingPeer(others).Handle}
+		subject, body = GoalAgentLeft(left)
+	}
+	return to, subject, body
+}
+
+// reportingPeer picks who reports that a goal stopped: the first agent whose
+// turn end reaches the user's notification hooks, which only Claude Code and
+// Codex have, else the first. peers is not empty.
+func reportingPeer(peers []Peer) Peer {
+	for _, p := range peers {
+		if p.Kind == Claude || p.Kind == Codex {
+			return p
+		}
+	}
+	return peers[0]
+}
+
 // Briefing is what an agent's crew and role ask of it. A text left empty
 // was not found; a path is set when the text was read from a file.
 type Briefing struct {

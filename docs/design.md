@@ -252,7 +252,7 @@ lifecycle lock, which also serialises agents that start together:
   replacement in the block) queues "`<handle>` left your Rex tab" for each
   live agent recorded in the same window. The record keeps the window its
   block was in at adoption (`window_id`), because a crashed agent's block is
-  already gone when collection finds it.
+  already gone when collection finds it; only a goal watcher updates it.
 - A queued note is delivered once, at the mate's next prompt:
   `UserPromptSubmit` (Claude Code, Codex), Pi's `before_agent_start`, or
   Antigravity's next `PreInvocation`. Tool hooks, Stop, and Pi's mail watcher
@@ -325,10 +325,15 @@ The crew file stays out of the role lookup, and the prompt is `roles/goal.md`.)
   permission dialog.
 - The adapter cannot tell who closed a pane, so a goal agent that closes its own
   peer hears about it too, which costs it one short turn.
-- Windows come from records, as for any departure, so an agent moved since its
-  adoption is announced to the window it was adopted in. A surviving agent
-  that is not Claude Code or Codex has no notification hook, so its report does
-  not reach the user's phone.
+- Windows come from records, as for any departure, and a crashed agent's block
+  can no longer be placed, so the watcher writes each block's current window
+  into its record on every look. An agent moved into a goal agent's tab
+  is announced there, and one moved out is not. Its session's records follow
+  the layout; a block moved to another session keeps its record, and a tab
+  without a watcher keeps the adoption window as before.
+- The peer told to report is the first Claude Code or Codex agent when there is
+  one: only those have the notification hook that carries its last message to
+  the user. A tab left with neither, or with no agent at all, reaches nobody.
 
 Evidence (**reproduced**, `internal/e2e/goal_test.go`, scripted agents on a real
 Rex server and real `amq wake`): an idle goal agent hears a peer quit, crash, or

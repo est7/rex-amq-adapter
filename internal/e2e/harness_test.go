@@ -275,8 +275,9 @@ func (w *world) dump() string {
 
 // tab is one Rex tab with its first agent running.
 type tab struct {
-	w     *world
-	first string
+	w       *world
+	session string
+	first   string
 }
 
 func firstBlock(w *world, out []byte) string {
@@ -300,7 +301,7 @@ func (w *world) newTab(name, role string) *tab {
 		w.t.Fatal(err)
 	}
 	w.lastBlock = firstBlock(w, []byte(w.rex(w.start("run", name, role, "-s", doc.Session)...)))
-	return &tab{w: w, first: w.lastBlock}
+	return &tab{w: w, session: doc.Session, first: w.lastBlock}
 }
 
 // start is the rex command line that puts an agent in a new block. Rex would
@@ -314,6 +315,18 @@ func (w *world) start(verb, name, role string, where ...string) []string {
 func (tb *tab) split(name, role string) string {
 	tb.w.t.Helper()
 	return firstBlock(tb.w, []byte(tb.w.rex(tb.w.start("split", name, role, "-b", tb.first, "--split=right")...)))
+}
+
+// otherTab starts an agent called name in a new tab of the same session.
+func (tb *tab) otherTab(name, role string) string {
+	tb.w.t.Helper()
+	return firstBlock(tb.w, []byte(tb.w.rex(tb.w.start("run", name, role, "-s", tb.session)...)))
+}
+
+// move puts block beside anchor, in anchor's tab.
+func (tb *tab) move(block, anchor string) {
+	tb.w.t.Helper()
+	tb.w.rex("move", block, "right", anchor, "-s", tb.session)
 }
 
 func (w *world) ready(name string) {

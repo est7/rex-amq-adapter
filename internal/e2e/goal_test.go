@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,7 +10,10 @@ import (
 	"time"
 )
 
-const goalHears = 15 * time.Second // the watcher's tick and a doorbell
+const (
+	goalHears   = 15 * time.Second // the watcher's tick and a doorbell
+	watcherTick = 6 * time.Second
+)
 
 // goalTab starts a goal agent and a reviewer beside it.
 func goalTab(w *world) (tb *tab, reviewer string) {
@@ -156,5 +160,52 @@ func TestAGoalAgentDoesNotHearOfItsOwnTabsAfterItLeaves(t *testing.T) {
 	time.Sleep(2 * time.Second)
 	if w.doorbell("lead") {
 		t.Fatal("a departed goal agent got a doorbell")
+	}
+}
+
+// recordedWindow is the window handle's record names.
+func (w *world) recordedWindow(handle string) string {
+	w.t.Helper()
+	b, err := os.ReadFile(filepath.Join(w.home, "records", handle+".json"))
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	var rec struct {
+		Window string `json:"window_id"`
+	}
+	if err := json.Unmarshal(b, &rec); err != nil {
+		w.t.Fatal(err)
+	}
+	return rec.Window
+}
+
+func TestAGoalAgentHearsAPeerMovedIntoItsTab(t *testing.T) {
+	w := newWorld(t)
+	tb := w.newTab("lead", "goal")
+	w.ready("lead")
+	peer := tb.otherTab("rev", "reviewer")
+	w.ready("rev")
+	tb.move(peer, tb.first)
+	w.until("the watcher to see the move", goalHears, func() bool {
+		return w.recordedWindow("claude-reviewer-01") == w.recordedWindow("claude-goal-01")
+	})
+	w.typeInto(peer, "crash")
+	w.until("the goal agent to be woken", goalHears, func() bool { return w.doorbell("lead") })
+}
+
+func TestAGoalAgentDoesNotHearAPeerMovedOutOfItsTab(t *testing.T) {
+	w := newWorld(t)
+	tb, reviewer := goalTab(w)
+	away := tb.otherTab("away", "implementer")
+	w.ready("away")
+	tb.move(reviewer, away)
+	w.until("the watcher to see the move", goalHears, func() bool {
+		return w.recordedWindow("claude-reviewer-01") == w.recordedWindow("claude-implementer-01")
+	})
+	w.typeInto(reviewer, "quit")
+	w.until("the peer to depart", goalHears, func() bool { return strings.Contains(w.got("rev"), "quit") })
+	time.Sleep(watcherTick)
+	if n := w.unread("claude-goal-01"); n != 0 || w.doorbell("lead") {
+		t.Fatalf("the goal agent heard of an agent in another tab: %d unread\n%s", n, w.dump())
 	}
 }

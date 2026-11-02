@@ -42,8 +42,9 @@ func (e Env) FindWindow(ctx context.Context, block string) (Window, error) {
 	return Window{server: srv.Endpoint, id: blk.WindowID, windowOf: windowOf}, nil
 }
 
-// recorded reports whether r's agent was last recorded here. The record
-// keeps the window of its adoption, so a moved agent's is out of date.
+// recorded reports whether r's agent was last recorded here. Outside a goal
+// watcher's session the record keeps the window of its adoption, so a moved
+// agent's is out of date.
 func (w Window) recorded(r store.Record) bool {
 	return r.Server == w.server && r.WindowID == w.id
 }

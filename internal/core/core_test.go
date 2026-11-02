@@ -1,6 +1,7 @@
 package core
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -360,5 +361,43 @@ func TestDecideStartup(t *testing.T) {
 		if done != c.done || got.Status != c.want {
 			t.Errorf("%s: got %q %v, want %q %v", c.name, got.Status, done, c.want, c.done)
 		}
+	}
+}
+
+func TestDepartureMailGoesToTheGoalAgentOrItsReportingPeer(t *testing.T) {
+	goal := Peer{Handle: "claude-goal-01", Kind: Claude}
+	goal2 := Peer{Handle: "codex-goal-01", Kind: Codex}
+	pi := Peer{Handle: "pi-01", Kind: Pi}
+	agy := Peer{Handle: "agy-01", Kind: Agy}
+	claude := Peer{Handle: "claude-01", Kind: Claude}
+	codex := Peer{Handle: "codex-01", Kind: Codex}
+	for name, tc := range map[string]struct {
+		left    Peer
+		others  []Peer
+		to      []Handle
+		subject string
+	}{
+		"a peer leaves":            {claude, []Peer{pi, goal}, []Handle{goal.Handle}, "claude-01 left your Rex tab"},
+		"every goal agent hears":   {claude, []Peer{goal, goal2}, []Handle{goal.Handle, goal2.Handle}, "claude-01 left your Rex tab"},
+		"no goal agent":            {claude, []Peer{pi, codex}, nil, ""},
+		"goal leaves: prefers one": {goal, []Peer{pi, claude}, []Handle{claude.Handle}, "claude-goal-01 left your Rex tab"},
+		"goal leaves: codex too":   {goal, []Peer{agy, pi, codex}, []Handle{codex.Handle}, "claude-goal-01 left your Rex tab"},
+		"goal leaves: keeps first": {goal, []Peer{codex, claude}, []Handle{codex.Handle}, "claude-goal-01 left your Rex tab"},
+		"goal leaves: none notify": {goal, []Peer{agy, pi}, []Handle{agy.Handle}, "claude-goal-01 left your Rex tab"},
+		"goal leaves alone":        {goal, nil, nil, ""},
+	} {
+		to, subject, body := DepartureMail(tc.left, "s", tc.others)
+		if !slices.Equal(to, tc.to) || subject != tc.subject {
+			t.Errorf("%s: got %v %q want %v %q", name, to, subject, tc.to, tc.subject)
+		}
+		if (len(to) > 0) != (body != "") {
+			t.Errorf("%s: body %q for %v", name, body, to)
+		}
+	}
+	if _, _, body := DepartureMail(goal, "s", []Peer{codex}); !strings.Contains(body, "do not take over") {
+		t.Errorf("a peer is not told to stay out of the goal: %q", body)
+	}
+	if _, _, body := DepartureMail(codex, "sess-1", []Peer{goal}); !strings.Contains(body, "sess-1") {
+		t.Errorf("the goal agent is not told the session: %q", body)
 	}
 }
