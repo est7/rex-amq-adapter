@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/est7/rex-amq-adapter/internal/store"
 )
@@ -67,6 +68,30 @@ func (w Window) reconciles(r store.Record) bool {
 // CollectWindow reconciles records with Rex as Collect does, for w only.
 func (e Env) CollectWindow(ctx context.Context, w Window) error {
 	return e.collect(ctx, w.reconciles)
+}
+
+// SuperviseWindow brings back the dead wakers of the live agents w holds. The
+// Stop hook cannot: an idle agent runs no hooks, so mail to it would wait unseen
+// until the agent's next turn. A peer whose mail goes unanswered runs who.
+func (e Env) SuperviseWindow(ctx context.Context, w Window) error {
+	unlock, err := e.Store.LockLifecycle(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	recs, err := e.Store.Records()
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, r := range recs {
+		if r.Live() && w.holds(r) {
+			if err := e.ensureWaker(ctx, r); err != nil {
+				errs = append(errs, fmt.Errorf("%s: %w", r.Handle, err))
+			}
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // WindowAgents returns the records w holds, departed ones included.

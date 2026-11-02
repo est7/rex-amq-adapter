@@ -246,3 +246,9 @@ func ResolveBin() (string, error) {
 	}
 	return "", errors.New("amq not found on PATH, ~/.local/bin, or Homebrew; set REX_AMQ_AMQ")
 }
+
+// Send mails body to to, as from.
+func Send(ctx context.Context, amqBin, root, from, to, subject, body string) error {
+	_, err := runAmq(ctx, amqBin, "send", "--root", root, "--me", from, "--to", to, "--kind", "status", "--priority", "normal", "--subject", subject, "--body", body)
+	return err
+}

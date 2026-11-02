@@ -38,7 +38,7 @@ uses them so that typing is the last resort, not the only channel.
 |---|---|---|
 | OSC 7501 program status, read with `rex block call -b B program_status` | The agent's own report of `idle` / `working` / `done` / `blocked` (+ `kind`, `msg`, `owner.pid`) | executed: Claude reports `app=claude-code`, Codex `app=codex`; Claude ends a turn in `done`, Codex in `idle`; Claude reports `blocked kind=question` with the question text while AskUserQuestion is open |
 | `rex block call -b B process` | Foreground pid, name, argv, cwd of the block | executed |
-| `rex capture --format=vt` | Screen with SGR styling | executed: herdr's `screen.Check` classifies it unchanged (`empty` for placeholder text, `typed` for a draft) |
+| `rex capture --format=vt` | Screen with SGR styling; a gap between words is a cursor-forward move (`ESC[1C`), not a space | executed: herdr's `screen.Check` classifies it unchanged (`empty` for placeholder text, `typed` for a draft); text matching must read the moves as gaps (`screen.TrustScreen`) |
 | `rex block call -b B write {"data":…}` / `rex send` | Raw bytes to the pty; no bracketed paste is added | executed |
 | `REX_SESSION`, `REX_BLOCK`, `REX_SERVER` | Set in every Rex terminal; hooks and tools must inherit the pane's environment | executed; Codex shared-server exception below |
 | Codex `--no-daemon` | Keeps hooks and tools under the terminal-launched Codex process | executed with Codex 0.164.0 (2026-10-25): the shared server was parented by launchd and tool shells lacked `REX_BLOCK` / `REX_SESSION`; a separate Rex probe with `--no-daemon` inherited both, tools were descendants of its Codex process, and adapter `env` returned the assigned handle. This probe verified identity, not a full AMQ round trip |
@@ -298,6 +298,43 @@ both with its identity, at adoption:
   `session.new_window` call; `crews` lists what an agent in a directory
   would find.
 
+**Goal agents.** A tab normally has the user present: they see an agent stop,
+so the adapter adds nothing. An agent in a pane labelled `goal` changes that.
+It owns a goal and runs it unattended, so the tab needs no setting: a live goal
+agent is the mode, and it is also who to tell. (Runner's `goal.md` is a mission
+template and implies nothing about attendance; this meaning is the adapter's.
+The crew file stays out of the role lookup, and the prompt is `roles/goal.md`.)
+
+- Departure (`park`) also mails every live goal agent in the record's window,
+  naming the agent and the session to resume. A window note waits for a prompt,
+  and an idle goal agent has none coming, so this is mail: the doorbell wakes it,
+  and a working one hears through its hooks. Recovery is the goal agent's
+  decision; the adapter restarts nothing.
+- If the goal agent itself departs, the first other agent in the window is
+  mailed to report and stop, without taking over. Its turn ending reaches the
+  user through their notification hooks.
+- A hook-less departure (a crash, and possibly a closed pane) has nothing to
+  react to, so each goal agent has a watcher: a detached
+  `__internal watch <server> <handle>` that reconciles its window every 5 s. One
+  `flock` per handle keeps it single; adoption and `Stop` start it when missing.
+  It exits when the goal agent is no longer live, or after a minute of failed
+  looks, since without a Rex server it would otherwise run forever. It costs one
+  process and only goal tabs pay it.
+- Permission and question dialogs are not events here: the user's notification
+  hooks already report them, and a goal agent must not answer a peer's
+  permission dialog.
+- The adapter cannot tell who closed a pane, so a goal agent that closes its own
+  peer hears about it too, which costs it one short turn.
+- Windows come from records, as for any departure, so an agent moved since its
+  adoption is announced to the window it was adopted in. A surviving agent
+  that is not Claude Code or Codex has no notification hook, so its report does
+  not reach the user's phone.
+
+Evidence (**reproduced**, `internal/e2e/goal_test.go`, scripted agents on a real
+Rex server and real `amq wake`): an idle goal agent hears a peer quit, crash, or
+have its pane closed; a peer hears the goal agent crash; a tab without a goal
+agent stays silent; the watcher ends with its agent. Real agents: section 11.
+
 Evidence (2026-10-29, **reproduced**): `tab pair --role implementer` opened a
 Claude, and a Codex was split beside it with `--label reviewer`. Asked what
 they had been told, the implementer named its role, the crew, its lead, and
@@ -341,8 +378,10 @@ A doorbell deferred again and again is the one delivery failure that is
 otherwise silent: mail waits durably, the sender waits for a reply, and
 nothing reports that, say, an agent update changed its input box so every
 attempt ends `box_not_found`. `who` therefore shows each agent's latest
-outcome and how long the same outcome has repeated (`core.LastDelivery`), and
-the agent guide tells a sender to read it before writing again. The log is cut
+outcome and how long the same outcome has repeated (`core.DeliveryStatus`), and
+the agent guide tells a sender to read it before writing again. With no unread
+mail it shows `-` unless the last doorbell was accepted: a deferral that mail
+has since overtaken is history, not a stuck delivery. The log is cut
 to its newest entries (at most 1000, half of 1 MB) once it passes 1 MB.
 
 The notice is amq's payload plus
@@ -377,8 +416,8 @@ with a timeout (both harnesses run hook commands through a shell). Outside Rex
 |---|---|---|
 | `SessionStart` | Garbage-collect, adopt this block (handle, mailbox, record, waker, window-mates), print identity, unread count, window-mates, and the crew and role briefing as context | 5 s / 4.5 s |
 | `UserPromptSubmit`, `PostToolUse` | Announce new ids from the ledger; `UserPromptSubmit` also delivers queued window notes. Filesystem only, no subprocess, unless the agent must be adopted first (measured p50 6.8 ms, max 16.7 ms over 30 runs) | 3 s / 2.5 s |
-| `Stop` | Block once per section 3, then supervise the waker: one `amq wake check` (about 60 ms), and `Ensure` when it is dead or runs an older binary | 3 s / 2.5 s (supervision bounded to 1.5 s) |
-| `SessionEnd` | Retire the block's waker (identified by amq's saved target), set `departed_at`, drop the agent's undelivered window notes, and queue "left" notes for its window-mates | 3 s / 2.5 s (Codex clamps to 3 s) |
+| `Stop` | Block once per section 3, then supervise the waker: one `amq wake check` (about 60 ms), and `Ensure` when it is dead or runs an older binary; a goal agent's missing watcher is started here too | 3 s / 2.5 s (supervision bounded to 1.5 s) |
+| `SessionEnd` | Retire the block's waker (identified by amq's saved target), set `departed_at`, drop the agent's undelivered window notes, queue "left" notes for its window-mates, and mail the goal agent if the window has one | 3 s / 2.5 s (Codex clamps to 3 s) |
 
 **Antigravity** has no `SessionEnd` hook and no `stop_hook_active`. Its agents
 depart through collection, and its Stop hook blocks only for mail never
@@ -424,6 +463,15 @@ lock, and a `SessionStart` can run out of time: in a crew launch (2026-10-29,
 **reproduced**) Codex's start was killed mid-adoption and its first turn
 ended inside the minute, so it idled with no mailbox until the next prompt.
 
+**Waiting for a started peer.** `rex-amq-adapter await <block>` polls every
+250 ms and prints one JSON line: `adopted` with the handle, `trust_screen`
+(a folder-trust dialog on the block's screen), `blocked` (the program reports
+it), `exited` (the block is gone), or `timeout` (30 s unless `--timeout`). It
+names a block, not a window, so it also works for a peer placed in another tab.
+The decision is `core.DecideStartup`. `adopted` means a live record exists: the
+mailbox is ready, so mail is safe, but the waker may still be starting and the
+peer may not have read its brief.
+
 **Adopt** (under the state lifecycle lock): resolve the block's foreground
 process and confirm it is the agent; choose the handle; `amq init --force` with
 the merged agent list under the root registry lock (port from herdr); write the
@@ -435,8 +483,8 @@ session's blocks to find the window-mates and queue join notes for them. The
 crew and role briefing is read after the lock is released.
 
 **Garbage collection** runs over every record before every adoption and on
-`rex-amq-adapter collect`; `rex-amq-adapter who` runs it only for the caller's
-tab. A live record whose block is gone or now runs
+`rex-amq-adapter collect`; `rex-amq-adapter who` and a goal watcher run it only
+for their tab. A live record whose block is gone or now runs
 a different foreground process is parked like a departure (waker retired,
 `departed_at` set, window-mates told it left); a departed record older than 7 days is deleted with its
 ledger and inject log, so the handle can be named afresh. A server that cannot
@@ -456,8 +504,10 @@ reports its death. Every `Stop` (the moment an agent starts depending on its
 waker) checks it and brings back a dead one; an independent review killed a
 waker, delivered mail to the idle agent, and saw nothing ring until this was
 added (executed). A waker that dies mid-turn is revived at that turn's end; one
-that dies while the agent sits idle for a long time is revived at the agent's
-next turn or session start. The hook timeouts and the adapter's budgets come
+that dies while the agent sits idle is revived at its next turn or session
+start, or by `who` in its tab, which a sender runs when a peer stays silent
+(reproduced in `internal/e2e`). Global collection does not check wakers: it runs
+inside every adoption's hook budget. The hook timeouts and the adapter's budgets come
 from one table (`install.hookTimeouts`).
 
 **The injector depends on no environment.** A dead waker revived with
@@ -517,14 +567,15 @@ Overridable with `REX_AMQ_ADAPTER_HOME` (tests use a temporary directory).
 ├── window/<handle>           window notes (joins, departures) queued for the next prompt
 ├── pending/<block>           a doorbell written and not yet known to be submitted
 ├── adopt-failed/<block>      when adopting the block's agent last failed (back-off)
+├── watch/<handle>.lock       held by a goal agent's watcher
 └── lifecycle.lock
 ```
 
 ## 9. Module layout
 
 ```
-cmd/rex-amq-adapter/   subcommands: hook, inject, env, who, collect, crews, tab, setup, status, remove, __internal, version
-internal/app/          entry points: observe, ask core, act (adopt, inject, announce, depart, collect)
+cmd/rex-amq-adapter/   subcommands: hook, inject, env, who, await, collect, crews, tab, setup, status, remove, __internal, version
+internal/app/          entry points: observe, ask core, act (adopt, inject, announce, depart, collect, discovery, await, goal)
 internal/core/         pure policy: handle choice, inject decision, announce decision, window-mates, notice text
 internal/crew/         crew and role prompt lookup across project, user, and built-in layers; built-in prompts
 internal/fsutil/       flock and atomic replace
@@ -532,14 +583,18 @@ internal/rex/          rex CLI client: process, program_status, capture, write, 
 internal/amq/          wake check/start/repair/retire, mailbox registration, inbox listing (ported)
 internal/screen/       input-box classifier (ported from herdr-amq-adapter)
 internal/store/        records, ledger, inject log, window notes, reservations, locks
+internal/e2e/          scripted agents on a private Rex server and real amq wake
 internal/install/      settings.json / hooks.json merge, stub skills
 internal/guide/        embedded agent guide
 ```
 
 The core takes observations and returns decisions; `rex/`, `amq/`, and `store/`
 are thin shells. Tests cover the core directly and the shells against fakes and
-temporary directories. An end-to-end script drives real agents in scratch Rex
-tabs.
+temporary directories. `internal/e2e` runs the real binary against a private Rex
+server and real `amq wake`, with scripted agents that report OSC 7501 and draw
+an input box, so a dead waker or a crash can be injected without a model. It
+skips under `go test -short` or when `rex` or `amq` is missing. An end-to-end
+script drives real agents in scratch Rex tabs.
 
 Connecting a further agent follows [adding-an-agent-kind.md](adding-an-agent-kind.md).
 
@@ -586,6 +641,21 @@ file written by `setup`, Codex hooks passed inline with `-c`.
 | Pi `/quit` | record departed |
 | Mail to idle Pi with an unsent draft in its editor | delivered with a turn of its own; the draft stayed in the editor |
 
+Goal agents, run on 2026-11-01 with real Claude Code 2.1.314 (Sonnet goal, Haiku
+peers), Codex 0.166.0, and amq 0.120.0, on a private Rex server started with a
+fake `HOME` so that every agent and peer ran this build's hooks and guide:
+
+| Scenario | Observed |
+|---|---|
+| Claude started in an untrusted folder | `await` reported `trust_screen`; once the dialog was answered, `adopted` in 2 s |
+| Goal agent launched with `tab pair --role goal` | `claude-goal-01`, or `codex-goal-01` once its first turn started; watcher running in both cases |
+| Goal agent starts a Codex peer whose hooks need review | it left the dialog to the user and said so; it resumed on its own after they were approved |
+| Claude goal, Codex peer killed with SIGKILL mid-`sleep` | parked in 3.7 s, doorbell `accepted` in 4.0 s; the goal agent counted a failed attempt, resumed the same session in a new pane, got its handle back, finished, verified the file, closed the peer |
+| Codex goal, Claude peer killed with SIGKILL mid-`sleep` | parked in 2.1 s, doorbell `accepted` in 2.7 s; same recovery, and it ran `await` on each peer |
+| Goal agent closes its finished peer | one more doorbell and a turn of 4 s; no loop |
+| Goal agent killed with SIGKILL, idle Claude peer beside it | parked within 1 s; the peer drained, said it would not take over, and ended its turn; watcher exited |
+| Tab without a goal agent, one agent killed | no mail, no doorbell, no watcher; the survivor has one window note waiting for its next prompt |
+
 ## 12. Pre-mortem
 
 | Failure | Guard |
@@ -603,5 +673,5 @@ file written by `setup`, Codex hooks passed inline with `-c`.
 | A handle names the wrong harness (`codex-…` running Claude) | The kind is never read from a label; a pane that changes kind keeps only its role |
 | Two agents claim one handle | Adoption holds the lifecycle lock; mailbox registration holds the root registry lock |
 | Installing hooks invalidates Codex trust | Append-only placement |
-| A waker dies and an idle agent never hears of mail | Every `Stop` checks the waker and revives a dead one; nothing else in Rex would notice (executed by the independent review, fixed and tested) |
+| A waker dies and an idle agent never hears of mail | Every `Stop` checks the waker and revives a dead one, and `who` does so for its tab when a sender checks on a silent peer; nothing in Rex would notice (executed by the independent review, fixed and tested) |
 | Pi's notice is lost after the ledger marks it announced | The ledger is written before `pi.sendMessage` returns; if delivery fails there, an idle Pi is reminded after 5 minutes, and `agent_before_settle` reminds at the end of the next run. While a Pi dialog is open (`ui_prompt_start` … `ui_prompt_end`) the extension asks the adapter nothing, so no mail is marked announced; it delivers when the dialog closes (not yet exercised end to end) |

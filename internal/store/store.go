@@ -214,6 +214,11 @@ func (s Store) removeRecordFiles(h core.Handle, keep string) error {
 	return nil
 }
 
+// LockWatch is held by h's goal watcher, so there is at most one.
+func (s Store) LockWatch(ctx context.Context, h core.Handle) (func(), error) {
+	return fsutil.Flock(ctx, filepath.Join(s.P.Home, "watch", string(h)+".lock"))
+}
+
 // LockLifecycle serialises adoption, departure, and collection.
 func (s Store) LockLifecycle(ctx context.Context) (func(), error) {
 	return fsutil.Flock(ctx, s.P.lifecycle())

@@ -71,13 +71,24 @@ func (e Env) SuperviseWaker(ctx context.Context, loc Location) error {
 	}
 	defer unlock()
 	rec, ok, err := e.Store.Record(loc.Block)
-	if err != nil || !ok || !rec.Live() || rec.Kind.InProcess() {
+	if err != nil || !ok || !rec.Live() {
 		return err
+	}
+	if err := e.ensureGoalWatcher(rec); err != nil {
+		fmt.Fprintf(Diagnostics, "%v\n", err)
+	}
+	return e.ensureWaker(ctx, rec)
+}
+
+// ensureWaker brings back rec's waker if it died. An in-process agent has none.
+func (e Env) ensureWaker(ctx context.Context, rec store.Record) error {
+	if rec.Kind.InProcess() {
+		return nil
 	}
 	if err := e.prepareInjector(); err != nil {
 		return err
 	}
-	_, _, err = amq.Ensure(ctx, e.AmqBin, e.waker(rec), e.Paths.Logs())
+	_, _, err := amq.Ensure(ctx, e.AmqBin, e.waker(rec), e.Paths.Logs())
 	return err
 }
 
@@ -116,6 +127,7 @@ func (e Env) park(ctx context.Context, rec store.Record) error {
 		return err
 	}
 	e.leaveWindow(ctx, rec)
+	e.wakeForDeparture(ctx, rec)
 	return nil
 }
 

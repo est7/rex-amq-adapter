@@ -26,7 +26,9 @@ var builtin embed.FS
 // Conventions is the file holding a crew's shared conventions.
 const Conventions = "team-conventions.md"
 
-// notRoles are files in a crew directory that are not role prompts.
+// notRoles are files in a crew directory that are not role prompts. A crew's
+// goal.md describes a mission (Runner's format); the goal role's prompt is
+// roles/goal.md.
 var notRoles = map[string]bool{Conventions: true, "goal.md": true, "readme.md": true}
 
 // Prompt is a prompt file's text and where it came from.
@@ -71,10 +73,10 @@ func (l Library) Conventions(crew string) (Prompt, bool, error) {
 // Role returns the prompt for role in crew: the crew's own, else the shared
 // one. crew may be empty (a tab that names no crew).
 func (l Library) Role(crew, role string) (Prompt, bool, error) {
-	if role == "" || notRoles[role+".md"] {
+	if role == "" {
 		return Prompt{}, false, nil
 	}
-	if crew != "" {
+	if crew != "" && !notRoles[role+".md"] {
 		if p, ok, err := l.find(path.Join(crew, role+".md")); ok || err != nil {
 			return p, ok, err
 		}
@@ -139,7 +141,7 @@ func (l Library) List() ([]Entry, error) {
 				case name == Conventions:
 					e.Conventions = !seen[crew+"/"+Conventions]
 					seen[crew+"/"+Conventions] = true
-				case !notRoles[name] && !seen[crew+"/"+name]:
+				case (crew == "" || !notRoles[name]) && !seen[crew+"/"+name]:
 					seen[crew+"/"+name] = true
 					e.Roles = append(e.Roles, strings.TrimSuffix(name, ".md"))
 				}

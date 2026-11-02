@@ -42,9 +42,9 @@ is erased only when the box holds exactly that doorbell. See
 
 ## Install
 
-Requirements: Rex (macOS), `amq` on `PATH` (tested with 0.98.0; needs
+Requirements: Rex (macOS), `amq` on `PATH` (tested with 0.120.0; needs
 `amq wake check --json-schema 2` and `retire --if-generation`, as in 0.81.2+),
-Go to build, and Claude Code (2.1.303), Codex (0.163.0), Antigravity CLI
+Go to build, and Claude Code (2.1.314), Codex (0.166.0), Antigravity CLI
 (1.4.2), or Pi (0.84.2) — the versions tested.
 
 ```bash
@@ -105,6 +105,7 @@ conventions, shared by every agent in it:
 | Built in | What it is |
 |---|---|
 | roles `implementer`, `reviewer`, `qa`, `architect`, `writer`, `editor` | work in any tab |
+| role `goal` | owns a goal and runs it unattended (below) |
 | crew `pair` | implementer builds, reviewer critiques the working-tree diff, until clean |
 | crew `ship` | `pair`, then QA runs the reviewed candidate and reports a verdict with evidence |
 | crew `dev` | an architect decomposes the goal into tasks for an implementer and reviewer |
@@ -115,6 +116,18 @@ conventions, shared by every agent in it:
 rex-amq-adapter tab pair --role implementer -- codex --no-daemon "Fix #42: …"
 rex split -b <its block> --label reviewer -- claude "Review the implementer's fix for #42 when it hands off."
 rex-amq-adapter crews        # every crew and role available in this directory
+```
+
+A tab without a `goal` agent assumes you are watching: an agent that stops is
+yours to notice. Label a pane `goal` and the tab runs unattended instead. That
+agent owns the goal and decides how to recover: it is woken at once when a peer
+quits, crashes, or has its pane closed, with the session to resume, and it
+restarts or replaces the peer itself. If the goal agent is the one that goes, one
+peer is told to report and stop. A small watcher process runs for each goal
+agent and ends with it.
+
+```bash
+rex-amq-adapter tab pair --role goal -- claude "Ship #42. Done when CI is green. You may open a PR but not merge. Stop after two failed attempts."
 ```
 
 Your own crews and roles override the built-in ones by name: a crew is a
@@ -140,6 +153,7 @@ Inspect state:
 ```bash
 rex-amq-adapter who          # running agents in this Rex tab, including yourself
 rex-amq-adapter who --all    # also this tab's departed agents reserved for a resume
+rex-amq-adapter await <block> # wait for an agent you started; prints its outcome as JSON
 rex-amq-adapter collect      # retire agents whose pane closed or process died
 ```
 
@@ -147,8 +161,10 @@ rex-amq-adapter collect      # retire agents whose pane closed or process died
 terminal and fails if the tab cannot be resolved. It uses the current layout,
 so moving a block changes which tab discovers it. `--all` includes departed
 agents last recorded in this tab, never agents from other tabs. A failure
-while reconciling the tab is a warning on stderr; the tab is still listed. Use
-the adapter's `who`, not the shared mailbox directory from `amq who`.
+while reconciling the tab is a warning on stderr; the tab is still listed.
+`who` also brings back a dead waker in the tab, so an idle agent hears its mail
+again once a peer checks on it. Use the adapter's `who`, not the shared mailbox
+directory from `amq who`.
 
 ## Lifecycle
 
@@ -156,7 +172,7 @@ the adapter's `who`, not the shared mailbox directory from `amq who`.
 |---|---|
 | Agent's first hook runs | Handle chosen (`<kind>-<role>-<NN>`, the role from the pane label, else `<kind>-<NN>`), mailbox created, `amq wake` started, pane relabeled to the handle; it is told its window-mates and its crew and role briefing, and its window-mates are told it joined |
 | Agent exits | `SessionEnd` retires its waker and tells its window-mates it left; the handle stays reserved for its session for 7 days |
-| Agent crashes or its pane closes | The next adoption or `collect` notices and does the same, as does `who` in that tab |
+| Agent crashes or its pane closes | The next adoption or `collect` notices and does the same, as does `who` in that tab, or within seconds with a `goal` agent there |
 | Session resumed (`claude --resume`, `codex resume`), in any pane | Gets its handle back, with the mail that arrived meanwhile |
 | New session in a used pane | Gets a new handle; the previous session keeps its own |
 
@@ -174,13 +190,16 @@ hooks that omit the field keep their existing behavior.
 for an agent's next prompt), `inject/<handle>.jsonl` (every doorbell
 attempt and why it waited, trimmed past 1 MB; `who` shows the latest as LAST
 DOORBELL, e.g. `deferred box_not_found 23m` when the adapter cannot find an
-agent's input box), `logs/<handle>.log` (amq wake), `logs/hooks.log`
+agent's input box, or `-` when no mail is waiting and the last attempt was not
+accepted), `watch/` (locks of goal watchers), `logs/<handle>.log` (amq
+wake), `logs/watch-<handle>.log` (a goal watcher), `logs/hooks.log`
 (hook failures; hooks run with stderr discarded).
 
 ## Development
 
 ```bash
-go test ./...                              # one test drives the real amq binary in a temp root
+go test ./...                              # includes internal/e2e: scripted agents on a private Rex server and real amq wake
+go test -short ./...                       # skips internal/e2e
 REX_AMQ_LIVE=1 go test ./internal/rex/     # inside a Rex terminal: the rex CLI client against the live server
 ```
 

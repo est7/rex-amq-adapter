@@ -145,5 +145,8 @@ func runInternal(args []string) int {
 		fmt.Print(guide.Skill)
 		return 0
 	}
-	return fail(errors.New("__internal: want `skill`"))
+	if len(args) == 3 && args[0] == "watch" {
+		return runWatch(args[1], args[2])
+	}
+	return fail(errors.New("__internal: want `skill` or `watch <server> <handle>`"))
 }

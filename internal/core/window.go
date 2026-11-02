@@ -54,6 +54,30 @@ func LeftNotice(p Peer) string {
 	return fmt.Sprintf("AMQ: %s (%s) left your Rex tab. Mail to it waits until its session resumes; do not wait for its reply.", p.Handle, p.Kind)
 }
 
+// GoalRole is the pane label of the agent that owns a goal. A window holding
+// one runs unattended.
+const GoalRole = "goal"
+
+// IsGoalAgent reports whether h was named for a pane labelled GoalRole.
+func IsGoalAgent(h Handle) bool { return Role(string(h)) == GoalRole }
+
+// GoalPeerLeft is the mail telling a goal agent that p departed. session is
+// p's agent session, "" when unknown.
+func GoalPeerLeft(p Peer, session string) (subject, body string) {
+	subject = fmt.Sprintf("%s left your Rex tab", p.Handle)
+	body = fmt.Sprintf("%s (%s) left your Rex tab: it quit, crashed, or its pane closed. You own the goal, so decide what happens next: resume it, start a new agent, or change the plan.", p.Handle, p.Kind)
+	if session != "" {
+		body += fmt.Sprintf(" To keep its context, resume session %s in a pane; it takes its handle back.", session)
+	}
+	return subject, body + " It cannot read a reply to this mail."
+}
+
+// GoalAgentLeft is the mail telling a surviving agent that the goal agent
+// departed.
+func GoalAgentLeft(p Peer) (subject, body string) {
+	return fmt.Sprintf("%s left your Rex tab", p.Handle), fmt.Sprintf("%s, which owned this tab's goal, left your Rex tab: it quit, crashed, or its pane closed, and nobody is running the goal. Finish the step you are on, say in your final message that the goal stopped and where the work stands, then end your turn: do not take over the goal. It cannot read a reply to this mail.", p.Handle)
+}
+
 // Briefing is what an agent's crew and role ask of it. A text left empty
 // was not found; a path is set when the text was read from a file.
 type Briefing struct {

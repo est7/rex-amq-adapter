@@ -36,6 +36,16 @@ func LastDelivery(history []Attempt, now time.Time) string {
 	return what + " " + Ago(now.Sub(since))
 }
 
+// DeliveryStatus is LastDelivery for an agent holding unread mail. An outcome
+// short of accepted explains why a doorbell did not ring; with nothing unread
+// none is due, so that outcome is history and no sign of a stuck delivery.
+func DeliveryStatus(history []Attempt, unread int, now time.Time) string {
+	if unread == 0 && len(history) > 0 && history[len(history)-1].Progress != Accepted {
+		return "-"
+	}
+	return LastDelivery(history, now)
+}
+
 // Ago is a compact duration: 40s, 23m, 5h, 2d.
 func Ago(d time.Duration) string {
 	switch {

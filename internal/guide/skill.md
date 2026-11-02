@@ -86,19 +86,32 @@ use `amq who` for discovery: its shared mailbox directory spans tabs. If
 the adapter cannot resolve your tab, report the error instead of using a
 global listing.
 
-`who` shows each agent's last doorbell and how long that outcome has held:
-`accepted 2m` means the agent was told; `deferred agent_working` for seconds is
+After you send, end your turn: the reply arrives as a notice, so never sleep or
+poll for it. The only waits inside a turn are bounded ones a check itself needs,
+such as watching CI.
+
+`who` shows each agent's last doorbell and how long that outcome has held; with
+no unread mail it shows `-` unless the last doorbell was accepted, because none
+is due. `accepted 2m` means a turn started after the doorbell, not that the
+agent read the mail; `deferred agent_working` for seconds is
 normal. When a peer you wrote to stays silent, check it before writing again:
 `deferred box_not_found` or `deferred rex_error` lasting minutes means the
 adapter cannot deliver (tell the user, quoting the line); `deferred
 draft_in_box` or `agent_blocked` means the user must clear the peer's input
-box or answer its dialog (tell the user which pane); `accepted` means the peer
-was told and has not acted yet.
+box or answer its dialog (tell the user which pane).
+
+To follow one message, in any tab, use the id `amq send` printed:
+`eval "$(rex-amq-adapter env)" && amq trace <message-id>`. Its receipts show
+who drained it and its thread shows any reply. Each step is evidence of that
+step only: a drained message may still be unanswered, and a reply is not
+finished work until you read it.
 
 Agents in your Rex tab are your window-mates. Your start notice names those
 already there ("Agents beside you in this Rex tab: …"), and a notice with
 your next prompt names each that joins or leaves ("… joined your Rex tab",
-"… left your Rex tab"). Stop waiting for a reply from an agent that left. When the
+"… left your Rex tab"). Stop waiting for a reply from an agent that left. In a
+tab with a `goal` agent, it hears of a departure by mail at once, even when
+idle; if that agent itself leaves, one peer is told to report and stop. When the
 user says "the one beside you", "旁边那个", or "隔壁", they mean these. Reach
 them with `amq send`, not with your harness's own agent messaging, which does
 not know AMQ handles. Use `rex-amq-adapter who` for the current list of your
@@ -117,15 +130,16 @@ this needs is below; no other skill is required.
 
 1. **Pick a role** for the pane label: a word or two for what the peer does
    (`reviewer`, `test-writer`). The adapter names the peer
-   `<kind>-<role>-<NN>` (`codex-reviewer-01`) and relabels the pane; read the
-   handle from `who` (step 4) when the peer is in your tab; `who` cannot see a
-   peer in a new tab, session, or crew tab, so there the only source is the
-   peer's first message. A role with a
+   `<kind>-<role>-<NN>` (`codex-reviewer-01`) and relabels the pane; step 4
+   prints the handle. A role with a
    prompt briefs the peer when it starts: `implementer`, `reviewer`, `qa`,
-   `architect`, `writer`, and `editor` are built in, and
+   `architect`, `writer`, `editor`, and `goal` are built in, and
    `rex-amq-adapter crews` lists every role and crew available here. Prefer
    one of these names when it fits; the peer then knows its job and how to
-   hand off before it reads your brief, so keep the brief to the task.
+   hand off before it reads your brief, so keep the brief to the task. Use
+   `goal` only when the user wants work to run on its own: it owns the goal and
+   decides how to recover, and a tab with no `goal` agent means the user is
+   there.
 2. **Write the brief** as the peer's first prompt: the task, the files or diff,
    and, for a peer in your tab, that it should report back with
    `amq send --to <your handle>` (or `amq reply` to your mail). An agent is
@@ -159,13 +173,21 @@ this needs is below; no other skill is required.
    prefer a pane: the user can move it (`rex move`), and an unseen peer is easy
    to forget. Tell the user where the peer is ("opened reviewer in a pane on the
    right", "started codex in a new session `billing-api`").
-4. **Confirm adoption** before more mail: `rex-amq-adapter who` lists a same-tab peer
-   under its handle once the peer's first turn starts. A Codex peer whose hooks were never
-   approved is never adopted: tell the user to approve them with `/hooks` in that
-   pane. Its report arrives as a notice. An agent placed in another tab,
-   session, or crew tab is independent and does not appear in this tab's
-   discovery, so you cannot confirm its adoption or see that its Codex hooks
-   were never approved. When you start one, tell the user to check that pane.
+4. **Confirm adoption** before more mail, with the block id you saved:
+
+   ```bash
+   rex-amq-adapter await <block>   # waits up to 30 s; --timeout changes it
+   ```
+
+   It prints one JSON line and exits 0 only for `adopted`, which also gives the
+   `handle`. This works in any tab, because you name a block you started.
+   `adopted` means the mailbox exists, so mail is safe to send, not that the
+   peer read your brief. `trust_screen` and `blocked` need the user in that pane;
+   `exited` means the pane is gone; `timeout` means no hook ran: a Codex peer
+   whose hooks were never approved stays there, so tell the user to approve them
+   with `/hooks` in that pane. The peer's report arrives as a notice. An agent
+   placed in another tab or session is independent and does not appear in this
+   tab's `who`.
 
 ## Rex commands
 

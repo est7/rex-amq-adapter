@@ -126,6 +126,9 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 		}
 	}
 
+	if err := e.ensureGoalWatcher(rec); err != nil {
+		fmt.Fprintf(Diagnostics, "%v\n", err)
+	}
 	known := hasOwn && in.SessionID != "" && own.AgentSessionID == in.SessionID
 	out := Adoption{Record: rec, Decision: decision, Known: known, Role: core.Role(blk.Label), Window: blk.WindowID, Session: blk.SessionID}
 	// An agent arrives unless it is the live record of this block again (a

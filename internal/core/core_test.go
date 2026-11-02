@@ -316,3 +316,49 @@ func TestBriefNoticeCarriesConventionsThenRole(t *testing.T) {
 		t.Fatalf("a long file must be named, not inlined: %.80q", s)
 	}
 }
+
+func TestDeliveryStatusOnlyCountsARefusedDoorbellWhileMailWaits(t *testing.T) {
+	now := time.Date(2026, 10, 19, 9, 0, 0, 0, time.UTC)
+	at := func(ago time.Duration, p Progress, code string) []Attempt {
+		return []Attempt{{At: now.Add(-ago), Outcome: Outcome{Progress: p, Code: code}}}
+	}
+	cases := []struct {
+		name    string
+		history []Attempt
+		unread  int
+		want    string
+	}{
+		{"drained after a deferral", at(48*time.Hour, Deferred, "agent_working"), 0, "-"},
+		{"mail still waits", at(23*time.Minute, Deferred, "box_not_found"), 2, "deferred box_not_found 23m"},
+		{"drained after a failure", at(time.Hour, Failed, "block_gone"), 0, "-"},
+		{"an accepted doorbell stays", at(2*time.Minute, Accepted, ""), 0, "accepted 2m"},
+		{"no doorbell yet", nil, 0, "-"},
+	}
+	for _, c := range cases {
+		if got := DeliveryStatus(c.history, c.unread, now); got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+func TestDecideStartup(t *testing.T) {
+	cases := []struct {
+		name string
+		o    StartupObservation
+		want StartupStatus
+		done bool
+	}{
+		{"adopted wins over a stale dialog on screen", StartupObservation{Handle: "claude-01", TrustPhrase: "Hooks need review"}, StartupAdopted, true},
+		{"block gone", StartupObservation{BlockGone: true}, StartupExited, true},
+		{"trust dialog", StartupObservation{TrustPhrase: "Trust this folder?", State: StateBlocked}, StartupTrust, true},
+		{"blocked", StartupObservation{State: StateBlocked, BlockedKind: "permission"}, StartupBlocked, true},
+		{"working: keep waiting", StartupObservation{State: StateWorking}, "", false},
+		{"nothing yet: keep waiting", StartupObservation{}, "", false},
+	}
+	for _, c := range cases {
+		got, done := DecideStartup(c.o)
+		if done != c.done || got.Status != c.want {
+			t.Errorf("%s: got %q %v, want %q %v", c.name, got.Status, done, c.want, c.done)
+		}
+	}
+}

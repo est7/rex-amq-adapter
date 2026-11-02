@@ -173,6 +173,16 @@ configuration for a probe:
 Always export `REX_AMQ_ADAPTER_HOME=<temp dir>` for the agent you start; a probe
 without it writes into the owner's real state directory.
 
+A scenario where an agent starts its own peers needs more: that peer gets the
+environment of the Rex server, not yours. Start a private server
+(`rex --autostart=false server run --listen unix://<sock> --state-dir <dir>
+--restore=false`) from a clean environment with a fake `HOME`, `USER` set, and
+the fake home's `bin` first on `PATH`. Claude Code then needs
+`<fake>/Library/Keychains` linked to the real one for its login, and a seeded
+`.claude.json`; Codex needs a copy of the provider settings and `auth.json`.
+Keep the fake home in a private temporary directory, not under `/tmp`, because
+amq refuses an injector there.
+
 Run every row; each must be observed, not inferred:
 
 | Scenario | Expected |
@@ -186,7 +196,7 @@ Run every row; each must be observed, not inferred:
 | Normal exit | record `departed`, waker `missing` |
 | Kill the agent | `collect` parks it and retires the waker |
 | Kill its waker, finish a turn, then send mail | waker revived by `Stop`; doorbell delivered |
-| Peer launched with its brief and a `--label` | adopted under the label; reports back |
+| Peer launched with its brief and a `--label` | `await <block>` prints `adopted` with the handle; adopted under the label; reports back |
 | Hook latency | in-band hook well under its budget (measure p50/max) |
 
 Clean up before reporting: close every tab you opened, confirm no `amq wake`
@@ -200,6 +210,9 @@ first. Report residue you could not remove.
 
 - **Status is the gate, the screen is the fallback.** Read OSC 7501 before the
   box; a dialog often defeats the classifier (`unknown`) but reports `blocked`.
+- **Take screen fixtures from a real capture.** `rex capture --format=vt` draws
+  the gap between words as `ESC[1C`, so a hand-written fixture with spaces
+  passes while every real dialog goes unrecognized.
 - **`working` is the only proof of submission.** Agents refresh status at rest;
   never accept on "updated after the write".
 - **An unconfirmed write is `deferred`, never `failed`.** amq does not retry a

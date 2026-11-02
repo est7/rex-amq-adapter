@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -29,6 +30,9 @@ Agent and user commands:
   env                       print the AMQ identity of this Rex block (eval it)
   who [--all]               list agents in this Rex tab only;
                             --all adds this tab's departed agents reserved for a resume
+  await <block> [--timeout D]
+                            wait for the agent started in a block, then print
+                            its outcome as JSON; exits 0 only when adopted
   collect                   reconcile records with Rex now
   tab <crew> [--role R] [-c DIR] -- COMMAND...
                             open a Rex tab for a crew, its first pane labelled
@@ -65,6 +69,8 @@ func run(args []string) int {
 		return runEnv()
 	case "who":
 		return runWho(rest)
+	case "await":
+		return runAwait(rest)
 	case "collect":
 		return runCollect()
 	case "crews":
@@ -265,6 +271,9 @@ func runWho(args []string) int {
 	if err := env.CollectWindow(ctx, window); err != nil {
 		fmt.Fprintf(os.Stderr, "rex-amq-adapter: collect: %v\n", err)
 	}
+	if err := env.SuperviseWindow(ctx, window); err != nil {
+		fmt.Fprintf(os.Stderr, "rex-amq-adapter: supervise: %v\n", err)
+	}
 	recs, err := env.WindowAgents(window)
 	if err != nil {
 		return fail(err)
@@ -290,12 +299,60 @@ func runWho(args []string) int {
 			if err != nil {
 				return fail(err)
 			}
-			last = core.LastDelivery(history, now)
+			last = core.DeliveryStatus(history, len(unread), now)
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%s\n", r.Handle, r.Kind, state, len(unread), last, r.BlockID)
 	}
 	if err := tw.Flush(); err != nil {
 		return fail(err)
+	}
+	return 0
+}
+
+// runWatch is the goal watcher, started by a goal agent's hooks. It ends with
+// its goal agent.
+func runWatch(server, handle string) int {
+	h, err := core.ParseHandle(handle)
+	if err != nil {
+		return fail(err)
+	}
+	env, err := app.NewEnv(server)
+	if err != nil {
+		return fail(err)
+	}
+	if err := env.WatchGoal(context.Background(), h); err != nil {
+		return fail(err)
+	}
+	return 0
+}
+
+func runAwait(args []string) int {
+	fs := flag.NewFlagSet("await", flag.ContinueOnError)
+	timeout := fs.Duration("timeout", 30*time.Second, "how long to wait")
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		fmt.Fprintln(os.Stderr, "usage: rex-amq-adapter await <block> [--timeout D]")
+		return 2
+	}
+	if err := fs.Parse(args[1:]); err != nil {
+		return 2
+	}
+	env, err := app.NewEnv("")
+	if err != nil {
+		return fail(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	defer cancel()
+	s, err := env.AwaitStartup(ctx, args[0])
+	if err != nil {
+		return fail(err)
+	}
+	out, err := json.Marshal(s)
+	if err != nil {
+		return fail(err)
+	}
+	fmt.Println(string(out))
+	if s.Status != core.StartupAdopted {
+		return 1
 	}
 	return 0
 }
