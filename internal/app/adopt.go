@@ -64,7 +64,7 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	if err != nil {
 		return Adoption{}, err
 	}
-	own, hasOwn := claim(recs, loc.Block, agentPID, kind, in.SessionID)
+	own, hasOwn := claim(recs, loc.Block, agentPID, kind, lineage(recs, kind, in))
 	handle := own.Handle
 	if !hasOwn {
 		taken, err := e.takenHandles(recs)
@@ -85,6 +85,9 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	}
 	if err := amq.EnsureMailbox(ctx, e.AmqBin, e.Paths.Root(), string(handle)); err != nil {
 		return Adoption{}, err
+	}
+	if !hasOwn {
+		e.seedSentCursor(handle)
 	}
 	server := srv.Endpoint
 	if server == "" {
@@ -209,33 +212,28 @@ func (e Env) noteWindow(ctx context.Context, h core.Handle, note string) error {
 	return e.Store.AddWindowNote(h, note)
 }
 
-// claim finds the handle this agent already holds, if any:
+// claim finds the handle this agent already holds, if any. sessions is the
+// agent's lineage: its session, then the sessions its conversation continues.
 //
-//  1. The record of the same agent session and kind, when no other block's
-//     agent is running it: a resume, in this block or any other, takes its
-//     handle back, so peers' mail and the conversation's references to it
-//     still reach it.
+//  1. The record of a session in the lineage, nearest first, of the same kind:
+//     a resume, in this block or any other, takes its handle back, so peers'
+//     mail and the conversation's references to it still reach it. A session
+//     another block's agent is running ends the search: that agent is this
+//     conversation's continuation too, and owns what came before it.
 //  2. Otherwise this block's live record of the same process: a repeated
 //     hook, a compaction, or a new session in the same process (/clear).
 //
 // An agent that claims nothing is named afresh: a new session in a pane
 // does not inherit the handle of the pane's previous session.
-func claim(recs []store.Record, block string, pid int, kind core.Kind, session string) (store.Record, bool) {
-	var resumed store.Record
-	found := false
-	for _, r := range recs {
-		if session == "" || r.AgentSessionID != session || r.Kind != kind {
-			continue
+func claim(recs []store.Record, block string, pid int, kind core.Kind, sessions []string) (store.Record, bool) {
+	for _, session := range sessions {
+		r, ok, running := resumable(recs, block, kind, session)
+		if ok {
+			return r, true
 		}
-		if r.Live() && r.BlockID != block {
-			continue // running in another block: never shared
+		if running {
+			break
 		}
-		if !found || r.AdoptedAt.After(resumed.AdoptedAt) {
-			resumed, found = r, true
-		}
-	}
-	if found {
-		return resumed, true
 	}
 	for _, r := range recs {
 		if r.BlockID == block && r.Live() && r.AgentPID == pid {
@@ -243,6 +241,25 @@ func claim(recs []store.Record, block string, pid int, kind core.Kind, session s
 		}
 	}
 	return store.Record{}, false
+}
+
+// resumable is the newest record of session that the agent in block may take.
+// running reports that another block's agent holds the session: a handle is
+// never shared.
+func resumable(recs []store.Record, block string, kind core.Kind, session string) (resumed store.Record, found, running bool) {
+	for _, r := range recs {
+		if r.AgentSessionID != session || r.Kind != kind {
+			continue
+		}
+		if r.Live() && r.BlockID != block {
+			running = true
+			continue
+		}
+		if !found || r.AdoptedAt.After(resumed.AdoptedAt) {
+			resumed, found = r, true
+		}
+	}
+	return resumed, found, running
 }
 
 // takenHandles are the handles a new name must avoid: every record's (live,

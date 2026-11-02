@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
@@ -220,7 +221,64 @@ func Inbox(root, handle string) string {
 // missing inbox has none. Only regular files count; the adapter follows no
 // links.
 func Unread(root, handle string) ([]string, error) {
-	entries, err := os.ReadDir(Inbox(root, handle))
+	return messageIDs(Inbox(root, handle))
+}
+
+func outbox(root, handle string) string {
+	return filepath.Join(root, "agents", handle, "outbox", "sent")
+}
+
+// SentAfter lists the ids of the messages handle sent after the message with
+// id after, oldest first: ids start with their timestamp. A missing outbox
+// has none.
+func SentAfter(root, handle, after string) ([]string, error) {
+	ids, err := messageIDs(outbox(root, handle))
+	if err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(ids, func(id string) bool { return id <= after }), nil
+}
+
+// SentAt is when a message handle sent reached its outbox.
+func SentAt(root, handle, id string) (time.Time, error) {
+	st, err := os.Stat(filepath.Join(outbox(root, handle), id+".md"))
+	if err != nil {
+		return time.Time{}, err
+	}
+	return st.ModTime(), nil
+}
+
+// Recipients reads who a message handle sent was addressed to.
+func Recipients(root, handle, id string) ([]string, error) {
+	b, err := os.ReadFile(filepath.Join(outbox(root, handle), id+".md"))
+	if err != nil {
+		return nil, err
+	}
+	return parseRecipients(b)
+}
+
+// parseRecipients reads amq's message format: a JSON header between "---json"
+// and "---" lines, then the body.
+func parseRecipients(b []byte) ([]string, error) {
+	rest, ok := bytes.CutPrefix(b, []byte("---json\n"))
+	if !ok {
+		return nil, errors.New("message has no JSON header")
+	}
+	header, _, ok := bytes.Cut(rest, []byte("\n---"))
+	if !ok {
+		return nil, errors.New("message header is not closed")
+	}
+	var h struct {
+		To []string `json:"to"`
+	}
+	if err := json.Unmarshal(header, &h); err != nil {
+		return nil, fmt.Errorf("decode message header: %w", err)
+	}
+	return h.To, nil
+}
+
+func messageIDs(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	}

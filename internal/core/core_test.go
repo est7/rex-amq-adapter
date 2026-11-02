@@ -302,6 +302,18 @@ func TestWindowMatesAreTheOtherAgentsInTheSameWindow(t *testing.T) {
 	}
 }
 
+func TestUndeliveredNoticeSaysOnlyWhatIsKnown(t *testing.T) {
+	alone := UndeliveredNotice("claude-26", nil, nil)
+	if !strings.Contains(alone, "mail to claude-26") || !strings.Contains(alone, "rex-amq-adapter who") || strings.Contains(alone, "pane") {
+		t.Errorf("alone: %q", alone)
+	}
+	next := Peer{Handle: "claude-33", Kind: Claude}
+	full := UndeliveredNotice("claude-26", &next, []Peer{next})
+	if !strings.Contains(full, "claude-33 (claude) now runs in its pane") || !strings.Contains(full, "Agents beside you") || strings.Contains(full, "rex-amq-adapter who") {
+		t.Errorf("replaced: %q", full)
+	}
+}
+
 func TestBriefNoticeCarriesConventionsThenRole(t *testing.T) {
 	b := Briefing{Crew: "pair", Conventions: "Review before commit.", Role: "reviewer", RolePrompt: "You are the reviewer."}
 	s := BriefNotice(b)

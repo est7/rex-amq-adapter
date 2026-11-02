@@ -42,10 +42,10 @@ is erased only when the box holds exactly that doorbell. See
 
 ## Install
 
-Requirements: Rex (macOS), `amq` on `PATH` (tested with 0.120.0; needs
+Requirements: Rex (macOS), `amq` on `PATH` (tested with 0.123.0; needs
 `amq wake check --json-schema 2` and `retire --if-generation`, as in 0.81.2+),
-Go to build, and Claude Code (2.1.314), Codex (0.166.0), Antigravity CLI
-(1.4.2), or Pi (0.84.2) — the versions tested.
+Go to build, and Claude Code (2.1.316), Codex (0.166.0), Antigravity CLI
+(1.4.2), or Pi (1.4.0) — the versions tested.
 
 ```bash
 brew install est7/tap/rex-amq-adapter      # macOS / Linux; pulls in amq
@@ -172,8 +172,9 @@ directory from `amq who`.
 |---|---|
 | Agent's first hook runs | Handle chosen (`<kind>-<role>-<NN>`, the role from the pane label, else `<kind>-<NN>`), mailbox created, `amq wake` started, pane relabeled to the handle; it is told its window-mates and its crew and role briefing, and its window-mates are told it joined |
 | Agent exits | `SessionEnd` retires its waker and tells its window-mates it left; the handle stays reserved for its session for 7 days |
-| Agent crashes or its pane closes | The next adoption or `collect` notices and does the same, as does `who` in that tab, or within seconds with a `goal` agent there |
-| Session resumed (`claude --resume`, `codex resume`), in any pane | Gets its handle back, with the mail that arrived meanwhile |
+| Agent crashes or its pane closes | The next adoption or `collect` notices and does the same, as does `who` in that tab, a send to it, or within seconds a `goal` agent there |
+| Session resumed (`claude --resume`, `codex resume`), in any pane | Gets its handle back, with the mail that arrived meanwhile; so does a Claude conversation that moved to a new session id, found through its transcript |
+| Mail sent to an agent that left | The sender's next hook says so once, naming who now runs in that pane and who is in its tab |
 | New session in a used pane | Gets a new handle; the previous session keeps its own |
 
 Codex's ephemeral background sessions can inherit the interactive process's

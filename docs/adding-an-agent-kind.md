@@ -21,6 +21,7 @@ over.
 | **Tell at the prompt** | Deliver window notes (an agent joined or left the tab) where the agent takes a prompt, never mid-turn and never by starting a turn | Claude/Codex `UserPromptSubmit`; agy `PreInvocation` (no prompt hook: every model call, an accepted exception); Pi `before_agent_start` |
 | **Hold the turn end** | Keep an agent that is about to stop with unread mail going, exactly once (loop guard) | Claude/Codex `Stop` + `stop_hook_active`; agy `Stop` (`decision: continue`, guard emulated in `normalize`); Pi `agent_before_settle` |
 | **Wake at rest** | Reach an *idle* agent | typed doorbell via `amq wake --inject-via` (needs OSC 7501 status + an input-box classifier); Pi: `sendMessage(…, {triggerTurn: true})` |
+| **Tell a sender** | After the agent sends mail, say once which of it no agent will read, without starting a turn of its own | every `announce` hook but Pi's mail watcher (`announcing.undelivered`); the agent's outbox is read, never the send intercepted |
 | **Depart and supervise** | Retire the waker when the agent ends and tell its window-mates; revive a dead waker | `SessionEnd`; `collect` when there is none (agy); `Stop` runs `SuperviseWaker` |
 
 ## 2. Probe the agent

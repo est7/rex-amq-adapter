@@ -153,7 +153,7 @@ func (s Store) DeleteRecord(h core.Handle) error {
 	if err := s.removeRecordFiles(h, ""); err != nil {
 		return err
 	}
-	for _, p := range []string{s.ledgerPath(h), s.injectLog(h)} {
+	for _, p := range []string{s.ledgerPath(h), s.sentCursorPath(h), s.injectLog(h)} {
 		if err := os.Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}
@@ -365,6 +365,29 @@ func (s Store) SetAnnounced(h core.Handle, ids []string, at time.Time) error {
 		return err
 	}
 	return fsutil.WriteAtomic(s.ledgerPath(h), append(b, '\n'))
+}
+
+func (s Store) sentCursorPath(h core.Handle) string {
+	return filepath.Join(s.P.ledgers(), string(h)+".sent")
+}
+
+// SentCursor is the id of the last message of h's checked for a departed
+// recipient, "" when h had sent none when checking began. ok is false when
+// checking never began for h.
+func (s Store) SentCursor(h core.Handle) (id string, ok bool, err error) {
+	b, err := os.ReadFile(s.sentCursorPath(h))
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return string(b), true, nil
+}
+
+// SetSentCursor records that h's messages up to id have been checked.
+func (s Store) SetSentCursor(h core.Handle, id string) error {
+	return fsutil.WriteAtomic(s.sentCursorPath(h), []byte(id))
 }
 
 // Pending is a doorbell written into a block and not yet known to be

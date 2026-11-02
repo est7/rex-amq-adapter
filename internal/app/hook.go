@@ -83,8 +83,8 @@ func (e Env) Hook(ctx context.Context, event string, kind core.Kind, loc Locatio
 		return Reply{}, e.Depart(ctx, loc, in)
 	case EventMail:
 		// Pi's watcher turns a notice into a turn of its own; window notes
-		// wait for its next prompt instead.
-		return e.announce(ctx, kind, loc, in, core.PromptSubmitted, onToolCall)
+		// and bounces wait for its next run instead.
+		return e.announce(ctx, kind, loc, in, core.PromptSubmitted, onMail)
 	}
 	return Reply{}, fmt.Errorf("unknown hook event %q", event)
 }
@@ -125,8 +125,9 @@ func (e Env) sessionStart(ctx context.Context, kind core.Kind, loc Location, in 
 	return r, nil
 }
 
-// announce is the in-band fast path: one record read, one directory read,
-// and the ledger. No subprocess runs, so it is cheap on every tool call.
+// announce is the in-band fast path: one record read, two directory reads,
+// and the ledger. No subprocess runs unless the agent has just sent mail, so
+// it is cheap on every tool call.
 //
 // An agent without a finished adoption is adopted here first. That happens
 // when SessionStart never ran the adapter: Codex runs new hooks only after the
@@ -155,7 +156,11 @@ func (e Env) announce(ctx context.Context, kind core.Kind, loc Location, in Hook
 			fmt.Fprintf(Diagnostics, "finish adopting %s: %v\n", rec.Handle, err)
 		}
 	}
-	return e.announceMail(ctx, rec, in, event, identity, may.window)
+	var sent []string
+	if may.undelivered {
+		sent = e.checkableSent(ctx, rec)
+	}
+	return e.announceMail(ctx, rec, in, event, identity, may.window, sent)
 }
 
 // adoptUnlessBackingOff adopts the agent in loc. A failing adoption is not
@@ -169,7 +174,7 @@ func (e Env) adoptUnlessBackingOff(ctx context.Context, kind core.Kind, loc Loca
 	return a, err == nil, err
 }
 
-func (e Env) announceMail(ctx context.Context, rec store.Record, in HookInput, event core.HookEvent, identity string, window bool) (Reply, error) {
+func (e Env) announceMail(ctx context.Context, rec store.Record, in HookInput, event core.HookEvent, identity string, window bool, sent []string) (Reply, error) {
 	unlock, err := e.Store.LockLedger(ctx, rec.Handle)
 	if err != nil {
 		return Reply{}, err
@@ -189,17 +194,19 @@ func (e Env) announceMail(ctx context.Context, rec store.Record, in HookInput, e
 		in2.Since = now.Sub(ledger.At)
 	}
 	a := core.DecideAnnounce(in2)
-	if !a.Speak {
-		// A Stop hook never blocks only to state the identity.
-		if event == core.TurnEnding {
-			return Reply{}, nil
+	mail := ""
+	if a.Speak {
+		if err := e.Store.SetAnnounced(rec.Handle, core.MergeAnnounced(ledger.IDs, unread, unread), now); err != nil {
+			return Reply{}, err
 		}
-		return e.withWindowNotes(rec.Handle, window, identity, "")
+		mail = core.HookNotice(a, rec.Handle, e.EnvCommand(), event)
 	}
-	if err := e.Store.SetAnnounced(rec.Handle, core.MergeAnnounced(ledger.IDs, unread, unread), now); err != nil {
-		return Reply{}, err
+	mail = joinNotices(e.takeUndelivered(rec, sent), mail)
+	// A Stop hook never blocks only to state the identity.
+	if mail == "" && event == core.TurnEnding {
+		return Reply{}, nil
 	}
-	return e.withWindowNotes(rec.Handle, window, identity, core.HookNotice(a, rec.Handle, e.EnvCommand(), event))
+	return e.withWindowNotes(rec.Handle, window, identity, mail)
 }
 
 // withWindowNotes builds the reply, taking h's queued window notes when
@@ -288,13 +295,17 @@ type announcing struct {
 	// whose start failed (two agents starting at once can run SessionStart
 	// out of time) and whose first turn ends quickly would idle unadopted.
 	retry bool
+	// undelivered: tell of mail the agent sent that no agent will read. Like
+	// window notes it is advice, which must not start a turn of its own.
+	undelivered bool
 }
 
 var (
-	onPrompt    = announcing{window: true, retry: true}
-	onModelCall = announcing{window: true} // Antigravity's PreInvocation: every model call
-	onToolCall  = announcing{}             // PostToolUse; Pi's mail watcher
-	onTurnEnd   = announcing{retry: true}  // Stop; Pi's settle
+	onPrompt    = announcing{window: true, retry: true, undelivered: true}
+	onModelCall = announcing{window: true, undelivered: true} // Antigravity's PreInvocation: every model call
+	onToolCall  = announcing{undelivered: true}               // PostToolUse
+	onMail      = announcing{}                                // Pi's mail watcher
+	onTurnEnd   = announcing{retry: true, undelivered: true}  // Stop; Pi's settle
 )
 
 // AdoptRetryAfter is how long the frequent hooks wait before adopting again

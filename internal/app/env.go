@@ -111,6 +111,21 @@ type HookInput struct {
 	Idle bool `json:"idle"`
 }
 
+// transcript is the transcript path in the payload; "" when it has none.
+func (in HookInput) transcript() (string, error) {
+	var path *string
+	if len(in.TranscriptPath) == 0 {
+		return "", nil
+	}
+	if err := json.Unmarshal(in.TranscriptPath, &path); err != nil {
+		return "", fmt.Errorf("decode transcript_path: %w", err)
+	}
+	if path == nil {
+		return "", nil
+	}
+	return *path, nil
+}
+
 // NormalStop reports whether a Stop ends a turn normally. Antigravity also
 // runs Stop when the user cancels, on errors, and at its loop limits; mail
 // must not override any of those.

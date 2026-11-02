@@ -130,15 +130,25 @@ the ladder cap (2 min); this is accepted.
 disposable; agent sessions are not. Claude Code and Codex keep their session id
 across a resume (executed 2026-10-28: `claude -p --resume` and `codex exec
 resume` returned the id of the session they resumed; a Codex hook's
-`session_id` is the id in its rollout file name), so the handle is bound to that
-id, not to the pane. Adoption, in order:
+`session_id` is the id in its rollout file name; observed 2026-11-01:
+an interactive `claude -r` kept the id too), so the handle is bound to that id,
+not to the pane. The harness owns that id, so it is evidence of continuity and
+not a promise: one Claude conversation in 204 moved to a new session id while
+its process ran, unannounced by its hooks, and its restart looked like a new
+agent. Adoption, in order:
 
-1. **Resume.** A record of the same agent session and kind takes its handle
-   back, in this pane or any other, unless another pane's agent is running it.
-   Peers' mail and the conversation's own references to the handle still
-   reach it; mail sent while it was closed is waiting as unread. This also
-   covers a process that switches session (`/resume` inside the agent); the
-   session it left keeps its own handle.
+1. **Resume.** A record of a session in the agent's lineage, nearest first, and
+   of the same kind takes its handle back, in this pane or any other, unless
+   another pane's agent is running it. The lineage is the agent's own session
+   and, for a Claude session with no record, the other session ids in the
+   entries its transcript copied from the conversation it continues. An
+   official `--fork-session` leaves no such entries (executed 2026-11-01,
+   Claude Code 2.1.316), so a fork is a new agent. The transcript format is
+   Claude Code's own: a lineage that cannot be read is reported and the agent
+   is named afresh. Peers' mail and the conversation's own references to the
+   handle still reach it; mail sent while it was closed is waiting as unread.
+   This also covers a process that switches session (`/resume` inside the
+   agent); the session it left keeps its own handle.
 2. **Same process.** This pane's live record of the same process keeps its
    handle: a repeated hook, a compaction, a new session in the process
    (`/clear`).
@@ -257,6 +267,24 @@ lifecycle lock, which also serialises agents that start together:
   block was last seen in (`window_id`), because a crashed agent's block is
   already gone when collection finds it. Each window reconciliation (`who`, a
   goal watcher) writes the layout of its session into the records.
+- A send to a departed handle succeeds in amq, and its mail waits for a resume
+  that may never come. Sending is a tool call, so the sender's next hook reads
+  its outbox past `ledger/<handle>.sent`. New mail makes it check the agents
+  it mailed, because one that crashed or lost its pane sends no SessionEnd and
+  still reads as live. Mail left unread in a departed agent's inbox is told
+  once: who now runs in that pane and who is in its tab. The check runs on one
+  batch, the mail present when it starts. A recipient Rex cannot speak for holds
+  the batch, and the next hook repeats it, for up to a minute; then the check
+  gives up on that recipient, reports it, and tells the rest. It never costs the
+  agent its own mail. The cursor starts at the outbox's newest message when an
+  agent takes a new handle and for an agent adopted before this check existed,
+  and moves past the goal mail sent in a departed agent's name, so neither a
+  previous owner's mail nor that mail is told. Pi's mail watcher turns any
+  notice into a turn, so there the bounce waits for its next run. Mail read before the agent left is not told, and
+  mail that goes unread after the sender's check is covered by the note below;
+  an idle sender hears that only in a goal tab. Mail to itself and to a handle
+  with no record is not checked, and ids that sort before the cursor (a parallel
+  send, a clock stepping back) are missed.
 - A queued note is delivered once, at the mate's next prompt:
   `UserPromptSubmit` (Claude Code, Codex), Pi's `before_agent_start`, or
   Antigravity's next `PreInvocation`. Tool hooks, Stop, and Pi's mail watcher
@@ -429,7 +457,7 @@ with a timeout (both harnesses run hook commands through a shell). Outside Rex
 | Hook | Action | Installed timeout / adapter budget |
 |---|---|---|
 | `SessionStart` | Garbage-collect, adopt this block (handle, mailbox, record, waker, window-mates), print identity, unread count, window-mates, and the crew and role briefing as context | 5 s / 4.5 s |
-| `UserPromptSubmit`, `PostToolUse` | Announce new ids from the ledger; `UserPromptSubmit` also delivers queued window notes. Filesystem only, no subprocess, unless the agent must be adopted first (measured p50 6.8 ms, max 16.7 ms over 30 runs) | 3 s / 2.5 s |
+| `UserPromptSubmit`, `PostToolUse` | Announce new ids from the ledger; `UserPromptSubmit` also delivers queued window notes. Filesystem only, no subprocess, unless the agent must be adopted first or has just sent mail (measured p50 6.8 ms, max 16.7 ms over 30 runs, before the outbox check) | 3 s / 2.5 s |
 | `Stop` | Block once per section 3, then supervise the waker: one `amq wake check` (about 60 ms), and `Ensure` when it is dead or runs an older binary; a goal agent's missing watcher is started here too | 3 s / 2.5 s (supervision bounded to 1.5 s) |
 | `SessionEnd` | Retire the block's waker (identified by amq's saved target), set `departed_at`, drop the agent's undelivered window notes, queue "left" notes for its window-mates, and mail the goal agent if the window has one | 3 s / 2.5 s (Codex clamps to 3 s) |
 
@@ -598,6 +626,7 @@ Overridable with `REX_AMQ_ADAPTER_HOME` (tests use a temporary directory).
 ├── bin/inject                the wrapper amq wake runs as --inject-via
 ├── records/<handle>.json     one record per handle (earlier versions named it by block)
 ├── ledger/<handle>.json      announced message ids
+├── ledger/<handle>.sent      the last sent message checked for a departed recipient
 ├── inject/<handle>.jsonl     injector outcomes
 ├── logs/<handle>.log         amq wake stdout/stderr
 ├── logs/hooks.log            hook failures
@@ -704,6 +733,17 @@ agents:
 | `/exit` beside a goal agent, then `/exit` of the goal agent | `SessionEnd` parked each within about 1 s; the goal agent, then the surviving peer, was mailed; the watcher exited |
 | All agents gone | every record departed and finished, no waker, no watcher, no failed adoption |
 
+Identity continuity, run on 2026-11-01 against the working tree with real Rex
+and Claude Code 2.1.316, adapter state isolated by `REX_AMQ_ADAPTER_HOME`:
+
+| Scenario | Result |
+|---|---|
+| Recipient killed with SIGKILL, then mailed by a live Claude | The record read live until the send; the next hook parked it and the agent quoted the bounce |
+| `claude --resume` of a transcript with old-id entries before its own, in a new pane | Took the old handle, relabelled the pane; mail to that handle rang the new pane (`accepted`) |
+| `/resume` inside a running TUI | Hooks and transcript kept the resumed id: not what moved the conversation in the original incident, whose trigger is unknown |
+| Claude sends from a background shell | The shell's completion ran `UserPromptSubmit`, and the agent read the bounce about 6 s after the send |
+| Real Codex 0.166 (`--no-daemon`) mails a killed Claude while mail waits for it | The record read live until the send; the agent got the bounce and its own mail notice together |
+
 ## 12. Pre-mortem
 
 | Failure | Guard |
@@ -716,6 +756,8 @@ agents:
 | Rex upgrade moves the rex binary | Resolved at run time, never baked into the waker target |
 | A hook in one Rex session sees every agent in another as gone | rex resolves `-b` within `$REX_SESSION`, which hooks inherit; collection then parked live agents, whose next hook re-adopted them and spawned a fresh waker, over and over. Every rex call names its target by id, so the client drops `REX_SESSION` (executed: old and new `collect` on a copy of real state) |
 | A parked record is re-adopted by its own still-running session, and the agent is told its identity again | The identity notice goes only to a session that did not hold the handle before. Pi's mail watcher turns any notice into a turn of its own, so a repeated identity cost Pi a whole turn (reproduced; executed in `resume_test.go`) |
+| A conversation changes session id and its restart loses the handle | Claude's transcript proves the lineage, read only for a session with no record; a parent running elsewhere keeps its handle (executed in `lineage_test.go`, and read-only against the real 2026-11-01 transcript) |
+| Mail goes to a departed handle and nobody notices | The sender's next hook checks its outbox and says so once, naming who took the pane (executed in `undelivered_test.go`) |
 | A new agent inherits stale mail | New names skip mailboxes with undrained mail and reserved handles |
 | A resumed agent loses its handle, and its peer writes to nobody | The handle belongs to the agent session, not the pane; collection runs before adoption so the closed pane's record is parked and claimable; reservations last 7 days (executed in `resume_test.go`) |
 | A handle names the wrong harness (`codex-…` running Claude) | The kind is never read from a label; a pane that changes kind keeps only its role |

@@ -56,6 +56,9 @@ func (e Env) wakeForDeparture(ctx context.Context, rec store.Record) error {
 			errs = append(errs, fmt.Errorf("tell %s: %w", h, err))
 		}
 	}
+	// The mail went out in rec's name, which is not rec's doing: should rec
+	// resume, it is not told about it.
+	e.seedSentCursor(rec.Handle)
 	return errors.Join(errs...)
 }
 

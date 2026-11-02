@@ -120,7 +120,9 @@ tab's agents.
 Send only to a handle `rex-amq-adapter who` lists. A departed agent (`who
 --all`) keeps its handle for 7 days so its session can be resumed, and mail to
 it waits unread until then; start a peer instead unless the user is resuming
-it. Several recipients: `--to a,b`.
+it. If you do mail one, a notice says so after your send and names who now runs
+in that pane and who is in your tab: resend to the agent you meant. Several
+recipients: `--to a,b`.
 
 ## Start a peer
 

@@ -54,6 +54,20 @@ func LeftNotice(p Peer) string {
 	return fmt.Sprintf("AMQ: %s (%s) left your Rex tab. Mail to it waits until its session resumes; do not wait for its reply.", p.Handle, p.Kind)
 }
 
+// UndeliveredNotice tells a sender that its mail went to to, an agent that had
+// left. occupant is the agent now in to's pane, if any; mates are the sender's
+// window-mates, the agents it may have meant.
+func UndeliveredNotice(to Handle, occupant *Peer, mates []Peer) string {
+	notice := fmt.Sprintf("AMQ: your mail to %s will not be read unless its session resumes: that agent left.", to)
+	if occupant != nil {
+		notice += fmt.Sprintf(" %s (%s) now runs in its pane.", occupant.Handle, occupant.Kind)
+	}
+	if beside := MatesNotice(mates); beside != "" {
+		return notice + " " + beside
+	}
+	return notice + " Run `rex-amq-adapter who` for the agents in your Rex tab."
+}
+
 // GoalRole is the pane label of the agent that owns a goal. A window holding
 // one runs unattended.
 const GoalRole = "goal"

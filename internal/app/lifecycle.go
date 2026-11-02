@@ -230,14 +230,22 @@ func (e Env) collectOne(ctx context.Context, rec store.Record) error {
 		}
 		return nil
 	}
+	_, err := e.parkIfGone(ctx, rec)
+	return err
+}
+
+// parkIfGone parks the live agent of rec if Rex shows it is gone. observed is
+// false when Rex could not say: an unreachable or failing server cannot prove
+// the agent is gone, and the record stands.
+func (e Env) parkIfGone(ctx context.Context, rec store.Record) (observed bool, err error) {
 	on := e
 	on.Rex = e.RexOn(rec.Server)
 	b, err := on.observeBinding(ctx, rec)
 	if err != nil {
-		return nil // unreachable or failing server: cannot prove the agent is gone
+		return false, nil
 	}
 	if o, bound := core.CheckBinding(b); !bound && o.Progress == core.Failed {
-		return e.park(ctx, rec)
+		return true, e.park(ctx, rec)
 	}
-	return nil
+	return true, nil
 }
