@@ -26,6 +26,10 @@ const (
 // is ever typed into its terminal.
 func (k Kind) InProcess() bool { return k == Pi }
 
+// Notifies reports whether the agent's turn end can reach the user: only Claude
+// Code and Codex have the notification hooks that carry its last message.
+func (k Kind) Notifies() bool { return k == Claude || k == Codex }
+
 // ParseKind accepts the --agent value hooks are installed with.
 func ParseKind(s string) (Kind, error) {
 	switch k := Kind(s); k {

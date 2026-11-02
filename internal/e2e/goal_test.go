@@ -209,3 +209,19 @@ func TestAGoalAgentDoesNotHearAPeerMovedOutOfItsTab(t *testing.T) {
 		t.Fatalf("the goal agent heard of an agent in another tab: %d unread\n%s", n, w.dump())
 	}
 }
+
+// Without a watcher, the agent who looks brings the records up to date.
+func TestWhoFollowsAPeerMovedIntoItsTab(t *testing.T) {
+	w := newWorld(t)
+	tb := w.newTab("lead", "implementer")
+	w.ready("lead")
+	peer := tb.otherTab("rev", "reviewer")
+	w.ready("rev")
+	tb.move(peer, tb.first)
+	if out, code := w.who(tb.first); code != 0 || !strings.Contains(out, "claude-reviewer-01") {
+		t.Fatalf("who: %d\n%s", code, out)
+	}
+	if got, want := w.recordedWindow("claude-reviewer-01"), w.recordedWindow("claude-implementer-01"); got != want {
+		t.Fatalf("the record stayed in %s, the agent is in %s", got, want)
+	}
+}

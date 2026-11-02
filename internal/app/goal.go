@@ -33,16 +33,14 @@ const (
 )
 
 // wakeForDeparture tells rec's window that rec departed, when a goal agent
-// is involved. Like a note about leaving it is advice: a failure is reported,
-// and the departure stands.
-func (e Env) wakeForDeparture(ctx context.Context, rec store.Record) {
+// is involved.
+func (e Env) wakeForDeparture(ctx context.Context, rec store.Record) error {
 	if rec.WindowID == "" {
-		return
+		return nil
 	}
 	recs, err := e.Store.Records()
 	if err != nil {
-		fmt.Fprintf(Diagnostics, "tell the goal agent that %s left: %v\n", rec.Handle, err)
-		return
+		return err
 	}
 	var others []core.Peer
 	for _, r := range recs {
@@ -52,11 +50,13 @@ func (e Env) wakeForDeparture(ctx context.Context, rec store.Record) {
 	}
 	left := core.Peer{Handle: rec.Handle, Kind: rec.Kind, Block: rec.BlockID}
 	to, subject, body := core.DepartureMail(left, rec.AgentSessionID, others)
+	var errs []error
 	for _, h := range to {
 		if err := amq.Send(ctx, e.AmqBin, e.Paths.Root(), string(rec.Handle), string(h), subject, body); err != nil {
-			fmt.Fprintf(Diagnostics, "tell %s that %s left: %v\n", h, rec.Handle, err)
+			errs = append(errs, fmt.Errorf("tell %s: %w", h, err))
 		}
 	}
+	return errors.Join(errs...)
 }
 
 // ensureGoalWatcher starts the watcher of a goal agent unless one runs. An
@@ -148,36 +148,5 @@ func (e Env) watchOnce(ctx context.Context, rec store.Record) error {
 	if err != nil {
 		return err
 	}
-	if err := e.followMoves(ctx, w); err != nil {
-		return err
-	}
 	return e.CollectWindow(ctx, w)
-}
-
-// followMoves records the window each agent's block is in now. A
-// departure is told to the recorded window, because a crashed agent's block
-// can no longer be placed, so a goal agent must not lag a peer's move. A block
-// outside w's session keeps its record.
-func (e Env) followMoves(ctx context.Context, w Window) error {
-	unlock, err := e.Store.LockLifecycle(ctx)
-	if err != nil {
-		return err
-	}
-	defer unlock()
-	recs, err := e.Store.Records()
-	if err != nil {
-		return err
-	}
-	var errs []error
-	for _, r := range recs {
-		placed, ok := w.windowOf[r.BlockID]
-		if !ok || r.WindowID == placed {
-			continue
-		}
-		r.WindowID = placed
-		if err := e.Store.PutRecord(r); err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", r.Handle, err))
-		}
-	}
-	return errors.Join(errs...)
 }

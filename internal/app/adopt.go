@@ -90,23 +90,35 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	if server == "" {
 		server = loc.Server
 	}
+	// What this adoption means. The live record of this block coming back is a
+	// repeated start hook or a compaction: nothing changes, unless the adoption
+	// that wrote it never finished. Then the agent was not told, and nor was
+	// its window. One that departed was announced as gone, so taking its handle
+	// back is news again.
+	again := hasOwn && own.Live() && own.BlockID == loc.Block
+	unfinished := hasOwn && own.Unfinished == store.Adopting
+	arrived := !again || unfinished
+	known := hasOwn && in.SessionID != "" && own.AgentSessionID == in.SessionID && !unfinished
 	rec := store.Record{
 		Handle:         handle,
 		Kind:           kind,
 		Server:         server,
-		SessionID:      loc.Session,
 		BlockID:        loc.Block,
 		WindowID:       blk.WindowID,
 		AgentPID:       agentPID,
 		AgentSessionID: in.SessionID,
 		AdoptedAt:      e.Now().UTC(),
 	}
-	if hasOwn && own.Live() && own.BlockID == loc.Block && own.AgentPID == agentPID {
+	if again && own.AgentPID == agentPID {
 		rec.AdoptedAt = own.AdoptedAt
+	}
+	if arrived {
+		rec.Unfinished = store.Adopting
 	}
 	// Recorded before the waker starts: whatever happens next, departure and
 	// collection find this record and retire the block's waker, which amq
-	// identifies by the block its saved target names.
+	// identifies by the block its saved target names, and a later hook finishes
+	// the adoption.
 	if err := e.Store.PutRecord(rec); err != nil {
 		return Adoption{}, err
 	}
@@ -129,12 +141,9 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	if err := e.ensureGoalWatcher(rec); err != nil {
 		fmt.Fprintf(Diagnostics, "%v\n", err)
 	}
-	known := hasOwn && in.SessionID != "" && own.AgentSessionID == in.SessionID
-	out := Adoption{Record: rec, Decision: decision, Known: known, Role: core.Role(blk.Label), Window: blk.WindowID, Session: blk.SessionID}
-	// An agent arrives unless it is the live record of this block again (a
-	// repeated start hook, a compaction). One that departed was announced
-	// as gone, so taking its handle back is news again.
-	arrived := !hasOwn || own.BlockID != loc.Block || !own.Live()
+	// The handle carries the role, so briefing and goal behaviour read one fact:
+	// the label is overwritten below, and a resumed agent may land in any pane.
+	out := Adoption{Decision: decision, Known: known, Role: core.Role(string(handle)), Window: blk.WindowID, Session: blk.SessionID}
 	out.Mates = e.joinWindow(ctx, rec, blk, recs, arrived)
 	if blk.Label != string(handle) {
 		out.LabelErr = e.Rex.RenameBlock(ctx, loc.Block, string(handle))
@@ -144,6 +153,13 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 		return Adoption{}, err
 	}
 	out.Unread = len(unread)
+	if rec.Unfinished != "" {
+		rec.Unfinished = ""
+		if err := e.Store.PutRecord(rec); err != nil {
+			return Adoption{}, err
+		}
+	}
+	out.Record = rec
 	return out, nil
 }
 

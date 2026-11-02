@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -67,7 +66,7 @@ func (e Env) Hook(ctx context.Context, event string, kind core.Kind, loc Locatio
 		return e.announce(ctx, kind, loc, in, core.ToolFinished, onModelCall)
 	case EventPostTool:
 		return e.announce(ctx, kind, loc, in, core.ToolFinished, onToolCall)
-	case EventStop:
+	case EventStop, EventSettle:
 		if !in.NormalStop() {
 			return Reply{}, nil
 		}
@@ -86,8 +85,6 @@ func (e Env) Hook(ctx context.Context, event string, kind core.Kind, loc Locatio
 		// Pi's watcher turns a notice into a turn of its own; window notes
 		// wait for its next prompt instead.
 		return e.announce(ctx, kind, loc, in, core.PromptSubmitted, onToolCall)
-	case EventSettle:
-		return e.announce(ctx, kind, loc, in, core.TurnEnding, onTurnEnd)
 	}
 	return Reply{}, fmt.Errorf("unknown hook event %q", event)
 }
@@ -116,7 +113,7 @@ func (e Env) sessionStart(ctx context.Context, kind core.Kind, loc Location, in 
 		// The extension delivers waiting mail itself, with a turn of its own,
 		// from the first scan of this inbox; marking it announced here would
 		// leave an idle agent never told.
-		r.Inbox = filepath.Join(e.Paths.Root(), "agents", string(a.Record.Handle), "inbox", "new")
+		r.Inbox = amq.Inbox(e.Paths.Root(), string(a.Record.Handle))
 		return r, nil
 	}
 	if a.Unread > 0 {
@@ -131,32 +128,45 @@ func (e Env) sessionStart(ctx context.Context, kind core.Kind, loc Location, in 
 // announce is the in-band fast path: one record read, one directory read,
 // and the ledger. No subprocess runs, so it is cheap on every tool call.
 //
-// An agent without a live record is adopted here first. That happens when
-// SessionStart never ran the adapter: Codex runs new hooks only after the
+// An agent without a finished adoption is adopted here first. That happens
+// when SessionStart never ran the adapter: Codex runs new hooks only after the
 // user approves them, which is usually after the session started, and an
-// adapter installed mid-session misses SessionStart too.
+// adapter installed mid-session misses SessionStart too. It also finishes an
+// adoption that stopped after writing its record. An agent in that state has a
+// mailbox, so a failed retry does not silence its mail.
 func (e Env) announce(ctx context.Context, kind core.Kind, loc Location, in HookInput, event core.HookEvent, may announcing) (Reply, error) {
 	rec, ok, err := e.Store.Record(loc.Block)
 	if err != nil {
 		return Reply{}, err
 	}
 	identity := ""
-	if !ok || !rec.Live() {
-		// A failing adoption is not retried on every tool call: each
-		// attempt can take the hook's whole budget.
-		if at, failed, err := e.Store.AdoptFailedAt(loc.Block); err != nil || (failed && !may.retry && e.Now().Sub(at) < AdoptRetryAfter) {
+	if !ok || !rec.Adopted() {
+		hasMailbox := ok && rec.Live()
+		a, adopted, err := e.adoptUnlessBackingOff(ctx, kind, loc, in, may)
+		switch {
+		case adopted:
+			rec = a.Record
+			if !a.Known {
+				identity = e.identityNotice(ctx, a, 0)
+			}
+		case !hasMailbox:
 			return Reply{}, err
-		}
-		a, err := e.adopt(ctx, loc, kind, in)
-		if err != nil {
-			return Reply{}, err
-		}
-		rec = a.Record
-		if !a.Known {
-			identity = e.identityNotice(ctx, a, 0)
+		case err != nil:
+			fmt.Fprintf(Diagnostics, "finish adopting %s: %v\n", rec.Handle, err)
 		}
 	}
 	return e.announceMail(ctx, rec, in, event, identity, may.window)
+}
+
+// adoptUnlessBackingOff adopts the agent in loc. A failing adoption is not
+// retried on every tool call: each attempt can take the hook's whole budget.
+func (e Env) adoptUnlessBackingOff(ctx context.Context, kind core.Kind, loc Location, in HookInput, may announcing) (Adoption, bool, error) {
+	at, failed, err := e.Store.AdoptFailedAt(loc.Block)
+	if err != nil || (failed && !may.retry && e.Now().Sub(at) < AdoptRetryAfter) {
+		return Adoption{}, false, err
+	}
+	a, err := e.adopt(ctx, loc, kind, in)
+	return a, err == nil, err
 }
 
 func (e Env) announceMail(ctx context.Context, rec store.Record, in HookInput, event core.HookEvent, identity string, window bool) (Reply, error) {

@@ -15,7 +15,6 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/app"
 	"github.com/est7/rex-amq-adapter/internal/core"
 	"github.com/est7/rex-amq-adapter/internal/crew"
@@ -274,34 +273,18 @@ func runWho(args []string) int {
 	if err := env.SuperviseWindow(ctx, window); err != nil {
 		fmt.Fprintf(os.Stderr, "rex-amq-adapter: supervise: %v\n", err)
 	}
-	recs, err := env.WindowAgents(window)
+	agents, err := env.WindowAgents(window, *all)
 	if err != nil {
 		return fail(err)
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "HANDLE\tKIND\tSTATE\tUNREAD\tLAST DOORBELL\tBLOCK")
-	now := time.Now()
-	for _, r := range recs {
-		if !r.Live() && !*all {
-			continue
-		}
+	for _, a := range agents {
 		state := "live"
-		if !r.Live() {
-			state = "departed " + r.DepartedAt.Local().Format("01-02 15:04")
+		if a.DepartedAt != nil {
+			state = "departed " + a.DepartedAt.Local().Format("01-02 15:04")
 		}
-		unread, err := amq.Unread(env.Paths.Root(), string(r.Handle))
-		if err != nil {
-			return fail(err)
-		}
-		last := "in-process" // Pi: its extension delivers; no doorbell is typed
-		if !r.Kind.InProcess() {
-			history, err := env.Store.InjectHistory(r.Handle)
-			if err != nil {
-				return fail(err)
-			}
-			last = core.DeliveryStatus(history, len(unread), now)
-		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%s\n", r.Handle, r.Kind, state, len(unread), last, r.BlockID)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%s\n", a.Handle, a.Kind, state, a.Unread, a.LastDoorbell, a.Block)
 	}
 	if err := tw.Flush(); err != nil {
 		return fail(err)

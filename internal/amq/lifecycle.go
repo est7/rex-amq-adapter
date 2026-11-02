@@ -197,7 +197,7 @@ func agentsWith(configJSON []byte, handle string) ([]string, bool, error) {
 }
 
 func mailboxPresent(root, handle string) bool {
-	st, err := os.Stat(filepath.Join(root, "agents", handle, "inbox", "new"))
+	st, err := os.Stat(Inbox(root, handle))
 	return err == nil && st.IsDir()
 }
 
@@ -210,11 +210,17 @@ func lockRegistry(ctx context.Context, root string) (func(), error) {
 	return fsutil.Flock(ctx, filepath.Join(dir, ".adapter-registry.lock"))
 }
 
-// Unread lists the ids of undrained messages in handle's inbox (amq's
-// Maildir layout: agents/<handle>/inbox/new/<id>.md), sorted. A missing inbox
-// has none. Only regular files count; the adapter follows no links.
+// Inbox is the directory holding handle's undrained messages (amq's Maildir
+// layout: agents/<handle>/inbox/new/<id>.md).
+func Inbox(root, handle string) string {
+	return filepath.Join(root, "agents", handle, "inbox", "new")
+}
+
+// Unread lists the ids of undrained messages in handle's inbox, sorted. A
+// missing inbox has none. Only regular files count; the adapter follows no
+// links.
 func Unread(root, handle string) ([]string, error) {
-	entries, err := os.ReadDir(filepath.Join(root, "agents", handle, "inbox", "new"))
+	entries, err := os.ReadDir(Inbox(root, handle))
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	}

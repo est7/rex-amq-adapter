@@ -28,6 +28,10 @@ const ReserveFor = 7 * 24 * time.Hour
 // of the hook's budget when another agent's adoption holds the lifecycle lock.
 const superviseFor = 1500 * time.Millisecond
 
+// finishDepartureFor bounds one retry of an unfinished departure: collection
+// runs inside every adoption's hook budget.
+const finishDepartureFor = time.Second
+
 // waker is the amq waker that wakes rec's agent.
 func (e Env) waker(rec store.Record) amq.Waker {
 	return amq.Waker{InjectVia: e.injector(), Server: rec.Server, Block: rec.BlockID, Handle: string(rec.Handle), Root: e.Paths.Root()}
@@ -111,24 +115,40 @@ func (e Env) Depart(ctx context.Context, loc Location, in HookInput) error {
 	return e.park(ctx, rec)
 }
 
-// park retires the block's waker and marks the record departed.
+// park retires the block's waker and marks the record departed. What follows
+// can fail without undoing that: the departure stands, and collection finishes
+// it.
 func (e Env) park(ctx context.Context, rec store.Record) error {
 	if _, err := amq.RetireFor(ctx, e.AmqBin, e.Paths.Root(), string(rec.Handle), rec.BlockID); err != nil {
 		return err
 	}
 	now := e.Now().UTC()
 	rec.DepartedAt = &now
+	rec.Unfinished = store.Departing
 	if err := e.Store.PutRecord(rec); err != nil {
 		return err
 	}
+	e.leaveWindow(ctx, rec)
+	if err := e.finishDeparture(ctx, rec); err != nil {
+		fmt.Fprintf(Diagnostics, "finish the departure of %s: %v\n", rec.Handle, err)
+	}
+	return nil
+}
+
+// finishDeparture does what a departure must not lose. Nothing else would ever
+// tell an idle goal agent, so this runs until it succeeds, which may tell it
+// twice. Notes about leaving are advice and are not repeated here.
+func (e Env) finishDeparture(ctx context.Context, rec store.Record) error {
 	// Notes about who joined are about the window it was in; a resume may
 	// be elsewhere, much later.
 	if err := e.clearWindowNotes(ctx, rec.Handle); err != nil {
 		return err
 	}
-	e.leaveWindow(ctx, rec)
-	e.wakeForDeparture(ctx, rec)
-	return nil
+	if err := e.wakeForDeparture(ctx, rec); err != nil {
+		return err
+	}
+	rec.Unfinished = ""
+	return e.Store.PutRecord(rec)
 }
 
 func (e Env) clearWindowNotes(ctx context.Context, h core.Handle) error {
@@ -166,9 +186,10 @@ func (e Env) leaveWindow(ctx context.Context, rec store.Record) {
 // Collect reconciles records with Rex: an agent whose block is gone or whose
 // process exited departed without a SessionEnd (it crashed, or its pane was
 // closed) and is parked like a departure; a departed record past its
-// reservation is deleted. An agent that is alive but not in the foreground
-// (an editor it opened) stays live, and a server that cannot be reached
-// leaves its records alone: absence cannot be proven.
+// reservation is deleted, and an unfinished departure is finished. An agent
+// that is alive but not in the foreground (an editor it opened) stays live,
+// and a server that cannot be reached leaves its records alone: absence
+// cannot be proven.
 func (e Env) Collect(ctx context.Context) error {
 	return e.collect(ctx, func(store.Record) bool { return true })
 }
@@ -202,6 +223,11 @@ func (e Env) collectOne(ctx context.Context, rec store.Record) error {
 		if e.Now().Sub(*rec.DepartedAt) > ReserveFor {
 			return e.Store.DeleteRecord(rec.Handle)
 		}
+		if rec.Unfinished == store.Departing {
+			ctx, cancel := context.WithTimeout(ctx, finishDepartureFor)
+			defer cancel()
+			return e.finishDeparture(ctx, rec)
+		}
 		return nil
 	}
 	on := e
@@ -210,7 +236,7 @@ func (e Env) collectOne(ctx context.Context, rec store.Record) error {
 	if err != nil {
 		return nil // unreachable or failing server: cannot prove the agent is gone
 	}
-	if b.BlockGone || (b.ForegroundPID != rec.AgentPID && b.AgentGone) {
+	if o, bound := core.CheckBinding(b); !bound && o.Progress == core.Failed {
 		return e.park(ctx, rec)
 	}
 	return nil

@@ -98,11 +98,10 @@ func DepartureMail(left Peer, session string, others []Peer) (to []Handle, subje
 }
 
 // reportingPeer picks who reports that a goal stopped: the first agent whose
-// turn end reaches the user's notification hooks, which only Claude Code and
-// Codex have, else the first. peers is not empty.
+// turn end reaches the user, else the first. peers is not empty.
 func reportingPeer(peers []Peer) Peer {
 	for _, p := range peers {
-		if p.Kind == Claude || p.Kind == Codex {
+		if p.Kind.Notifies() {
 			return p
 		}
 	}

@@ -39,7 +39,7 @@ func (e Env) observeStartup(ctx context.Context, block string) (core.StartupObse
 	if err != nil {
 		return o, err
 	}
-	if ok && rec.Live() {
+	if ok && rec.Adopted() {
 		o.Handle = rec.Handle
 		return o, nil
 	}

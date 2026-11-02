@@ -62,14 +62,13 @@ func PathsForRoot(root string) (Paths, error) {
 // one record: a departed record keeps the handle for its agent session after
 // the block is gone.
 type Record struct {
-	Handle    core.Handle `json:"handle"`
-	Kind      core.Kind   `json:"kind"`
-	Server    string      `json:"server"`
-	SessionID string      `json:"session_id"`
-	BlockID   string      `json:"block_id"`
-	// WindowID is the Rex window (tab) the block was in when the agent was
-	// adopted. Departure tells the agents recorded in it. Only a goal watcher
-	// follows a block moved to another window later.
+	Handle  core.Handle `json:"handle"`
+	Kind    core.Kind   `json:"kind"`
+	Server  string      `json:"server"`
+	BlockID string      `json:"block_id"`
+	// WindowID is the Rex window (tab) the block was last seen in: at adoption,
+	// then whenever its window is reconciled. Departure tells the agents
+	// recorded in it, because a crashed agent's block can no longer be placed.
 	WindowID       string    `json:"window_id,omitempty"`
 	AgentPID       int       `json:"agent_pid"`
 	AgentSessionID string    `json:"agent_session_id,omitempty"`
@@ -78,10 +77,26 @@ type Record struct {
 	// handle reserved for its agent session (a resume, in any block) until
 	// collected.
 	DepartedAt *time.Time `json:"departed_at,omitempty"`
+	// Unfinished names the transition this record was committed in the middle
+	// of, so whoever reads it next can finish it.
+	Unfinished Transition `json:"unfinished,omitempty"`
 }
+
+// Transition is a change of an agent's state with steps after the record is
+// written: a process can die, or a hook run out of time, between them.
+type Transition string
+
+const (
+	Adopting  Transition = "adoption"
+	Departing Transition = "departure"
+)
 
 // Live reports whether the record describes a running agent.
 func (r Record) Live() bool { return r.DepartedAt == nil }
+
+// Adopted reports whether r's agent finished adoption: it has its waker and
+// was told who it is. A live record that has not has a mailbox, and no more.
+func (r Record) Adopted() bool { return r.Live() && r.Unfinished != Adopting }
 
 // Store reads and writes state under Paths.
 type Store struct{ P Paths }

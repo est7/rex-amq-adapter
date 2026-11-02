@@ -6,8 +6,8 @@ import "fmt"
 type StartupStatus string
 
 const (
-	// StartupAdopted: it has a mailbox, so mail is safe. Its waker may still be
-	// starting and its first prompt may be unread.
+	// StartupAdopted: it has a mailbox and a waker, so mail is safe. Its first
+	// prompt may be unread.
 	StartupAdopted StartupStatus = "adopted"
 	// StartupTrust: a trust or hook-approval dialog needs the user.
 	StartupTrust StartupStatus = "trust_screen"
@@ -57,5 +57,5 @@ func DecideStartup(o StartupObservation) (Startup, bool) {
 
 // StartupTimedOut is the outcome when nothing was decided in time.
 func StartupTimedOut() Startup {
-	return Startup{Status: StartupTimeout, Note: "no hook ran: the agent is still starting, or its hooks were never approved (Codex: /hooks)"}
+	return Startup{Status: StartupTimeout, Note: "no adoption finished: the agent is still starting, or its hooks were never approved (Codex: /hooks)"}
 }

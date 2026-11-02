@@ -67,8 +67,7 @@ esac
 	} {
 		if err := s.PutRecord(store.Record{
 			Handle: core.Handle(agent.handle), Kind: core.Pi, AgentPID: os.Getpid(),
-			BlockID: "block:" + agent.block, WindowID: "window:" + agent.window,
-			SessionID: "session:1", Server: "unix:///" + agent.server + ".sock",
+			BlockID: "block:" + agent.block, WindowID: "window:" + agent.window, Server: "unix:///" + agent.server + ".sock",
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -77,8 +76,7 @@ esac
 	for _, window := range []string{"1", "2"} {
 		if err := s.PutRecord(store.Record{
 			Handle: core.Handle("pi-departed-" + window), Kind: core.Pi,
-			BlockID: "block:departed-" + window, WindowID: "window:" + window,
-			SessionID: "session:1", Server: "unix:///test.sock", DepartedAt: &now,
+			BlockID: "block:departed-" + window, WindowID: "window:" + window, Server: "unix:///test.sock", DepartedAt: &now,
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -186,7 +184,7 @@ func TestWhoStillCollectsAClosedBlockFromThisTab(t *testing.T) {
 	s := store.Store{P: store.Paths{Home: dir}}
 	if err := s.PutRecord(store.Record{
 		Handle: "pi-closed", Kind: core.Pi, BlockID: "block:closed",
-		Server: "unix:///test.sock", SessionID: "session:1", WindowID: "window:1",
+		Server: "unix:///test.sock", WindowID: "window:1",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +222,6 @@ func whoStore() store.Store {
 func whoAgent(t *testing.T, r store.Record) {
 	t.Helper()
 	r.Kind = core.Pi
-	r.SessionID = "session:1"
 	if r.Server == "" {
 		r.Server = "unix:///test.sock"
 	}
@@ -385,8 +382,8 @@ func TestWhoFindsRecordsWhoseSessionIsStale(t *testing.T) {
 	now := time.Now()
 	s := whoStore()
 	for _, r := range []store.Record{
-		{Handle: "pi-stale-departed", Kind: core.Pi, BlockID: "block:gone", Server: "unix:///test.sock", SessionID: "session:stale", WindowID: "window:1", DepartedAt: &now},
-		{Handle: "pi-stale-closed", Kind: core.Pi, BlockID: "block:closed", Server: "unix:///test.sock", SessionID: "session:stale", WindowID: "window:1"},
+		{Handle: "pi-stale-departed", Kind: core.Pi, BlockID: "block:gone", Server: "unix:///test.sock", WindowID: "window:1", DepartedAt: &now},
+		{Handle: "pi-stale-closed", Kind: core.Pi, BlockID: "block:closed", Server: "unix:///test.sock", WindowID: "window:1"},
 	} {
 		if err := s.PutRecord(r); err != nil {
 			t.Fatal(err)

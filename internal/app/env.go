@@ -140,14 +140,13 @@ var ErrNotInRex = errors.New("not running in a Rex terminal (REX_BLOCK is unset)
 
 // Location is the Rex terminal the caller runs in.
 type Location struct {
-	Server  string
-	Session string
-	Block   string
+	Server string
+	Block  string
 }
 
 // Here reads the caller's Rex location from the environment Rex sets.
 func Here() (Location, error) {
-	l := Location{Server: os.Getenv("REX_SERVER"), Session: os.Getenv("REX_SESSION"), Block: os.Getenv("REX_BLOCK")}
+	l := Location{Server: os.Getenv("REX_SERVER"), Block: os.Getenv("REX_BLOCK")}
 	if l.Block == "" {
 		return Location{}, ErrNotInRex
 	}

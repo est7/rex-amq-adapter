@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
+	"github.com/est7/rex-amq-adapter/internal/amq"
+	"github.com/est7/rex-amq-adapter/internal/core"
 	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
@@ -42,9 +45,9 @@ func (e Env) FindWindow(ctx context.Context, block string) (Window, error) {
 	return Window{server: srv.Endpoint, id: blk.WindowID, windowOf: windowOf}, nil
 }
 
-// recorded reports whether r's agent was last recorded here. Outside a goal
-// watcher's session the record keeps the window of its adoption, so a moved
-// agent's is out of date.
+// recorded reports whether r's agent was last recorded here. A record is only
+// as current as the last reconciliation of its window, so a moved agent's may
+// be out of date.
 func (w Window) recorded(r store.Record) bool {
 	return r.Server == w.server && r.WindowID == w.id
 }
@@ -66,15 +69,47 @@ func (w Window) reconciles(r store.Record) bool {
 	return w.holds(r) || (w.recorded(r) && !placed)
 }
 
-// CollectWindow reconciles records with Rex as Collect does, for w only.
+// CollectWindow reconciles records with Rex as Collect does, for w only, and
+// brings the records of w's session up to date with its layout.
 func (e Env) CollectWindow(ctx context.Context, w Window) error {
-	return e.collect(ctx, w.reconciles)
+	return errors.Join(e.followMoves(ctx, w), e.collect(ctx, w.reconciles))
+}
+
+// followMoves records the window each agent's block is in now. A departure is
+// told to the recorded window, so a record must not lag a move for longer than
+// it takes someone to look. A block outside w's session keeps its record.
+func (e Env) followMoves(ctx context.Context, w Window) error {
+	unlock, err := e.Store.LockLifecycle(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	recs, err := e.Store.Records()
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, r := range recs {
+		placed, ok := w.windowOf[r.BlockID]
+		if !ok || r.WindowID == placed {
+			continue
+		}
+		r.WindowID = placed
+		if err := e.Store.PutRecord(r); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", r.Handle, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // SuperviseWindow brings back the dead wakers of the live agents w holds. The
 // Stop hook cannot: an idle agent runs no hooks, so mail to it would wait unseen
 // until the agent's next turn. A peer whose mail goes unanswered runs who.
 func (e Env) SuperviseWindow(ctx context.Context, w Window) error {
+	// A waker that will not come up is waited for under the lock every tab's
+	// adoption needs.
+	ctx, cancel := context.WithTimeout(ctx, superviseFor)
+	defer cancel()
 	unlock, err := e.Store.LockLifecycle(ctx)
 	if err != nil {
 		return err
@@ -95,17 +130,42 @@ func (e Env) SuperviseWindow(ctx context.Context, w Window) error {
 	return errors.Join(errs...)
 }
 
-// WindowAgents returns the records w holds, departed ones included.
-func (e Env) WindowAgents(w Window) ([]store.Record, error) {
+// TabAgent is one agent as who shows it.
+type TabAgent struct {
+	Handle       core.Handle
+	Kind         core.Kind
+	DepartedAt   *time.Time // nil: running
+	Unread       int
+	LastDoorbell string
+	Block        string
+}
+
+// WindowAgents lists the running agents w holds, and with departed the ones
+// reserved for a resume.
+func (e Env) WindowAgents(w Window, departed bool) ([]TabAgent, error) {
 	recs, err := e.Store.Records()
 	if err != nil {
 		return nil, err
 	}
-	var out []store.Record
+	now := e.Now()
+	var out []TabAgent
 	for _, r := range recs {
-		if w.holds(r) {
-			out = append(out, r)
+		if !w.holds(r) || (!r.Live() && !departed) {
+			continue
 		}
+		unread, err := amq.Unread(e.Paths.Root(), string(r.Handle))
+		if err != nil {
+			return nil, err
+		}
+		last := "in-process" // Pi: its extension delivers; no doorbell is typed
+		if !r.Kind.InProcess() {
+			history, err := e.Store.InjectHistory(r.Handle)
+			if err != nil {
+				return nil, err
+			}
+			last = core.DeliveryStatus(history, len(unread), now)
+		}
+		out = append(out, TabAgent{Handle: r.Handle, Kind: r.Kind, DepartedAt: r.DepartedAt, Unread: len(unread), LastDoorbell: last, Block: r.BlockID})
 	}
 	return out, nil
 }

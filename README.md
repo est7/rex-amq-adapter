@@ -163,7 +163,7 @@ so moving a block changes which tab discovers it. `--all` includes departed
 agents last recorded in this tab, never agents from other tabs. A failure
 while reconciling the tab is a warning on stderr; the tab is still listed.
 `who` also brings back a dead waker in the tab, so an idle agent hears its mail
-again once a peer checks on it. Use the adapter's `who`, not the shared mailbox
+again once a peer checks on it, and records where moved agents are now. Use the adapter's `who`, not the shared mailbox
 directory from `amq who`.
 
 ## Lifecycle

@@ -120,8 +120,8 @@ the process), run start / settle, and dialog open / close.
 Make the changes in this order; each step has tests before the next.
 
 1. **Kind** — `internal/core/identity.go`: add the constant, accept it in
-   `ParseKind`, and include it in `InProcess` if section 3 chose in-process.
-   Extend `TestParseKind`.
+   `ParseKind`, include it in `InProcess` if section 3 chose in-process, and in
+   `Notifies` if the user's notification hooks reach it. Extend `TestParseKind`.
 2. **Input box** (typed-doorbell kinds) — `internal/screen/promptbox.go`,
    `inputBox`: add a case. Reuse `ruledBox` when the layout is a glyph under a
    rule (Claude, agy); follow the Codex case when wrapped rows share a

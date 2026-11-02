@@ -181,11 +181,11 @@ this needs is below; no other skill is required.
 
    It prints one JSON line and exits 0 only for `adopted`, which also gives the
    `handle`. This works in any tab, because you name a block you started.
-   `adopted` means the mailbox exists, so mail is safe to send, not that the
-   peer read your brief. `trust_screen` and `blocked` need the user in that pane;
-   `exited` means the pane is gone; `timeout` means no hook ran: a Codex peer
-   whose hooks were never approved stays there, so tell the user to approve them
-   with `/hooks` in that pane. The peer's report arrives as a notice. An agent
+   `adopted` means the mailbox and its waker are ready, so mail is safe to send,
+   not that the peer read your brief. `trust_screen` and `blocked` need the user
+   in that pane; `exited` means the pane is gone; `timeout` means no adoption
+   finished: a Codex peer whose hooks were never approved stays there, so tell
+   the user to approve them with `/hooks` in that pane. The peer's report arrives as a notice. An agent
    placed in another tab or session is independent and does not appear in this
    tab's `who`.
 
