@@ -3,8 +3,9 @@
 // whether text may be typed into it: the input box
 // must not hold someone's unsent draft, and the pane must not show a trust
 // dialog. It works for every harness without hooks: each supported kind has
-// its own anchor for the box, and text drawn dim, a known placeholder, or a
-// harness-drawn cursor over a placeholder does not count as typed.
+// its own anchor for the box, and text drawn dim, in a kind's hint colour, a
+// known placeholder, or a harness-drawn cursor over a placeholder does not
+// count as typed.
 //
 // Ported from herdr-projects (src/prompt_box.rs, src/trust_screen.rs),
 // Copyright (c) 2026 Elias Stravik, MIT License; see testdata/NOTICE.md.
@@ -70,7 +71,17 @@ type cell struct {
 	ch      rune
 	dim     bool
 	reverse bool
+	fg      string
 	bg      string
+}
+
+// hintInk reports a cell drawn in the colour a kind paints its own hints in,
+// which no typed text takes. Antigravity (agy) draws the empty box's hint, the
+// current mode's ("Auto mode: edits & safe commands auto-approved (...", cut
+// to the width), in grey 256-colour 8 and typed text in the default colour;
+// matching the colour, not the words, survives agy rewording its hints.
+func hintInk(kind string, c cell) bool {
+	return kind == "agy" && c.fg == "5;8"
 }
 
 type line []cell
@@ -84,12 +95,13 @@ func (l line) text() string {
 }
 
 // parse splits screen text into styled cells. Only SGR dim, reverse and the
-// background colour are kept; other escape sequences are skipped.
+// foreground and background colours are kept; other escape sequences are
+// skipped.
 func parse(screen string) []line {
 	var lines []line
 	var cur line
 	var dim, reverse bool
-	var bg string
+	var fg, bg string
 	rs := []rune(screen)
 	for i := 0; i < len(rs); i++ {
 		ch := rs[i]
@@ -108,14 +120,14 @@ func parse(screen string) []line {
 				}
 			}
 			if final == 'm' {
-				sgr(string(rs[start:i]), &dim, &reverse, &bg)
+				sgr(string(rs[start:i]), &dim, &reverse, &fg, &bg)
 			}
 		case ch == '\n':
 			lines = append(lines, cur)
 			cur = nil
 		case unicode.IsControl(ch):
 		default:
-			cur = append(cur, cell{ch: ch, dim: dim, reverse: reverse, bg: bg})
+			cur = append(cur, cell{ch: ch, dim: dim, reverse: reverse, fg: fg, bg: bg})
 		}
 	}
 	if len(cur) > 0 {
@@ -124,7 +136,7 @@ func parse(screen string) []line {
 	return lines
 }
 
-func sgr(params string, dim, reverse *bool, bg *string) {
+func sgr(params string, dim, reverse *bool, fg, bg *string) {
 	codes := []string{"0"}
 	if params != "" {
 		codes = strings.Split(params, ";")
@@ -132,7 +144,7 @@ func sgr(params string, dim, reverse *bool, bg *string) {
 	for i := 0; i < len(codes); i++ {
 		switch code := codes[i]; {
 		case code == "0" || code == "":
-			*dim, *reverse, *bg = false, false, ""
+			*dim, *reverse, *fg, *bg = false, false, "", ""
 		case code == "2":
 			*dim = true
 		case code == "22":
@@ -141,6 +153,8 @@ func sgr(params string, dim, reverse *bool, bg *string) {
 			*reverse = true
 		case code == "27":
 			*reverse = false
+		case code == "39":
+			*fg = ""
 		case code == "49":
 			*bg = ""
 		case code == "38" || code == "48":
@@ -153,11 +167,15 @@ func sgr(params string, dim, reverse *bool, bg *string) {
 					take = 4
 				}
 			}
-			if code == "48" {
-				end := min(i+1+take, len(codes))
+			end := min(i+1+take, len(codes))
+			if code == "38" {
+				*fg = strings.Join(codes[i+1:end], ";")
+			} else {
 				*bg = strings.Join(codes[i+1:end], ";")
 			}
 			i += take
+		case len(code) == 2 && (code[0] == '3' || code[0] == '9') && code[1] >= '0' && code[1] <= '7':
+			*fg = code
 		case len(code) == 2 && code[0] == '4':
 			*bg = code
 		case len(code) == 3 && strings.HasPrefix(code, "10"):
@@ -197,12 +215,13 @@ func isBorder(l line) bool {
 	return strings.HasPrefix(t, strings.Repeat("─", 10))
 }
 
-// typed is the text in a box's cells: non-blank, not dim, and not a
-// harness-drawn cursor sitting on a dim placeholder.
-func typed(cells line) string {
+// typed is the text in a box's cells: non-blank, not dim or in kind's hint
+// colour, and not a harness-drawn cursor sitting on such a placeholder.
+func typed(kind string, cells line) string {
+	drawn := func(c cell) bool { return c.dim || hintInk(kind, c) }
 	var b strings.Builder
 	for i, c := range cells {
-		if c.dim || unicode.IsSpace(c.ch) || (c.reverse && i+1 < len(cells) && cells[i+1].dim) {
+		if drawn(c) || unicode.IsSpace(c.ch) || (c.reverse && i+1 < len(cells) && drawn(cells[i+1])) {
 			b.WriteByte(' ')
 			continue
 		}
@@ -400,7 +419,7 @@ func boxText(kind, screen string) (string, bool) {
 	}
 	var parts []string
 	for _, row := range rows {
-		if t := strings.TrimSpace(typed(row)); t != "" {
+		if t := strings.TrimSpace(typed(kind, row)); t != "" {
 			parts = append(parts, t)
 		}
 	}

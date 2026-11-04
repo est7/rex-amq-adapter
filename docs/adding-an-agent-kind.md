@@ -52,7 +52,10 @@ Record, by driving the agent through each state (an idle prompt, a turn with a
 
 Capture VT screens with `rex capture -b <block> --format=vt`:
 
-- the empty box, including any dim placeholder text;
+- the empty box, including any placeholder text, in every mode the agent
+  cycles through (agy's shift+tab modes each draw a hint). A hint drawn dim is
+  already ignored; one drawn in a plain colour is told by that colour, not its
+  words (`hintInk`, agy's grey), so a reworded hint still counts as empty;
 - a draft typed with `rex send` (no Enter);
 - a draft longer than the pane width (open the agent in a narrow split, e.g.
   `--ratio 35`), so the wrapped layout is known;
