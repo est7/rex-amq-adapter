@@ -34,7 +34,7 @@ func runInstall(cmd string, args []string) int {
 	var only kindList
 	fs.Var(&only, "agent", "only this agent: claude, codex, agy, or pi (repeatable)")
 	dryRun := fs.Bool("dry-run", false, "report what would change without changing anything")
-	force := fs.Bool("force", false, "replace what setup did not install: a rex-amq-adapter skill or Pi extension, or Antigravity's window title command")
+	force := fs.Bool("force", false, "replace what setup did not install: a rex-amq-adapter skill or Pi extension, Antigravity's window title command, or a shared supervisor you set on")
 	asJSON := fs.Bool("json", false, "print the result as JSON")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -142,7 +142,7 @@ func conflictWhat(kind string) string {
 func printSetupNotes(agents []install.Agent, items []install.Item) {
 	for _, it := range items {
 		if it.Change == "conflict" && it.Kind == "supervisor" {
-			fmt.Printf("\n%s: %s turns on the shared supervisor that runs sessions outside their pane (README, Recommended configuration); it was left alone. Use --force to turn it off.\n", it.Agent, it.Path)
+			fmt.Printf("\n%s: %s keeps the shared supervisor that runs sessions outside their pane (README, Recommended configuration) on: %s.\n", it.Agent, it.Path, it.Note)
 			continue
 		}
 		if it.Change == "conflict" {

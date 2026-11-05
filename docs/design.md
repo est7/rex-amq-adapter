@@ -748,11 +748,19 @@ modeled on `rex skill`:
 - **Supervisors**: the `supervisor` item turns off what runs sessions in a
   shared process another terminal started (section 4): `"disableAgentView":
   true` in Claude Code's `settings.json`, and `daemon_auto_start = false` under
-  `[features]` in Codex's `config.toml`, edited by that one line so the rest of
-  the file stays as written. It is `current` when off (for Claude also through
-  managed settings or `CLAUDE_CODE_DISABLE_AGENT_VIEW` in the settings' `env`),
-  `missing` when unset, and `foreign` when the user set it on, which setup
-  keeps unless `--force`. `remove` keeps it: setup cannot tell whether the user
+  `[features]` in Codex's `config.toml`. The Codex state is read by parsing the
+  file (go-toml, which rejects a table defined twice as Codex does; BurntSushi
+  accepts it), so inline tables, dotted and quoted keys, and multi-line strings
+  read as Codex reads them. The edit is by lines, keeping comments and order:
+  the first of rewrite the value, insert after a `[features]` header, append a
+  `[features]` table, or insert `features.daemon_auto_start` at the top whose
+  result parses to the same document with only that key set (executed: each
+  result loads in Codex 0.166.0, `codex features list`). When none does, as for
+  an inline `features = {…}`, the item is a `conflict` whose note asks for the
+  edit by hand. It is `current` when off (for Claude also through managed
+  settings or `CLAUDE_CODE_DISABLE_AGENT_VIEW` in an `env`), `missing` when
+  unset, and `foreign` when the user set it on, which setup keeps unless
+  `--force`. `remove` keeps it: setup cannot tell whether the user
   wanted it off anyway, and turning a supervisor back on would bring the
   misplaced sessions back. A running Codex daemon is not stopped.
 - The agent guide carries every Rex command it uses (opening a peer in a pane,
@@ -794,7 +802,7 @@ internal/amq/          wake check/start/repair/retire, mailbox registration, inb
 internal/screen/       input-box classifier (ported from herdr-amq-adapter)
 internal/store/        records, ledger, inject log, window notes, reservations, locks
 internal/e2e/          scripted agents on a private Rex server and real amq wake
-internal/install/      settings.json / hooks.json merge, stub skills, supervisor settings
+internal/install/      settings.json / hooks.json merge, stub skills, supervisor settings (config.toml through go-toml)
 internal/guide/        embedded agent guide
 ```
 

@@ -91,6 +91,7 @@ type Item struct {
 	Path   string `json:"path"`
 	State  string `json:"state"`            // current | outdated | missing | foreign
 	Change string `json:"change,omitempty"` // created | updated | unchanged | removed | kept | conflict
+	Note   string `json:"note,omitempty"`   // why a conflict was left alone, when setup knows
 }
 
 // Options control setup and removal.

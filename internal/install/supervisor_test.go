@@ -47,7 +47,11 @@ func TestSupervisorStates(t *testing.T) {
 		{"codex flat", "features.daemon_auto_start = false\n[x]\n", core.Codex, "current"},
 		{"codex other table", "[agents.x]\ndaemon_auto_start = false\n", core.Codex, "missing"},
 		{"codex on", "[features]\ndaemon_auto_start = true\n", core.Codex, "foreign"},
-		{"codex inline", "features = { hooks = true }\n", core.Codex, "foreign"},
+		{"codex inline", "features = { hooks = true }\n", core.Codex, "missing"},
+		{"codex inline off", "features = { daemon_auto_start = false }\n", core.Codex, "current"},
+		{"codex quoted header", "[\"features\"]\ndaemon_auto_start = false\n", core.Codex, "current"},
+		{"codex not a bool", "[features]\ndaemon_auto_start = \"false\"\n", core.Codex, "foreign"},
+		{"codex in a string", "instructions = \"\"\"\n[features]\ndaemon_auto_start = false\n\"\"\"\n", core.Codex, "missing"},
 	} {
 		a, _ := supervisorAgent(t, c.kind, c.content)
 		if got, err := supervisorState(a); err != nil || got != c.want {
@@ -102,7 +106,17 @@ func TestSetupTurnsTheCodexDaemonOff(t *testing.T) {
 		{"no file", "", "[features]\n" + codexDaemonComment + "\ndaemon_auto_start = false\n", false, "created"},
 		{"on, kept", "[features]\ndaemon_auto_start = true # mine\n", "[features]\ndaemon_auto_start = true # mine\n", false, "conflict"},
 		{"on, forced", "[features]\ndaemon_auto_start = true # mine\n", "[features]\ndaemon_auto_start = false # mine\n", true, "updated"},
-		{"flat, forced", "features.daemon_auto_start = true\n[features]\nhooks = true\n", "features.daemon_auto_start = false\n[features]\nhooks = true\n", true, "updated"},
+		{"flat, forced", "features.daemon_auto_start = true\n[other]\nhooks = true\n", "features.daemon_auto_start = false\n[other]\nhooks = true\n", true, "updated"},
+		{"not a bool, forced", "[features]\ndaemon_auto_start = \"false\"\n", "[features]\ndaemon_auto_start = false\n", true, "updated"},
+		// A table defined by dotted keys cannot take a [features] header.
+		{"dotted features", "features.hooks = true\n[mcp]\na = 1\n", codexDaemonComment + "\nfeatures.daemon_auto_start = false\nfeatures.hooks = true\n[mcp]\na = 1\n", false, "created"},
+		// A header inside a multi-line string is not the table.
+		{"header in a string", "instructions = \"\"\"\n[features]\n\"\"\"\n\n[features]\nhooks = true\n",
+			"instructions = \"\"\"\n[features]\n\"\"\"\n\n[features]\n" + codexDaemonComment + "\ndaemon_auto_start = false\nhooks = true\n", false, "created"},
+		{"crlf", "[features]\r\nhooks = true\r\n", "[features]\r\n" + codexDaemonComment + "\r\ndaemon_auto_start = false\r\nhooks = true\r\n", false, "created"},
+		// An inline table cannot be edited by lines: left for the user.
+		{"inline", "features = { hooks = true }\n", "features = { hooks = true }\n", false, "conflict"},
+		{"inline on, forced", "features = { daemon_auto_start = true }\n", "features = { daemon_auto_start = true }\n", true, "conflict"},
 	} {
 		a, path := supervisorAgent(t, core.Codex, c.content)
 		it, err := setupSupervisor(a, Options{Force: c.force})
@@ -128,8 +142,8 @@ func TestSetupTurnsTheCodexDaemonOff(t *testing.T) {
 	if st, err := os.Stat(path); err != nil || st.Mode().Perm() != 0o640 {
 		t.Errorf("the file mode was not kept: %v %v", st.Mode(), err)
 	}
-	a, _ = supervisorAgent(t, core.Codex, "features = { hooks = true }\n")
-	if _, err := setupSupervisor(a, Options{Force: true}); err == nil {
-		t.Error("an inline features table was edited by lines")
+	a, _ = supervisorAgent(t, core.Codex, "[features]\nhooks = \n")
+	if _, err := setupSupervisor(a, Options{}); err == nil {
+		t.Error("a config.toml that does not parse was edited")
 	}
 }

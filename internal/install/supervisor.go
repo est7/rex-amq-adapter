@@ -5,10 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
+	"slices"
 	"strings"
+
+	toml "github.com/pelletier/go-toml/v2"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
 	"github.com/est7/rex-amq-adapter/internal/fsutil"
@@ -36,8 +41,7 @@ func supervisorState(a Agent) (string, error) {
 	case core.Claude:
 		return claudeAgentViewState(a.SupervisorFile)
 	case core.Codex:
-		st, _, err := codexDaemonState(a.SupervisorFile)
-		return st, err
+		return codexDaemonState(a.SupervisorFile)
 	}
 	return "", fmt.Errorf("%s has no shared supervisor", a.Name)
 }
@@ -55,6 +59,7 @@ func setupSupervisor(a Agent, o Options) (Item, error) {
 		return it, nil
 	case st == "foreign" && !o.Force:
 		it.Change = "conflict"
+		it.Note = "it is set on; --force turns it off"
 		return it, nil
 	case st == "foreign":
 		it.Change = "updated"
@@ -67,8 +72,17 @@ func setupSupervisor(a Agent, o Options) (Item, error) {
 	if a.Kind == core.Claude {
 		return it, disableAgentView(a.SupervisorFile)
 	}
-	return it, disableCodexDaemon(a.SupervisorFile)
+	err = disableCodexDaemon(a.SupervisorFile)
+	if errors.Is(err, errNoSafeEdit) {
+		it.Change, it.Note = "conflict", err.Error()
+		return it, nil
+	}
+	return it, err
 }
+
+// errNoSafeEdit is a config file setup cannot edit without changing what
+// else it says; the user edits it by hand.
+var errNoSafeEdit = errors.New("no edit by lines keeps the rest of the file as it is")
 
 func removeSupervisor(a Agent) (Item, error) {
 	it := Item{Agent: a.Name, Kind: "supervisor", Path: a.SupervisorFile}
@@ -88,9 +102,10 @@ func removeSupervisor(a Agent) (Item, error) {
 func claudeAgentViewState(settings string) (string, error) {
 	if b, err := os.ReadFile(managedClaudeSettings); err == nil {
 		var managed struct {
-			Disable *bool `json:"disableAgentView"`
+			Disable *bool             `json:"disableAgentView"`
+			Env     map[string]string `json:"env"`
 		}
-		if json.Unmarshal(b, &managed) == nil && managed.Disable != nil && *managed.Disable {
+		if json.Unmarshal(b, &managed) == nil && (managed.Disable != nil && *managed.Disable || truthy(managed.Env["CLAUDE_CODE_DISABLE_AGENT_VIEW"])) {
 			return "current", nil
 		}
 	}
@@ -136,114 +151,159 @@ func disableAgentView(settings string) error {
 
 // --- Codex: the shared daemon ---
 //
-// Only the one key is read and written, line by line, so no TOML parser is
-// needed and the rest of the file (comments, order) is left as it was.
+// The state comes from parsing config.toml, so inline tables, dotted and
+// quoted keys, and multi-line strings read as Codex reads them. The parser
+// must be as strict as Codex's: go-toml rejects a table defined twice (by
+// dotted keys and a header) as Codex does, where BurntSushi/toml accepts it. The edit is
+// by lines, so comments and order stay as written, and is written only when
+// the edited file parses to the same document with features.daemon_auto_start
+// set to false: a line placed wrong (inside a string, in another table, a
+// duplicate key) is refused rather than leaving Codex a config it rejects.
 
 var (
-	tomlTable      = regexp.MustCompile(`^\s*\[([^\[\]]*)\]\s*(#.*)?$`)
-	daemonKey      = regexp.MustCompile(`^(\s*daemon_auto_start\s*=\s*)(true|false)(\s*(#.*)?)$`)
-	daemonKeyFlat  = regexp.MustCompile(`^(\s*features\.daemon_auto_start\s*=\s*)(true|false)(\s*(#.*)?)$`)
-	inlineFeatures = regexp.MustCompile(`^\s*features\s*=`)
+	featuresHeader = regexp.MustCompile(`^\s*\[\s*features\s*\]\s*(#.*)?$`)
+	daemonLine     = regexp.MustCompile(`^(\s*(?:features\.)?daemon_auto_start\s*=\s*)([^#]*?)(\s*(#.*)?)$`)
 )
 
-// codexLines is config.toml split into lines, with what it says about the
-// daemon: the index of the daemon_auto_start line (flat when written as
-// features.daemon_auto_start before any table) and of the [features]
-// header, -1 when absent, and whether features is an inline table, which
-// setup does not edit by lines.
-type codexLines struct {
-	lines       []string
-	key, header int
-	flat, keyOn bool
-	inline      bool
-	path        string
-	mode        fs.FileMode
+// codexConfig is config.toml as read: its path (symlinks resolved), mode,
+// text, and parsed document.
+type codexConfig struct {
+	path string
+	mode fs.FileMode
+	text string
+	doc  map[string]any
 }
 
-func readCodexConfig(config string) (codexLines, error) {
-	c := codexLines{key: -1, header: -1, path: config, mode: 0o600}
+func readCodexConfig(config string) (codexConfig, error) {
+	c := codexConfig{path: config, mode: 0o600, doc: map[string]any{}}
 	if r, err := filepath.EvalSymlinks(config); err == nil {
 		c.path = r
 	}
 	b, err := os.ReadFile(c.path)
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if errors.Is(err, fs.ErrNotExist) {
+		return c, nil
+	}
+	if err != nil {
 		return c, err
 	}
 	if st, err := os.Stat(c.path); err == nil {
 		c.mode = st.Mode().Perm()
 	}
-	if len(b) > 0 {
-		c.lines = strings.Split(strings.TrimSuffix(string(b), "\n"), "\n")
-	}
-	table := ""
-	for i, line := range c.lines {
-		if m := tomlTable.FindStringSubmatch(line); m != nil {
-			table = strings.TrimSpace(m[1])
-			if table == "features" {
-				c.header = i
-			}
-			continue
-		}
-		var m []string
-		switch table {
-		case "":
-			if inlineFeatures.MatchString(line) {
-				c.inline = true
-			}
-			m = daemonKeyFlat.FindStringSubmatch(line)
-		case "features":
-			m = daemonKey.FindStringSubmatch(line)
-		}
-		if m != nil {
-			c.key, c.keyOn, c.flat = i, m[2] == "true", table == ""
-		}
+	c.text = string(b)
+	if err := toml.Unmarshal(b, &c.doc); err != nil {
+		return c, fmt.Errorf("%s: %w", config, err)
 	}
 	return c, nil
 }
 
-func codexDaemonState(config string) (string, codexLines, error) {
+// daemonSetting is features.daemon_auto_start in doc.
+func daemonSetting(doc map[string]any) (value any, ok bool) {
+	features, _ := doc["features"].(map[string]any)
+	value, ok = features["daemon_auto_start"]
+	return value, ok
+}
+
+func codexDaemonState(config string) (string, error) {
 	c, err := readCodexConfig(config)
-	switch {
-	case err != nil:
-		return "", c, err
-	case c.key >= 0 && !c.keyOn:
-		return "current", c, nil
-	case c.key >= 0 || c.inline:
-		return "foreign", c, nil
+	if err != nil {
+		return "", err
 	}
-	return "missing", c, nil
+	switch v, ok := daemonSetting(c.doc); {
+	case !ok:
+		return "missing", nil
+	case v == false:
+		return "current", nil
+	}
+	return "foreign", nil
 }
 
 const codexDaemonComment = "# rex-amq-adapter: a shared daemon gives every thread the first terminal's Rex environment"
 
 func disableCodexDaemon(config string) error {
-	_, c, err := codexDaemonState(config)
+	c, err := readCodexConfig(config)
 	if err != nil {
 		return err
 	}
-	lines := c.lines
-	switch {
-	case c.key >= 0:
-		re := daemonKey
-		if c.flat {
-			re = daemonKeyFlat
+	eol := "\n"
+	if strings.Contains(c.text, "\r\n") {
+		eol = "\r\n"
+	}
+	var lines []string
+	if c.text != "" {
+		lines = strings.Split(strings.TrimSuffix(strings.ReplaceAll(c.text, "\r\n", "\n"), "\n"), "\n")
+	}
+	text, err := "", errors.New("no edit to try")
+	for _, edit := range daemonEdits(lines) {
+		text = strings.Join(edit, eol) + eol
+		if err = checkDaemonEdit(c.doc, text); err == nil {
+			break
 		}
-		lines[c.key] = re.ReplaceAllString(lines[c.key], "${1}false${3}")
-	case c.inline:
-		return fmt.Errorf("%s sets features as an inline table; add daemon_auto_start = false to it by hand", config)
-	case c.header >= 0:
-		lines = append(lines[:c.header+1], append([]string{codexDaemonComment, "daemon_auto_start = false"}, lines[c.header+1:]...)...)
-	default:
-		if len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) != "" {
-			lines = append(lines, "")
-		}
-		lines = append(lines, "[features]", codexDaemonComment, "daemon_auto_start = false")
+	}
+	if err != nil {
+		return fmt.Errorf("%w (%v): add daemon_auto_start = false to features by hand", errNoSafeEdit, err)
 	}
 	if err := os.MkdirAll(filepath.Dir(c.path), 0o700); err != nil {
 		return err
 	}
-	if err := fsutil.WriteAtomic(c.path, []byte(strings.Join(lines, "\n")+"\n")); err != nil {
+	if err := fsutil.WriteAtomic(c.path, []byte(text)); err != nil {
 		return err
 	}
 	return os.Chmod(c.path, c.mode)
+}
+
+// daemonEdits are the ways to turn the daemon off by lines, most specific
+// first: rewrite the value of a daemon_auto_start line, add the key after a
+// [features] header, append a [features] table, or add
+// features.daemon_auto_start before every table. A line that only looks like
+// one (inside a multi-line string, in another table) yields an edit that
+// checkDaemonEdit refuses, so the next is tried.
+func daemonEdits(lines []string) [][]string {
+	var edits [][]string
+	for i, line := range lines {
+		if daemonLine.MatchString(line) {
+			edit := slices.Clone(lines)
+			edit[i] = daemonLine.ReplaceAllString(line, "${1}false${3}")
+			edits = append(edits, edit)
+		}
+	}
+	for i, line := range lines {
+		if featuresHeader.MatchString(line) {
+			edits = append(edits, slices.Insert(slices.Clone(lines), i+1, codexDaemonComment, "daemon_auto_start = false"))
+		}
+	}
+	table := slices.Clone(lines)
+	if len(table) > 0 && strings.TrimSpace(table[len(table)-1]) != "" {
+		table = append(table, "")
+	}
+	edits = append(edits, append(table, "[features]", codexDaemonComment, "daemon_auto_start = false"))
+	return append(edits, slices.Insert(slices.Clone(lines), 0, codexDaemonComment, "features.daemon_auto_start = false"))
+}
+
+// checkDaemonEdit reports whether text is before with only
+// features.daemon_auto_start set to false.
+func checkDaemonEdit(before map[string]any, text string) error {
+	after := map[string]any{}
+	if err := toml.Unmarshal([]byte(text), &after); err != nil {
+		return fmt.Errorf("the edit would not parse (%v)", err)
+	}
+	if v, ok := daemonSetting(after); !ok || v != false {
+		return errors.New("the edit did not set features.daemon_auto_start")
+	}
+	strip := func(doc map[string]any) map[string]any {
+		out := maps.Clone(doc)
+		if features, ok := out["features"].(map[string]any); ok {
+			features = maps.Clone(features)
+			delete(features, "daemon_auto_start")
+			if len(features) == 0 {
+				delete(out, "features")
+			} else {
+				out["features"] = features
+			}
+		}
+		return out
+	}
+	if !reflect.DeepEqual(strip(before), strip(after)) {
+		return errors.New("the edit would change other settings")
+	}
+	return nil
 }
