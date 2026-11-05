@@ -373,7 +373,7 @@ func (e Env) Exports(loc Location) (string, error) {
 		return "", err
 	}
 	if !ok || !rec.Live() {
-		return "", fmt.Errorf("no AMQ identity for this Rex block (%s); it is assigned when Claude Code or Codex starts here with the adapter's hooks installed", loc.Block)
+		return "", fmt.Errorf("no AMQ identity for this Rex block (%s); it is assigned when an agent's first turn starts here with the adapter's hooks installed", loc.Block)
 	}
 	return fmt.Sprintf("export AM_ROOT=%s AM_ME=%s\n", shellQuote(e.Paths.Root()), shellQuote(string(rec.Handle))), nil
 }

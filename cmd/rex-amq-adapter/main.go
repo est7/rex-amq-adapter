@@ -115,7 +115,7 @@ func runHook(args []string) int {
 	}
 	fs := flag.NewFlagSet("hook", flag.ContinueOnError)
 	fs.SetOutput(log)
-	agent := fs.String("agent", "", "agent kind: claude or codex")
+	agent := fs.String("agent", "", "agent kind: claude, codex, agy, or pi")
 	if err := fs.Parse(args[1:]); err != nil {
 		return hookFail(log, err)
 	}
