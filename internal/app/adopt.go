@@ -83,6 +83,22 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 			}
 		}
 	}
+	// A background job is adopted only into a pane that shows it: a hook on
+	// every tool call trusts the block of the job's record, and that record
+	// may be stale or an older adapter's.
+	if in.Job {
+		job, _, err := e.claudeJob(in.SessionID)
+		if err != nil {
+			return Adoption{}, err
+		}
+		shown, err := e.showsJob(ctx, loc.Block, own, job)
+		if err != nil {
+			return Adoption{}, err
+		}
+		if !shown {
+			return Adoption{}, fmt.Errorf("%w: block %s shows something else", ErrJobNotShown, loc.Block)
+		}
+	}
 	handle := own.Handle
 	if !hasOwn {
 		taken, err := e.takenHandles(recs)

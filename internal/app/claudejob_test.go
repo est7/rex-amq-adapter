@@ -410,3 +410,34 @@ func TestAJobMoveThatFailsIsFinishedLater(t *testing.T) {
 		t.Errorf("after a failed move: %+v, want it in %s and unfinished", rec, next)
 	}
 }
+
+// A job's record can name a pane that does not show it (written by an older
+// adapter, or left behind). A frequent hook trusts the record's block, and
+// its pid mismatch asks for an adoption: the job must not be adopted into a
+// pane that does not show it. Found on the real system after the v0.8.0
+// upgrade, where a PostToolUse re-adopted a job into another conversation's
+// pane.
+func TestAJobIsNeverAdoptedIntoAPaneThatDoesNotShowIt(t *testing.T) {
+	w := newJobWorld(t)
+	// An old adapter's record: the job bound to another conversation's pane,
+	// with that pane's foreground pid.
+	const stale = "block:stale"
+	w.term.windows[stale] = "window:3"
+	w.term.fgs[stale] = rex.Process{PID: 4242, Name: "claude"}
+	w.term.titles[stale] = "✳ another conversation"
+	if err := w.e.Store.PutRecord(store.Record{Handle: "claude-old", Kind: core.Claude, Server: "unix:///fake.sock", BlockID: stale, AgentPID: 4242, AgentSessionID: jobSess}); err != nil {
+		t.Fatal(err)
+	}
+	w.jobHook(t, EventPostTool)
+	if rec, _, _ := w.e.liveRecordOf(core.Claude, jobSess); rec.BlockID == stale && rec.AgentPID == w.jobPID {
+		t.Errorf("the job was adopted into a pane that shows something else: %+v", rec)
+	}
+	if w.term.label == "claude-old" {
+		t.Errorf("the other pane was relabelled with the job's handle")
+	}
+	// Its next prompt finds the pane that shows it.
+	w.jobHook(t, EventPrompt)
+	if rec, _, _ := w.e.liveRecordOf(core.Claude, jobSess); rec.BlockID != viewBlock || rec.AgentPID != w.jobPID {
+		t.Errorf("the job's next prompt did not move it to its pane: %+v", rec)
+	}
+}
