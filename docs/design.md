@@ -149,9 +149,9 @@ agent. Adoption, in order:
    handle still reach it; mail sent while it was closed is waiting as unread.
    This also covers a process that switches session (`/resume` inside the
    agent); the session it left keeps its own handle.
-2. **Same process.** This pane's live record of the same process keeps its
-   handle: a repeated hook, a compaction, a new session in the process
-   (`/clear`).
+2. **Same process.** This pane's live record of the same process and kind
+   keeps its handle: a repeated hook, a compaction, a new session in the
+   process (`/clear`), an agy subagent (below).
 3. **New name.** `<kind>-<role>-<NN>`, or `<kind>-<NN>` without a role, with
    the lowest `NN` from `01` that is not taken. The role comes from the pane
    label a peer set when it launched the agent (`rex split --label reviewer
@@ -194,6 +194,44 @@ restarted Rex server makes old records' blocks unfindable and collection
 parks them. A different pid in the same block is a different agent process: it
 keeps the handle only by resuming the same session, and the record it
 replaces is parked as that session's reservation.
+
+**A hook checks the record before trusting it.** The record is a lease taken
+at adoption, and a harness that announces no change leaves it stale. A hook
+is first-hand evidence of three facts: the kind it was installed for, the
+session in its payload, and the process it descends from. The announcing hooks
+(`UserPromptSubmit`, `PostToolUse`, `PreInvocation`, `Stop`, Pi's mail and
+settle) compare them with the block's record (`recordFit`) and adopt again
+when they disagree; `SessionStart` always adopts, and `SessionEnd` departs only
+the session it names:
+
+| The record | Means | Then |
+|---|---|---|
+| is of another kind | another harness replaced the agent, possibly with its pid | adopt; while adoption fails, the record's mail is not this agent's to hear |
+| names a process the hook does not descend from (local server, positive pid) | the session was resumed in a new process, or the pid now belongs to another program | adopt; another session as well makes the record another agent's, as above |
+| matches | | trust it |
+
+A record on a remote server, or one without a pid, cannot be checked against
+this machine's processes and is trusted as before.
+
+The ancestry is read with sysctl (Linux: `/proc`), about 80 µs, so the fast
+path still starts no subprocess. An ancestry that cannot be read does not
+confirm the record: the hook adopts again. Every harness's hooks descend from
+its pane's foreground process (Claude through two shells; executed for all four
+by agent-post's probes, 2026-11-03), except Codex's shared daemon, whose
+chain runs through the first pane's TUI; hence `--no-daemon`.
+
+Another session from the record's own process is trusted, not taken as a
+switch. agy runs each subagent as a conversation of its own inside the
+parent's process (`invoke_subagent` returns its `conversationId`; the parent's
+`brain/<id>/.system_generated/subagents/` lists it), and the subagent's hooks
+reach the adapter from the parent's pane: 3 of 20 agy records on est9's
+machine held a subagent's id (2026-11-05), written by its SessionStart through
+the same-process claim. Re-adopting on such a hook would hand the pane back and
+forth between parent and subagents. The cost is two known gaps, closed only
+once a hook can tell a subagent from the conversation the pane shows: agy's
+`/resume` of another conversation inside the running process keeps the
+handle of the conversation it left, and a subagent's SessionStart rewrites the
+record's session, so a later resume of the parent is named afresh.
 
 Codex can run an ephemeral memory-consolidation session inside the same
 terminal process. It inherits the Rex block but has no persisted transcript.
@@ -465,7 +503,13 @@ with a timeout (both harnesses run hook commands through a shell). Outside Rex
 depart through collection, and its Stop hook blocks only for mail never
 announced (the adapter treats every agy stop as already continued), so a turn
 cannot loop. A Stop the user cancelled, or one caused by an error or a loop
-limit, is never overridden. Every agy hook prints a JSON object, `{}` when it
+limit, is never overridden. agy fires `SessionStart` only for a new
+conversation, so a conversation `/resume`d by a new agy process is first seen
+by its next `PreInvocation`; the hook's own check of the record (section 4)
+adopts it there. Its subagents run hooks from the parent's pane under their own
+conversation ids (section 4). Without it the record kept the exited
+PID, the doorbell's binding check reported `agent_gone`, and the next collect
+parked the live agent (observed 2026-11-04). Every agy hook prints a JSON object, `{}` when it
 has nothing to say. Its peers start with
 `agy --dangerously-skip-permissions -i "<brief>"`, since agy otherwise asks
 before each `amq` command.
@@ -643,7 +687,7 @@ Overridable with `REX_AMQ_ADAPTER_HOME` (tests use a temporary directory).
 
 ```
 cmd/rex-amq-adapter/   subcommands: hook, inject, env, who, await, collect, crews, tab, setup, status, remove, __internal, version
-internal/app/          entry points: observe, ask core, act (adopt, inject, announce, depart, collect, discovery, await, goal)
+internal/app/          entry points: observe, ask core, act (adopt, inject, announce, depart, collect, discovery, await, goal); the hook's process ancestry (golang.org/x/sys)
 internal/core/         pure policy: handle choice, inject decision, announce decision, window-mates, notice text
 internal/crew/         crew and role prompt lookup across project, user, and built-in layers; built-in prompts
 internal/fsutil/       flock and atomic replace
@@ -761,6 +805,8 @@ and Claude Code 2.1.316, adapter state isolated by `REX_AMQ_ADAPTER_HOME`:
 | A conversation changes session id and its restart loses the handle | Claude's transcript proves the lineage, read only for a session with no record; a parent running elsewhere keeps its handle (executed in `lineage_test.go`, and read-only against the real 2026-11-01 transcript) |
 | Mail goes to a departed handle and nobody notices | The sender's next hook checks its outbox and says so once, naming who took the pane (executed in `undelivered_test.go`) |
 | A new agent inherits stale mail | New names skip mailboxes with undrained mail and reserved handles |
+| A hook trusts a record that is no longer its agent's: an agy conversation resumed in a new process (collection then parked the live agent), another kind in the pane before its SessionStart, a reused pid | Each announcing hook compares the record's kind and, for a local record with a pid, its process with its own, and adopts again on a mismatch; while that adoption fails, a record found to be another agent's is not read (executed in `lease_test.go`, each check ablated). Remote records are not checked |
+| An agy subagent takes its parent's pane | Its hooks come from the parent's process, so the record is trusted and the same-process claim keeps the handle (executed in `resume_test.go`); its SessionStart still rewrites the record's session (section 4) |
 | A resumed agent loses its handle, and its peer writes to nobody | The handle belongs to the agent session, not the pane; collection runs before adoption so the closed pane's record is parked and claimable; reservations last 7 days (executed in `resume_test.go`) |
 | A handle names the wrong harness (`codex-…` running Claude) | The kind is never read from a label; a pane that changes kind keeps only its role |
 | Two agents claim one handle | Adoption holds the lifecycle lock; mailbox registration holds the root registry lock |

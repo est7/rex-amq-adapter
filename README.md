@@ -175,7 +175,7 @@ directory from `amq who`.
 | Agent's first hook runs | Handle chosen (`<kind>-<role>-<NN>`, the role from the pane label, else `<kind>-<NN>`), mailbox created, `amq wake` started, pane relabeled to the handle; it is told its window-mates and its crew and role briefing, and its window-mates are told it joined |
 | Agent exits | `SessionEnd` retires its waker and tells its window-mates it left; the handle stays reserved for its session for 7 days |
 | Agent crashes or its pane closes | The next adoption or `collect` notices and does the same, as does `who` in that tab, a send to it, or within seconds a `goal` agent there |
-| Session resumed (`claude --resume`, `codex resume`), in any pane | Gets its handle back, with the mail that arrived meanwhile; so does a Claude conversation that moved to a new session id, found through its transcript |
+| Session resumed (`claude --resume`, `codex resume`), in any pane | Gets its handle back, with the mail that arrived meanwhile; so does a Claude conversation that moved to a new session id, found through its transcript, and an agy conversation `/resume`d by a new agy in the same pane, whose next hook adopts it |
 | Mail sent to an agent that left | The sender's next hook says so once, naming who now runs in that pane and who is in its tab |
 | New session in a used pane | Gets a new handle; the previous session keeps its own |
 

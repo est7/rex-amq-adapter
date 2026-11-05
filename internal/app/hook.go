@@ -141,8 +141,14 @@ func (e Env) announce(ctx context.Context, kind core.Kind, loc Location, in Hook
 		return Reply{}, err
 	}
 	identity := ""
-	if !ok || !rec.Adopted() {
-		hasMailbox := ok && rec.Live()
+	f := own
+	if ok {
+		f = e.recordFit(kind, rec, in)
+	}
+	if !ok || !rec.Adopted() || f != own {
+		// The record's mailbox is this agent's own unless the record belongs
+		// to another agent: then a failed adoption leaves it nothing to read.
+		hasMailbox := ok && rec.Live() && f != foreign
 		a, adopted, err := e.adoptUnlessBackingOff(ctx, kind, loc, in, may)
 		switch {
 		case adopted:

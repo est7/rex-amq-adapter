@@ -169,3 +169,91 @@ func TestAgyReadoptionByConversationRepeatsNoIdentity(t *testing.T) {
 		t.Fatalf("a new conversation must learn its handle: notice %q, err %v", r.Notice, err)
 	}
 }
+
+// Antigravity fires SessionStart only for a new conversation and has no
+// SessionEnd, so an agy that quits and is /resumed by a new agy process in the
+// same pane reaches the adapter first as a PreInvocation. That hook must rebind
+// the record to the live process: otherwise the doorbell's binding check
+// reports the agent gone and the next collect parks it.
+func TestAgyResumedInANewProcessRebindsItsRecord(t *testing.T) {
+	const deadPID = 0x3ffffff0 // no such process
+	term := &fakeTerm{state: "idle", fgPID: deadPID}
+	e := realAmqEnv(t, term)
+	ctx := context.Background()
+	loc := Location{Block: block}
+	if _, err := e.Hook(ctx, EventSessionStart, core.Agy, loc, HookInput{ConversationID: "c1"}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = e.Depart(ctx, loc, HookInput{}) })
+	before, _, _ := e.Store.Record(block)
+	if before.AgentPID != deadPID {
+		t.Fatalf("setup: pid %d", before.AgentPID)
+	}
+
+	term.mu.Lock()
+	term.fgPID = os.Getpid() // the replacement agy, alive and in the foreground
+	term.mu.Unlock()
+	r, err := e.Hook(ctx, EventPreInvocation, core.Agy, loc, HookInput{ConversationID: "c1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Notice != "" {
+		t.Errorf("rebinding the same conversation repeated its identity: %q", r.Notice)
+	}
+	after, _, _ := e.Store.Record(block)
+	if after.AgentPID != os.Getpid() || after.Handle != before.Handle {
+		t.Errorf("record not rebound to the live process: %+v", after)
+	}
+	b, err := e.observeBinding(ctx, after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o, bound := core.CheckBinding(b); !bound {
+		t.Errorf("doorbell binding check fails: %+v", o)
+	}
+	if err := e.Collect(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if rec := recordOf(t, e, before.Handle); !rec.Live() {
+		t.Errorf("collect parked the live resumed agent: %+v", rec)
+	}
+}
+
+// agy runs a subagent as a conversation of its own inside the same process,
+// and its hooks carry the subagent's conversationId from the parent's pane
+// (seen 2026-11-05: 3 of 20 agy records held a subagent's id). The pane must
+// stay the parent's: same handle, nothing parked. The subagent's SessionStart
+// rewrites the record's session (a known gap); after it, no hook of either
+// conversation adopts again, so none repeats the identity or rewrites the
+// record.
+func TestAgySubagentDoesNotTakeThePane(t *testing.T) {
+	e := realAmqEnv(t, &fakeTerm{state: "working"})
+	ctx := context.Background()
+	loc := Location{Block: block}
+	for _, conversation := range []string{"parent", "child"} {
+		if _, err := e.Hook(ctx, EventSessionStart, core.Agy, loc, HookInput{ConversationID: conversation}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { _ = e.Depart(ctx, loc, HookInput{}) })
+	started, _, _ := e.Store.Record(block)
+	for _, conversation := range []string{"child", "parent", "child", "parent"} {
+		r, err := e.Hook(ctx, EventPreInvocation, core.Agy, loc, HookInput{ConversationID: conversation})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r.Notice != "" {
+			t.Errorf("a hook from %s adopted again: %q", conversation, r.Notice)
+		}
+		if now, _, _ := e.Store.Record(block); now != started {
+			t.Fatalf("a hook from %s rewrote the pane's record: %+v, was %+v", conversation, now, started)
+		}
+	}
+	recs, err := e.Store.Records()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recs) != 1 {
+		t.Errorf("a subagent left records behind: %+v", recs)
+	}
+}

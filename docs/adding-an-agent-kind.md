@@ -90,6 +90,13 @@ official pages), find and then exercise:
 - **when the first hook fires**: at process start, or only at the first turn.
   If only at the first turn, peers must be launched with their brief as the
   first prompt, and the launch flag goes into the guide;
+- whether the start hook fires when the running process switches session
+  (`/resume`, `/clear`, `/new`), and which session id the hooks of subagents
+  or background tasks carry: agy fires it only for a new conversation, and
+  its subagents' hooks carry their own ids from the parent's pane;
+- that every hook descends from the pane's foreground process (`ps -o
+  ppid=` up from the hook against `rex block call -b <block> process`): a
+  hook's check of its record depends on it;
 - the environment hooks and tool shells inherit (`REX_BLOCK` must reach both).
   Probe any shared-background-server mode separately: the terminal frontend's
   environment does not prove that the backend inherits it. Codex requires

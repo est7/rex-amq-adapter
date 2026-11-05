@@ -45,6 +45,9 @@ type Env struct {
 	AmqBin  string
 	SelfBin string // SelfPath(): absolute, stable across Homebrew upgrades
 	Now     func() time.Time
+	// Ancestors is the calling process and its ancestors, nearest first; nil
+	// reads them from the OS.
+	Ancestors func() ([]int, error)
 }
 
 // NewEnv resolves binaries and state paths. server is the Rex address to
