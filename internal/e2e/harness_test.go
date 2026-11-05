@@ -82,7 +82,11 @@ func newWorld(t *testing.T) *world {
 	if testing.Short() {
 		t.Skip("needs real Rex and amq servers")
 	}
-	t.Parallel() // each world is private
+	// Each world is private. Its scripted agents run SessionStart once and
+	// never retry adoption as a real harness does on its next hook, so a hook
+	// that gives up at its budget fails the test: about four suites at once
+	// on one machine (60-odd Rex servers) are enough. Run one suite at a time.
+	t.Parallel()
 	rexBin, err := exec.LookPath("rex")
 	if err != nil {
 		t.Skip("rex is not installed")
