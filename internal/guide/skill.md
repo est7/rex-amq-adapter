@@ -168,7 +168,9 @@ this needs is below; no other skill is required.
    them, never afterwards: the agent takes its role and crew when its first
    hook runs, which can be before a later rename. The program after `--` takes the brief as its first
    prompt: `codex --no-daemon "<brief>"`, `claude "<brief>"`, `pi "<brief>"`, or
-   `agy -i "<brief>"` (Antigravity needs `-i`). Pass `--no-daemon` explicitly
+   `agy --dangerously-skip-permissions -i "<brief>"` (Antigravity needs `-i`,
+   and without the skip flag it stops to ask before every `amq` command it
+   runs). Pass `--no-daemon` explicitly
    for Codex: Rex launches the binary without expanding fish abbreviations.
    This mode cannot be combined with `--remote` or `codex agents`. Never take
    focus. Save the returned block id. When unsure whether work is the same task,

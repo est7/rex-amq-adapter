@@ -466,7 +466,9 @@ depart through collection, and its Stop hook blocks only for mail never
 announced (the adapter treats every agy stop as already continued), so a turn
 cannot loop. A Stop the user cancelled, or one caused by an error or a loop
 limit, is never overridden. Every agy hook prints a JSON object, `{}` when it
-has nothing to say. Its peers start with `agy -i "<brief>"`.
+has nothing to say. Its peers start with
+`agy --dangerously-skip-permissions -i "<brief>"`, since agy otherwise asks
+before each `amq` command.
 
 **Pi** has no command hooks. `setup` installs a small JavaScript extension
 (`~/.pi/agent/extensions/rex-amq-adapter.js`, or under `PI_CODING_AGENT_DIR`)

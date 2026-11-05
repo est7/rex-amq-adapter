@@ -80,6 +80,8 @@ the binary. Run it again after moving the binary.
   Codex runs new hooks only after you approve them: run `/hooks` in Codex, or
   accept the review prompt at startup. The first hook that runs adopts the agent.
 - **Claude Code** and **Antigravity** run hooks only in folders you trust.
+- **Antigravity** peers start with `agy --dangerously-skip-permissions -i "<brief>"`;
+  without the skip flag agy stops to ask before every `amq` command it runs.
 - An agent gets its mailbox when its first turn starts; Codex and Antigravity
   start none on their own, so give a peer its brief as the first prompt.
 

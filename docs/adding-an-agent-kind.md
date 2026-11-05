@@ -106,7 +106,9 @@ the process), run start / settle, and dialog open / close.
 ### 2.5 Launch and skill
 
 - the flag that starts the agent with an initial prompt (`claude "<brief>"`,
-  `codex --no-daemon "<brief>"`, `pi "<brief>"`, `agy -i "<brief>"`);
+  `codex --no-daemon "<brief>"`, `pi "<brief>"`, `agy -i "<brief>"`), plus any
+  flag a peer needs to run `amq` without stopping for permission (agy's
+  `--dangerously-skip-permissions`);
 - the user-level skill directory the agent reads, and whether it is shared
   with another kind (Pi and Codex share `~/.agents/skills`).
 
