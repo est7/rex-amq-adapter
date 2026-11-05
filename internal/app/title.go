@@ -61,10 +61,11 @@ func (e Env) syncTitle(ctx context.Context, kind core.Kind, event string, rec st
 // Code session whose pane shows no task. Claude Code runs SessionStart, which
 // carries the same request, before the user has asked anything, so the agent
 // cannot know its task then; Codex and agy run it with the first prompt. Each
-// session is asked once: a session that stays without a task (a quick
-// question) is not asked again.
+// session is asked once, at its first prompt: a session that stays without a
+// task (a quick question), or clears the task it started with, is not asked
+// again. An unfinished adoption is not asked: its pane is not relabelled yet.
 func (e Env) askTask(ctx context.Context, kind core.Kind, event string, rec store.Record, session string) string {
-	if kind != core.Claude || event != EventPrompt || rec.Task != "" || session == "" {
+	if kind != core.Claude || event != EventPrompt || session == "" || !rec.Adopted() {
 		return ""
 	}
 	unlock, err := e.Store.LockLedger(ctx, rec.Handle)
@@ -75,7 +76,7 @@ func (e Env) askTask(ctx context.Context, kind core.Kind, event string, rec stor
 	defer unlock()
 	asked, err := e.Store.TaskAsked(rec.Handle)
 	if err == nil && asked != session {
-		if err = e.Store.SetTaskAsked(rec.Handle, session); err == nil {
+		if err = e.Store.SetTaskAsked(rec.Handle, session); err == nil && rec.Task == "" {
 			return core.TaskNotice(rec.Handle, e.SelfBin+" title", "")
 		}
 	}

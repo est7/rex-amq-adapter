@@ -110,18 +110,17 @@ func HookNotice(a Announcement, h Handle, envCmd string, event HookEvent) string
 	return lead + ". " + act + "."
 }
 
-// SessionNotice is the SessionStart context: who the agent is, how to use
-// AMQ, and what its pane label shows. The label paragraph stands apart, since
-// it applies whether or not the agent messages anyone; task is the one it
-// starts with, if any.
-func SessionNotice(h Handle, envCmd, titleCmd, task string, unread int) string {
+// SessionNotice is the SessionStart context's AMQ part: who the agent is
+// and how to use AMQ. What its pane label shows (TaskNotice) follows on a
+// line of its own, since it applies whether or not the agent messages anyone.
+func SessionNotice(h Handle, envCmd string, unread int) string {
 	s := fmt.Sprintf("AMQ: you are %s. Other agents in Rex reach you with `amq send --to %s`. "+
 		"Before any amq command run `eval \"$(%s)\"` (each shell needs it). "+
 		"Load the rex-amq-adapter skill before messaging other agents.", h, h, envCmd)
 	if unread > 0 {
 		s += fmt.Sprintf(" You have %d unread message(s): drain them with `amq drain --include-body` and act on them.", unread)
 	}
-	return s + "\n" + TaskNotice(h, titleCmd, task)
+	return s
 }
 
 // TaskNotice is what an agent is told about its pane label: the task it

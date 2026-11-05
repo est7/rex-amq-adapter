@@ -141,7 +141,7 @@ conventions, shared by every agent in it:
 | crew `design` | architects propose independently, critique each other, and report a decision or the crux |
 
 ```bash
-rex-amq-adapter tab pair --role implementer -- codex --no-daemon "Fix #42: …"
+rex-amq-adapter tab pair --role "implementer | fix #42" -- codex --no-daemon "Fix #42: …"
 rex split -b <its block> --label "reviewer | review #42" -- claude "Review the implementer's fix for #42 when it hands off."
 rex-amq-adapter crews        # every crew and role available in this directory
 ```

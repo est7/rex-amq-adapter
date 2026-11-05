@@ -32,12 +32,15 @@ func TestInitialTask(t *testing.T) {
 // The pane-label request stands apart from the AMQ instructions, so an agent
 // that never messages anyone still reads it; an agent that starts with a task
 // is told what its pane shows instead of being asked for one.
-func TestSessionNoticeAsksForTheTaskOnItsOwn(t *testing.T) {
-	asked := SessionNotice("claude-06", "x env", "x title", "", 0)
-	if !strings.Contains(asked, "\nPane label:") || !strings.Contains(asked, `x title "<task in a few words>"`) {
-		t.Errorf("no separate request for a task:\n%s", asked)
+func TestTaskNoticeAsksForATaskOrSaysWhatThePaneShows(t *testing.T) {
+	if amq := SessionNotice("claude-06", "x env", 0); strings.Contains(amq, "Pane label") || strings.Contains(amq, "title") {
+		t.Errorf("the AMQ notice carries the pane-label request:\n%s", amq)
 	}
-	told := SessionNotice("codex-architect-01", "x env", "x title", "v0.8.2 review", 0)
+	asked := TaskNotice("claude-06", "x title", "")
+	if !strings.HasPrefix(asked, "Pane label:") || !strings.Contains(asked, `x title "<task in a few words>"`) {
+		t.Errorf("no request for a task:\n%s", asked)
+	}
+	told := TaskNotice("codex-architect-01", "x title", "v0.8.2 review")
 	if !strings.Contains(told, "`codex-architect-01 | v0.8.2 review`") || strings.Contains(told, "<task in a few words>") {
 		t.Errorf("an agent with a task was asked for one:\n%s", told)
 	}

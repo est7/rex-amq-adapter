@@ -73,3 +73,36 @@ func TestAClaudeAdoptedAtAPromptIsAskedOnce(t *testing.T) {
 		t.Errorf("asked again at the next prompt: %q", n)
 	}
 }
+
+// The pane-label line carries only the pane label: the window-mates news
+// stays with the AMQ instructions.
+func TestThePaneLabelLineStandsAlone(t *testing.T) {
+	e := realAmqEnv(t, &fakeTerm{state: "idle", windows: map[string]string{"block:a": "window:1", "block:b": "window:1"}})
+	startPi(t, e, "block:a", "s1")
+	_, n := startPi(t, e, "block:b", "s2")
+	var line string
+	for _, l := range strings.Split(n, "\n") {
+		if strings.HasPrefix(l, "Pane label:") {
+			line = l
+		}
+	}
+	if line == "" || strings.Contains(line, "beside you") || !strings.Contains(n, "beside you") {
+		t.Errorf("pane-label line %q in notice:\n%s", line, n)
+	}
+}
+
+// A Claude peer that started with a task and cleared it is not asked again
+// later in the session: its first prompt was the one to ask at.
+func TestAClaudeThatClearsItsTaskIsNotAskedLater(t *testing.T) {
+	e := realAmqEnv(t, &fakeTerm{label: "reviewer | fix login", state: "working"})
+	in := HookInput{SessionID: "s1"}
+	promptNotice(t, e, core.Claude, EventSessionStart, in)
+	t.Cleanup(func() { _ = e.Depart(context.Background(), Location{Block: block}, HookInput{}) })
+	if n := promptNotice(t, e, core.Claude, EventPrompt, in); strings.Contains(n, "Pane label:") {
+		t.Errorf("a peer with a task was asked for one: %q", n)
+	}
+	setTask(t, e, block, "")
+	if n := promptNotice(t, e, core.Claude, EventPrompt, in); strings.Contains(n, "Pane label:") {
+		t.Errorf("asked after its first prompt: %q", n)
+	}
+}
