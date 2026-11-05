@@ -70,7 +70,7 @@ func TestSetupIsIdempotentAndAppendOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := changes(items); got != "skill=created,hook=created,skill=created,hook=created" {
+	if got := changes(items); got != "skill=created,hook=created,supervisor=created,skill=created,hook=created,supervisor=created" {
 		t.Fatalf("first setup: %s", got)
 	}
 	codexPath := filepath.Join(dir, ".codex", "hooks.json")
@@ -107,7 +107,7 @@ func TestSetupIsIdempotentAndAppendOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := changes(items); got != "skill=unchanged,hook=unchanged,skill=unchanged,hook=unchanged" {
+	if got := changes(items); got != "skill=unchanged,hook=unchanged,supervisor=unchanged,skill=unchanged,hook=unchanged,supervisor=unchanged" {
 		t.Fatalf("second setup: %s", got)
 	}
 	if read(t, codexPath) != after {
@@ -131,7 +131,7 @@ func TestMovedBinaryUpdatesInPlace(t *testing.T) {
 		t.Fatalf("moved binary: %+v", st)
 	}
 	items, err := Setup(agents, Options{SelfBin: "/new/rex-amq-adapter"})
-	if err != nil || changes(items) != "skill=updated,hook=updated,skill=updated,hook=updated" {
+	if err != nil || changes(items) != "skill=updated,hook=updated,supervisor=unchanged,skill=updated,hook=updated,supervisor=unchanged" {
 		t.Fatalf("update: %s %v", changes(items), err)
 	}
 	after := read(t, filepath.Join(dir, ".codex", "hooks.json"))
@@ -154,7 +154,7 @@ func TestRemoveRestoresOnlyWhatSetupAdded(t *testing.T) {
 		t.Fatal(err)
 	}
 	items, err := Remove(agents, Options{SelfBin: "/opt/x/rex-amq-adapter"})
-	if err != nil || changes(items) != "skill=removed,hook=removed,skill=removed,hook=removed" {
+	if err != nil || changes(items) != "skill=removed,hook=removed,supervisor=kept,skill=removed,hook=removed,supervisor=kept" {
 		t.Fatalf("remove: %s %v", changes(items), err)
 	}
 	if got := read(t, codexPath); got != string(want) {
@@ -164,7 +164,7 @@ func TestRemoveRestoresOnlyWhatSetupAdded(t *testing.T) {
 		t.Fatal("skill directory left behind")
 	}
 	items, _ = Remove(agents, Options{SelfBin: "/opt/x/rex-amq-adapter"})
-	if changes(items) != "skill=unchanged,hook=unchanged,skill=unchanged,hook=unchanged" {
+	if changes(items) != "skill=unchanged,hook=unchanged,supervisor=kept,skill=unchanged,hook=unchanged,supervisor=kept" {
 		t.Fatalf("second remove: %s", changes(items))
 	}
 }
@@ -196,7 +196,7 @@ func TestForeignSkillIsKept(t *testing.T) {
 func TestDryRunWritesNothing(t *testing.T) {
 	dir, agents := setup(t)
 	items, err := Setup(agents, Options{SelfBin: "/opt/x/rex-amq-adapter", DryRun: true})
-	if err != nil || changes(items) != "skill=created,hook=created,skill=created,hook=created" {
+	if err != nil || changes(items) != "skill=created,hook=created,supervisor=created,skill=created,hook=created,supervisor=created" {
 		t.Fatalf("dry run: %s %v", changes(items), err)
 	}
 	if read(t, filepath.Join(dir, ".codex", "hooks.json")) != userSettings || exists(filepath.Join(dir, ".claude", "settings.json")) {
@@ -321,20 +321,20 @@ func TestPiExtension(t *testing.T) {
 	}
 	items, err := Setup(agents, Options{SelfBin: "/old/rex-amq-adapter"})
 	// The skill Codex and Pi share is installed once.
-	if err != nil || changes(items) != "skill=created,hook=created,hook=created" {
+	if err != nil || changes(items) != "skill=created,hook=created,supervisor=created,hook=created" {
 		t.Fatalf("setup: %s %v", changes(items), err)
 	}
 	body := read(t, ext)
 	if !strings.Contains(body, `const BIN = "/old/rex-amq-adapter";`) || strings.Contains(body, "__REX_AMQ_ADAPTER__") {
 		t.Fatalf("binary path not substituted:\n%s", body[:400])
 	}
-	if items, _ := Setup(agents, Options{SelfBin: "/old/rex-amq-adapter"}); changes(items) != "skill=unchanged,hook=unchanged,hook=unchanged" {
+	if items, _ := Setup(agents, Options{SelfBin: "/old/rex-amq-adapter"}); changes(items) != "skill=unchanged,hook=unchanged,supervisor=unchanged,hook=unchanged" {
 		t.Fatalf("second setup: %s", changes(items))
 	}
 	if st, _ := Status(agents[1:], "/new/rex-amq-adapter"); st[1].State != "outdated" {
 		t.Fatalf("moved binary: %+v", st)
 	}
-	if items, _ := Remove(agents, Options{SelfBin: "/new/rex-amq-adapter"}); changes(items) != "skill=removed,hook=removed,hook=removed" || exists(ext) {
+	if items, _ := Remove(agents, Options{SelfBin: "/new/rex-amq-adapter"}); changes(items) != "skill=removed,hook=removed,supervisor=kept,hook=removed" || exists(ext) {
 		t.Fatalf("remove: %s", changes(items))
 	}
 

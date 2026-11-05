@@ -29,7 +29,10 @@ type Agent struct {
 	// TitleFile, when set, is the settings file where the harness takes a
 	// command for its window title (Antigravity's "title" block).
 	TitleFile string
-	Found     bool
+	// SupervisorFile, when set, is the settings file where the harness's
+	// shared supervisor is turned off (supervisor.go).
+	SupervisorFile string
+	Found          bool
 }
 
 const skillName = "rex-amq-adapter"
@@ -46,8 +49,10 @@ func Agents(only []core.Kind) ([]Agent, error) {
 	agyDir := filepath.Join(home, ".gemini", "config") // Antigravity's global configuration
 	piDir := envOr("PI_CODING_AGENT_DIR", filepath.Join(home, ".pi", "agent"))
 	all := []Agent{
-		{Kind: core.Claude, Name: "Claude Code", SkillDir: filepath.Join(claudeDir, "skills", skillName), HookFile: filepath.Join(claudeDir, "settings.json"), Found: exists(claudeDir) || onPath("claude")},
-		{Kind: core.Codex, Name: "Codex", SkillDir: filepath.Join(home, ".agents", "skills", skillName), HookFile: filepath.Join(codexDir, "hooks.json"), Found: exists(codexDir) || onPath("codex")},
+		{Kind: core.Claude, Name: "Claude Code", SkillDir: filepath.Join(claudeDir, "skills", skillName), HookFile: filepath.Join(claudeDir, "settings.json"),
+			SupervisorFile: filepath.Join(claudeDir, "settings.json"), Found: exists(claudeDir) || onPath("claude")},
+		{Kind: core.Codex, Name: "Codex", SkillDir: filepath.Join(home, ".agents", "skills", skillName), HookFile: filepath.Join(codexDir, "hooks.json"),
+			SupervisorFile: filepath.Join(codexDir, "config.toml"), Found: exists(codexDir) || onPath("codex")},
 		{Kind: core.Agy, Name: "Antigravity", SkillDir: filepath.Join(agyDir, "skills", skillName), HookFile: filepath.Join(agyDir, "hooks.json"),
 			TitleFile: filepath.Join(home, ".gemini", "antigravity-cli", "settings.json"), Found: exists(agyDir) || onPath("agy")},
 		// Pi reads the Agent Skills directory it shares with Codex; its "hook"
@@ -82,7 +87,7 @@ func onPath(bin string) bool { _, err := exec.LookPath(bin); return err == nil }
 // Item is one installed thing and what happened to it.
 type Item struct {
 	Agent  string `json:"agent"`
-	Kind   string `json:"kind"` // skill | hook | title
+	Kind   string `json:"kind"` // skill | hook | title | supervisor
 	Path   string `json:"path"`
 	State  string `json:"state"`            // current | outdated | missing | foreign
 	Change string `json:"change,omitempty"` // created | updated | unchanged | removed | kept | conflict
@@ -184,6 +189,13 @@ func Status(agents []Agent, self string) ([]Item, error) {
 			}
 			items = append(items, Item{Agent: a.Name, Kind: "title", Path: a.TitleFile, State: ts})
 		}
+		if a.SupervisorFile != "" {
+			ss, err := supervisorState(a)
+			if err != nil {
+				return nil, err
+			}
+			items = append(items, Item{Agent: a.Name, Kind: "supervisor", Path: a.SupervisorFile, State: ss})
+		}
 	}
 	return items, nil
 }
@@ -216,6 +228,13 @@ func Setup(agents []Agent, o Options) ([]Item, error) {
 			}
 			items = append(items, it)
 		}
+		if a.SupervisorFile != "" {
+			it, err := setupSupervisor(a, o)
+			if err != nil {
+				return nil, err
+			}
+			items = append(items, it)
+		}
 	}
 	return items, nil
 }
@@ -240,6 +259,13 @@ func Remove(agents []Agent, o Options) ([]Item, error) {
 		items = append(items, it)
 		if a.TitleFile != "" {
 			it, err := removeTitle(a, o)
+			if err != nil {
+				return nil, err
+			}
+			items = append(items, it)
+		}
+		if a.SupervisorFile != "" {
+			it, err := removeSupervisor(a)
 			if err != nil {
 				return nil, err
 			}

@@ -78,8 +78,9 @@ leaving every other entry, key, and position as it was; adds a hook group named
 `~/.gemini/config/hooks.json` and a window `title` command to its
 `~/.gemini/antigravity-cli/settings.json` (an existing title command of yours is
 kept); installs a small JavaScript extension for Pi in
-`~/.pi/agent/extensions/`; and installs a skill stub whose guide ships inside
-the binary. Run it again after moving the binary.
+`~/.pi/agent/extensions/`; turns off Claude Code's agent view and Codex's shared
+daemon (see Recommended configuration); and installs a skill stub whose guide
+ships inside the binary. Run it again after moving the binary.
 
 - **Codex** must be started with `codex --no-daemon` (resume:
   `codex --no-daemon resume <session-id>`). The shared background server can
@@ -101,8 +102,10 @@ the binary. Run it again after moving the binary.
 
 The adapter finds an agent by the pane it runs in. Two harness features run
 conversations in a shared background process that another terminal started,
-so every conversation they host inherits that terminal's `REX_BLOCK`. Turn
-them off; `status` and `setup` warn while they are on, and never change them:
+so every conversation they host inherits that terminal's `REX_BLOCK`. `setup`
+turns both off (the `supervisor` item) unless you set them on yourself, which
+it keeps unless `--force`; `remove` leaves them off. A Codex daemon that is
+already running is not stopped:
 
 | Harness | Setting | Why |
 |---|---|---|

@@ -745,14 +745,16 @@ modeled on `rex skill`:
   A foreign skill of the same name is reported as a conflict and kept unless
   `--force`. `remove` deletes only what setup installed.
 - Codex requires approving new hooks in `/hooks`; setup prints this.
-- **Warnings**: `status` and `setup` warn, and list under `warnings` in
-  `--json`, while a found agent runs sessions in a shared process that another
-  terminal started (section 4): Claude Code's agent view unless
-  `disableAgentView` is true in user or managed settings or
-  `CLAUDE_CODE_DISABLE_AGENT_VIEW` is set, and Codex unless
-  `daemon_auto_start = false` under `[features]` in its `config.toml`. They are
-  the user's settings: setup never changes them, and the exit status is
-  unaffected. Project settings are not read, since they differ per folder.
+- **Supervisors**: the `supervisor` item turns off what runs sessions in a
+  shared process another terminal started (section 4): `"disableAgentView":
+  true` in Claude Code's `settings.json`, and `daemon_auto_start = false` under
+  `[features]` in Codex's `config.toml`, edited by that one line so the rest of
+  the file stays as written. It is `current` when off (for Claude also through
+  managed settings or `CLAUDE_CODE_DISABLE_AGENT_VIEW` in the settings' `env`),
+  `missing` when unset, and `foreign` when the user set it on, which setup
+  keeps unless `--force`. `remove` keeps it: setup cannot tell whether the user
+  wanted it off anyway, and turning a supervisor back on would bring the
+  misplaced sessions back. A running Codex daemon is not stopped.
 - The agent guide carries every Rex command it uses (opening a peer in a pane,
   tab, or session; reading a peer's screen and status). It does not depend on
   Rex's own skill, so an agent needs one skill lookup, not two.
@@ -792,7 +794,7 @@ internal/amq/          wake check/start/repair/retire, mailbox registration, inb
 internal/screen/       input-box classifier (ported from herdr-amq-adapter)
 internal/store/        records, ledger, inject log, window notes, reservations, locks
 internal/e2e/          scripted agents on a private Rex server and real amq wake
-internal/install/      settings.json / hooks.json merge, stub skills, supervisor warnings
+internal/install/      settings.json / hooks.json merge, stub skills, supervisor settings
 internal/guide/        embedded agent guide
 ```
 

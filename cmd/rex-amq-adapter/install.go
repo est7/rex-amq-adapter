@@ -63,12 +63,8 @@ func runInstall(cmd string, args []string) int {
 	if err != nil {
 		return fail(err)
 	}
-	var warnings []install.Warning
-	if cmd != "remove" {
-		warnings = install.Warnings(agents)
-	}
 	if *asJSON {
-		b, err := json.MarshalIndent(map[string]any{"binary": self, "dry_run": *dryRun, "items": items, "warnings": warnings}, "", "  ")
+		b, err := json.MarshalIndent(map[string]any{"binary": self, "dry_run": *dryRun, "items": items}, "", "  ")
 		if err != nil {
 			return fail(err)
 		}
@@ -76,9 +72,6 @@ func runInstall(cmd string, args []string) int {
 		return 0
 	}
 	printItems(cmd, items)
-	for _, w := range warnings {
-		fmt.Printf("\nWarning (%s): %s\n", w.Agent, w.Message)
-	}
 	switch cmd {
 	case "setup":
 		printSetupNotes(agents, items)
@@ -131,7 +124,7 @@ func printItems(cmd string, items []install.Item) {
 		if cmd != "status" {
 			col = it.Change
 		}
-		fmt.Printf("  %-6s %-10s %s\n", it.Kind, col, strings.Replace(it.Path, home, "~", 1))
+		fmt.Printf("  %-10s %-10s %s\n", it.Kind, col, strings.Replace(it.Path, home, "~", 1))
 	}
 }
 
@@ -148,6 +141,10 @@ func conflictWhat(kind string) string {
 
 func printSetupNotes(agents []install.Agent, items []install.Item) {
 	for _, it := range items {
+		if it.Change == "conflict" && it.Kind == "supervisor" {
+			fmt.Printf("\n%s: %s turns on the shared supervisor that runs sessions outside their pane (README, Recommended configuration); it was left alone. Use --force to turn it off.\n", it.Agent, it.Path)
+			continue
+		}
 		if it.Change == "conflict" {
 			fmt.Printf("\n%s: %s holds %s that setup did not install; it was left alone. Use --force to replace it.\n", it.Agent, it.Path, conflictWhat(it.Kind))
 		}
