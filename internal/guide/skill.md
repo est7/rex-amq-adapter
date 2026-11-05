@@ -33,7 +33,10 @@ with `codex --no-daemon resume <session-id>`, using the actual conversation id.
 If the Rex environment is present, check that the adapter's hooks are installed
 and approved; restart the agent in Rex if it started before installation.
 A missing identity does not prevent launching a peer requested by the user;
-its reply over AMQ must wait until your identity is available.
+its reply over AMQ must wait until your identity is available. The exception
+is a Claude Code background session that `env` says no pane shows: its
+`REX_BLOCK` and `REX_SESSION` name another terminal's pane, and `env` unsets
+them, so ask the user where to place a peer instead.
 
 ## Show your task in your pane
 
@@ -166,7 +169,11 @@ this needs is below; no other skill is required.
    An independent task in another tab or session reports to its own user;
    do not pass it the handles from your tab.
 3. **Place it** by how the work relates to yours. The user reads related
-   agents side by side, so placement is part of the request:
+   agents side by side, so placement is part of the request. Run the
+   command in the same shell right after `eval "$(rex-amq-adapter env)"`: in a
+   Claude Code background session (agent view), the inherited `REX_SESSION`
+   and `REX_BLOCK` name the pane of whichever terminal started Claude's
+   supervisor, and `env` sets them to the pane that shows you:
 
    | The peer works on | Place it | Command |
    |---|---|---|
@@ -212,7 +219,10 @@ this needs is below; no other skill is required.
 ## Rex commands
 
 `REX_SESSION` and `REX_BLOCK` name your own session and pane; every Rex terminal
-sets them. In Rex, a window is a tab and a block is a pane.
+sets them. In Rex, a window is a tab and a block is a pane. In a Claude Code
+background session they are inherited from another terminal: load them with
+`eval "$(rex-amq-adapter env)"` first, and if `env` says no pane shows you, you
+have no AMQ identity until the user opens you in one.
 
 If these variables are missing from your tools, resolve your pane from verified
 session or process identity before using a placement command. A process name,

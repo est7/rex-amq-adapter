@@ -45,14 +45,22 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	if err != nil {
 		return Adoption{}, err
 	}
+	// The agent is the block's foreground process. Claude Code reports its
+	// own pid (CLAUDE_PID), which must be that process: a `claude -p` that
+	// another program in the pane runs is not the pane's agent. A background
+	// job is the exception: a terminal client is its pane's foreground, and
+	// its title placed it (jobLocation).
 	agentPID := in.AgentPID
-	if agentPID <= 0 {
+	if agentPID <= 0 || kind == core.Claude && !in.Job {
 		fg, ok, err := e.Rex.Foreground(ctx, loc.Block)
 		if err != nil {
 			return Adoption{}, err
 		}
 		if !ok {
 			return Adoption{}, fmt.Errorf("block %s reports no foreground process", loc.Block)
+		}
+		if kind == core.Claude && agentPID > 0 && fg.PID != agentPID {
+			return Adoption{}, fmt.Errorf("the hook's agent (pid %d) is not the foreground of block %s (pid %d), so it is not that pane's agent", agentPID, loc.Block, fg.PID)
 		}
 		agentPID = fg.PID
 	}
@@ -65,6 +73,16 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 		return Adoption{}, err
 	}
 	own, hasOwn := claim(recs, loc.Block, agentPID, kind, lineage(recs, kind, in))
+	// A background job shown in another pane than its record's moved there
+	// (jobLocation): it keeps its handle and is not departing anywhere.
+	moved := false
+	if !hasOwn && in.Job {
+		for _, r := range recs {
+			if r.Live() && r.Kind == kind && r.AgentSessionID == in.SessionID && r.BlockID != loc.Block {
+				own, hasOwn, moved = r, true, true
+			}
+		}
+	}
 	handle := own.Handle
 	if !hasOwn {
 		taken, err := e.takenHandles(recs)
@@ -82,6 +100,11 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 				return Adoption{}, fmt.Errorf("park %s, replaced in this block: %w", r.Handle, err)
 			}
 		}
+	}
+	// The moved job's waker follows it: amq.Ensure below replaces the one
+	// that targets its old block.
+	if moved && own.WindowID != blk.WindowID {
+		e.leaveWindow(ctx, own)
 	}
 	if err := amq.EnsureMailbox(ctx, e.AmqBin, e.Paths.Root(), string(handle)); err != nil {
 		return Adoption{}, err
@@ -101,6 +124,9 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	again := hasOwn && own.Live() && own.BlockID == loc.Block
 	unfinished := hasOwn && own.Unfinished == store.Adopting
 	arrived := !again || unfinished
+	if moved {
+		arrived = own.WindowID != blk.WindowID || unfinished // a move within the tab is no news
+	}
 	known := hasOwn && in.SessionID != "" && own.AgentSessionID == in.SessionID && !unfinished
 	rec := store.Record{
 		Handle:         handle,
@@ -118,7 +144,9 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	if again && own.AgentPID == agentPID {
 		rec.AdoptedAt = own.AdoptedAt
 	}
-	if arrived {
+	// Recorded as unfinished until the waker and label follow: a move within
+	// the tab tells no one but is a transition all the same.
+	if !again || unfinished {
 		rec.Unfinished = store.Adopting
 	}
 	// Recorded before the waker starts: whatever happens next, departure and

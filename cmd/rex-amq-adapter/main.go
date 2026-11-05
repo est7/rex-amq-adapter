@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -146,6 +147,11 @@ func runHook(args []string) int {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
+	if kind == core.Claude && in.AgentPID <= 0 {
+		// The harness process, which is not the pane's foreground when Claude
+		// Code's supervisor runs the session in the background.
+		in.AgentPID, _ = strconv.Atoi(os.Getenv("CLAUDE_PID"))
+	}
 	r, err := env.Hook(ctx, event, kind, loc, in)
 	if err != nil {
 		reply(app.Reply{})
@@ -232,29 +238,58 @@ func runInject(args []string) int {
 	return report(env.Inject(ctx, app.InjectRequest{Block: block, Handle: h, Root: root}))
 }
 
-func runEnv() int {
-	loc, err := app.Here()
+// caller resolves the Rex location of the agent running a command (see
+// app.Env.Caller) and an Env for it.
+func caller() (app.Env, app.Location, error) {
+	here, err := app.Here()
 	if err != nil {
+		return app.Env{}, app.Location{}, err
+	}
+	env, err := app.NewEnv(here.Server)
+	if err != nil {
+		return app.Env{}, app.Location{}, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	loc, err := env.Caller(ctx, here, os.Getenv("CLAUDE_CODE_SESSION_ID"))
+	return env, loc, err
+}
+
+// runEnv prints the shell text agents eval. A failure prints `false` as well,
+// because `eval ""` succeeds and `eval "$(… env)" && …` would carry on; a
+// background job no pane shows also unsets the inherited Rex location, which
+// names another agent's pane.
+func runEnv() int {
+	failEnv := func(err error) int {
+		if errors.Is(err, app.ErrJobNotShown) {
+			fmt.Print("unset AM_ROOT AM_ME REX_BLOCK REX_SESSION; ")
+		}
+		fmt.Println("false")
 		return fail(err)
 	}
-	env, err := app.NewEnv(loc.Server)
+	env, loc, err := caller()
 	if err != nil {
-		return fail(err)
+		return failEnv(err)
 	}
 	out, err := env.Exports(loc)
 	if err != nil {
-		return fail(err)
+		return failEnv(err)
+	}
+	if here, _ := app.Here(); here.Block != loc.Block {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		rexOut, err := env.RexExports(ctx, loc.Block)
+		if err != nil {
+			return failEnv(err)
+		}
+		out += rexOut
 	}
 	fmt.Print(out)
 	return 0
 }
 
 func runTitle(args []string) int {
-	loc, err := app.Here()
-	if err != nil {
-		return fail(err)
-	}
-	env, err := app.NewEnv(loc.Server)
+	env, loc, err := caller()
 	if err != nil {
 		return fail(err)
 	}
@@ -274,11 +309,7 @@ func runWho(args []string) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	loc, err := app.Here()
-	if err != nil {
-		return fail(err)
-	}
-	env, err := app.NewEnv(loc.Server)
+	env, loc, err := caller()
 	if err != nil {
 		return fail(err)
 	}
@@ -367,7 +398,7 @@ func runTab(args []string) int {
 	fs := flag.NewFlagSet("tab", flag.ContinueOnError)
 	role := fs.String("role", "", "the role of the first pane's agent")
 	dir := fs.String("c", "", "the working directory (default: the current one)")
-	session := fs.String("s", os.Getenv("REX_SESSION"), "the Rex session (default: $REX_SESSION)")
+	session := fs.String("s", "", "the Rex session (default: the caller's)")
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
 		fmt.Fprintln(os.Stderr, "usage: rex-amq-adapter tab <crew> [--role R] [-c DIR] [-s SESSION] -- COMMAND...")
 		return 2
@@ -377,7 +408,19 @@ func runTab(args []string) int {
 		return 2
 	}
 	if *session == "" {
-		return fail(errors.New("no Rex session: run inside Rex or pass -s"))
+		// The caller's own session: REX_SESSION is inherited, and in a Claude
+		// Code background session it names another terminal's.
+		env, loc, err := caller()
+		if err != nil {
+			return fail(fmt.Errorf("no Rex session (pass -s): %w", err))
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		b, err := env.Rex.InspectBlock(ctx, loc.Block)
+		cancel()
+		if err != nil {
+			return fail(err)
+		}
+		*session = b.SessionID
 	}
 	if *dir == "" {
 		wd, err := os.Getwd()

@@ -244,6 +244,38 @@ func (c Client) ListBlocks(ctx context.Context, session string) ([]Block, error)
 	return res.Blocks, nil
 }
 
+// Title returns the terminal title the block's programs last set (OSC 0/2).
+func (c Client) Title(ctx context.Context, block string) (string, error) {
+	var res struct {
+		Title string `json:"title"`
+	}
+	if err := c.blockCall(ctx, block, "title", map[string]any{}, &res); err != nil {
+		return "", err
+	}
+	return res.Title, nil
+}
+
+// ListSessions returns the id of every session on the server.
+func (c Client) ListSessions(ctx context.Context) ([]string, error) {
+	out, err := c.run(ctx, nil, "ls", "--json")
+	if err != nil {
+		return nil, err
+	}
+	var res struct {
+		Sessions []struct {
+			ID string `json:"session_id"`
+		} `json:"sessions"`
+	}
+	if err := json.Unmarshal(out, &res); err != nil {
+		return nil, fmt.Errorf("decode session list: %w", err)
+	}
+	ids := make([]string, 0, len(res.Sessions))
+	for _, s := range res.Sessions {
+		ids = append(ids, s.ID)
+	}
+	return ids, nil
+}
+
 // NewWindow opens a tab labelled tab in session, holding one block labelled
 // label that runs command in dir, and returns the window and block ids. The
 // CLI's window new cannot label the block, and run cannot label the tab,

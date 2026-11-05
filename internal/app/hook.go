@@ -58,6 +58,12 @@ func (e Env) Hook(ctx context.Context, event string, kind core.Kind, loc Locatio
 		}
 		return Reply{}, nil
 	}
+	if kind == core.Claude {
+		var shown bool
+		if loc, in, shown = e.jobLocation(ctx, event, loc, in); !shown {
+			return Reply{}, nil
+		}
+	}
 	switch event {
 	case EventSessionStart:
 		return e.sessionStart(ctx, kind, loc, in)

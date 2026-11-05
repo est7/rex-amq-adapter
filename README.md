@@ -195,6 +195,7 @@ directory from `amq who`.
 | Session resumed (`claude --resume`, `codex resume`), in any pane | Gets its handle back, with the mail that arrived meanwhile; so does a Claude conversation that moved to a new session id, found through its transcript, and an agy conversation `/resume`d by a new agy in the same pane, whose next hook adopts it |
 | Mail sent to an agent that left | The sender's next hook says so once, naming who now runs in that pane and who is in its tab |
 | New session in a used pane | Gets a new handle; the previous session keeps its own |
+| Claude Code session moved to the background (`←`, `/bg`, `claude --bg`) | The pane that shows it, found by its title, is its pane; it is named afresh there, and the terminal session it came from departs. Until a pane shows it, it has no AMQ identity |
 
 Codex's ephemeral background sessions can inherit the interactive process's
 Rex environment. Hooks that explicitly report `transcript_path: null` do not

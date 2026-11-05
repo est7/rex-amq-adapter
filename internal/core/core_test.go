@@ -449,3 +449,50 @@ func TestRoleIgnoresTheTask(t *testing.T) {
 		}
 	}
 }
+
+func TestShownTitleDropsTheStateGlyph(t *testing.T) {
+	for in, want := range map[string]string{
+		"✳ claude-07 | fix login":             "claude-07 | fix login",
+		"◐ Adapter spike brief for claude-89": "Adapter spike brief for claude-89",
+		"probe job j1":                        "probe job j1",
+		"  claude-07  ":                       "claude-07",
+		"2 awaiting input · claude agents":    "2 awaiting input · claude agents",
+		"":                                    "",
+	} {
+		if got := ShownTitle(in); got != want {
+			t.Errorf("ShownTitle(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestAShownBackgroundJobIsBound(t *testing.T) {
+	if _, ok := CheckBinding(Binding{ForegroundPID: 10, RecordPID: 20, JobShown: true}); !ok {
+		t.Error("a job its pane's client shows is bound")
+	}
+	if o, ok := CheckBinding(Binding{ForegroundPID: 10, RecordPID: 20}); ok || o.Code != "agent_not_foreground" {
+		t.Errorf("a job its pane does not show: %+v %v", o, ok)
+	}
+}
+
+func TestAgentViewTitle(t *testing.T) {
+	for _, title := range []string{"2 awaiting input · claude agents", "✳ 1 awaiting input · claude agents", "claude agents"} {
+		if !AgentViewTitle(title) {
+			t.Errorf("agent view %q not recognised", title)
+		}
+	}
+	for _, title := range []string{"claude-07 | write the claude agents doc", "probe job j1", "notes · claude agents", "many awaiting input · claude agents"} {
+		if AgentViewTitle(title) {
+			t.Errorf("a conversation's title %q taken for agent view", title)
+		}
+	}
+	if !TitleNamesHandle("✳ claude-07", "claude-07") || !TitleNamesHandle("claude-07 | old task", "claude-07") ||
+		TitleNamesHandle("claude-070", "claude-07") || TitleNamesHandle("claude-07x | t", "claude-07") {
+		t.Error("TitleNamesHandle")
+	}
+}
+
+func TestAPaneThatShowsSomethingElse(t *testing.T) {
+	if o, ok := CheckBinding(Binding{ForegroundPID: 10, RecordPID: 10, LeftPane: true}); ok || o.Progress != Failed || o.Code != "agent_left_pane" {
+		t.Errorf("agent view in the agent's own process: %+v %v", o, ok)
+	}
+}

@@ -36,7 +36,7 @@ func (e Env) recordFit(kind core.Kind, rec store.Record, in HookInput) fit {
 	if rec.Kind != kind {
 		return foreign
 	}
-	if !e.descendsFrom(rec) {
+	if !e.sameProcess(rec, in) {
 		if in.SessionID != "" && rec.AgentSessionID != "" && in.SessionID != rec.AgentSessionID {
 			return foreign
 		}
@@ -46,6 +46,18 @@ func (e Env) recordFit(kind core.Kind, rec store.Record, in HookInput) fit {
 	// switch: agy runs each subagent as a conversation of its own in the same
 	// process, and its hooks carry the subagent's id from the parent's pane.
 	return own
+}
+
+// sameProcess reports whether the hook comes from rec's agent process. A
+// harness that reports its own pid (Claude Code's CLAUDE_PID, Pi's
+// process.pid) is compared exactly: a session started inside the agent (a
+// `claude -p` it runs) descends from it but is not it. Others are known by
+// ancestry.
+func (e Env) sameProcess(rec store.Record, in HookInput) bool {
+	if in.AgentPID > 0 && rec.AgentPID > 0 && localServer(rec.Server) {
+		return in.AgentPID == rec.AgentPID
+	}
+	return e.descendsFrom(rec)
 }
 
 // descendsFrom reports whether this process descends from rec's agent

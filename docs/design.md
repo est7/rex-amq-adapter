@@ -282,6 +282,37 @@ once a hook can tell a subagent from the conversation the pane shows: agy's
 handle of the conversation it left, and a subagent's SessionStart rewrites the
 record's session, so a later resume of the parent is named afresh.
 
+**Claude Code background sessions.** A session moved to the background
+(agent view: `←` on an empty prompt, `/bg`, `claude --bg`) runs under Claude
+Code's supervisor, which the first terminal that needed it started; every
+job it hosts inherits that terminal's environment, so `REX_BLOCK` and
+`REX_SESSION` name that terminal's pane, not the one showing the job. A
+terminal client shows a job, and can switch to another in agent view.
+Evidence and probes: `docs/research/claude-background-sessions.md`
+(2026-11-05, Claude Code 2.1.318). One rule decides where a Claude
+conversation is: **a pane shows a Claude agent when its terminal title,
+without its state glyph, names it** — its handle once adopted (the harness
+title is its pane label, and the handle names it whatever task Claude Code
+last drew), or before that a job's current name
+(`~/.claude/jobs/<id>/state.json`).
+
+| Case | What the adapter does |
+|---|---|
+| A hook whose session is a job (a worker in `~/.claude/daemon/roster.json`) | Ignores `REX_BLOCK`. The job is where its live record is; hooks that run once a turn check that the pane still shows it, and otherwise find the one block whose foreground is a `claude` client titled with it. A job seen first is adopted only at SessionStart or a prompt, where it is told who it is. A job seen in another pane moves there in one adoption: its handle, mailbox, and waker follow, and only a move to another tab tells either tab. No such block: the hook does nothing |
+| Adopting a Claude session | Its pid is `CLAUDE_PID`, the harness process. A terminal session must be its pane's foreground, so a `claude -p` another program runs in the pane is not the pane's agent and reads none of its mail (`recordFit` compares pids exactly when the hook reports one) |
+| The doorbell for a job | Typed only while the pane's foreground is a `claude` client whose title names the job, and while the job's supervisor state is not `working`: the client reports no OSC 7501 of its own, so an emptied box confirms it |
+| A terminal session whose pane title is agent view (`claude agents`, `<n> awaiting input · claude agents`) or another conversation (a job's name, another record's handle) | Its process is now a client and its conversation moved to the background for good: it departs (`agent_left_pane`) |
+| A command in a Claude tool shell (`env`, `title`, `who`, `tab`) | Identity is the live record of `CLAUDE_CODE_SESSION_ID`, for a job only while its pane shows it, never `REX_BLOCK`; `env` then also exports the right `REX_BLOCK` and `REX_SESSION`, so `rex split` places a peer beside the job. A session no hook adopted (a nested `claude -p`) or a job no pane shows has no identity. A failing `env` prints `false` (and for such a job unsets the Rex variables), because `eval ""` succeeds and `eval "$(… env)" && …` would carry on |
+| SessionEnd of a job | Parks the job's own record, found by session: the supervisor may drop the job from its roster first |
+
+A conversation moved to the background keeps no handle: `--fork-session`
+gives the job a new session id, and its transcript carries none of the old
+one (observed), so the job is named afresh and the terminal session's record
+departs. Not handled: two terminals attached to one job; a nested `pi -p`
+(only Claude's reported pid is checked against the pane's foreground);
+`terminalTitleFromRename: false`, which keeps the label out of the terminal
+title; Codex's agent view, whose daemon `--no-daemon` still turns off.
+
 Codex can run an ephemeral memory-consolidation session inside the same
 terminal process. It inherits the Rex block but has no persisted transcript.
 Hooks that explicitly send `transcript_path: null` are ignored before any
@@ -859,6 +890,7 @@ and Claude Code 2.1.316, adapter state isolated by `REX_AMQ_ADAPTER_HOME`:
 | Mail goes to a departed handle and nobody notices | The sender's next hook checks its outbox and says so once, naming who took the pane (executed in `undelivered_test.go`) |
 | A new agent inherits stale mail | New names skip mailboxes with undrained mail and reserved handles |
 | A hook trusts a record that is no longer its agent's: an agy conversation resumed in a new process (collection then parked the live agent), another kind in the pane before its SessionStart, a reused pid | Each announcing hook compares the record's kind and, for a local record with a pid, its process with its own, and adopts again on a mismatch; while that adoption fails, a record found to be another agent's is not read (executed in `lease_test.go`, each check ablated). Remote records are not checked |
+| A Claude Code background job is adopted into the pane of the terminal that started the supervisor, takes its handle, has doorbells typed into another conversation, and opens peers beside the wrong pane (incident 2026-11-05, `claude-73`) | A job is placed by the title of the pane showing it, never by `REX_BLOCK`; a terminal session in agent view departs; a nested `claude -p` is not its pane's agent (executed in `claudejob_test.go`, each mechanism ablated) |
 | An agy subagent takes its parent's pane | Its hooks come from the parent's process, so the record is trusted and the same-process claim keeps the handle (executed in `resume_test.go`); its SessionStart still rewrites the record's session (section 4) |
 | A resumed agent loses its handle, and its peer writes to nobody | The handle belongs to the agent session, not the pane; collection runs before adoption so the closed pane's record is parked and claimable; reservations last 7 days (executed in `resume_test.go`) |
 | A handle names the wrong harness (`codex-…` running Claude) | The kind is never read from a label; a pane that changes kind keeps only its role |

@@ -60,6 +60,11 @@ func (e Env) inject(ctx context.Context, r InjectRequest) core.Outcome {
 	if err != nil {
 		return rexOutcome(err)
 	}
+	if jobStatus, jobReports, isJob, err := e.jobStatus(rec); err != nil {
+		return deferredErr("state_unreadable", err)
+	} else if isJob {
+		status, reports = jobStatus, jobReports
+	}
 	vt, err := e.Rex.CaptureVT(ctx, r.Block)
 	if err != nil {
 		return rexOutcome(err)
@@ -123,6 +128,11 @@ func (e Env) observeBinding(ctx context.Context, rec store.Record) (core.Binding
 	b := core.Binding{RecordPID: rec.AgentPID, AgentGone: localServer(rec.Server) && processGone(rec.AgentPID)}
 	if ok {
 		b.ForegroundPID = fg.PID
+	}
+	if rec.Kind == core.Claude && ok {
+		if err := e.claudeBinding(ctx, rec, &b); err != nil {
+			return core.Binding{}, err
+		}
 	}
 	return b, nil
 }

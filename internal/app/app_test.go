@@ -29,11 +29,13 @@ type fakeTerm struct {
 	statusErr bool // ProgramStatus fails after the first write
 	writes    []string
 	keys      []string
-	label     string            // the block label; "" reads as Rex's default
-	windows   map[string]string // block -> window, all in session:s; nil: none known
-	listErr   error             // ListBlocks fails
-	tabs      map[string]string // window -> tab label
-	cwd       string            // the foreground process's directory
+	label     string                 // the block label; "" reads as Rex's default
+	windows   map[string]string      // block -> window, all in session:s; nil: none known
+	listErr   error                  // ListBlocks fails
+	tabs      map[string]string      // window -> tab label
+	cwd       string                 // the foreground process's directory
+	titles    map[string]string      // block -> terminal title
+	fgs       map[string]rex.Process // block -> foreground, overriding fgPID
 }
 
 func (f *fakeTerm) Whoami(context.Context) (rex.Server, error) {
@@ -45,6 +47,9 @@ func (f *fakeTerm) Foreground(_ context.Context, block string) (rex.Process, boo
 	defer f.mu.Unlock()
 	if f.gone {
 		return rex.Process{}, false, rex.ErrNotFound
+	}
+	if p, ok := f.fgs[block]; ok {
+		return p, true, nil
 	}
 	return rex.Process{PID: f.fgPID, Name: "codex", Cwd: f.cwd}, true, nil
 }
@@ -121,6 +126,14 @@ func (f *fakeTerm) ListBlocks(context.Context, string) ([]rex.Block, error) {
 	}
 	return out, nil
 }
+
+func (f *fakeTerm) Title(_ context.Context, block string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.titles[block], nil
+}
+
+func (f *fakeTerm) ListSessions(context.Context) ([]string, error) { return []string{"session:s"}, nil }
 
 func (f *fakeTerm) InspectSession(_ context.Context, id string) (rex.Session, error) {
 	f.mu.Lock()

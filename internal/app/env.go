@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
@@ -30,6 +31,8 @@ type Terminal interface {
 	InspectSession(ctx context.Context, session string) (rex.Session, error)
 	ListBlocks(ctx context.Context, session string) ([]rex.Block, error)
 	RenameBlock(ctx context.Context, block, label string) error
+	Title(ctx context.Context, block string) (string, error)
+	ListSessions(ctx context.Context) ([]string, error)
 }
 
 // Env is everything an entry point needs.
@@ -48,6 +51,9 @@ type Env struct {
 	// Ancestors is the calling process and its ancestors, nearest first; nil
 	// reads them from the OS.
 	Ancestors func() ([]int, error)
+	// ClaudeDir is Claude Code's configuration directory, where its
+	// supervisor lists background sessions; "" knows of none.
+	ClaudeDir string
 }
 
 // NewEnv resolves binaries and state paths. server is the Rex address to
@@ -75,15 +81,29 @@ func NewEnvAt(server string, paths store.Paths) (Env, error) {
 		return Env{}, err
 	}
 	return Env{
-		Paths:   paths,
-		Store:   store.Store{P: paths},
-		Rex:     rex.Client{Bin: rexBin, Server: server},
-		RexOn:   func(s string) Terminal { return rex.Client{Bin: rexBin, Server: s} },
-		Crews:   crew.Load,
-		AmqBin:  amqBin,
-		SelfBin: self,
-		Now:     time.Now,
+		Paths:     paths,
+		Store:     store.Store{P: paths},
+		Rex:       rex.Client{Bin: rexBin, Server: server},
+		RexOn:     func(s string) Terminal { return rex.Client{Bin: rexBin, Server: s} },
+		Crews:     crew.Load,
+		AmqBin:    amqBin,
+		SelfBin:   self,
+		Now:       time.Now,
+		ClaudeDir: claudeDir(),
 	}, nil
+}
+
+// claudeDir is Claude Code's configuration directory: CLAUDE_CONFIG_DIR, else
+// ~/.claude.
+func claudeDir() string {
+	if d := os.Getenv("CLAUDE_CONFIG_DIR"); d != "" {
+		return d
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".claude")
 }
 
 // EnvCommand is what agents run to load their identity.
@@ -102,12 +122,16 @@ type HookInput struct {
 	TurnID         string          `json:"turn_id"`
 	StopHookActive bool            `json:"stop_hook_active"`
 
-	ConversationID    string `json:"conversationId"`
+	ConversationID string `json:"conversationId"`
+	// Job is set when the hook's session is a Claude Code background job
+	// (jobLocation): its process is not its pane's foreground.
+	Job               bool   `json:"-"`
 	TerminationReason string `json:"terminationReason"`
 
-	// AgentPID is the agent's own process id, sent by an in-process
-	// integration (Pi's extension); hooks run as children of a shell and
-	// cannot know it, so for them the block's foreground process is used.
+	// AgentPID is the agent's own process id: sent by Pi's extension
+	// (process.pid), and for Claude Code taken from the hook's CLAUDE_PID.
+	// Other harnesses' hooks cannot know it; the block's foreground process
+	// is used for them.
 	AgentPID int `json:"agent_pid"`
 	// Idle: the agent is at rest (sent by Pi's extension when it rescans
 	// between runs), so only an announcement can start it.

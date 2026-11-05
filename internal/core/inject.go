@@ -59,6 +59,14 @@ type Binding struct {
 	// AgentGone: the adopted agent process is known to have exited. Known only
 	// for a local server, where the pid can be probed.
 	AgentGone bool
+	// JobShown: the agent is a background session hosted by its harness's
+	// supervisor, and the block's foreground (a terminal client) shows it.
+	JobShown bool
+	// LeftPane: the block's foreground is the agent's process, but its title
+	// says it shows the harness's list of background sessions, or another
+	// conversation: the agent's conversation was moved to the background and
+	// is no longer here.
+	LeftPane bool
 }
 
 // CheckBinding fails only when the agent is provably gone: its block no
@@ -69,7 +77,9 @@ func CheckBinding(b Binding) (Outcome, bool) {
 	switch {
 	case b.BlockGone:
 		return Outcome{Progress: Failed, Code: "block_gone", Note: "the agent's Rex block no longer exists"}, false
-	case b.ForegroundPID == b.RecordPID:
+	case b.LeftPane:
+		return Outcome{Progress: Failed, Code: "agent_left_pane", Note: "the agent's conversation was moved to the background; its pane shows something else"}, false
+	case b.ForegroundPID == b.RecordPID, b.JobShown:
 		return Outcome{}, true
 	case b.AgentGone:
 		return Outcome{Progress: Failed, Code: "agent_gone", Note: "the adopted agent process exited"}, false

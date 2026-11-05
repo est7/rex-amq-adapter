@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode"
 
 	"golang.org/x/text/width"
 )
@@ -164,4 +165,41 @@ func runeWidth(r rune) int {
 		return 2
 	}
 	return 1
+}
+
+// ShownTitle is a terminal title without the state glyph a harness puts in
+// front of it ("✳ fix login" while Claude Code works): a first character that
+// is neither a letter nor a digit, followed by a space.
+func ShownTitle(title string) string {
+	title = strings.TrimSpace(title)
+	for i, r := range title {
+		if i == 0 && !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+			if rest, ok := strings.CutPrefix(title[len(string(r)):], " "); ok {
+				return strings.TrimSpace(rest)
+			}
+		}
+		break
+	}
+	return title
+}
+
+// AgentViewTitle reports whether a terminal title is Claude Code's agent view
+// (its list of background sessions), which shows no conversation: "claude
+// agents", or "<n> awaiting input · claude agents" ("2 awaiting input · claude
+// agents" observed; both forms read in Claude Code 2.1.318 by agy's review).
+func AgentViewTitle(title string) bool {
+	t := ShownTitle(title)
+	if t == "claude agents" {
+		return true
+	}
+	n, ok := strings.CutSuffix(t, " awaiting input · claude agents")
+	return ok && n != "" && strings.Trim(n, "0123456789") == ""
+}
+
+// TitleNamesHandle reports whether a title, without its state glyph, is h's
+// pane label with any task or none. The handle is unique and comes first, so
+// a task changed since the harness last drew its title still names h.
+func TitleNamesHandle(title string, h Handle) bool {
+	t := ShownTitle(title)
+	return h != "" && (t == string(h) || strings.HasPrefix(t, string(h)+PaneSeparator))
 }
