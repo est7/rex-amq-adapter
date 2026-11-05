@@ -98,3 +98,14 @@ func TestIdentityNoticeNamesTheTitleCommand(t *testing.T) {
 		t.Errorf("identity notice does not name the title command: %q", r.Notice)
 	}
 }
+
+// A peer launched in a pane labelled "<role> | <task>" is named for the role
+// and starts with the task, so its pane and harness title show it at once.
+func TestAPeerStartsWithTheTaskItsLauncherGave(t *testing.T) {
+	term := &fakeTerm{label: "architect | v0.8.2 review"}
+	e := realAmqEnv(t, term)
+	rec := adoptIn(t, e, block, "s1", 0)
+	if rec.Handle != "codex-architect-01" || rec.Task != "v0.8.2 review" || term.label != "codex-architect-01 | v0.8.2 review" {
+		t.Errorf("peer %s, task %q, label %q", rec.Handle, rec.Task, term.label)
+	}
+}

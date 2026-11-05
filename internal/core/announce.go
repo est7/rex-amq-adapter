@@ -110,14 +110,25 @@ func HookNotice(a Announcement, h Handle, envCmd string, event HookEvent) string
 	return lead + ". " + act + "."
 }
 
-// SessionNotice is the SessionStart context: who the agent is and how to use AMQ.
-func SessionNotice(h Handle, envCmd, titleCmd string, unread int) string {
+// SessionNotice is the SessionStart context: who the agent is, how to use
+// AMQ, and what its pane label shows. The label paragraph stands apart, since
+// it applies whether or not the agent messages anyone; task is the one it
+// starts with, if any.
+func SessionNotice(h Handle, envCmd, titleCmd, task string, unread int) string {
 	s := fmt.Sprintf("AMQ: you are %s. Other agents in Rex reach you with `amq send --to %s`. "+
 		"Before any amq command run `eval \"$(%s)\"` (each shell needs it). "+
-		"Load the rex-amq-adapter skill before messaging other agents. "+
-		"Once you know your task, show it after your handle in your pane's label with `%s \"<task in a few words>\"`, and again when it changes.", h, h, envCmd, titleCmd)
+		"Load the rex-amq-adapter skill before messaging other agents.", h, h, envCmd)
 	if unread > 0 {
 		s += fmt.Sprintf(" You have %d unread message(s): drain them with `amq drain --include-body` and act on them.", unread)
 	}
-	return s
+	return s + "\n" + TaskNotice(h, titleCmd, task)
+}
+
+// TaskNotice is what an agent is told about its pane label: the task it
+// shows, or a request for one once the agent knows what it is working on.
+func TaskNotice(h Handle, titleCmd, task string) string {
+	if task != "" {
+		return fmt.Sprintf("Pane label: your pane shows `%s`. When your task changes, run `%s \"<new task in a few words>\"`.", PaneLabel(h, task), titleCmd)
+	}
+	return fmt.Sprintf("Pane label: your pane shows only `%s`. As soon as you know what you are working on (usually from the user's first request), show it after your handle with `%s \"<task in a few words>\"`, and again when it changes. Do this even if you never use AMQ.", h, titleCmd)
 }

@@ -40,8 +40,9 @@ them, so ask the user where to place a peer instead.
 
 ## Show your task in your pane
 
-Once you know what you are working on, put it after your handle in your pane's
-label, in a few words, and run it again when the task changes:
+Once you know what you are working on, usually from the user's first request,
+put it after your handle in your pane's label, in a few words, and run it
+again when the task changes. Do it whether or not you use AMQ:
 
 ```bash
 rex-amq-adapter title "fix login redirect"   # pane: claude-reviewer-01 | fix login redirect
@@ -49,7 +50,8 @@ rex-amq-adapter title                        # clear it
 ```
 
 The adapter composes the label and keeps the handle in front; it cuts a long
-task to 32 columns. The task follows your handle, so a resume in another pane
+task to 32 columns. A peer you start gets its task from its launch label
+(Start a peer, step 1), so it shows one from its first turn. The task follows your handle, so a resume in another pane
 shows it again. Do not rename your pane with `rex block rename`: the next
 adoption would write the adapter's label back. The Rex session's name is not
 the adapter's: name it as Rex's own guidance says.
@@ -149,10 +151,15 @@ When the user asks for another agent ("开个 codex 审一下", "spin up a revie
 start it, hand it the brief, and talk to it like any peer. Every Rex command
 this needs is below; no other skill is required.
 
-1. **Pick a role** for the pane label: a word or two for what the peer does
-   (`reviewer`, `test-writer`). The adapter names the peer
-   `<kind>-<role>-<NN>` (`codex-reviewer-01`) and relabels the pane; step 4
-   prints the handle. A role with a
+0. **Show your own task** first if your pane shows only your handle: you know
+   it now, since you are about to hand part of it on
+   (`rex-amq-adapter title "<your task>"`).
+1. **Pick a role and name the peer's task** for its pane label,
+   `<label>` below, written `"<role> | <task>"`: a word or two for what the
+   peer does (`reviewer`, `test-writer`), then its task in a few words
+   (`"reviewer | fix login redirect"`). The adapter names the peer
+   `<kind>-<role>-<NN>` (`codex-reviewer-01`) and relabels the pane
+   `codex-reviewer-01 | <task>`; step 4 prints the handle. A role with a
    prompt briefs the peer when it starts: `implementer`, `reviewer`, `qa`,
    `architect`, `writer`, `editor`, and `goal` are built in, and
    `rex-amq-adapter crews` lists every role and crew available here. Prefer
@@ -177,11 +184,11 @@ this needs is below; no other skill is required.
 
    | The peer works on | Place it | Command |
    |---|---|---|
-   | the same task (review, tests, second opinion) | a pane in your window | `rex split -s "$REX_SESSION" -b "$REX_BLOCK" --split=right --focus=false --label reviewer -c "$PWD" --json -- codex --no-daemon "<brief>"` |
+   | the same task (review, tests, second opinion) | a pane in your window | `rex split -s "$REX_SESSION" -b "$REX_BLOCK" --split=right --focus=false --label "<label>" -c "$PWD" --json -- codex --no-daemon "<brief>"` |
    | another peer on the same task | a pane in the same window, below the last peer | the same, with `-b <last peer's block> --split=below` |
-   | another task in the same project | a new tab in your session | `rex run -s "$REX_SESSION" --label <role> -c "$PWD" --focus=false --json -- codex --no-daemon "<brief>"` |
-   | a team the user asked for by crew ("开个 pair 组", "a ship crew for this fix") | a new tab named after the crew, then the other members as panes in it | `rex-amq-adapter tab <crew> --role <role> -c "$PWD" -- codex --no-daemon "<brief>"` for the first, then `rex split -b <its block> --label <role> …` for each other member |
-   | another project (other repository or directory) | a new session | `rex new <project> -c <dir> --json`, then `rex run -s <its .session_id> --label <role> -c <dir> --focus=false --json -- codex --no-daemon "<brief>"` |
+   | another task in the same project | a new tab in your session | `rex run -s "$REX_SESSION" --label "<label>" -c "$PWD" --focus=false --json -- codex --no-daemon "<brief>"` |
+   | a team the user asked for by crew ("开个 pair 组", "a ship crew for this fix") | a new tab named after the crew, then the other members as panes in it | `rex-amq-adapter tab <crew> --role "<label>" -c "$PWD" -- codex --no-daemon "<brief>"` for the first, then `rex split -b <its block> --label "<label>" …` for each other member |
+   | another project (other repository or directory) | a new session | `rex new <project> -c <dir> --json`, then `rex run -s <its .session_id> --label "<label>" -c <dir> --focus=false --json -- codex --no-daemon "<brief>"` |
 
    A tab named after a crew (`pair`, `ship`, `dev`, `docs`, `design` are
    built in) gives every agent in it the crew's team conventions: who leads,

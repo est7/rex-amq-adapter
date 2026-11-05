@@ -168,7 +168,23 @@ it does not inherit the handle of the pane's previous session. The adapter
 then sets the pane label to the handle, so it is visible in Rex.
 
 **Pane label.** `<handle> | <task>`, where the task is what the agent said it
-is doing (`rex-amq-adapter title "<task>"`, which the identity notice names).
+is doing (`rex-amq-adapter title "<task>"`, which the identity notice names),
+or for a new agent the task its launcher wrote after `|` in the pane label
+(`rex split --label "reviewer | fix login"`). A label whose head has the shape
+of a handle (a kind first, a number last) is the adapter's own for an earlier
+agent in the pane, so its task is not taken (`core.InitialTask`). The identity
+notice asks for a task in a paragraph of its own (`Pane label: …`), apart
+from the AMQ instructions, so an agent that never messages anyone reads it
+too; an agent that has a task is told what its pane shows instead. Claude
+Code runs SessionStart before the user has asked anything, so its first
+`UserPromptSubmit` in each session repeats the request while the pane shows
+no task, once (`task-asked/<handle>` holds the last session asked). Codex
+and agy run SessionStart with the first prompt, so they need no repeat. agy
+has no `UserPromptSubmit`, but its `PreInvocation` input carries
+`invocationNum`, which restarts at 0 at every turn of a running agy and
+counts its model calls (reproduced, agy 1.5.1, 2026-11-05: turn one 0, 1;
+turn two 0, 1, 2), and `lastUserInput`, the turn's prompt: `invocationNum ==
+0` marks a turn's first call, should something need to run once a turn.
 The adapter composes the label, so the handle always comes first and survives
 a pane too narrow for the rest; the task is one line, `|` replaced, at most 32
 columns (`golang.org/x/text/width`: CJK and most emoji count two; a joined
@@ -784,6 +800,7 @@ Overridable with `REX_AMQ_ADAPTER_HOME` (tests use a temporary directory).
 ├── logs/hooks.log            hook failures
 ├── window/<handle>           window notes (joins, departures) queued for the next prompt
 ├── title/<handle>            the title last given each session's harness (Claude Code, Pi)
+├── task-asked/<handle>       the last Claude Code session asked for a task at its first prompt
 ├── pending/<block>           a doorbell written and not yet known to be submitted
 ├── adopt-failed/<block>      when adopting the block's agent last failed (back-off)
 ├── watch/<handle>.lock       held by a goal agent's watcher

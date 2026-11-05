@@ -155,7 +155,9 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 		AdoptedAt:      e.Now().UTC(),
 	}
 	if hasOwn {
-		rec.Task = own.Task
+		rec.Task = own.Task // a resumed agent keeps its task, in any pane
+	} else {
+		rec.Task = core.InitialTask(blk.Label)
 	}
 	if again && own.AgentPID == agentPID {
 		rec.AdoptedAt = own.AdoptedAt

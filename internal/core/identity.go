@@ -98,6 +98,26 @@ func Role(label string) string {
 	return strings.Join(words, "-")
 }
 
+// InitialTask is the task a launcher wrote in a new agent's pane label,
+// "<role> | <task>", so the agent starts with it. A label whose head has the
+// shape of a handle (a kind first, a number last) is one the adapter wrote for
+// an earlier agent in the pane, and its task was that agent's: none.
+func InitialTask(label string) string {
+	head, tail, ok := strings.Cut(label, "|")
+	if !ok {
+		return ""
+	}
+	words := strings.FieldsFunc(strings.ToLower(head), func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9')
+	})
+	if n := len(words); n >= 2 && strings.Trim(words[n-1], "0123456789") == "" {
+		if _, err := ParseKind(words[0]); err == nil {
+			return ""
+		}
+	}
+	return Task(tail)
+}
+
 // composeHandle is <kind>[-<role>]-<NN>, the role cut to keep the handle
 // within its 32 characters.
 func composeHandle(kind Kind, role string, n int) Handle {

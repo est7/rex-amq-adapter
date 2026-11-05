@@ -183,6 +183,10 @@ func (e Env) announce(ctx context.Context, kind core.Kind, loc Location, in Hook
 	r, err := e.announceMail(ctx, rec, in, event, identity, may.window, sent)
 	if err == nil {
 		r.Title = e.syncTitle(ctx, kind, hook, rec, in.SessionID)
+		// An identity notice carries the request already: it counts as asked.
+		if ask := e.askTask(ctx, kind, hook, rec, in.SessionID); identity == "" {
+			r.Notice = joinNotices(r.Notice, ask)
+		}
 	}
 	return r, err
 }
@@ -251,7 +255,7 @@ func (e Env) withWindowNotes(h core.Handle, window bool, identity, mail string) 
 // identityNotice tells a newly adopted agent who it is, who is beside it,
 // and what its crew and role ask of it.
 func (e Env) identityNotice(ctx context.Context, a Adoption, unread int) string {
-	notice := joinNotices(core.SessionNotice(a.Record.Handle, e.EnvCommand(), e.SelfBin+" title", unread), core.MatesNotice(a.Mates))
+	notice := joinNotices(core.SessionNotice(a.Record.Handle, e.EnvCommand(), e.SelfBin+" title", a.Record.Task, unread), core.MatesNotice(a.Mates))
 	if brief := core.BriefNotice(e.briefing(ctx, a)); brief != "" {
 		notice += "\n\n" + brief
 	}

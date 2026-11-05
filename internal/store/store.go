@@ -44,6 +44,7 @@ func (p Paths) pending() string   { return filepath.Join(p.Home, "pending") }
 func (p Paths) failures() string  { return filepath.Join(p.Home, "adopt-failed") }
 func (p Paths) window() string    { return filepath.Join(p.Home, "window") }
 func (p Paths) titles() string    { return filepath.Join(p.Home, "title") }
+func (p Paths) taskAsked() string { return filepath.Join(p.Home, "task-asked") }
 
 // PathsForRoot locates the state directory from its AMQ root. The injector
 // uses it: amq wake passes the root explicitly, while the environment a
@@ -158,7 +159,7 @@ func (s Store) DeleteRecord(h core.Handle) error {
 	if err := s.removeRecordFiles(h, ""); err != nil {
 		return err
 	}
-	for _, p := range []string{s.ledgerPath(h), s.sentCursorPath(h), s.injectLog(h), s.titlePath(h)} {
+	for _, p := range []string{s.ledgerPath(h), s.sentCursorPath(h), s.injectLog(h), s.titlePath(h), s.taskAskedPath(h)} {
 		if err := os.Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}
@@ -527,4 +528,26 @@ func (s Store) SetTitlesShown(h core.Handle, shown map[string]string) error {
 
 func (s Store) titlePath(h core.Handle) string {
 	return filepath.Join(s.P.titles(), fileKey(string(h)))
+}
+
+// TaskAsked is the last session of h that was asked at its first prompt to
+// show its task, "" when none was. The caller holds h's ledger lock.
+func (s Store) TaskAsked(h core.Handle) (string, error) {
+	b, err := os.ReadFile(s.taskAskedPath(h))
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", nil
+	}
+	return strings.TrimSpace(string(b)), err
+}
+
+// SetTaskAsked records that session of h was asked.
+func (s Store) SetTaskAsked(h core.Handle, session string) error {
+	if err := os.MkdirAll(s.P.taskAsked(), 0o700); err != nil {
+		return err
+	}
+	return fsutil.WriteAtomic(s.taskAskedPath(h), []byte(session+"\n"))
+}
+
+func (s Store) taskAskedPath(h core.Handle) string {
+	return filepath.Join(s.P.taskAsked(), fileKey(string(h)))
 }

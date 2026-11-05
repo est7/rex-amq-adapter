@@ -142,7 +142,7 @@ conventions, shared by every agent in it:
 
 ```bash
 rex-amq-adapter tab pair --role implementer -- codex --no-daemon "Fix #42: …"
-rex split -b <its block> --label reviewer -- claude "Review the implementer's fix for #42 when it hands off."
+rex split -b <its block> --label "reviewer | review #42" -- claude "Review the implementer's fix for #42 when it hands off."
 rex-amq-adapter crews        # every crew and role available in this directory
 ```
 
@@ -169,11 +169,12 @@ built-in prompts are rewritten from.
 The agent's skill handles `amq send`, `amq drain`, and `amq reply`, and opens
 peers itself: a pane beside it for the same task, a new tab for another task in
 the same project, a new session for another project. To start one by hand,
-label its pane (the label becomes the handle) and give it a first prompt (an
-agent gets its mailbox when its first turn starts):
+label its pane `"<role> | <task>"` (the role becomes part of the handle, the
+task shows after it) and give it a first prompt (an agent gets its mailbox
+when its first turn starts):
 
 ```bash
-rex split --split=right --focus=false --label reviewer -- codex --no-daemon "Review the diff; report to claude over AMQ"
+rex split --split=right --focus=false --label "reviewer | review the diff" -- codex --no-daemon "Review the diff; report to claude over AMQ"
 ```
 
 Inspect state:
@@ -187,8 +188,10 @@ rex-amq-adapter collect      # retire agents whose pane closed or process died
 
 An agent shows what it is working on after its handle in its pane's label
 (`claude-reviewer-01 | fix login redirect`) with `rex-amq-adapter title
-"<task>"`; its identity notice tells it to. The task follows the handle into
-any pane it is resumed in. Claude Code, Pi, and Antigravity show the same
+"<task>"`; its identity notice tells it to, and Claude Code, whose session
+starts before the user asks anything, is asked once more at its first prompt.
+A peer launched in a pane labelled `"<role> | <task>"` starts with that task.
+The task follows the handle into any pane it is resumed in. Claude Code, Pi, and Antigravity show the same
 label as their own title (Claude Code from the next prompt after a change, Pi
 within about 30 s, agy at its next state change); Codex cannot without its
 shared daemon.

@@ -57,6 +57,34 @@ func (e Env) syncTitle(ctx context.Context, kind core.Kind, event string, rec st
 	return ""
 }
 
+// askTask is the request for a task given with the first prompt of a Claude
+// Code session whose pane shows no task. Claude Code runs SessionStart, which
+// carries the same request, before the user has asked anything, so the agent
+// cannot know its task then; Codex and agy run it with the first prompt. Each
+// session is asked once: a session that stays without a task (a quick
+// question) is not asked again.
+func (e Env) askTask(ctx context.Context, kind core.Kind, event string, rec store.Record, session string) string {
+	if kind != core.Claude || event != EventPrompt || rec.Task != "" || session == "" {
+		return ""
+	}
+	unlock, err := e.Store.LockLedger(ctx, rec.Handle)
+	if err != nil {
+		fmt.Fprintf(Diagnostics, "ask %s for its task: %v\n", rec.Handle, err)
+		return ""
+	}
+	defer unlock()
+	asked, err := e.Store.TaskAsked(rec.Handle)
+	if err == nil && asked != session {
+		if err = e.Store.SetTaskAsked(rec.Handle, session); err == nil {
+			return core.TaskNotice(rec.Handle, e.SelfBin+" title", "")
+		}
+	}
+	if err != nil {
+		fmt.Fprintf(Diagnostics, "ask %s for its task: %v\n", rec.Handle, err)
+	}
+	return ""
+}
+
 // PaneTitle is the window title for a harness that asks for one
 // (Antigravity's settings.json "title" command, run on every change of the
 // agent's state): the pane label of its agent in loc. A block without a live
