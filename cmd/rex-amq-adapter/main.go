@@ -43,7 +43,8 @@ Agent and user commands:
                             by a pane label) that brief agents working in dir
 
 Installation:
-  setup|status|remove       install, inspect, or remove the skill and hooks
+  setup|status|remove       install, inspect, or remove the skill, hooks, and
+                            harness settings (agy title, shared supervisors off)
 
 Internal (run by installed hooks and by amq wake):
   hook <event> --agent K    session-start | user-prompt-submit | post-tool-use | pre-invocation | stop | session-end | mail | settle

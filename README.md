@@ -42,14 +42,14 @@ is erased only when the box holds exactly that doorbell. See
 
 ## Install
 
-Requirements: Rex (macOS), `amq` on `PATH` (tested with 0.123.0; needs
+Requirements: Rex (macOS), `amq` on `PATH` (tested with 0.126.1; needs
 `amq wake check --json-schema 2` and `retire --if-generation`, as in 0.81.2+),
-Go to build, and Claude Code (2.1.316), Codex (0.166.0), Antigravity CLI
-(1.4.2), or Pi (1.4.0) — the versions tested.
+Go to build, and Claude Code (2.1.318), Codex (0.166.0), Antigravity CLI
+(1.5.1), or Pi (1.4.0) — the versions tested.
 
 ```bash
 brew install est7/tap/rex-amq-adapter      # macOS / Linux; pulls in amq
-rex-amq-adapter setup                       # skill + hooks for every agent found; --dry-run to preview
+rex-amq-adapter setup                       # skill, hooks, and harness settings for every agent found; --dry-run to preview
 ```
 
 Or with Go: `go install github.com/est7/rex-amq-adapter/cmd/rex-amq-adapter@latest`
@@ -268,6 +268,10 @@ duties, the code to change, and the end-to-end checks to pass.
 - Cross-machine delivery is out of scope.
 - An agent that ends a turn with mail it chose not to drain gets its next
   doorbell on amq's retry ladder, up to 2 minutes later.
+- Antigravity's `/resume` of another conversation inside a running agy keeps
+  the handle of the conversation it left.
+- Antigravity subagents are recognized by agy's own conversation store
+  (`brain/<parent>/.system_generated/subagents/`), which agy may change.
 
 ## License
 

@@ -151,7 +151,8 @@ agent. Adoption, in order:
    agent); the session it left keeps its own handle.
 2. **Same process.** This pane's live record of the same process and kind
    keeps its handle: a repeated hook, a compaction, a new session in the
-   process (`/clear`), an agy subagent (below).
+   process (`/clear`). An agy subagent never gets here: its hooks are ignored
+   (below).
 3. **New name.** `<kind>-<role>-<NN>`, or `<kind>-<NN>` without a role, with
    the lowest `NN` from `01` that is not taken. The role comes from the pane
    label a peer set when it launched the agent (`rex split --label reviewer
@@ -591,7 +592,7 @@ limit, is never overridden. agy fires `SessionStart` only for a new
 conversation, so a conversation `/resume`d by a new agy process is first seen
 by its next `PreInvocation`; the hook's own check of the record (section 4)
 adopts it there. Its subagents run hooks from the parent's pane under their own
-conversation ids (section 4). Without it the record kept the exited
+conversation ids, which the adapter ignores (section 4). Without it the record kept the exited
 PID, the doorbell's binding check reported `agent_gone`, and the next collect
 parked the live agent (observed 2026-11-04). Every agy hook prints a JSON object, `{}` when it
 has nothing to say. Its peers start with

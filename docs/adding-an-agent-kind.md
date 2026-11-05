@@ -94,6 +94,11 @@ official pages), find and then exercise:
   (`/resume`, `/clear`, `/new`), and which session id the hooks of subagents
   or background tasks carry: agy fires it only for a new conversation, and
   its subagents' hooks carry their own ids from the parent's pane;
+- whether the harness can run a session in a shared process that another
+  terminal started (Claude Code's agent view, Codex's app-server daemon):
+  such a session inherits that terminal's `REX_BLOCK`. Find the setting that
+  turns it off and give the agent a `SupervisorFile` so setup turns it off
+  (`internal/install/supervisor.go`);
 - that every hook descends from the pane's foreground process (`ps -o
   ppid=` up from the hook against `rex block call -b <block> process`): a
   hook's check of its record depends on it;
