@@ -37,6 +37,9 @@ type Reply struct {
 	// Inbox is the directory an in-process integration watches for mail;
 	// set on session-start for such agents.
 	Inbox string
+	// Title, when set, is the agent's pane label for its harness to show as
+	// its own conversation title (see syncTitle).
+	Title string
 }
 
 // Hook runs one agent hook.
@@ -59,18 +62,18 @@ func (e Env) Hook(ctx context.Context, event string, kind core.Kind, loc Locatio
 	case EventSessionStart:
 		return e.sessionStart(ctx, kind, loc, in)
 	case EventPrompt:
-		return e.announce(ctx, kind, loc, in, core.PromptSubmitted, onPrompt)
+		return e.announce(ctx, kind, loc, in, event, core.PromptSubmitted, onPrompt)
 	case EventPreInvocation:
 		// Antigravity has no prompt hook; its first model call after a
 		// prompt is the nearest point, so window notes ride here too.
-		return e.announce(ctx, kind, loc, in, core.ToolFinished, onModelCall)
+		return e.announce(ctx, kind, loc, in, event, core.ToolFinished, onModelCall)
 	case EventPostTool:
-		return e.announce(ctx, kind, loc, in, core.ToolFinished, onToolCall)
+		return e.announce(ctx, kind, loc, in, event, core.ToolFinished, onToolCall)
 	case EventStop, EventSettle:
 		if !in.NormalStop() {
 			return Reply{}, nil
 		}
-		r, err := e.announce(ctx, kind, loc, in, core.TurnEnding, onTurnEnd)
+		r, err := e.announce(ctx, kind, loc, in, event, core.TurnEnding, onTurnEnd)
 		if err != nil {
 			return r, err
 		}
@@ -84,7 +87,7 @@ func (e Env) Hook(ctx context.Context, event string, kind core.Kind, loc Locatio
 	case EventMail:
 		// Pi's watcher turns a notice into a turn of its own; window notes
 		// and bounces wait for its next run instead.
-		return e.announce(ctx, kind, loc, in, core.PromptSubmitted, onMail)
+		return e.announce(ctx, kind, loc, in, event, core.PromptSubmitted, onMail)
 	}
 	return Reply{}, fmt.Errorf("unknown hook event %q", event)
 }
@@ -108,7 +111,7 @@ func (e Env) sessionStart(ctx context.Context, kind core.Kind, loc Location, in 
 	if err != nil {
 		return Reply{}, err
 	}
-	r := Reply{Notice: e.identityNotice(ctx, a, a.Unread)}
+	r := Reply{Notice: e.identityNotice(ctx, a, a.Unread), Title: e.syncTitle(ctx, kind, EventSessionStart, a.Record, in.SessionID)}
 	if kind.InProcess() {
 		// The extension delivers waiting mail itself, with a turn of its own,
 		// from the first scan of this inbox; marking it announced here would
@@ -135,7 +138,7 @@ func (e Env) sessionStart(ctx context.Context, kind core.Kind, loc Location, in 
 // adapter installed mid-session misses SessionStart too. It also finishes an
 // adoption that stopped after writing its record. An agent in that state has a
 // mailbox, so a failed retry does not silence its mail.
-func (e Env) announce(ctx context.Context, kind core.Kind, loc Location, in HookInput, event core.HookEvent, may announcing) (Reply, error) {
+func (e Env) announce(ctx context.Context, kind core.Kind, loc Location, in HookInput, hook string, event core.HookEvent, may announcing) (Reply, error) {
 	rec, ok, err := e.Store.Record(loc.Block)
 	if err != nil {
 		return Reply{}, err
@@ -166,7 +169,11 @@ func (e Env) announce(ctx context.Context, kind core.Kind, loc Location, in Hook
 	if may.undelivered {
 		sent = e.checkableSent(ctx, rec)
 	}
-	return e.announceMail(ctx, rec, in, event, identity, may.window, sent)
+	r, err := e.announceMail(ctx, rec, in, event, identity, may.window, sent)
+	if err == nil {
+		r.Title = e.syncTitle(ctx, kind, hook, rec, in.SessionID)
+	}
+	return r, err
 }
 
 // adoptUnlessBackingOff adopts the agent in loc. A failing adoption is not
@@ -354,8 +361,8 @@ func Render(kind core.Kind, event string, r Reply) (string, error) {
 	var v any
 	switch {
 	case kind == core.Pi:
-		// Pi's extension reads {"notice", "inbox"}; an empty object means
-		// nothing to deliver.
+		// Pi's extension reads {"notice", "inbox", "title"}; an empty object
+		// means nothing to deliver.
 		out := map[string]string{}
 		if r.Notice != "" {
 			out["notice"] = r.Notice
@@ -363,10 +370,13 @@ func Render(kind core.Kind, event string, r Reply) (string, error) {
 		if r.Inbox != "" {
 			out["inbox"] = r.Inbox
 		}
+		if r.Title != "" {
+			out["title"] = r.Title
+		}
 		v = out
 	case kind == core.Agy && r.Notice == "":
 		return "{}\n", nil
-	case r.Notice == "":
+	case r.Notice == "" && r.Title == "":
 		return "", nil
 	case kind == core.Agy && event == EventStop:
 		v = map[string]string{"decision": "continue", "reason": r.Notice}
@@ -374,12 +384,21 @@ func Render(kind core.Kind, event string, r Reply) (string, error) {
 		v = map[string]any{"injectSteps": []any{map[string]any{"systemMessage": map[string]string{"systemMessage": r.Notice}}}}
 	case kind == core.Agy:
 		v = map[string]any{"injectSteps": []any{map[string]string{"ephemeralMessage": r.Notice}}}
-	case event == EventSessionStart:
+	case event == EventSessionStart && r.Title == "":
 		return r.Notice + "\n", nil
 	case event == EventStop:
 		v = map[string]string{"decision": "block", "reason": r.Notice}
 	default:
-		v = map[string]any{"hookSpecificOutput": map[string]string{"hookEventName": hookEventNames[event], "additionalContext": r.Notice}}
+		// Claude Code's sessionTitle names the conversation; only
+		// SessionStart and UserPromptSubmit carry one (titleCarried).
+		out := map[string]string{"hookEventName": hookEventNames[event]}
+		if r.Notice != "" {
+			out["additionalContext"] = r.Notice
+		}
+		if r.Title != "" {
+			out["sessionTitle"] = r.Title
+		}
+		v = map[string]any{"hookSpecificOutput": out}
 	}
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -391,6 +410,7 @@ func Render(kind core.Kind, event string, r Reply) (string, error) {
 // hookEventNames are the Claude Code and Codex names hookSpecificOutput
 // must carry.
 var hookEventNames = map[string]string{
-	EventPrompt:   "UserPromptSubmit",
-	EventPostTool: "PostToolUse",
+	EventSessionStart: "SessionStart",
+	EventPrompt:       "UserPromptSubmit",
+	EventPostTool:     "PostToolUse",
 }

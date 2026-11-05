@@ -269,7 +269,7 @@ func TestAgyHookGroup(t *testing.T) {
 		t.Fatalf("agy paths: %+v %v", agents, err)
 	}
 	items, err := Setup(agents, Options{SelfBin: "/old/rex-amq-adapter"})
-	if err != nil || changes(items) != "skill=created,hook=created" {
+	if err != nil || changes(items) != "skill=created,hook=created,title=created" {
 		t.Fatalf("setup: %s %v", changes(items), err)
 	}
 	root, _ := parseObject([]byte(read(t, path)))
@@ -284,20 +284,20 @@ func TestAgyHookGroup(t *testing.T) {
 	if cmd != hookCommand("/old/rex-amq-adapter", "pre-invocation", core.Agy) {
 		t.Fatalf("command: %v", cmd)
 	}
-	if items, _ := Setup(agents, Options{SelfBin: "/old/rex-amq-adapter"}); changes(items) != "skill=unchanged,hook=unchanged" {
+	if items, _ := Setup(agents, Options{SelfBin: "/old/rex-amq-adapter"}); changes(items) != "skill=unchanged,hook=unchanged,title=unchanged" {
 		t.Fatalf("second setup: %s", changes(items))
 	}
 	if st, _ := Status(agents, "/new/rex-amq-adapter"); st[1].State != "outdated" {
 		t.Fatalf("moved binary: %+v", st)
 	}
-	if items, err := Setup(agents, Options{SelfBin: "/new/rex-amq-adapter"}); err != nil || changes(items) != "skill=updated,hook=updated" {
+	if items, err := Setup(agents, Options{SelfBin: "/new/rex-amq-adapter"}); err != nil || changes(items) != "skill=updated,hook=updated,title=updated" {
 		t.Fatalf("update: %s %v", changes(items), err)
 	}
 	root, _ = parseObject([]byte(read(t, path)))
 	if strings.Join(root.keys, ",") != "orca-status,rex-amq-adapter" || strings.Contains(read(t, path), "/old/") {
 		t.Fatalf("update must replace the group in place: %v", root.keys)
 	}
-	if items, err := Remove(agents, Options{SelfBin: "/new/rex-amq-adapter"}); err != nil || changes(items) != "skill=removed,hook=removed" {
+	if items, err := Remove(agents, Options{SelfBin: "/new/rex-amq-adapter"}); err != nil || changes(items) != "skill=removed,hook=removed,title=removed" {
 		t.Fatalf("remove: %s %v", changes(items), err)
 	}
 	before, _ := parseObject([]byte(agyHooks))
@@ -368,5 +368,74 @@ func TestEveryHookHasOneTimeoutAndABudgetInsideIt(t *testing.T) {
 	}
 	if _, ok := Budget("unknown"); ok {
 		t.Error("unknown event has a budget")
+	}
+}
+
+// agy's settings.json keeps the user's other keys in their order; the title
+// block is added, updated in place when the binary moves (keeping the
+// "enabled" agy writes for /title off), and removed again. Someone else's
+// title command is never replaced or removed.
+func TestAgyTitleCommand(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	if err := os.MkdirAll(filepath.Join(dir, ".gemini", "config"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	settings := filepath.Join(dir, ".gemini", "antigravity-cli", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settings), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const user = `{"model": "argon", "statusLine": {"type": "command", "command": "~/s.sh"}}`
+	if err := os.WriteFile(settings, []byte(user), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	agents, err := Agents([]core.Kind{core.Agy})
+	if err != nil || agents[0].TitleFile != settings {
+		t.Fatalf("agy title file: %+v %v", agents, err)
+	}
+	if _, err := Setup(agents, Options{SelfBin: "/old/rex-amq-adapter"}); err != nil {
+		t.Fatal(err)
+	}
+	root, _ := parseObject([]byte(read(t, settings)))
+	if strings.Join(root.keys, ",") != "model,statusLine,title" {
+		t.Fatalf("keys: %v", root.keys)
+	}
+	block := root.vals["title"].(*object)
+	if block.vals["type"] != "command" || block.vals["command"] != "'/old/rex-amq-adapter' __internal pane-title --agent agy" {
+		t.Fatalf("title block: %v", block.vals)
+	}
+	// /title off, then the binary moves.
+	block.set("enabled", false)
+	b, _ := marshal(root)
+	if err := os.WriteFile(settings, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if items, err := Setup(agents, Options{SelfBin: "/new/rex-amq-adapter"}); err != nil || items[2].Change != "updated" {
+		t.Fatalf("update: %+v %v", items, err)
+	}
+	root, _ = parseObject([]byte(read(t, settings)))
+	block = root.vals["title"].(*object)
+	if block.vals["enabled"] != false || block.vals["command"] != "'/new/rex-amq-adapter' __internal pane-title --agent agy" {
+		t.Fatalf("update must keep enabled and move the command: %v", block.vals)
+	}
+	if _, err := Remove(agents, Options{SelfBin: "/new/rex-amq-adapter"}); err != nil {
+		t.Fatal(err)
+	}
+	if root, _ = parseObject([]byte(read(t, settings))); strings.Join(root.keys, ",") != "model,statusLine" {
+		t.Fatalf("after remove: %v", root.keys)
+	}
+
+	const mine = `{"title": {"type": "command", "command": "~/my-title.sh"}}`
+	if err := os.WriteFile(settings, []byte(mine), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := Status(agents, "/new/rex-amq-adapter"); st[2].State != "foreign" {
+		t.Fatalf("someone else's title: %+v", st)
+	}
+	if items, _ := Setup(agents, Options{SelfBin: "/new/rex-amq-adapter"}); items[2].Change != "conflict" || !strings.Contains(read(t, settings), "my-title.sh") {
+		t.Fatalf("setup replaced someone else's title: %+v", items)
+	}
+	if items, _ := Remove(agents, Options{SelfBin: "/new/rex-amq-adapter"}); items[2].Change != "kept" || !strings.Contains(read(t, settings), "my-title.sh") {
+		t.Fatalf("remove dropped someone else's title: %+v", items)
 	}
 }

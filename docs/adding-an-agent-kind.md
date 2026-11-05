@@ -97,6 +97,10 @@ official pages), find and then exercise:
 - that every hook descends from the pane's foreground process (`ps -o
   ppid=` up from the hook against `rex block call -b <block> process`): a
   hook's check of its record depends on it;
+- how the harness's own title can be set: a hook output field (Claude's
+  `sessionTitle`), an extension API (Pi's `setSessionName`), or a command it
+  runs for its window title (agy's `"title"` block); see `titleCarried` and
+  `PaneTitle`;
 - the environment hooks and tool shells inherit (`REX_BLOCK` must reach both).
   Probe any shared-background-server mode separately: the terminal frontend's
   environment does not prove that the backend inherits it. Codex requires

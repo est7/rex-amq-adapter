@@ -26,7 +26,10 @@ type Agent struct {
 	Name     string
 	SkillDir string // directory holding SKILL.md
 	HookFile string
-	Found    bool
+	// TitleFile, when set, is the settings file where the harness takes a
+	// command for its window title (Antigravity's "title" block).
+	TitleFile string
+	Found     bool
 }
 
 const skillName = "rex-amq-adapter"
@@ -45,7 +48,8 @@ func Agents(only []core.Kind) ([]Agent, error) {
 	all := []Agent{
 		{Kind: core.Claude, Name: "Claude Code", SkillDir: filepath.Join(claudeDir, "skills", skillName), HookFile: filepath.Join(claudeDir, "settings.json"), Found: exists(claudeDir) || onPath("claude")},
 		{Kind: core.Codex, Name: "Codex", SkillDir: filepath.Join(home, ".agents", "skills", skillName), HookFile: filepath.Join(codexDir, "hooks.json"), Found: exists(codexDir) || onPath("codex")},
-		{Kind: core.Agy, Name: "Antigravity", SkillDir: filepath.Join(agyDir, "skills", skillName), HookFile: filepath.Join(agyDir, "hooks.json"), Found: exists(agyDir) || onPath("agy")},
+		{Kind: core.Agy, Name: "Antigravity", SkillDir: filepath.Join(agyDir, "skills", skillName), HookFile: filepath.Join(agyDir, "hooks.json"),
+			TitleFile: filepath.Join(home, ".gemini", "antigravity-cli", "settings.json"), Found: exists(agyDir) || onPath("agy")},
 		// Pi reads the Agent Skills directory it shares with Codex; its "hook"
 		// is an extension file.
 		{Kind: core.Pi, Name: "Pi", SkillDir: filepath.Join(home, ".agents", "skills", skillName), HookFile: filepath.Join(piDir, "extensions", skillName+".js"), Found: exists(piDir) || onPath("pi")},
@@ -78,7 +82,7 @@ func onPath(bin string) bool { _, err := exec.LookPath(bin); return err == nil }
 // Item is one installed thing and what happened to it.
 type Item struct {
 	Agent  string `json:"agent"`
-	Kind   string `json:"kind"` // skill | hook
+	Kind   string `json:"kind"` // skill | hook | title
 	Path   string `json:"path"`
 	State  string `json:"state"`            // current | outdated | missing | foreign
 	Change string `json:"change,omitempty"` // created | updated | unchanged | removed | kept | conflict
@@ -173,6 +177,13 @@ func Status(agents []Agent, self string) ([]Item, error) {
 			return nil, err
 		}
 		items = append(items, Item{Agent: a.Name, Kind: "hook", Path: a.HookFile, State: hs})
+		if a.TitleFile != "" {
+			ts, err := titleState(a, self)
+			if err != nil {
+				return nil, err
+			}
+			items = append(items, Item{Agent: a.Name, Kind: "title", Path: a.TitleFile, State: ts})
+		}
 	}
 	return items, nil
 }
@@ -198,6 +209,13 @@ func Setup(agents []Agent, o Options) ([]Item, error) {
 			return nil, err
 		}
 		items = append(items, it)
+		if a.TitleFile != "" {
+			it, err := setupTitle(a, o)
+			if err != nil {
+				return nil, err
+			}
+			items = append(items, it)
+		}
 	}
 	return items, nil
 }
@@ -220,6 +238,13 @@ func Remove(agents []Agent, o Options) ([]Item, error) {
 			return nil, err
 		}
 		items = append(items, it)
+		if a.TitleFile != "" {
+			it, err := removeTitle(a, o)
+			if err != nil {
+				return nil, err
+			}
+			items = append(items, it)
+		}
 	}
 	return items, nil
 }
@@ -650,6 +675,121 @@ func removeAgyHooks(a Agent, o Options, it Item) (Item, error) {
 		return it, err
 	}
 	hf.root.del(skillName)
+	it.Change = "removed"
+	if o.DryRun {
+		return it, nil
+	}
+	return it, hf.save()
+}
+
+// --- Antigravity window title ---
+//
+// agy runs the "title" block's command in its settings.json on every change
+// of its agent's state and shows the output as the terminal window title.
+// Ours prints the agent's pane label. The block is ours when its command is;
+// agy itself writes "enabled" into it (/title on|off), and setup keeps that.
+// Someone else's title command is foreign and kept.
+
+func titleCommand(self string) string {
+	return "'" + self + "' __internal pane-title --agent agy"
+}
+
+var ourTitle = regexp.MustCompile(`^'[^']*/rex-amq-adapter' __internal pane-title --agent agy$`)
+
+// titleBlock is the settings file's "title" object and its command; ok is
+// false when there is no "title" key.
+func titleBlock(hf hookFile) (block *object, command string, ok bool) {
+	v, ok := hf.root.get("title")
+	if !ok {
+		return nil, "", false
+	}
+	block, _ = v.(*object)
+	if block != nil {
+		c, _ := block.get("command")
+		command, _ = c.(string)
+	}
+	return block, command, true
+}
+
+func titleState(a Agent, self string) (string, error) {
+	hf, err := loadHooks(a.TitleFile)
+	if err != nil {
+		return "", err
+	}
+	block, command, ok := titleBlock(hf)
+	switch {
+	case !ok:
+		return "missing", nil
+	case block == nil || !ourTitle.MatchString(command):
+		return "foreign", nil
+	case command == titleCommand(self):
+		return "current", nil
+	}
+	return "outdated", nil
+}
+
+func setupTitle(a Agent, o Options) (Item, error) {
+	it := Item{Agent: a.Name, Kind: "title", Path: a.TitleFile}
+	st, err := titleState(a, o.SelfBin)
+	if err != nil {
+		return it, err
+	}
+	it.State = st
+	switch st {
+	case "current":
+		it.Change = "unchanged"
+		return it, nil
+	case "foreign":
+		if !o.Force {
+			it.Change = "conflict"
+			return it, nil
+		}
+		it.Change = "updated"
+	case "missing":
+		it.Change = "created"
+	default:
+		it.Change = "updated"
+	}
+	hf, err := loadHooks(a.TitleFile)
+	if err != nil {
+		return it, err
+	}
+	block, _, _ := titleBlock(hf)
+	if block == nil || st == "foreign" {
+		block = newObject()
+	}
+	block.set("type", "command")
+	block.set("command", titleCommand(o.SelfBin))
+	hf.root.set("title", block)
+	if o.DryRun {
+		return it, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(hf.path), 0o700); err != nil {
+		return it, err
+	}
+	return it, hf.save()
+}
+
+func removeTitle(a Agent, o Options) (Item, error) {
+	it := Item{Agent: a.Name, Kind: "title", Path: a.TitleFile}
+	st, err := titleState(a, o.SelfBin)
+	if err != nil {
+		return it, err
+	}
+	it.State = st
+	switch st {
+	case "missing":
+		it.Change = "unchanged"
+		return it, nil
+	case "foreign":
+		it.Change = "kept"
+		return it, nil
+	}
+	hf, err := loadHooks(a.TitleFile)
+	if err != nil {
+		return it, err
+	}
+	hf.root.del("title")
 	it.Change = "removed"
 	if o.DryRun {
 		return it, nil

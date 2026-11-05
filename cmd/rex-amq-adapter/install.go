@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/est7/rex-amq-adapter/internal/core"
 	"github.com/est7/rex-amq-adapter/internal/guide"
 	"github.com/est7/rex-amq-adapter/internal/install"
+	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 type kindList []core.Kind
@@ -32,7 +34,7 @@ func runInstall(cmd string, args []string) int {
 	var only kindList
 	fs.Var(&only, "agent", "only this agent: claude, codex, agy, or pi (repeatable)")
 	dryRun := fs.Bool("dry-run", false, "report what would change without changing anything")
-	force := fs.Bool("force", false, "replace a rex-amq-adapter skill that setup did not install")
+	force := fs.Bool("force", false, "replace what setup did not install: a rex-amq-adapter skill or Pi extension, or Antigravity's window title command")
 	asJSON := fs.Bool("json", false, "print the result as JSON")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -126,10 +128,21 @@ func printItems(cmd string, items []install.Item) {
 	}
 }
 
+// conflictWhat names what a conflicting item holds.
+func conflictWhat(kind string) string {
+	switch kind {
+	case "title":
+		return "a window title command"
+	case "hook":
+		return "a rex-amq-adapter extension"
+	}
+	return "a rex-amq-adapter skill"
+}
+
 func printSetupNotes(agents []install.Agent, items []install.Item) {
 	for _, it := range items {
 		if it.Change == "conflict" {
-			fmt.Printf("\n%s has a rex-amq-adapter skill that setup did not install; it was left alone. Use --force to replace it.\n", it.Agent)
+			fmt.Printf("\n%s: %s holds %s that setup did not install; it was left alone. Use --force to replace it.\n", it.Agent, it.Path, conflictWhat(it.Kind))
 		}
 	}
 	for _, a := range agents {
@@ -148,5 +161,33 @@ func runInternal(args []string) int {
 	if len(args) == 3 && args[0] == "watch" {
 		return runWatch(args[1], args[2])
 	}
-	return fail(errors.New("__internal: want `skill` or `watch <server> <handle>`"))
+	if len(args) == 3 && args[0] == "pane-title" && args[1] == "--agent" {
+		fmt.Println(paneTitle(args[2], os.Stdin))
+		return 0
+	}
+	return fail(errors.New("__internal: want `skill`, `watch <server> <handle>`, or `pane-title --agent K`"))
+}
+
+// paneTitle answers a harness that asks for its window title (Antigravity's
+// "title" command, with its status JSON on stdin). It always prints a line
+// and never fails: agy stops asking after repeated failures.
+func paneTitle(agent string, stdin io.Reader) string {
+	var status struct {
+		Cwd string `json:"cwd"`
+	}
+	_ = json.NewDecoder(io.LimitReader(stdin, 1<<20)).Decode(&status)
+	kind, err := core.ParseKind(agent)
+	if err != nil {
+		return app.DirTitle(status.Cwd)
+	}
+	loc, err := app.Here()
+	if err != nil {
+		return app.DirTitle(status.Cwd)
+	}
+	paths, err := store.DefaultPaths()
+	if err != nil {
+		return app.DirTitle(status.Cwd)
+	}
+	env := app.Env{Paths: paths, Store: store.Store{P: paths}}
+	return env.PaneTitle(loc, kind, status.Cwd)
 }

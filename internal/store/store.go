@@ -43,6 +43,7 @@ func (p Paths) lifecycle() string { return filepath.Join(p.Home, "lifecycle.lock
 func (p Paths) pending() string   { return filepath.Join(p.Home, "pending") }
 func (p Paths) failures() string  { return filepath.Join(p.Home, "adopt-failed") }
 func (p Paths) window() string    { return filepath.Join(p.Home, "window") }
+func (p Paths) titles() string    { return filepath.Join(p.Home, "title") }
 
 // PathsForRoot locates the state directory from its AMQ root. The injector
 // uses it: amq wake passes the root explicitly, while the environment a
@@ -157,7 +158,7 @@ func (s Store) DeleteRecord(h core.Handle) error {
 	if err := s.removeRecordFiles(h, ""); err != nil {
 		return err
 	}
-	for _, p := range []string{s.ledgerPath(h), s.sentCursorPath(h), s.injectLog(h)} {
+	for _, p := range []string{s.ledgerPath(h), s.sentCursorPath(h), s.injectLog(h), s.titlePath(h)} {
 		if err := os.Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}
@@ -494,4 +495,36 @@ func (s Store) ClearAdoptFailed(block string) error {
 		return nil
 	}
 	return err
+}
+
+// TitlesShown are the titles the adapter last gave h's harness, by the
+// session that received each: a handle can pass to a new session in the
+// same process (/clear, /new), which starts without a title. The caller
+// holds h's ledger lock.
+func (s Store) TitlesShown(h core.Handle) (map[string]string, error) {
+	shown := map[string]string{}
+	b, err := os.ReadFile(s.titlePath(h))
+	if errors.Is(err, fs.ErrNotExist) {
+		return shown, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return shown, json.Unmarshal(b, &shown)
+}
+
+// SetTitlesShown records them.
+func (s Store) SetTitlesShown(h core.Handle, shown map[string]string) error {
+	if err := os.MkdirAll(s.P.titles(), 0o700); err != nil {
+		return err
+	}
+	b, err := json.Marshal(shown)
+	if err != nil {
+		return err
+	}
+	return fsutil.WriteAtomic(s.titlePath(h), append(b, '\n'))
+}
+
+func (s Store) titlePath(h core.Handle) string {
+	return filepath.Join(s.P.titles(), fileKey(string(h)))
 }

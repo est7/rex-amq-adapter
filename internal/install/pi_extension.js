@@ -41,13 +41,20 @@ export default function (pi) {
 	let prompting = 0; // dialogs waiting on the user: deliver nothing meanwhile
 
 	const input = (extra) => ({ session_id: sessionId, agent_pid: process.pid, ...extra });
+	// ask runs a hook and shows the title it carries (the agent's pane label)
+	// as this session's name. The adapter sends one only when it changed.
+	const ask = async (event, extra) => {
+		const r = await hook(event, input(extra));
+		if (r.title && typeof pi.setSessionName === "function") pi.setSessionName(r.title);
+		return r;
+	};
 
 	const deliver = async () => {
 		// Asking the adapter would mark the mail announced; while a dialog
 		// waits on the user, leave it unannounced and deliver once it closes.
 		if (prompting > 0) return;
 		// idle lets the adapter remind of mail announced but never drained.
-		const r = await hook("mail", input({ idle: !busy }));
+		const r = await ask("mail", { idle: !busy });
 		if (!r.notice) return;
 		const message = { customType: "amq", content: r.notice, display: true };
 		pi.sendMessage(message, busy ? { deliverAs: "steer" } : { triggerTurn: true });
@@ -66,7 +73,7 @@ export default function (pi) {
 	pi.on("session_start", async (_event, ctx) => {
 		disarm(); // a reload or session switch starts over
 		sessionId = ctx.sessionManager.getSessionId();
-		const r = await hook("session-start", input({}));
+		const r = await ask("session-start", {});
 		if (r.notice) pi.sendMessage({ customType: "amq", content: r.notice, display: false });
 		if (!r.inbox) return;
 		try {
@@ -81,7 +88,7 @@ export default function (pi) {
 	// A run is starting from a prompt: news meant for the next prompt (an agent
 	// started beside this one) rides along instead of starting a turn itself.
 	pi.on("before_agent_start", async () => {
-		const r = await hook("user-prompt-submit", input({}));
+		const r = await ask("user-prompt-submit", {});
 		if (!r.notice) return;
 		return { message: { customType: "amq", content: r.notice, display: true } };
 	});
@@ -103,7 +110,7 @@ export default function (pi) {
 
 	// The run is about to end with mail unread: continue it once.
 	pi.on("agent_before_settle", async () => {
-		const r = await hook("settle", input({ stop_hook_active: continued }));
+		const r = await ask("settle", { stop_hook_active: continued });
 		if (!r.notice) return;
 		continued = true;
 		return { entries: [{ type: "custom_message", customType: "amq", content: r.notice, display: true }], continue: true };

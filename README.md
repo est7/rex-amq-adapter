@@ -75,7 +75,9 @@ The hooks run the binary at the absolute path `setup` was run from.
 `Stop`, `SessionEnd`) to `~/.claude/settings.json` and `~/.codex/hooks.json`,
 leaving every other entry, key, and position as it was; adds a hook group named
 `rex-amq-adapter` (`SessionStart`, `PreInvocation`, `Stop`) to Antigravity's
-`~/.gemini/config/hooks.json`; installs a small JavaScript extension for Pi in
+`~/.gemini/config/hooks.json` and a window `title` command to its
+`~/.gemini/antigravity-cli/settings.json` (an existing title command of yours is
+kept); installs a small JavaScript extension for Pi in
 `~/.pi/agent/extensions/`; and installs a skill stub whose guide ships inside
 the binary. Run it again after moving the binary.
 
@@ -169,7 +171,10 @@ rex-amq-adapter collect      # retire agents whose pane closed or process died
 An agent shows what it is working on after its handle in its pane's label
 (`claude-reviewer-01 | fix login redirect`) with `rex-amq-adapter title
 "<task>"`; its identity notice tells it to. The task follows the handle into
-any pane it is resumed in.
+any pane it is resumed in. Claude Code, Pi, and Antigravity show the same
+label as their own title (Claude Code from the next prompt after a change, Pi
+within about 30 s, agy at its next state change); Codex cannot without its
+shared daemon.
 
 `who` resolves the caller's current tab from `REX_BLOCK`; it requires a Rex
 terminal and fails if the tab cannot be resolved. It uses the current layout,

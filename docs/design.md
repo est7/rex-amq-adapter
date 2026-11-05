@@ -180,6 +180,35 @@ than this reads the task into the role (`claude-goal-01 | fix login` names a
 new agent `claude-goal-01-fix-login-01`, no longer a goal agent), so every
 hook must run the same version; README says how to downgrade.
 
+**The harness shows the pane label too.** The agent's own title in its TUI is
+made to match the pane label, each harness the way it allows:
+
+| Harness | How | When it changes |
+|---|---|---|
+| Claude Code | `hookSpecificOutput.sessionTitle` from `SessionStart` and `UserPromptSubmit`, the only events that carry it; it becomes the conversation's custom title (terminal title, prompt-box rule, resume picker) | at start, then at the user's next prompt after the task changed |
+| Pi | the reply's `title`, which the extension passes to `pi.setSessionName` (terminal title `π - <label> - <dir>`, footer, `/resume`) | at the next hook, within about 30 s (the mail watcher's rescan) |
+| Antigravity | `setup` adds a `"title"` block to `~/.gemini/antigravity-cli/settings.json` whose command, `rex-amq-adapter __internal pane-title --agent agy`, agy runs on every change of its agent's state and shows as the window title. It reads only the record and prints the label, or the directory's name when the block holds no agy of its own (before its first turn) | on agy's next state change |
+| Codex | not supported: its thread name can be set only through its shared daemon, which `--no-daemon` turns off | |
+
+Claude Code and Pi are pushed a title, so the adapter keeps the last one it
+gave each session under a handle (`title/<handle>`, under the ledger lock) and
+gives one only when the label changed for that session: a title the user set
+by hand (`/rename`, `/name`) stays until the task changes, and a new session
+that keeps the handle (`/clear`, Pi's `/new`) starts unnamed and is given it.
+It is given at most once: a hook that dies after deciding, or an extension
+that cannot apply it, leaves the label unshown until it changes. A hook that
+has not proven the record is its agent's is given none. agy pulls its title,
+so nothing is kept for it; its command also checks that it descends from the
+record's process, because a new agy finds the last one's record still live
+until its first turn.
+Evidence (2026-11-05, **reproduced**): a headless Claude 2.1 run recorded
+`custom-title` `claude-probe-01` and still received the identity notice as
+context; a Pi 0.84 pane's title became `π - pi-probe-01 - work`, then the
+task's label after `title`; an agy 1.5.1 pane showed `rex-amq-adapter`, then
+`agy-probe-01` once adopted, then the task's label at its next turn. The
+mechanisms are from agent-post's `docs/research/session-title-sync.md` and
+agy's documentation (antigravity.google/docs/cli/title).
+
 Session labels are left alone. Rex's own startup hook asks each agent to name
 the session after its task, and a session is shared: during the 2026-11-05
 work on this section, the session holding this adapter's tab was renamed by an
@@ -667,7 +696,10 @@ modeled on `rex skill`:
 - **Antigravity**: the adapter owns the hook group named `rex-amq-adapter` in
   `~/.gemini/config/hooks.json`; setup replaces that group in place or appends
   it, removal deletes it, and no other group is touched. The skill stub goes to
-  `~/.gemini/config/skills/rex-amq-adapter`.
+  `~/.gemini/config/skills/rex-amq-adapter`. Its window title command is the
+  `"title"` block of `~/.gemini/antigravity-cli/settings.json`: ours when its
+  command is, updated in place keeping the `enabled` agy writes for `/title
+  off`; someone else's title command is foreign and kept unless `--force`.
 - **Hooks**: appended to `~/.claude/settings.json` and `~/.codex/hooks.json`.
   Existing hooks and keys are preserved. Entries are identified by their
   command string. New entries go at the end of each event's array: Codex trusts
@@ -697,6 +729,7 @@ Overridable with `REX_AMQ_ADAPTER_HOME` (tests use a temporary directory).
 ├── logs/<handle>.log         amq wake stdout/stderr
 ├── logs/hooks.log            hook failures
 ├── window/<handle>           window notes (joins, departures) queued for the next prompt
+├── title/<handle>            the title last given each session's harness (Claude Code, Pi)
 ├── pending/<block>           a doorbell written and not yet known to be submitted
 ├── adopt-failed/<block>      when adopting the block's agent last failed (back-off)
 ├── watch/<handle>.lock       held by a goal agent's watcher
