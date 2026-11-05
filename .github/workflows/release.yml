@@ -1,0 +1,53 @@
+# Builds the release archives for a pushed version tag and publishes them as
+# a GitHub release whose notes are the annotated tag's message. The Homebrew
+# formula in est7/homebrew-tap is bumped by hand afterwards.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the tag's message becomes the release notes
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: vet
+        run: go vet ./...
+      - name: build
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          ver=${TAG#v}
+          mkdir dist
+          for p in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64; do
+            os=${p%/*} arch=${p#*/} stage=$(mktemp -d)
+            CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath \
+              -ldflags "-X main.buildVersion=$TAG" -o "$stage/rex-amq-adapter" ./cmd/rex-amq-adapter
+            cp README.md LICENSE "$stage/"
+            tar -C "$stage" -czf "dist/rex-amq-adapter_${ver}_${os}_${arch}.tar.gz" rex-amq-adapter README.md LICENSE
+          done
+          (cd dist && sha256sum rex-amq-adapter_*.tar.gz > SHA256SUMS)
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # checkout can leave the tag lightweight (actions/checkout#290)
+          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          git tag -l "$TAG" --format='%(contents:body)' > notes.md
+          if ! grep -q '[^[:space:]]' notes.md; then
+            echo "the tag $TAG has no message body to use as release notes" >&2
+            exit 1
+          fi
+          gh release create "$TAG" dist/* --title "$TAG" --notes-file notes.md --verify-tag

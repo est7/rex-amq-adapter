@@ -243,6 +243,15 @@ REX_AMQ_LIVE=1 go test ./internal/rex/     # inside a Rex terminal: the rex CLI 
 (`internal/store`). `internal/screen` is the input-box classifier ported from
 [herdr-amq-adapter](https://github.com/est7/herdr-amq-adapter).
 
+Run one test suite at a time: e2e hooks that exceed their budget under
+several concurrent suites fail the test instead of retrying.
+
+To release, run the tests, then push an annotated tag whose message body is
+the release notes (`git tag -a vX.Y.Z -F notes.txt`, subject line `vX.Y.Z`).
+`.github/workflows/release.yml` builds the four archives and `SHA256SUMS` and
+publishes the release; then bump the formula in
+[est7/homebrew-tap](https://github.com/est7/homebrew-tap).
+
 ## Adding another agent
 
 [docs/adding-an-agent-kind.md](docs/adding-an-agent-kind.md) is the procedure:
