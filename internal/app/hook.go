@@ -64,6 +64,11 @@ func (e Env) Hook(ctx context.Context, event string, kind core.Kind, loc Locatio
 			return Reply{}, nil
 		}
 	}
+	// An Antigravity subagent is a conversation of its own inside its
+	// parent's process, with hooks of its own: it is not the pane's agent.
+	if kind == core.Agy && e.agySubagent(in.SessionID) {
+		return Reply{}, nil
+	}
 	switch event {
 	case EventSessionStart:
 		return e.sessionStart(ctx, kind, loc, in)

@@ -269,8 +269,7 @@ func (e Env) noteWindow(ctx context.Context, h core.Handle, note string) error {
 //     conversation's continuation too, and owns what came before it.
 //  2. Otherwise this block's live record of the same process and kind: a
 //     repeated hook, a compaction, a new session in the same process
-//     (/clear), or an agy subagent, which runs as a conversation of its own in
-//     the parent's process; the pane keeps its handle through it.
+//     (/clear).
 //
 // An agent that claims nothing is named afresh: a new session in a pane
 // does not inherit the handle of the pane's previous session.

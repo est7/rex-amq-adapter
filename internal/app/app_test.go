@@ -36,6 +36,7 @@ type fakeTerm struct {
 	cwd       string                 // the foreground process's directory
 	titles    map[string]string      // block -> terminal title
 	fgs       map[string]rex.Process // block -> foreground, overriding fgPID
+	renamed   map[string]string      // block -> the last label set on it
 }
 
 func (f *fakeTerm) Whoami(context.Context) (rex.Server, error) {
@@ -145,10 +146,14 @@ func (f *fakeTerm) InspectSession(_ context.Context, id string) (rex.Session, er
 	return s, nil
 }
 
-func (f *fakeTerm) RenameBlock(_ context.Context, _ string, label string) error {
+func (f *fakeTerm) RenameBlock(_ context.Context, block string, label string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.label = label
+	if f.renamed == nil {
+		f.renamed = map[string]string{}
+	}
+	f.renamed[block] = label
 	return nil
 }
 

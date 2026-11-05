@@ -432,12 +432,34 @@ func TestAJobIsNeverAdoptedIntoAPaneThatDoesNotShowIt(t *testing.T) {
 	if rec, _, _ := w.e.liveRecordOf(core.Claude, jobSess); rec.BlockID == stale && rec.AgentPID == w.jobPID {
 		t.Errorf("the job was adopted into a pane that shows something else: %+v", rec)
 	}
-	if w.term.label == "claude-old" {
-		t.Errorf("the other pane was relabelled with the job's handle")
+	if label, ok := w.term.renamed[stale]; ok {
+		t.Errorf("the other pane was relabelled %q", label)
 	}
 	// Its next prompt finds the pane that shows it.
 	w.jobHook(t, EventPrompt)
 	if rec, _, _ := w.e.liveRecordOf(core.Claude, jobSess); rec.BlockID != viewBlock || rec.AgentPID != w.jobPID {
 		t.Errorf("the job's next prompt did not move it to its pane: %+v", rec)
+	}
+}
+
+// A tool call of a job whose record is stale (an older adapter's, bound to
+// another pane with that pane's pid) finds the job's pane at once, and never
+// marks the other pane's adoption as failed, which would hold back the
+// adoption of the agent that really runs there.
+func TestAStaleJobRecordIsMovedByAToolCall(t *testing.T) {
+	w := newJobWorld(t)
+	const stale = "block:stale"
+	w.term.windows[stale] = "window:3"
+	w.term.fgs[stale] = rex.Process{PID: 4242, Name: "claude"}
+	w.term.titles[stale] = "✳ another conversation"
+	if err := w.e.Store.PutRecord(store.Record{Handle: "claude-old", Kind: core.Claude, Server: "unix:///fake.sock", BlockID: stale, AgentPID: 4242, AgentSessionID: jobSess}); err != nil {
+		t.Fatal(err)
+	}
+	w.jobHook(t, EventPostTool)
+	if rec, _, _ := w.e.liveRecordOf(core.Claude, jobSess); rec.BlockID != viewBlock || rec.AgentPID != w.jobPID || rec.Handle != "claude-old" {
+		t.Errorf("a tool call did not move the stale job to its pane: %+v", rec)
+	}
+	if _, failed, _ := w.e.Store.AdoptFailedAt(stale); failed {
+		t.Error("the job's failed adoption was recorded against another agent's pane")
 	}
 }

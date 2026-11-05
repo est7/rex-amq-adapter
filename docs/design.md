@@ -271,16 +271,20 @@ chain runs through the first pane's TUI; hence `--no-daemon`.
 
 Another session from the record's own process is trusted, not taken as a
 switch. agy runs each subagent as a conversation of its own inside the
-parent's process (`invoke_subagent` returns its `conversationId`; the parent's
-`brain/<id>/.system_generated/subagents/` lists it), and the subagent's hooks
-reach the adapter from the parent's pane: 3 of 20 agy records on est9's
-machine held a subagent's id (2026-11-05), written by its SessionStart through
-the same-process claim. Re-adopting on such a hook would hand the pane back and
-forth between parent and subagents. The cost is two known gaps, closed only
-once a hook can tell a subagent from the conversation the pane shows: agy's
-`/resume` of another conversation inside the running process keeps the
-handle of the conversation it left, and a subagent's SessionStart rewrites the
-record's session, so a later resume of the parent is named afresh.
+parent's process (`invoke_subagent` returns its `conversationId`), and runs
+SessionStart, PreInvocation, and Stop for it under the subagent's id from the
+parent's pane: 3 of 20 agy records on est9's machine held a subagent's id
+(2026-11-05), and one subagent's transcript opens with "AMQ: you are agy-18",
+its parent's identity. agy builds the hook input with the parent's id and
+strips it for command hooks, and writes
+`brain/<parent>/.system_generated/subagents/<id>.json` before the subagent's
+first hook (read in the agy 1.5.1 binary by agy's plan review). So every agy
+hook whose conversation is listed there is ignored before it touches any
+state, like a Codex memory worker: a subagent is told nothing, reads none of
+its parent's mail, and its Stop is never held. Remove this once agy's hook
+input names the parent. Still not handled: agy's `/resume` of another
+conversation inside the running process keeps the handle of the conversation
+it left.
 
 **Claude Code background sessions.** A session moved to the background
 (agent view: `←` on an empty prompt, `/bg`, `claude --bg`) runs under Claude
@@ -891,7 +895,7 @@ and Claude Code 2.1.316, adapter state isolated by `REX_AMQ_ADAPTER_HOME`:
 | A new agent inherits stale mail | New names skip mailboxes with undrained mail and reserved handles |
 | A hook trusts a record that is no longer its agent's: an agy conversation resumed in a new process (collection then parked the live agent), another kind in the pane before its SessionStart, a reused pid | Each announcing hook compares the record's kind and, for a local record with a pid, its process with its own, and adopts again on a mismatch; while that adoption fails, a record found to be another agent's is not read (executed in `lease_test.go`, each check ablated). Remote records are not checked |
 | A Claude Code background job is adopted into the pane of the terminal that started the supervisor, takes its handle, has doorbells typed into another conversation, and opens peers beside the wrong pane (incident 2026-11-05, `claude-73`) | A job is placed by the title of the pane showing it, never by `REX_BLOCK`; a terminal session in agent view departs; a nested `claude -p` is not its pane's agent (executed in `claudejob_test.go`, each mechanism ablated) |
-| An agy subagent takes its parent's pane | Its hooks come from the parent's process, so the record is trusted and the same-process claim keeps the handle (executed in `resume_test.go`); its SessionStart still rewrites the record's session (section 4) |
+| An agy subagent takes its parent's identity, reads its mail, or is kept from stopping | A hook whose conversation agy lists as a subagent does nothing (executed in `agy_subagent_test.go`); a subagent not yet listed is kept off the pane's handle by the same-process claim (`resume_test.go`) |
 | A resumed agent loses its handle, and its peer writes to nobody | The handle belongs to the agent session, not the pane; collection runs before adoption so the closed pane's record is parked and claimable; reservations last 7 days (executed in `resume_test.go`) |
 | A handle names the wrong harness (`codex-…` running Claude) | The kind is never read from a label; a pane that changes kind keeps only its role |
 | Two agents claim one handle | Adoption holds the lifecycle lock; mailbox registration holds the root registry lock |

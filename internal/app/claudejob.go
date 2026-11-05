@@ -263,10 +263,15 @@ func (e Env) jobLocation(ctx context.Context, event string, loc Location, in Hoo
 		return loc, in, event != EventSessionEnd || !hasRec
 	}
 	in.Job = true
-	if hasRec && !onceATurn(event) {
+	// A tool call trusts the record of its own adopted process: looking
+	// through every pane on each call would cost too much. A record that is
+	// not, such as an older adapter's bound to another pane, is checked and
+	// moved like at a prompt, so the hook never adopts, or records a failed
+	// adoption, in a pane that does not show the job.
+	if hasRec && !onceATurn(event) && rec.Adopted() && e.sameProcess(rec, in) {
 		return at(rec.BlockID), in, true
 	}
-	if !onceATurn(event) {
+	if !onceATurn(event) && !hasRec {
 		return loc, in, false
 	}
 	if hasRec {

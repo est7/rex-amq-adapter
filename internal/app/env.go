@@ -54,6 +54,9 @@ type Env struct {
 	// ClaudeDir is Claude Code's configuration directory, where its
 	// supervisor lists background sessions; "" knows of none.
 	ClaudeDir string
+	// AgyBrainDir is Antigravity's conversation store, where a conversation
+	// lists the subagents it started; "" knows of none.
+	AgyBrainDir string
 }
 
 // NewEnv resolves binaries and state paths. server is the Rex address to
@@ -81,16 +84,26 @@ func NewEnvAt(server string, paths store.Paths) (Env, error) {
 		return Env{}, err
 	}
 	return Env{
-		Paths:     paths,
-		Store:     store.Store{P: paths},
-		Rex:       rex.Client{Bin: rexBin, Server: server},
-		RexOn:     func(s string) Terminal { return rex.Client{Bin: rexBin, Server: s} },
-		Crews:     crew.Load,
-		AmqBin:    amqBin,
-		SelfBin:   self,
-		Now:       time.Now,
-		ClaudeDir: claudeDir(),
+		Paths:       paths,
+		Store:       store.Store{P: paths},
+		Rex:         rex.Client{Bin: rexBin, Server: server},
+		RexOn:       func(s string) Terminal { return rex.Client{Bin: rexBin, Server: s} },
+		Crews:       crew.Load,
+		AmqBin:      amqBin,
+		SelfBin:     self,
+		Now:         time.Now,
+		ClaudeDir:   claudeDir(),
+		AgyBrainDir: agyBrainDir(),
 	}, nil
+}
+
+// agyBrainDir is Antigravity's conversation store.
+func agyBrainDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".gemini", "antigravity-cli", "brain")
 }
 
 // claudeDir is Claude Code's configuration directory: CLAUDE_CONFIG_DIR, else
