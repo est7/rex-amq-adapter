@@ -20,6 +20,10 @@ import (
 func whoFixture(t *testing.T) {
 	t.Helper()
 	dir := t.TempDir()
+	// The agent running these tests may itself be a Claude Code session; its
+	// session id and supervisor must not decide who the caller is.
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "")
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
 	bin := filepath.Join(dir, "rex")
 	script := fmt.Sprintf(`#!/bin/sh
 shift

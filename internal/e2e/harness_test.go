@@ -115,7 +115,10 @@ func newWorld(t *testing.T) *world {
 	w.write(config, "")
 	for _, kv := range os.Environ() {
 		name, _, _ := strings.Cut(kv, "=")
-		if !strings.HasPrefix(name, "REX_") && !strings.HasPrefix(name, "AM_") && name != "HOME" {
+		// CLAUDE*: the agent running the tests may be a Claude Code session,
+		// whose harness pid and session id must not stand for the scripted
+		// agents'.
+		if !strings.HasPrefix(name, "REX_") && !strings.HasPrefix(name, "AM_") && !strings.HasPrefix(name, "CLAUDE") && name != "HOME" {
 			w.env = append(w.env, kv)
 		}
 	}
