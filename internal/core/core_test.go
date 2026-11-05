@@ -413,3 +413,39 @@ func TestDepartureMailGoesToTheGoalAgentOrItsReportingPeer(t *testing.T) {
 		t.Errorf("the goal agent is not told the session: %q", body)
 	}
 }
+
+func TestPaneLabelIsTheHandleThenTheTask(t *testing.T) {
+	if got := PaneLabel("claude-reviewer-01", ""); got != "claude-reviewer-01" {
+		t.Errorf("no task: %q", got)
+	}
+	if got := PaneLabel("claude-reviewer-01", "fix login redirect"); got != "claude-reviewer-01 | fix login redirect" {
+		t.Errorf("with a task: %q", got)
+	}
+}
+
+func TestTaskFitsAPaneLabel(t *testing.T) {
+	for in, want := range map[string]string{
+		"  fix   login\nredirect ":          "fix login redirect",
+		"a | b":                             "a / b",
+		"   ":                               "",
+		"exactly thirty-two columns long!":  "exactly thirty-two columns long!",
+		"one column too long for the label": "one column too long for the lab…",
+		"修复登录跳转并补上回归测试然后提交合并请求": "修复登录跳转并补上回归测试然后…",
+		strings.Repeat("🚀", 17): strings.Repeat("🚀", 15) + "…",
+		strings.Repeat("🚀", 16): strings.Repeat("🚀", 16),
+	} {
+		if got := Task(in); got != want {
+			t.Errorf("Task(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// A label the adapter wrote, task included, reads back as the same role, so
+// the next agent started in that pane is named for the role and not the task.
+func TestRoleIgnoresTheTask(t *testing.T) {
+	for _, label := range []string{"codex-reviewer-01 | fix login", "reviewer | 修复登录", "reviewer|x"} {
+		if got := Role(label); got != "reviewer" {
+			t.Errorf("Role(%q) = %q, want reviewer", label, got)
+		}
+	}
+}

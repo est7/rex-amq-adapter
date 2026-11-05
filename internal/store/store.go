@@ -69,10 +69,14 @@ type Record struct {
 	// WindowID is the Rex window (tab) the block was last seen in: at adoption,
 	// then whenever its window is reconciled. Departure tells the agents
 	// recorded in it, because a crashed agent's block can no longer be placed.
-	WindowID       string    `json:"window_id,omitempty"`
-	AgentPID       int       `json:"agent_pid"`
-	AgentSessionID string    `json:"agent_session_id,omitempty"`
-	AdoptedAt      time.Time `json:"adopted_at"`
+	WindowID       string `json:"window_id,omitempty"`
+	AgentPID       int    `json:"agent_pid"`
+	AgentSessionID string `json:"agent_session_id,omitempty"`
+	// Task is what the agent said it is doing (core.Task), shown after the
+	// handle in its pane label. It follows the handle, so a resume in another
+	// pane shows it again and a newly named agent starts without one.
+	Task      string    `json:"task,omitempty"`
+	AdoptedAt time.Time `json:"adopted_at"`
 	// DepartedAt is set when the agent ended. A departed record keeps its
 	// handle reserved for its agent session (a resume, in any block) until
 	// collected.

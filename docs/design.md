@@ -164,8 +164,27 @@ Taken handles are every record's (live, or reserved for a departed session) and
 every mailbox holding undrained mail, so a new agent never inherits someone
 else's session or unread messages. A new session in a pane is a new identity:
 it does not inherit the handle of the pane's previous session. The adapter
-then sets the pane label to the handle, so it is visible in Rex. Session
-labels are left alone; Rex's own skill renames the session after the task.
+then sets the pane label to the handle, so it is visible in Rex.
+
+**Pane label.** `<handle> | <task>`, where the task is what the agent said it
+is doing (`rex-amq-adapter title "<task>"`, which the identity notice names).
+The adapter composes the label, so the handle always comes first and survives
+a pane too narrow for the rest; the task is one line, `|` replaced, at most 32
+columns (`golang.org/x/text/width`: CJK and most emoji count two; a joined
+emoji sequence is counted per character). The task is kept in the record and the label is drawn from it at
+every adoption, so a repeated SessionStart or a compaction keeps it, a resume
+in another pane shows it there, and a newly named agent starts without one.
+Reading a role from a label ignores everything from `|` on, so the next agent
+in a described pane is named for the role, not the task. An adapter older
+than this reads the task into the role (`claude-goal-01 | fix login` names a
+new agent `claude-goal-01-fix-login-01`, no longer a goal agent), so every
+hook must run the same version; README says how to downgrade.
+
+Session labels are left alone. Rex's own startup hook asks each agent to name
+the session after its task, and a session is shared: during the 2026-11-05
+work on this section, the session holding this adapter's tab was renamed by an
+agent in another of its tabs. A second writer with its own format would only
+fight over it.
 
 **Record** (one JSON file per handle, the single source of truth):
 
@@ -178,6 +197,7 @@ labels are left alone; Rex's own skill renames the session after the task.
   "window_id": "window:…",
   "agent_pid": 13318,
   "agent_session_id": "01a1526a-…",
+  "task": "review the binding change",
   "adopted_at": "2026-10-18T21:28:15Z",
   "departed_at": null,
   "unfinished": "adoption"

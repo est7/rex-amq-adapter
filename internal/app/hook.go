@@ -233,7 +233,7 @@ func (e Env) withWindowNotes(h core.Handle, window bool, identity, mail string) 
 // identityNotice tells a newly adopted agent who it is, who is beside it,
 // and what its crew and role ask of it.
 func (e Env) identityNotice(ctx context.Context, a Adoption, unread int) string {
-	notice := joinNotices(core.SessionNotice(a.Record.Handle, e.EnvCommand(), unread), core.MatesNotice(a.Mates))
+	notice := joinNotices(core.SessionNotice(a.Record.Handle, e.EnvCommand(), e.SelfBin+" title", unread), core.MatesNotice(a.Mates))
 	if brief := core.BriefNotice(e.briefing(ctx, a)); brief != "" {
 		notice += "\n\n" + brief
 	}

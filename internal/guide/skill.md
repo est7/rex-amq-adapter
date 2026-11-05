@@ -35,6 +35,22 @@ and approved; restart the agent in Rex if it started before installation.
 A missing identity does not prevent launching a peer requested by the user;
 its reply over AMQ must wait until your identity is available.
 
+## Show your task in your pane
+
+Once you know what you are working on, put it after your handle in your pane's
+label, in a few words, and run it again when the task changes:
+
+```bash
+rex-amq-adapter title "fix login redirect"   # pane: claude-reviewer-01 | fix login redirect
+rex-amq-adapter title                        # clear it
+```
+
+The adapter composes the label and keeps the handle in front; it cuts a long
+task to 32 columns. The task follows your handle, so a resume in another pane
+shows it again. Do not rename your pane with `rex block rename`: the next
+adoption would write the adapter's label back. The Rex session's name is not
+the adapter's: name it as Rex's own guidance says.
+
 ## When you are told about mail
 
 Notices arrive three ways, all meaning the same: added to your context after a

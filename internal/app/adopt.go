@@ -112,6 +112,9 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 		AgentSessionID: in.SessionID,
 		AdoptedAt:      e.Now().UTC(),
 	}
+	if hasOwn {
+		rec.Task = own.Task
+	}
 	if again && own.AgentPID == agentPID {
 		rec.AdoptedAt = own.AdoptedAt
 	}
@@ -148,8 +151,8 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	// the label is overwritten below, and a resumed agent may land in any pane.
 	out := Adoption{Decision: decision, Known: known, Role: core.Role(string(handle)), Window: blk.WindowID, Session: blk.SessionID}
 	out.Mates = e.joinWindow(ctx, rec, blk, recs, arrived)
-	if blk.Label != string(handle) {
-		out.LabelErr = e.Rex.RenameBlock(ctx, loc.Block, string(handle))
+	if label := core.PaneLabel(handle, rec.Task); blk.Label != label {
+		out.LabelErr = e.Rex.RenameBlock(ctx, loc.Block, label)
 	}
 	unread, err := amq.Unread(e.Paths.Root(), string(handle))
 	if err != nil {
@@ -290,6 +293,34 @@ func (e Env) takenHandles(recs []store.Record) (map[core.Handle]bool, error) {
 		}
 	}
 	return taken, nil
+}
+
+// SetTask records what the agent in loc says it is doing and shows it after
+// its handle in the pane label. A blank task clears it. It returns the label.
+// The record is the source: adoption draws the label from it again, so a
+// resumed agent shows its task in whichever pane it lands.
+func (e Env) SetTask(ctx context.Context, loc Location, task string) (string, error) {
+	unlock, err := e.Store.LockLifecycle(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
+	rec, ok, err := e.Store.Record(loc.Block)
+	if err != nil {
+		return "", err
+	}
+	if !ok || !rec.Live() {
+		return "", fmt.Errorf("no AMQ identity for this Rex block (%s), so there is no pane label to set", loc.Block)
+	}
+	rec.Task = core.Task(task)
+	if err := e.Store.PutRecord(rec); err != nil {
+		return "", err
+	}
+	label := core.PaneLabel(rec.Handle, rec.Task)
+	if err := e.Rex.RenameBlock(ctx, loc.Block, label); err != nil {
+		return "", fmt.Errorf("the task is recorded, but the pane label could not be set: %w", err)
+	}
+	return label, nil
 }
 
 // Exports is the shell text `rex-amq-adapter env` prints for the agent in loc.

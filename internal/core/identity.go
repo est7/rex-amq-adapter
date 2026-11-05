@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"golang.org/x/text/width"
 )
 
 // Kind is an agent harness the adapter can adopt.
@@ -70,12 +72,14 @@ func NameHandle(kind Kind, label string, taken map[Handle]bool) Handle {
 	}
 }
 
-// Role reads an agent's role from its pane label: lowercased, runs of other
-// characters folded to "-", a leading kind and a trailing number dropped. So
-// "Reviewer", "reviewer-2", and a handle the adapter composed earlier
-// ("codex-reviewer-01") all read as "reviewer", and Rex's default label, a
-// bare kind, or "codex-10" read as no role.
+// Role reads an agent's role from its pane label: the part before the task
+// (see PaneLabel), lowercased, runs of other characters folded to "-", a
+// leading kind and a trailing number dropped. So "Reviewer", "reviewer-2", and
+// a label the adapter composed earlier ("codex-reviewer-01 | fix login") all
+// read as "reviewer", and Rex's default label, a bare kind, or "codex-10" read
+// as no role.
 func Role(label string) string {
+	label, _, _ = strings.Cut(label, "|")
 	words := strings.FieldsFunc(strings.ToLower(label), func(r rune) bool {
 		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9')
 	})
@@ -105,4 +109,59 @@ func composeHandle(kind Kind, role string, n int) Handle {
 		base += "-" + role
 	}
 	return Handle(base + "-" + num)
+}
+
+// PaneSeparator divides an agent's pane label into its handle and its task.
+const PaneSeparator = " | "
+
+// MaxTaskWidth bounds a task in terminal columns (a CJK character takes two),
+// so the label stays readable in a narrow pane.
+const MaxTaskWidth = 32
+
+// PaneLabel is what an agent's pane is labelled: its handle, then what it is
+// doing when it has said so. The handle comes first, so a label cut short in a
+// narrow pane still names the agent.
+func PaneLabel(h Handle, task string) string {
+	if task == "" {
+		return string(h)
+	}
+	return string(h) + PaneSeparator + task
+}
+
+// Task is what an agent says it is doing, made fit for its pane label: one
+// line, single spaces, no separator, at most MaxTaskWidth columns with an
+// ellipsis when cut. Blank means no task.
+func Task(s string) string {
+	s = strings.Join(strings.Fields(strings.ReplaceAll(s, "|", "/")), " ")
+	if columns(s) <= MaxTaskWidth {
+		return s
+	}
+	used := 0
+	for i, r := range s {
+		if used+runeWidth(r) > MaxTaskWidth-1 { // one column for the ellipsis
+			return strings.TrimRight(s[:i], " ") + "…"
+		}
+		used += runeWidth(r)
+	}
+	return s
+}
+
+func columns(s string) int {
+	n := 0
+	for _, r := range s {
+		n += runeWidth(r)
+	}
+	return n
+}
+
+// runeWidth is a character's terminal width: two for East Asian wide and
+// fullwidth characters (CJK, Hangul, most emoji), one otherwise. A sequence
+// joined into one glyph (an emoji with a joiner) is counted per character, so
+// it may be cut, or measured wider than it draws.
+func runeWidth(r rune) int {
+	switch width.LookupRune(r).Kind() {
+	case width.EastAsianWide, width.EastAsianFullwidth:
+		return 2
+	}
+	return 1
 }

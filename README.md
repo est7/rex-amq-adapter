@@ -62,6 +62,13 @@ when `rex-amq-adapter status` reports an item `outdated` after an upgrade, run
 group-writable directory such as Homebrew's Cellar, and the wrapper's path
 survives the binary moving.
 
+Run one version for every hook: an adapter older than v0.6.0 reads a pane
+label's task (`claude-goal-01 | fix login`) as part of the role, so a new agent
+it names in that pane gets a handle like `claude-goal-01-fix-login-01` and
+loses its role. Before downgrading, clear each agent's task with
+`rex-amq-adapter title`; an agent already named that way needs a fresh start in
+a pane labelled with the role alone.
+
 The hooks run the binary at the absolute path `setup` was run from.
 
 `setup` appends five hooks (`SessionStart`, `UserPromptSubmit`, `PostToolUse`,
@@ -159,6 +166,11 @@ rex-amq-adapter await <block> # wait for an agent you started; prints its outcom
 rex-amq-adapter collect      # retire agents whose pane closed or process died
 ```
 
+An agent shows what it is working on after its handle in its pane's label
+(`claude-reviewer-01 | fix login redirect`) with `rex-amq-adapter title
+"<task>"`; its identity notice tells it to. The task follows the handle into
+any pane it is resumed in.
+
 `who` resolves the caller's current tab from `REX_BLOCK`; it requires a Rex
 terminal and fails if the tab cannot be resolved. It uses the current layout,
 so moving a block changes which tab discovers it. `--all` includes departed
@@ -172,7 +184,7 @@ directory from `amq who`.
 
 | Moment | What happens |
 |---|---|
-| Agent's first hook runs | Handle chosen (`<kind>-<role>-<NN>`, the role from the pane label, else `<kind>-<NN>`), mailbox created, `amq wake` started, pane relabeled to the handle; it is told its window-mates and its crew and role briefing, and its window-mates are told it joined |
+| Agent's first hook runs | Handle chosen (`<kind>-<role>-<NN>`, the role from the pane label, else `<kind>-<NN>`), mailbox created, `amq wake` started, pane relabeled to the handle (then `<handle> \| <task>` once the agent names its task); it is told its window-mates and its crew and role briefing, and its window-mates are told it joined |
 | Agent exits | `SessionEnd` retires its waker and tells its window-mates it left; the handle stays reserved for its session for 7 days |
 | Agent crashes or its pane closes | The next adoption or `collect` notices and does the same, as does `who` in that tab, a send to it, or within seconds a `goal` agent there |
 | Session resumed (`claude --resume`, `codex resume`), in any pane | Gets its handle back, with the mail that arrived meanwhile; so does a Claude conversation that moved to a new session id, found through its transcript, and an agy conversation `/resume`d by a new agy in the same pane, whose next hook adopts it |

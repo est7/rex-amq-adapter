@@ -111,10 +111,11 @@ func HookNotice(a Announcement, h Handle, envCmd string, event HookEvent) string
 }
 
 // SessionNotice is the SessionStart context: who the agent is and how to use AMQ.
-func SessionNotice(h Handle, envCmd string, unread int) string {
+func SessionNotice(h Handle, envCmd, titleCmd string, unread int) string {
 	s := fmt.Sprintf("AMQ: you are %s. Other agents in Rex reach you with `amq send --to %s`. "+
 		"Before any amq command run `eval \"$(%s)\"` (each shell needs it). "+
-		"Load the rex-amq-adapter skill before messaging other agents.", h, h, envCmd)
+		"Load the rex-amq-adapter skill before messaging other agents. "+
+		"Once you know your task, show it after your handle in your pane's label with `%s \"<task in a few words>\"`, and again when it changes.", h, h, envCmd, titleCmd)
 	if unread > 0 {
 		s += fmt.Sprintf(" You have %d unread message(s): drain them with `amq drain --include-body` and act on them.", unread)
 	}

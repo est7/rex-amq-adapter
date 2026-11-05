@@ -27,6 +27,8 @@ const usage = `rex-amq-adapter: AMQ messaging between coding agents in Rex termi
 
 Agent and user commands:
   env                       print the AMQ identity of this Rex block (eval it)
+  title [TASK...]           show TASK after your handle in this pane's label
+                            ("<handle> | <task>"); no TASK clears it
   who [--all]               list agents in this Rex tab only;
                             --all adds this tab's departed agents reserved for a resume
   await <block> [--timeout D]
@@ -66,6 +68,8 @@ func run(args []string) int {
 		return runInject(rest)
 	case "env":
 		return runEnv()
+	case "title":
+		return runTitle(rest)
 	case "who":
 		return runWho(rest)
 	case "await":
@@ -242,6 +246,25 @@ func runEnv() int {
 		return fail(err)
 	}
 	fmt.Print(out)
+	return 0
+}
+
+func runTitle(args []string) int {
+	loc, err := app.Here()
+	if err != nil {
+		return fail(err)
+	}
+	env, err := app.NewEnv(loc.Server)
+	if err != nil {
+		return fail(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	label, err := env.SetTask(ctx, loc, strings.Join(args, " "))
+	if err != nil {
+		return fail(err)
+	}
+	fmt.Println(label)
 	return 0
 }
 
