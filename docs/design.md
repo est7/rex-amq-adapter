@@ -745,6 +745,14 @@ modeled on `rex skill`:
   A foreign skill of the same name is reported as a conflict and kept unless
   `--force`. `remove` deletes only what setup installed.
 - Codex requires approving new hooks in `/hooks`; setup prints this.
+- **Warnings**: `status` and `setup` warn, and list under `warnings` in
+  `--json`, while a found agent runs sessions in a shared process that another
+  terminal started (section 4): Claude Code's agent view unless
+  `disableAgentView` is true in user or managed settings or
+  `CLAUDE_CODE_DISABLE_AGENT_VIEW` is set, and Codex unless
+  `daemon_auto_start = false` under `[features]` in its `config.toml`. They are
+  the user's settings: setup never changes them, and the exit status is
+  unaffected. Project settings are not read, since they differ per folder.
 - The agent guide carries every Rex command it uses (opening a peer in a pane,
   tab, or session; reading a peer's screen and status). It does not depend on
   Rex's own skill, so an agent needs one skill lookup, not two.
@@ -784,7 +792,7 @@ internal/amq/          wake check/start/repair/retire, mailbox registration, inb
 internal/screen/       input-box classifier (ported from herdr-amq-adapter)
 internal/store/        records, ledger, inject log, window notes, reservations, locks
 internal/e2e/          scripted agents on a private Rex server and real amq wake
-internal/install/      settings.json / hooks.json merge, stub skills
+internal/install/      settings.json / hooks.json merge, stub skills, supervisor warnings
 internal/guide/        embedded agent guide
 ```
 

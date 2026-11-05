@@ -97,6 +97,20 @@ the binary. Run it again after moving the binary.
 `rex-amq-adapter status` reports each item as `current`, `outdated`, `missing`, or
 `foreign`; `rex-amq-adapter remove` deletes only what setup installed.
 
+### Recommended configuration
+
+The adapter finds an agent by the pane it runs in. Two harness features run
+conversations in a shared background process that another terminal started,
+so every conversation they host inherits that terminal's `REX_BLOCK`. Turn
+them off; `status` and `setup` warn while they are on, and never change them:
+
+| Harness | Setting | Why |
+|---|---|---|
+| Claude Code | `"disableAgentView": true` in `~/.claude/settings.json` (or `CLAUDE_CODE_DISABLE_AGENT_VIEW=1`) | Agent view (`←` on an empty prompt, `/bg`, `claude --bg`) moves a conversation under Claude's supervisor. The adapter still places such a session by its pane's title, but one key press is enough to move a conversation there, and each one costs a supervisor, a pty host, and a second process beside the terminal that shows it |
+| Codex | `daemon_auto_start = false` under `[features]` in `~/.codex/config.toml`; stop a running daemon with `codex app-server daemon stop` | The shared daemon runs every thread with the first terminal's environment. The setting keeps a plain `codex` from starting it; a daemon that is already running is still used unless Codex starts with `--no-daemon` |
+
+Antigravity and Pi need nothing: each runs in its own pane's process.
+
 ## Use
 
 Start agents in Rex terminals as usual. Then ask one to talk to another:

@@ -63,8 +63,12 @@ func runInstall(cmd string, args []string) int {
 	if err != nil {
 		return fail(err)
 	}
+	var warnings []install.Warning
+	if cmd != "remove" {
+		warnings = install.Warnings(agents)
+	}
 	if *asJSON {
-		b, err := json.MarshalIndent(map[string]any{"binary": self, "dry_run": *dryRun, "items": items}, "", "  ")
+		b, err := json.MarshalIndent(map[string]any{"binary": self, "dry_run": *dryRun, "items": items, "warnings": warnings}, "", "  ")
 		if err != nil {
 			return fail(err)
 		}
@@ -72,6 +76,9 @@ func runInstall(cmd string, args []string) int {
 		return 0
 	}
 	printItems(cmd, items)
+	for _, w := range warnings {
+		fmt.Printf("\nWarning (%s): %s\n", w.Agent, w.Message)
+	}
 	switch cmd {
 	case "setup":
 		printSetupNotes(agents, items)
