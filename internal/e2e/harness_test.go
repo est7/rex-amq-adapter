@@ -24,7 +24,8 @@ import (
 // agentScript is a scripted agent. It adopts itself with a real hook, reports
 // idle, draws an empty box, and for each line typed reports working, appends
 // the line to <name>.got, and reports idle again. Sending it `quit` runs
-// SessionEnd; `crash` exits without running any hook.
+// SessionEnd; `crash` exits without running any hook; `join ARGS` runs
+// rex-amq-adapter join ARGS from its shell, its output to <name>.join.
 const agentScript = `name=$1
 status() { printf '\033]7501;state=%s:app=claude-code\033\\' "$1"; }
 rule() { printf '%s\r\n' '────────────────────────────────────────'; }
@@ -41,6 +42,7 @@ while read -r line; do
 	case "$line" in
 	*quit*) hook session-end; exit 0 ;;
 	*crash*) exit 1 ;;
+	join*) "$ADAPTER" $line >>"$DIR/$name.join" 2>&1; echo "exit=$?" >>"$DIR/$name.join" ;;
 	esac
 	sleep 0.3
 	status idle
@@ -119,10 +121,14 @@ func newWorld(t *testing.T) *world {
 	w.write(config, "")
 	for _, kv := range os.Environ() {
 		name, _, _ := strings.Cut(kv, "=")
-		// CLAUDE*: the agent running the tests may be a Claude Code session,
-		// whose harness pid and session id must not stand for the scripted
-		// agents'.
-		if !strings.HasPrefix(name, "REX_") && !strings.HasPrefix(name, "AM_") && !strings.HasPrefix(name, "CLAUDE") && name != "HOME" {
+		// CLAUDE* and the other harnesses' session ids: the agent running the
+		// tests may be a harness session, whose pid and session id must not
+		// stand for the scripted agents'.
+		switch name {
+		case "HOME", "CODEX_THREAD_ID", "PI_SESSION_ID", "ANTIGRAVITY_CONVERSATION_ID":
+			continue
+		}
+		if !strings.HasPrefix(name, "REX_") && !strings.HasPrefix(name, "AM_") && !strings.HasPrefix(name, "CLAUDE") {
 			w.env = append(w.env, kv)
 		}
 	}

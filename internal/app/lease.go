@@ -1,8 +1,10 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
 	"github.com/est7/rex-amq-adapter/internal/store"
@@ -74,10 +76,73 @@ func (e Env) descendsFrom(rec store.Record) bool {
 		fmt.Fprintf(Diagnostics, "read this hook's process ancestry: %v\n", err)
 		return false
 	}
-	return slices.Contains(ancestors, rec.AgentPID)
+	err = runsUnder(rec.Kind, ancestors, rec.AgentPID)
+	if errors.Is(err, ErrSharedHarness) {
+		fmt.Fprintf(Diagnostics, "%s: %v\n", rec.Handle, err)
+	}
+	return err == nil
 }
 
-func (e Env) ancestors() ([]int, error) {
+// ErrSharedHarness: a Codex hook descends from the pane's agent through
+// another Codex process, the shared daemon that runs other panes' threads.
+var ErrSharedHarness = errors.New("this Codex hook does not run directly under the pane's agent (a shared Codex daemon?); restart Codex with codex --no-daemon")
+
+// proc is one process of an ancestry.
+type proc struct {
+	PID  int
+	Name string
+}
+
+// runsUnder reports whether ancestors, this process first, place the hook
+// under the agent process agent. Descent is enough for most kinds. A Codex
+// hook must also run in agent itself, not in another Codex process below it:
+// without --no-daemon, Codex runs every pane's threads in one shared daemon,
+// which the first terminal client started and which inherited that pane's
+// Rex location. Another pane's thread then fires hooks that descend from the
+// first pane's agent and name its block. A Codex hook runs under shells its
+// harness starts (observed: hook ← zsh ← codex), so the first process above
+// them is the harness; a process of the harness's own name further up, the
+// agent included, means the harness is a second Codex. A launcher of another
+// name (node running a native codex) is the agent itself.
+func runsUnder(kind core.Kind, ancestors []proc, agent int) error {
+	if kind != core.Codex {
+		if slices.ContainsFunc(ancestors, func(p proc) bool { return p.PID == agent }) {
+			return nil
+		}
+		return errNotUnder
+	}
+	var harness *proc
+	for i, p := range ancestors {
+		if p.PID != agent && (i == 0 || isShell(p.Name)) {
+			continue
+		}
+		switch {
+		case harness == nil && p.PID == agent:
+			return nil
+		case harness == nil:
+			harness = &ancestors[i]
+		case p.Name == harness.Name:
+			return fmt.Errorf("%w (%s pid %d runs under %s pid %d; the agent is pid %d)", ErrSharedHarness, harness.Name, harness.PID, p.Name, p.PID, agent)
+		case p.PID == agent:
+			return nil
+		}
+	}
+	return errNotUnder
+}
+
+var errNotUnder = errors.New("this hook does not descend from the agent")
+
+// isShell reports whether name is a shell's process name. A login shell's
+// name starts with a dash.
+func isShell(name string) bool {
+	switch strings.TrimPrefix(name, "-") {
+	case "sh", "bash", "zsh", "dash", "fish", "ksh", "mksh", "tcsh", "csh", "ash", "busybox":
+		return true
+	}
+	return false
+}
+
+func (e Env) ancestors() ([]proc, error) {
 	if e.Ancestors != nil {
 		return e.Ancestors()
 	}

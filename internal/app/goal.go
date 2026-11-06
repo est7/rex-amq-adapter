@@ -16,10 +16,10 @@ import (
 	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
-// A live goal agent makes its window unattended: it owns the goal, so it
-// hears at once when an agent there departs, even when idle. A window without
-// one has the user present and gets nothing here. Window notes wait for a
-// prompt, so these go as mail, which rings a doorbell.
+// A live goal agent makes its Rex session unattended: it owns the goal, so it
+// hears at once when an agent there departs, even when idle. A session
+// without one has the user present and gets nothing here. Session notes wait
+// for a prompt, so these go as mail, which rings a doorbell.
 
 const (
 	// watchEvery bounds how late a crash or a closed pane is noticed.
@@ -32,10 +32,10 @@ const (
 	watchGiveUp = 12
 )
 
-// wakeForDeparture tells rec's window that rec departed, when a goal agent
+// wakeForDeparture tells rec's session that rec departed, when a goal agent
 // is involved.
 func (e Env) wakeForDeparture(ctx context.Context, rec store.Record) error {
-	if rec.WindowID == "" {
+	if !placed(rec) {
 		return nil
 	}
 	recs, err := e.Store.Records()
@@ -44,11 +44,11 @@ func (e Env) wakeForDeparture(ctx context.Context, rec store.Record) error {
 	}
 	var others []core.Peer
 	for _, r := range recs {
-		if r.Live() && r.WindowID == rec.WindowID {
-			others = append(others, core.Peer{Handle: r.Handle, Kind: r.Kind, Block: r.BlockID})
+		if r.Live() && together(r, rec) {
+			others = append(others, peerOf(r))
 		}
 	}
-	left := core.Peer{Handle: rec.Handle, Kind: rec.Kind, Block: rec.BlockID}
+	left := peerOf(rec)
 	to, subject, body := core.DepartureMail(left, rec.AgentSessionID, others)
 	var errs []error
 	for _, h := range to {
@@ -64,10 +64,10 @@ func (e Env) wakeForDeparture(ctx context.Context, rec store.Record) error {
 
 // ensureGoalWatcher starts the watcher of a goal agent unless one runs. An
 // agent that departs without a hook leaves nothing to react to, and a goal
-// agent is often idle, so its window needs a process of its own. Hooks call
+// agent is often idle, so its session needs a process of its own. Hooks call
 // this; the watcher ends with its goal agent.
 func (e Env) ensureGoalWatcher(rec store.Record) error {
-	if !core.IsGoalAgent(rec.Handle) {
+	if rec.Role != core.GoalRole {
 		return nil
 	}
 	done, cancel := context.WithCancel(context.Background())
@@ -94,7 +94,7 @@ func (e Env) ensureGoalWatcher(rec store.Record) error {
 	return cmd.Process.Release()
 }
 
-// WatchGoal reconciles h's window until h is no longer a live goal agent, so
+// WatchGoal reconciles h's session until h is no longer a live goal agent, so
 // its departure and its peers' are noticed without a hook. A second watcher
 // finds the lock held and returns.
 func (e Env) WatchGoal(ctx context.Context, h core.Handle) error {
@@ -110,8 +110,8 @@ func (e Env) WatchGoal(ctx context.Context, h core.Handle) error {
 		if err != nil {
 			return err
 		}
-		if !ok {
-			return nil
+		if !ok || rec.Role != core.GoalRole {
+			return nil // gone, or it joined a crew in another role
 		}
 		if err := e.watchOnce(ctx, rec); err != nil {
 			fmt.Fprintf(Diagnostics, "watch %s: %v\n", h, err)
@@ -143,13 +143,13 @@ func (e Env) liveRecord(h core.Handle) (store.Record, bool, error) {
 func (e Env) watchOnce(ctx context.Context, rec store.Record) error {
 	ctx, cancel := context.WithTimeout(ctx, watchBudget)
 	defer cancel()
-	w, err := e.FindWindow(ctx, rec.BlockID)
+	s, err := e.FindSession(ctx, rec.BlockID)
 	if errors.Is(err, rex.ErrNotFound) {
-		// The goal agent's own pane closed; its window can no longer be found.
+		// The goal agent's own pane closed; its session can no longer be found.
 		return e.collect(ctx, func(r store.Record) bool { return r.Handle == rec.Handle })
 	}
 	if err != nil {
 		return err
 	}
-	return e.CollectWindow(ctx, w)
+	return e.CollectSession(ctx, s)
 }

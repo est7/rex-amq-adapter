@@ -62,6 +62,31 @@ receives no events (located: `docs/automate/lua-events`). Every entry point
 below is therefore either an agent hook or the injector that `amq wake` runs.
 There is no adapter daemon.
 
+### amq's on-disk format (read by the observer)
+
+`events --json` and `who` read amq's mailbox files directly instead of
+starting `amq` for each look, so they depend on a format the adapter does
+not own (`internal/amq/mailbox.go`; amq 0.x as installed, observed
+2026-11-06):
+
+| Path under `agents/<handle>/` | Holds | Fields read |
+|---|---|---|
+| `inbox/new/<id>.md`, `inbox/cur/<id>.md` | undrained and drained mail | file name only (the id) |
+| `dlq/new/<id>.md`, `dlq/cur/<id>.md` | dead-lettered mail | file name only |
+| `outbox/sent/<id>.md` | mail the agent sent | the header |
+| `<id>.md` header | JSON between a `---json` line and a `---` line, then the body (never read; at most 64 KiB is read for the header) | schema 1: `id`, `from`, `to`, `thread`, `subject`, `created` |
+| `receipts/<id>__<consumer>__<stage>.json` | one receipt per stage of a message in that mailbox | schema 1: `msg_id`, `thread`, `sender`, `consumer`, `stage`, `emitted_at`; only `drained` is written today |
+
+amq writes each file by renaming it into place, so a reader sees all of it or
+none. A header or receipt of another `schema` is an error (`ReadHeader`,
+`ReadReceipt`), reported on stderr with its file, never guessed at; the
+undelivered-mail check reads only a header's `to` and does not check it. `receipts/notification-attempts.jsonl` (schema 2, amq's record of each
+wake) is not read: the injector's own log (`inject/<handle>.jsonl`) carries the
+same outcomes with the adapter's reason codes. A change in amq's layout or
+header schema shows up as messages missing from the stream and as decode
+errors on its stderr, not as wrong delivery: nothing that delivers mail reads
+these files beyond the inbox listing it always used.
+
 ### Typing findings (executed)
 
 - Codex detects paste bursts. A single `write` of `text\r`, or `rex send` text
@@ -126,7 +151,7 @@ the ladder cap (2 min); this is accepted.
 
 ## 4. Identity
 
-**Handle = `<kind>-<role>-<NN>`, owned by the agent session.** Panes are
+**Handle = `<kind>-<NN>`, owned by the agent session.** Panes are
 disposable; agent sessions are not. Claude Code and Codex keep their session id
 across a resume (executed 2026-10-28: `claude -p --resume` and `codex exec
 resume` returned the id of the session they resumed; a Codex hook's
@@ -153,25 +178,35 @@ agent. Adoption, in order:
    keeps its handle: a repeated hook, a compaction, a new session in the
    process (`/clear`). An agy subagent never gets here: its hooks are ignored
    (below).
-3. **New name.** `<kind>-<role>-<NN>`, or `<kind>-<NN>` without a role, with
-   the lowest `NN` from `01` that is not taken. The role comes from the pane
-   label a peer set when it launched the agent (`rex split --label reviewer
-   -- codex --no-daemon` → `codex-reviewer-01`): lowercased, other characters
-   folded to `-`, a leading kind and a trailing number dropped, so a label the
-   adapter wrote earlier reads back as the same role. Rex's default label
-   `shell` carries no role. The kind is always the agent's own.
+3. **New name.** `<kind>-<NN>`, with the lowest `NN` from `01` that is not
+   taken. The kind is always the agent's own.
+
+**Role, owned by the record.** What an agent is for (`reviewer`, `goal`) is
+`record.role`, not part of the handle, so an agent can take a role, or
+change it, and keep its handle (`join`, below). A new agent takes the role its
+pane label names (`rex split --label reviewer -- codex --no-daemon` → handle
+`codex-01`, role `reviewer`): lowercased, other characters folded to `-`, a
+trailing number dropped; a label the adapter wrote reads back as the role it
+shows (`reviewer(codex-01)` → `reviewer`). Rex's default label `shell` and a
+bare kind carry no role. A resumed or re-adopted agent keeps its record's
+role; one that has none takes the role of a launcher-written label, never of
+a label the adapter wrote for an earlier agent in the pane
+(`core.LauncherLabel`). The role chooses the briefing and makes a goal agent;
+notices name it beside the kind (`codex-01 (codex, reviewer)`), and `who`
+shows it.
 
 Taken handles are every record's (live, or reserved for a departed session) and
 every mailbox holding undrained mail, so a new agent never inherits someone
 else's session or unread messages. A new session in a pane is a new identity:
 it does not inherit the handle of the pane's previous session. The adapter
-then sets the pane label to the handle, so it is visible in Rex.
+then sets the pane label, so it is visible in Rex.
 
-**Pane label.** `<handle> | <task>`, where the task is what the agent said it
+**Pane label.** `<role>(<handle>) | <task>`, or `<handle> | <task>` without a
+role (`reviewer(codex-01) | fix login`), where the task is what the agent said it
 is doing (`rex-amq-adapter title "<task>"`, which the identity notice names),
 or for a new agent the task its launcher wrote after `|` in the pane label
-(`rex split --label "reviewer | fix login"`). A label whose head has the shape
-of a handle (a kind first, a number last) is the adapter's own for an earlier
+(`rex split --label "reviewer | fix login"`). A label whose head is the
+adapter's (`<kind>-<NN>` or `<role>(<kind>-<NN>)`) was written for an earlier
 agent in the pane, so its task is not taken (`core.InitialTask`). The identity
 notice asks for a task in a paragraph of its own (`Pane label: …`), apart
 from the AMQ instructions, so an agent that never messages anyone reads it
@@ -185,17 +220,20 @@ has no `UserPromptSubmit`, but its `PreInvocation` input carries
 counts its model calls (reproduced, agy 1.5.1, 2026-11-05: turn one 0, 1;
 turn two 0, 1, 2), and `lastUserInput`, the turn's prompt: `invocationNum ==
 0` marks a turn's first call, should something need to run once a turn.
-The adapter composes the label, so the handle always comes first and survives
-a pane too narrow for the rest; the task is one line, `|` replaced, at most 32
+The adapter composes the label, so the role comes first and survives a pane
+too narrow for the rest, and the handle peers mail follows in brackets; the
+task is one line, `|` replaced, at most 32
 columns (`golang.org/x/text/width`: CJK and most emoji count two; a joined
 emoji sequence is counted per character). The task is kept in the record and the label is drawn from it at
 every adoption, so a repeated SessionStart or a compaction keeps it, a resume
 in another pane shows it there, and a newly named agent starts without one.
 Reading a role from a label ignores everything from `|` on, so the next agent
-in a described pane is named for the role, not the task. An adapter older
-than this reads the task into the role (`claude-goal-01 | fix login` names a
-new agent `claude-goal-01-fix-login-01`, no longer a goal agent), so every
-hook must run the same version; README says how to downgrade.
+in a described pane takes the role, not the task. A harness title still
+drawn from an earlier label names the agent while its head is
+`<handle>` or `<any role>(<handle>)` (`core.TitleNamesHandle`), so a role
+taken since does not unbind it. The adapter keeps no compatibility with
+state written by earlier versions: after an upgrade, clear the state
+directory and restart the agents.
 
 **The harness shows the pane label too.** The agent's own title in its TUI is
 made to match the pane label, each harness the way it allows:
@@ -236,10 +274,12 @@ fight over it.
 
 ```json
 {
-  "handle": "codex-reviewer-01",
+  "handle": "codex-01",
   "kind": "codex",
+  "role": "reviewer",
   "server": "unix:///…/rex/server.sock",
   "block_id": "block:…",
+  "session_id": "session:…",
   "window_id": "window:…",
   "agent_pid": 13318,
   "agent_session_id": "01a1526a-…",
@@ -251,6 +291,10 @@ fight over it.
 ```
 
 `unfinished` is present only while a transition is under way (section 6).
+A departed record also says why it departed (`depart_reason`): `session_end`,
+`replaced` (another agent or session took the block), or the binding check's
+code when collection found the agent gone (`block_gone`, `agent_gone`,
+`agent_left_pane`). Observers show it; nothing decides on it.
 
 The record holds only facts the adapter owns. The waker's identity and
 liveness belong to amq: the adapter asks `amq wake check` and retires a waker
@@ -286,6 +330,22 @@ its pane's foreground process (Claude through two shells; executed for all four
 by agent-post's probes, 2026-11-03), except Codex's shared daemon, whose
 chain runs through the first pane's TUI; hence `--no-daemon`.
 
+A Codex hook must also run directly in its pane's agent, not merely descend
+from it (`runsUnder`). Codex reports no pid, so adoption takes the block's
+foreground, and the block is whatever its harness inherited: without
+`--no-daemon` one shared daemon, which the first pane's Codex started and which
+inherited that pane's `REX_BLOCK`, runs every pane's threads. Another pane's
+thread then fires hooks that name the first pane and descend from its agent,
+and `claim` would hand it that pane's handle by pid. So above the hook's
+shells the first process is its harness, and a process of the same name
+further up, the foreground included, means a second Codex: adoption fails
+and the lease is not trusted, with "restart Codex with codex --no-daemon" in
+`hooks.log`. A launcher of another name (`node` running a native `codex`)
+passes. With `--no-daemon` the chain is `rex-amq-adapter ← zsh ← codex`, the
+foreground (executed with Codex 0.166.0, 2026-11-05). Other kinds keep plain
+descent: agy and Pi run their own children (agy's subagents, Pi's extension)
+whose chains were not probed for intermediates.
+
 Another session from the record's own process is trusted, not taken as a
 switch. agy runs each subagent as a conversation of its own inside the
 parent's process (`invoke_subagent` returns its `conversationId`), and runs
@@ -319,11 +379,11 @@ last drew), or before that a job's current name
 
 | Case | What the adapter does |
 |---|---|
-| A hook whose session is a job (a worker in `~/.claude/daemon/roster.json`) | Ignores `REX_BLOCK`. The job is where its live record is; hooks that run once a turn check that the pane still shows it, and otherwise find the one block whose foreground is a `claude` client titled with it. A job seen first is adopted only at SessionStart or a prompt, where it is told who it is. A job seen in another pane moves there in one adoption: its handle, mailbox, and waker follow, and only a move to another tab tells either tab. No such block: the hook does nothing |
+| A hook whose session is a job (a worker in `~/.claude/daemon/roster.json`) | Ignores `REX_BLOCK`. The job is where its live record is; hooks that run once a turn check that the pane still shows it, and otherwise find the one block whose foreground is a `claude` client titled with it. A job seen first is adopted only at SessionStart or a prompt, where it is told who it is. A job seen in another pane moves there in one adoption: its handle, mailbox, and waker follow, and only a move to another session tells either session. No such block: the hook does nothing |
 | Adopting a Claude session | Its pid is `CLAUDE_PID`, the harness process. A job is adopted only into a pane whose title shows it, whatever hook asks: a hook on every tool call trusts the block of the job's record, which may be stale or an older adapter's (found on the real system after the v0.8.0 upgrade). A terminal session must be its pane's foreground, so a `claude -p` another program runs in the pane is not the pane's agent and reads none of its mail (`recordFit` compares pids exactly when the hook reports one) |
 | The doorbell for a job | Typed only while the pane's foreground is a `claude` client whose title names the job, and while the job's supervisor state is not `working`: the client reports no OSC 7501 of its own, so an emptied box confirms it |
 | A terminal session whose pane title is agent view (`claude agents`, `<n> awaiting input · claude agents`) or another conversation (a job's name, another record's handle) | Its process is now a client and its conversation moved to the background for good: it departs (`agent_left_pane`) |
-| A command in a Claude tool shell (`env`, `title`, `who`, `tab`) | Identity is the live record of `CLAUDE_CODE_SESSION_ID`, for a job only while its pane shows it, never `REX_BLOCK`; `env` then also exports the right `REX_BLOCK` and `REX_SESSION`, so `rex split` places a peer beside the job. A session no hook adopted (a nested `claude -p`) or a job no pane shows has no identity. A failing `env` prints `false` (and for such a job unsets the Rex variables), because `eval ""` succeeds and `eval "$(… env)" && …` would carry on |
+| A command in a harness's tool shell (`env`, `title`, `who`, `tab`) | See **How an agent finds its identity** below; for a job, its record counts only while its pane shows it. A job no pane shows has no identity, and its failing `env` also unsets the Rex variables |
 | SessionEnd of a job | Parks the job's own record, found by session: the supervisor may drop the job from its roster first |
 
 A conversation moved to the background keeps no handle: `--fork-session`
@@ -370,48 +430,53 @@ the terminal binding or announcement ledger, and that interactive startup,
 `/new`, resume, clear, and fork retain normal delivery. An issue closure alone
 is not sufficient evidence.
 
-**Window-mates.** Agents on one task are placed side by side in a Rex window
-(tab), so the window is the awareness boundary. Discovery through `who` lists
-only agents in the caller's current tab, including itself. It resolves the
-server and the block's current window and session through Rex, then filters
-live records against the current layout; an unresolved tab is an error, never
-a global fallback. `--all` adds departed records last recorded in that tab; the
-record's window is written at adoption and updated when a window is
-reconciled, so an agent moved since then is listed under its window at that
-moment once it departs.
-Its reconciliation covers that tab too: the agents the layout places there,
-plus agents recorded there whose block left the session's layout, which is
-closed or moved to another session (reconciliation finds which). A failure in
-another tab therefore does not reveal its agents through error output; the one
-exception is an agent recorded here that moved to another session, died, and
-could not be parked. Reconciliation is housekeeping: a failure, including a lifecycle lock that
-cannot be taken, is a warning on stderr and the tab is still listed, with the
-remaining records still reconciled. Only an unresolved tab fails `who`.
+**Session-mates.** A Rex session holds one task; a tab (window) in it holds
+one team, which its label can name as a crew; a pane holds one member, its
+label naming the role. A task outgrows one tab (several teams, or more agents
+than a tab shows), so the session is the awareness boundary, and the tab only
+says which team an agent is on (crew briefing, `who`'s TAB column). Discovery
+through `who` lists only agents in the caller's current session, including
+itself, each with the label of its tab (the window id when unlabelled). It
+resolves the server and the block's current session through Rex, then filters
+live records against the session's current layout; an unresolved session is
+an error, never a global fallback. `--all` adds departed records last recorded
+in that session; the record's session and window are written at adoption and
+updated when a session is reconciled, so an agent moved since then is listed
+where it was at that moment once it departs.
+Its reconciliation covers that session too: the agents the layout places
+there, plus agents recorded there whose block left the session's layout, which
+is closed or moved to another session (reconciliation finds which). A failure
+in another session therefore does not reveal its agents through error output;
+the one exception is an agent recorded here that moved to another session,
+died, and could not be parked. Reconciliation is housekeeping: a failure,
+including a lifecycle lock that cannot be taken, is a warning on stderr and the
+session is still listed, with the remaining records still reconciled. Only an
+unresolved session fails `who`.
 The shared AMQ root is transport, not a discovery scope; the agent guide
 uses the adapter's `who` instead of the global `amq who` directory.
 Rex delivers no layout events, but the moment that matters,
 an agent appearing, is an adoption, so adoption does the work under the
 lifecycle lock, which also serialises agents that start together:
 
-- One `rex block ls -s <session>` maps blocks to windows. The live records in
-  the adopted block's window, other than this block, are its mates; the
-  identity notice names them.
+- One `rex block ls -s <session>` lists the session's blocks. The live records
+  in them, other than the adopted block's, are its mates; the identity notice
+  names them.
 - An agent that just arrived in its block (a new handle, a session resumed
   in another block, or one taking its handle back after it departed) queues
-  "`<handle>` joined your Rex tab" for each mate. A live record adopted again
+  "`<handle>` joined your Rex session" for each mate. A live record adopted again
   in its own block (a repeated start hook, a compaction) tells no one.
 - Departure (`park`: SessionEnd, collection of a crash or a closed pane, a
-  replacement in the block) queues "`<handle>` left your Rex tab" for each
-  live agent recorded in the same window. The record keeps the window its
-  block was last seen in (`window_id`), because a crashed agent's block is
-  already gone when collection finds it. Each window reconciliation (`who`, a
-  goal watcher) writes the layout of its session into the records.
+  replacement in the block) queues "`<handle>` left your Rex session" for each
+  live agent recorded in the same session. The record keeps the session and
+  window its block was last seen in (`session_id`, `window_id`), because a
+  crashed agent's block is already gone when collection finds it. Each session reconciliation
+  (`who`, a goal watcher) writes the layout into the records.
 - A send to a departed handle succeeds in amq, and its mail waits for a resume
   that may never come. Sending is a tool call, so the sender's next hook reads
   its outbox past `ledger/<handle>.sent`. New mail makes it check the agents
   it mailed, because one that crashed or lost its pane sends no SessionEnd and
   still reads as live. Mail left unread in a departed agent's inbox is told
-  once: who now runs in that pane and who is in its tab. The check runs on one
+  once: who now runs in that pane and who is in its session. The check runs on one
   batch, the mail present when it starts. A recipient Rex cannot speak for holds
   the batch, and the next hook repeats it, for up to a minute; then the check
   gives up on that recipient, reports it, and tells the rest. It never costs the
@@ -421,7 +486,7 @@ lifecycle lock, which also serialises agents that start together:
   previous owner's mail nor that mail is told. Pi's mail watcher turns any
   notice into a turn, so there the bounce waits for its next run. Mail read before the agent left is not told, and
   mail that goes unread after the sender's check is covered by the note below;
-  an idle sender hears that only in a goal tab. Mail to itself and to a handle
+  an idle sender hears that only in a goal session. Mail to itself and to a handle
   with no record is not checked, and ids that sort before the cursor (a parallel
   send, a clock stepping back) are missed.
 - A queued note is delivered once, at the mate's next prompt:
@@ -432,19 +497,20 @@ lifecycle lock, which also serialises agents that start together:
   `PreInvocation` runs before every model call, so a mate that joins while it
   works is announced mid-turn. Departure drops undelivered notes; a hook that
   fails before it replies leaves them queued.
-- Mates are advice. When the window cannot be listed, adoption stands without
-  them and the failure goes to the hook log. A block moved to another window
+- Mates are advice. When the session cannot be listed, adoption stands without
+  them and the failure goes to the hook log. A block moved to another session
   is not noticed until a reconciliation or the next adoption; `who`'s listing
-  is always current. Until then a departure is told to the window recorded.
+  is always current. Until then a departure is told to the session recorded.
 
 Evidence (2026-10-29, **reproduced**): Claude, Codex, Antigravity, and Pi
 started into one tab and a Claude control in another, each on this
 implementation; every agent named exactly the mates and joins it was due, the
 control none, and the queue ended empty.
 
-**Crews and roles.** The window is the team; two labels say what kind of
+**Crews and roles.** The window is the team, inside the session's task; two
+labels say what kind of
 team it is and what each member does. The tab label names a crew, the pane
-label a role, which goes into the handle. From then on the handle is the role:
+label a role, which the record keeps. From then on the record is the role:
 the label is overwritten, a resumed agent may land in any pane, and briefing and
 goal behaviour both read it. An agent learns both with its identity, at
 adoption:
@@ -469,47 +535,67 @@ adoption:
   `internal/crew/builtin/NOTICE.md`). The file layout follows Runner's, so a
   crew can move between the two once its conventions say who to message
   rather than how.
+- A crew's conventions may open with a header naming its lead and members
+  (`---` / `lead: implementer` / `members: implementer, reviewer` / `---`),
+  which is stripped before an agent reads them; an unknown key or an
+  unclosed header is an error. The built-in crews: pair (lead implementer;
+  implementer, reviewer), ship (implementer; implementer, reviewer, qa), dev
+  (architect; architect, implementer, reviewer), design (architect;
+  architect, architect), docs (architect; architect, writer, editor).
+  `crews` lists each crew's lead and members (its role files when it
+  declares none).
 - `rex window new` cannot label the block and `rex run` cannot label the
   tab, so `rex-amq-adapter tab <crew> --role R -- CMD` opens both in one
   `session.new_window` call; `crews` lists what an agent in a directory
   would find.
+- `rex-amq-adapter join [CREW] [--role R]` makes the calling agent take a
+  role where it stands: the agent the user is talking to becomes the crew's
+  lead instead of briefing a new one in another tab. With CREW it names the
+  tab after the crew, unless another live agent is in the tab (that agent's
+  crew would change under it: the error says to open a new tab with `tab`),
+  and takes R or the crew's lead. The role goes into the record under the
+  lifecycle lock, the pane is relabelled, a goal agent's watcher starts, and
+  the briefing is printed with the members still to start. Later adoptions
+  keep the role.
 
-**Goal agents.** A tab normally has the user present: they see an agent stop,
-so the adapter adds nothing. An agent in a pane labelled `goal` changes that.
-It owns a goal and runs it unattended, so the tab needs no setting: a live goal
-agent is the mode, and it is also who to tell. (Runner's `goal.md` is a mission
+**Goal agents.** A session normally has the user present: they see an agent
+stop, so the adapter adds nothing. An agent in a pane labelled `goal` changes
+that. It owns a goal and runs it unattended, so the session needs no setting: a
+live goal agent is the mode, and it is also who to tell. (Runner's `goal.md` is a mission
 template and implies nothing about attendance; this meaning is the adapter's.
 The crew file stays out of the role lookup, and the prompt is `roles/goal.md`.)
 
-- Departure (`park`) also mails every live goal agent in the record's window,
+- Departure (`park`) also mails every live goal agent in the record's session,
   naming the agent and the session to resume. A window note waits for a prompt,
   and an idle goal agent has none coming, so this is mail: the doorbell wakes it,
   and a working one hears through its hooks. Nothing else would tell it, so a
   failed send is retried by collection (section 6), and a goal agent may hear
   twice. Recovery is the goal agent's decision; the adapter restarts nothing.
-- If the goal agent itself departs, the first other agent in the window is
+- If the goal agent itself departs, the first other agent in the session is
   mailed to report and stop, without taking over. Its turn ending reaches the
   user through their notification hooks.
 - A hook-less departure (a crash, and possibly a closed pane) has nothing to
   react to, so each goal agent has a watcher: a detached
-  `__internal watch <server> <handle>` that reconciles its window every 5 s. One
+  `__internal watch <server> <handle>` that reconciles its session every 5 s. One
   `flock` per handle keeps it single; adoption and the end of a turn (`Stop`,
   Pi's settle) start it when missing.
   It exits when the goal agent is no longer live, or after a minute of failed
   looks, since without a Rex server it would otherwise run forever. It costs one
-  process and only goal tabs pay it.
+  process and only goal sessions pay it.
 - Permission and question dialogs are not events here: the user's notification
   hooks already report them, and a goal agent must not answer a peer's
   permission dialog.
 - The adapter cannot tell who closed a pane, so a goal agent that closes its own
   peer hears about it too, which costs it one short turn.
-- Windows come from records, as for any departure, and a crashed agent's block
-  can no longer be placed, so the watcher's reconciliation keeps them current:
-  an agent moved into a goal agent's tab is announced there, and one moved out
-  is not. A block moved to another session keeps its record.
+- Sessions come from records, as for any departure, and a crashed agent's
+  block can no longer be placed, so the watcher's reconciliation keeps them
+  current: an agent moved into a goal agent's session is announced there, and
+  one moved out is not. A block moved to another session keeps its record until
+  that session is reconciled.
 - The peer told to report is the first Claude Code or Codex agent when there is
   one: only those have the notification hook that carries its last message to
-  the user. A tab left with neither, or with no agent at all, reaches nobody.
+  the user. A session left with neither, or with no agent at all, reaches
+  nobody.
 
 Evidence (**reproduced**, `internal/e2e/goal_test.go`, scripted agents on a real
 Rex server and real `amq wake`): an idle goal agent hears a peer quit, crash, or
@@ -522,9 +608,67 @@ they had been told, the implementer named its role, the crew, its lead, and
 its handoff; the reviewer quoted its role prompt and the conventions and
 stood by.
 
-**How an agent finds its identity.** `rex-amq-adapter env` resolves the record
-from `REX_BLOCK` and prints `export AM_ROOT=… AM_ME=…`. Agents run
+**How an agent finds its identity.** `rex-amq-adapter env` resolves the
+caller's record (`Caller`) and prints `export AM_ROOT=… AM_ME=…`. Agents run
 `eval "$(rex-amq-adapter env)"` before each `amq` command. No identity files.
+The same resolution places `title`, `who`, and `tab`.
+
+Each harness sets its session id afresh in its tool shells, overwriting an
+inherited value: `CLAUDE_CODE_SESSION_ID`, `CODEX_THREAD_ID`, `PI_SESSION_ID`
+(Pi 0.84 `bash.js` deletes and resets it), `ANTIGRAVITY_CONVERSATION_ID`
+(located in the Codex 0.166 and agy binaries; each equals the `session_id` its
+hooks report, so it matches `agent_session_id`). `REX_BLOCK` is inherited and
+names whichever pane started the process hosting the session. So:
+
+| The command's environment | Identity |
+|---|---|
+| no harness session id | the live record of `REX_BLOCK`; no `REX_BLOCK` is not Rex |
+| harness session ids, each with a live record of its kind | that record, wherever `REX_BLOCK` points or whether it is set; with several (an agent another agent started), the one whose agent pid is the nearest ancestor of the command, an error when none is |
+| any harness session id without one | none, even with `REX_BLOCK` set: a `claude -p` an adopted Codex runs, an Antigravity subagent (its own conversation id), a Codex thread its hooks refused |
+
+A record located by session rather than by `REX_BLOCK` comes with
+`export REX_BLOCK=… REX_SESSION=…` for its own pane, so `rex split` places a
+peer beside it. A failing `env` prints `false`, because `eval ""` succeeds and
+`eval "$(… env)" && …` would carry on.
+
+**Observing: `rex-amq-adapter events --json`.** A read-only stream of one
+scope for a dashboard or another tool: the caller's session by default,
+`--session S`, `--tab` (the caller's tab), or `--all` (every record of the
+server). It takes no adapter lock and writes nothing (no record, ledger,
+log, injector wrapper, or lock file; tested by comparing the state
+directory before and after), and never collects or supervises, so watching
+cannot change what happens to an agent. The same projection
+(`core.Project`) renders `who`.
+
+- Entities: agents keyed by handle (record, placement and tab, pane
+  `present`/`gone`, role, task; `lifecycle` with `depart_reason`; `activity`
+  from OSC 7501 or, for a Claude Code job, its supervisor; `delivery` with
+  unread and announced counts, the doorbell's last outcome and since when it
+  has repeated, `pending_doorbell`) and messages keyed by id (sender,
+  recipients, thread, state `sent`/`queued`/`drained`/`dead_lettered`,
+  `announced`, `bounced` when a departed agent holds it unread). A message
+  carries a sanitized subject (one line, no C0/C1 controls or bidi controls,
+  at most 120 runes) and never its body. Kept: every undrained or
+  dead-lettered message in the scope's mailboxes, and the newest 50 drained
+  or sent. Its state counts only recipients in the scope.
+- Frames, one JSON object per line on stdout, each with `schema` (1),
+  `stream` (random per run), `seq` (from 1, no gaps), `type`, and `at`:
+  `snapshot` (scope, agents, messages), then `upsert` (entity, key, value,
+  `changed` top-level fields) and `remove` (entity, key), `event` (`kind`
+  `doorbell` from the injector log, `drained` from amq's receipts,
+  `dead_lettered` when a copy reaches a dead-letter box; with `occurred_at`),
+  and `heartbeat` every 5 s. Diagnostics go to stderr.
+- Local state is read every second (records only when their directory
+  changed), Rex every two seconds (the layout and each live agent's program
+  status). A new sample of an unchanged state is no change: `observed_at` and
+  `source` are left out of the comparison, so polling alone emits only
+  heartbeats. A failed look is reported and retried; only a failed write ends
+  the stream. SIGINT or SIGTERM ends it with status 0.
+- Events are told once and only after the stream starts: the injector log is
+  cut by rewriting it, so its attempts are told by time, not by offset;
+  receipts and dead letters present at the start are history. A dead letter
+  in a mailbox the stream first sees later is not told as an event, though
+  the message shows its state.
 
 ## 5. Typed doorbell (injector)
 
@@ -595,10 +739,10 @@ with a timeout (both harnesses run hook commands through a shell). Outside Rex
 
 | Hook | Action | Installed timeout / adapter budget |
 |---|---|---|
-| `SessionStart` | Garbage-collect, adopt this block (handle, mailbox, record, waker, window-mates), print identity, unread count, window-mates, and the crew and role briefing as context | 5 s / 4.5 s |
+| `SessionStart` | Garbage-collect, adopt this block (handle, mailbox, record, waker, session-mates), print identity, unread count, session-mates, and the crew and role briefing as context | 5 s / 4.5 s |
 | `UserPromptSubmit`, `PostToolUse` | Announce new ids from the ledger; `UserPromptSubmit` also delivers queued window notes. Filesystem only, no subprocess, unless the agent must be adopted first or has just sent mail (measured p50 6.8 ms, max 16.7 ms over 30 runs, before the outbox check) | 3 s / 2.5 s |
 | `Stop` | Block once per section 3, then supervise the waker: one `amq wake check` (about 60 ms), and `Ensure` when it is dead or runs an older binary; a goal agent's missing watcher is started here too | 3 s / 2.5 s (supervision bounded to 1.5 s) |
-| `SessionEnd` | Retire the block's waker (identified by amq's saved target), set `departed_at`, drop the agent's undelivered window notes, queue "left" notes for its window-mates, and mail the goal agent if the window has one | 3 s / 2.5 s (Codex clamps to 3 s) |
+| `SessionEnd` | Retire the block's waker (identified by amq's saved target), set `departed_at`, drop the agent's undelivered window notes, queue "left" notes for its session-mates, and mail the goal agent if the session has one | 3 s / 2.5 s (Codex clamps to 3 s) |
 
 **Antigravity** has no `SessionEnd` hook and no `stop_hook_active`. Its agents
 depart through collection, and its Stop hook blocks only for mail never
@@ -664,11 +808,11 @@ are ready, so mail is safe; the peer may not have read its brief.
 **Adopt** (under the state lifecycle lock): take the agent's process from the
 block's foreground (Pi reports its own); choose the handle; `amq init --force` with
 the merged agent list under the root registry lock (port from herdr); write the
-record, with the block's window, before the waker starts, so whatever happens
+record, with the block's session and window, before the waker starts, so whatever happens
 next departure and collection find it and retire the block's waker; ensure the
 waker with herdr's `check` → keep / start / repair / replace decision and wait
 until `amq wake check` reports the expected target live; then list the
-session's blocks to find the window-mates and queue join notes for them. The
+session's blocks to find the session-mates and queue join notes for them. The
 crew and role briefing is read after the lock is released.
 
 **Transitions.** Adoption and departure each write the record partway through,
@@ -696,7 +840,7 @@ go once. Records written before this field read as finished.
 `rex-amq-adapter collect`; `rex-amq-adapter who` and a goal watcher run it only
 for their tab, and it finishes unfinished departures. A live record whose block is gone or now runs
 a different foreground process is parked like a departure (waker retired,
-`departed_at` set, window-mates told it left); a departed record older than 7 days is deleted with its
+`departed_at` set, session-mates told it left); a departed record older than 7 days is deleted with its
 ledger and inject log, so the handle can be named afresh. A server that cannot
 be reached leaves its records alone, since absence cannot be proven. The
 departed record itself is the reservation: while it exists its handle is taken
@@ -715,7 +859,7 @@ waker) checks it and brings back a dead one; an independent review killed a
 waker, delivered mail to the idle agent, and saw nothing ring until this was
 added (executed). A waker that dies mid-turn is revived at that turn's end; one
 that dies while the agent sits idle is revived at its next turn or session
-start, or by `who` in its tab, which a sender runs when a peer stays silent
+start, or by `who` in its session, which a sender runs when a peer stays silent
 (reproduced in `internal/e2e`). `who` holds the lifecycle lock for at most 1.5 s
 doing so: a waker that will not come up must not stall every tab's adoption.
 Global collection does not check wakers: it runs inside every adoption's hook
@@ -811,12 +955,12 @@ Overridable with `REX_AMQ_ADAPTER_HOME` (tests use a temporary directory).
 
 ```
 cmd/rex-amq-adapter/   subcommands: hook, inject, env, who, await, collect, crews, tab, setup, status, remove, __internal, version
-internal/app/          entry points: observe, ask core, act (adopt, inject, announce, depart, collect, discovery, await, goal); the hook's process ancestry (golang.org/x/sys)
-internal/core/         pure policy: handle choice, inject decision, announce decision, window-mates, notice text
+internal/app/          entry points: observe, ask core, act (adopt, inject, announce, depart, collect, discovery, await, goal, the events stream); the hook's process ancestry (golang.org/x/sys)
+internal/core/         pure policy: handle choice, inject decision, announce decision, session-mates, notice text, the observer's projection and diff
 internal/crew/         crew and role prompt lookup across project, user, and built-in layers; built-in prompts
 internal/fsutil/       flock and atomic replace
 internal/rex/          rex CLI client: process, program_status, capture, write, labels, whoami, block list, new window
-internal/amq/          wake check/start/repair/retire, mailbox registration, inbox listing (ported)
+internal/amq/          wake check/start/repair/retire, mailbox registration, inbox listing (ported); read-only mailbox, header, and receipt readers
 internal/screen/       input-box classifier (ported from herdr-amq-adapter)
 internal/store/        records, ledger, inject log, window notes, reservations, locks
 internal/e2e/          scripted agents on a private Rex server and real amq wake
@@ -884,7 +1028,7 @@ fake `HOME` so that every agent and peer ran this build's hooks and guide:
 | Scenario | Observed |
 |---|---|
 | Claude started in an untrusted folder | `await` reported `trust_screen`; once the dialog was answered, `adopted` in 2 s |
-| Goal agent launched with `tab pair --role goal` | `claude-goal-01`, or `codex-goal-01` once its first turn started; watcher running in both cases |
+| Goal agent launched with `tab pair --role goal` | `claude-goal-01`, or `codex-goal-01` once its first turn started; watcher running in both cases (handles of the version tested, before roles left them) |
 | Goal agent starts a Codex peer whose hooks need review | it left the dialog to the user and said so; it resumed on its own after they were approved |
 | Claude goal, Codex peer killed with SIGKILL mid-`sleep` | parked in 3.7 s, doorbell `accepted` in 4.0 s; the goal agent counted a failed attempt, resumed the same session in a new pane, got its handle back, finished, verified the file, closed the peer |
 | Codex goal, Claude peer killed with SIGKILL mid-`sleep` | parked in 2.1 s, doorbell `accepted` in 2.7 s; same recovery, and it ran `await` on each peer |
@@ -936,7 +1080,7 @@ and Claude Code 2.1.316, adapter state isolated by `REX_AMQ_ADAPTER_HOME`:
 | A handle names the wrong harness (`codex-…` running Claude) | The kind is never read from a label; a pane that changes kind keeps only its role |
 | Two agents claim one handle | Adoption holds the lifecycle lock; mailbox registration holds the root registry lock |
 | Installing hooks invalidates Codex trust | Append-only placement |
-| A waker dies and an idle agent never hears of mail | Every `Stop` checks the waker and revives a dead one, and `who` does so for its tab when a sender checks on a silent peer; nothing in Rex would notice (executed by the independent review, fixed and tested) |
+| A waker dies and an idle agent never hears of mail | Every `Stop` checks the waker and revives a dead one, and `who` does so for its session when a sender checks on a silent peer; nothing in Rex would notice (executed by the independent review, fixed and tested) |
 | A hook dies between writing a record and finishing | `unfinished` names the transition and a later hook or collection finishes it (executed in `transition_test.go`) |
 | One failed send leaves an idle goal agent unaware a peer left | The departure stays unfinished until the mail goes out; a duplicate costs one turn (executed in `transition_test.go`) |
 | Pi's notice is lost after the ledger marks it announced | The ledger is written before `pi.sendMessage` returns; if delivery fails there, an idle Pi is reminded after 5 minutes, and `agent_before_settle` reminds at the end of the next run. While a Pi dialog is open (`ui_prompt_start` … `ui_prompt_end`) the extension asks the adapter nothing, so no mail is marked announced; it delivers when the dialog closes (not yet exercised end to end) |

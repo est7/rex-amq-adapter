@@ -43,7 +43,7 @@ func (e Env) syncTitle(ctx context.Context, kind core.Kind, event string, rec st
 		return ""
 	}
 	defer unlock()
-	want := core.PaneLabel(rec.Handle, rec.Task)
+	want := core.PaneLabel(rec.Handle, rec.Role, rec.Task)
 	shown, err := e.Store.TitlesShown(rec.Handle)
 	if err == nil && shown[session] != want {
 		shown[session] = want
@@ -77,7 +77,7 @@ func (e Env) askTask(ctx context.Context, kind core.Kind, event string, rec stor
 	asked, err := e.Store.TaskAsked(rec.Handle)
 	if err == nil && asked != session {
 		if err = e.Store.SetTaskAsked(rec.Handle, session); err == nil && rec.Task == "" {
-			return core.TaskNotice(rec.Handle, e.SelfBin+" title", "")
+			return core.TaskNotice(rec.Handle, rec.Role, e.SelfBin+" title", "")
 		}
 	}
 	if err != nil {
@@ -95,7 +95,7 @@ func (e Env) askTask(ctx context.Context, kind core.Kind, event string, rec stor
 // in, so the title never names another agent.
 func (e Env) PaneTitle(loc Location, kind core.Kind, cwd string) string {
 	if rec, ok, err := e.Store.Record(loc.Block); err == nil && ok && rec.Live() && rec.Kind == kind && e.descendsFrom(rec) {
-		return core.PaneLabel(rec.Handle, rec.Task)
+		return core.PaneLabel(rec.Handle, rec.Role, rec.Task)
 	}
 	return DirTitle(cwd)
 }

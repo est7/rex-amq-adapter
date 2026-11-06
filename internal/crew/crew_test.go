@@ -145,3 +145,68 @@ func TestGoalRoleComesFromTheSharedPromptOnly(t *testing.T) {
 		t.Fatal("crews does not list the goal role")
 	}
 }
+
+// A crew's header declares who leads and who it is made of; the briefing an
+// agent reads never shows it.
+func TestCrewHeaderDeclaresItsShape(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	l := Load("")
+	for name, want := range map[string]struct {
+		lead    string
+		members []string
+	}{
+		"pair":   {"implementer", []string{"implementer", "reviewer"}},
+		"ship":   {"implementer", []string{"implementer", "reviewer", "qa"}},
+		"dev":    {"architect", []string{"architect", "implementer", "reviewer"}},
+		"design": {"architect", []string{"architect", "architect"}},
+		"docs":   {"architect", []string{"architect", "writer", "editor"}},
+	} {
+		c, ok, err := l.Crew(name)
+		if err != nil || !ok || c.Lead != want.lead || !slices.Equal(c.Members, want.members) {
+			t.Errorf("%s: %+v %v %v, want %v", name, c, ok, err, want)
+		}
+		if strings.Contains(c.Conventions.Text, "lead:") || strings.HasPrefix(c.Conventions.Text, "---") || !strings.HasPrefix(c.Conventions.Text, "This tab") {
+			t.Errorf("%s: the header reached the conventions: %q", name, c.Conventions.Text[:40])
+		}
+		if p, _, _ := l.Conventions(name); p.Text != c.Conventions.Text {
+			t.Errorf("%s: Conventions and Crew disagree", name)
+		}
+	}
+	entries, err := l.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.Crew == "pair" && (e.Lead != "implementer" || !slices.Equal(e.Members, []string{"implementer", "reviewer"})) {
+			t.Errorf("listed pair: %+v", e)
+		}
+	}
+}
+
+func TestCrewHeaders(t *testing.T) {
+	for text, want := range map[string]struct {
+		lead, body string
+		members    []string
+		bad        bool
+	}{
+		"no header": {body: "no header"},
+		"---\nlead: Lead\nmembers: a, B ,\n---\nbody": {lead: "lead", members: []string{"a", "b"}, body: "body"},
+		"---\n\nlead: x\n---\n":                       {lead: "x"},
+		"---\nlead: x\nbody":                          {bad: true},
+		"---\nleader: x\n---\nbody":                   {bad: true},
+		"---\njust words\n---\nbody":                  {bad: true},
+	} {
+		lead, members, body, err := parseHeader(text)
+		if (err != nil) != want.bad {
+			t.Errorf("%q: err %v", text, err)
+			continue
+		}
+		if !want.bad && (lead != want.lead || !slices.Equal(members, want.members) || body != want.body) {
+			t.Errorf("%q: %q %v %q", text, lead, members, body)
+		}
+	}
+	bad := Library{{Name: "project", FS: fstest.MapFS{"x/team-conventions.md": {Data: []byte("---\nleader: y\n---\n")}}, Dir: "/p"}}
+	if _, _, err := bad.Crew("x"); err == nil || !strings.Contains(err.Error(), "x/team-conventions.md") {
+		t.Errorf("a broken header is not reported with its file: %v", err)
+	}
+}

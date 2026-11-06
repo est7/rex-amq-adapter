@@ -3,10 +3,11 @@
 Coding agents running in [Rex](https://www.superlogical.com/rex/docs) terminals
 message each other over [AMQ](https://github.com/avivsinai/agent-message-queue).
 Install it once, and every Claude Code, Codex, Antigravity (`agy`), or Pi
-session you start in a Rex terminal gets a mailbox under a handle of its kind,
-role, and a number (`codex-reviewer-01`, or `claude-01` when the pane has no
-role), keeps it when you resume the session in another pane, and is told when
-mail arrives. No `amq init`, no environment variables,
+session you start in a Rex terminal gets a mailbox under a handle of its kind
+and a number (`codex-01`), keeps it when you resume the session in another
+pane, and is told when mail arrives. Its role (`reviewer`, from the pane label
+you launch it with, or taken later with `join`) is shown before the handle:
+`reviewer(codex-01) | fix login`. No `amq init`, no environment variables,
 no daemon.
 
 ```
@@ -62,12 +63,9 @@ when `rex-amq-adapter status` reports an item `outdated` after an upgrade, run
 group-writable directory such as Homebrew's Cellar, and the wrapper's path
 survives the binary moving.
 
-Run one version for every hook: an adapter older than v0.6.0 reads a pane
-label's task (`claude-goal-01 | fix login`) as part of the role, so a new agent
-it names in that pane gets a handle like `claude-goal-01-fix-login-01` and
-loses its role. Before downgrading, clear each agent's task with
-`rex-amq-adapter title`; an agent already named that way needs a fresh start in
-a pane labelled with the role alone.
+Run one version for every hook. The adapter keeps no compatibility with state
+an earlier version wrote: after an upgrade, stop the agents, remove the state
+directory (`~/.local/state/rex-amq-adapter`), and start them again.
 
 The hooks run the binary at the absolute path `setup` was run from.
 
@@ -120,11 +118,12 @@ Start agents in Rex terminals as usual. Then ask one to talk to another:
 
 > ask codex to review the current diff over AMQ
 
-Agents in one Rex tab know each other: an agent learns who is beside it when it
-starts, and the agents already there hear that it joined, or later left,
-with their next prompt. "Ask the one beside you" needs no handle.
-Other tabs and sessions are outside that awareness boundary: their agents
-do not appear in discovery or join/leave notices.
+Agents in one Rex session know each other: a session holds one task, a tab
+in it one team, a pane one member. An agent learns who is in its session when
+it starts, and the agents already there hear that it joined, or later left,
+with their next prompt. "Ask the one beside you" needs no handle. Other
+sessions are outside that awareness boundary: their agents do not appear in
+discovery or join/leave notices.
 
 A pane label names the agent's role, and a role with a prompt briefs the
 agent when it starts. A tab named after a crew adds the crew's team
@@ -143,11 +142,20 @@ conventions, shared by every agent in it:
 ```bash
 rex-amq-adapter tab pair --role "implementer | fix #42" -- codex --no-daemon "Fix #42: …"
 rex split -b <its block> --label "reviewer | review #42" -- claude "Review the implementer's fix for #42 when it hands off."
-rex-amq-adapter crews        # every crew and role available in this directory
+rex-amq-adapter crews        # every crew, its lead and members, and every role available here
 ```
 
-A tab without a `goal` agent assumes you are watching: an agent that stops is
-yours to notice. Label a pane `goal` and the tab runs unattended instead. That
+The agent you are already talking to can lead the crew itself: asked to "open
+a pair for #42", it runs `rex-amq-adapter join pair` in its own tab, which
+names the tab `pair`, makes it the implementer (the crew's lead), relabels its
+pane `implementer(claude-01)`, and prints its briefing with the members still
+to start; it then splits the reviewer in beside it. Another agent already in
+the tab keeps its crew: `join` refuses, and the crew goes in a new tab with
+`tab`. `join --role R` takes a role without changing the tab.
+
+A session without a `goal` agent assumes you are watching: an agent that stops
+is yours to notice. Label a pane `goal` and the session runs unattended
+instead. That
 agent owns the goal and decides how to recover: it is woken at once when a peer
 quits, crashes, or has its pane closed, with the session to resume, and it
 restarts or replaces the peer itself. If the goal agent is the one that goes, one
@@ -167,10 +175,10 @@ then `~/.config/rex-amq-adapter/crews/`. The format follows
 built-in prompts are rewritten from.
 
 The agent's skill handles `amq send`, `amq drain`, and `amq reply`, and opens
-peers itself: a pane beside it for the same task, a new tab for another task in
-the same project, a new session for another project. To start one by hand,
-label its pane `"<role> | <task>"` (the role becomes part of the handle, the
-task shows after it) and give it a first prompt (an agent gets its mailbox
+peers itself: a pane beside it for the same task, a new tab in its session for
+another team on that task, a new session for another task or project. To start one by hand,
+label its pane `"<role> | <task>"` (the agent takes the role and shows it
+before its handle, the task after it) and give it a first prompt (an agent gets its mailbox
 when its first turn starts):
 
 ```bash
@@ -180,14 +188,15 @@ rex split --split=right --focus=false --label "reviewer | review the diff" -- co
 Inspect state:
 
 ```bash
-rex-amq-adapter who          # running agents in this Rex tab, including yourself
-rex-amq-adapter who --all    # also this tab's departed agents reserved for a resume
+rex-amq-adapter who          # running agents in this Rex session and their tabs, including yourself
+rex-amq-adapter who --all    # also this session's departed agents reserved for a resume
+rex-amq-adapter events --json # stream this session's agents and mail as NDJSON (read-only; --tab, --session S, --all)
 rex-amq-adapter await <block> # wait for an agent you started; prints its outcome as JSON
 rex-amq-adapter collect      # retire agents whose pane closed or process died
 ```
 
-An agent shows what it is working on after its handle in its pane's label
-(`claude-reviewer-01 | fix login redirect`) with `rex-amq-adapter title
+An agent shows what it is working on after its role and handle in its pane's
+label (`reviewer(claude-01) | fix login redirect`) with `rex-amq-adapter title
 "<task>"`; its identity notice tells it to, and Claude Code, whose session
 starts before the user asks anything, is asked once more at its first prompt.
 A peer launched in a pane labelled `"<role> | <task>"` starts with that task.
@@ -196,24 +205,26 @@ label as their own title (Claude Code from the next prompt after a change, Pi
 within about 30 s, agy at its next state change); Codex cannot without its
 shared daemon.
 
-`who` resolves the caller's current tab from `REX_BLOCK`; it requires a Rex
-terminal and fails if the tab cannot be resolved. It uses the current layout,
-so moving a block changes which tab discovers it. `--all` includes departed
-agents last recorded in this tab, never agents from other tabs. A failure
-while reconciling the tab is a warning on stderr; the tab is still listed.
-`who` also brings back a dead waker in the tab, so an idle agent hears its mail
-again once a peer checks on it, and records where moved agents are now. Use the adapter's `who`, not the shared mailbox
+`who` resolves the caller's current session from its identity (see
+`env`); it requires a Rex terminal and fails if the session cannot be
+resolved. It uses the current layout, so moving a block to another session
+changes which session discovers it, and its TAB column shows each agent's tab
+now. `--all` includes departed agents last recorded in this session, never
+agents from other sessions. A failure while reconciling the session is a
+warning on stderr; the session is still listed. `who` also brings back a dead
+waker in the session, so an idle agent hears its mail again once a peer checks
+on it, and records where moved agents are now. Use the adapter's `who`, not the shared mailbox
 directory from `amq who`.
 
 ## Lifecycle
 
 | Moment | What happens |
 |---|---|
-| Agent's first hook runs | Handle chosen (`<kind>-<role>-<NN>`, the role from the pane label, else `<kind>-<NN>`), mailbox created, `amq wake` started, pane relabeled to the handle (then `<handle> \| <task>` once the agent names its task); it is told its window-mates and its crew and role briefing, and its window-mates are told it joined |
-| Agent exits | `SessionEnd` retires its waker and tells its window-mates it left; the handle stays reserved for its session for 7 days |
-| Agent crashes or its pane closes | The next adoption or `collect` notices and does the same, as does `who` in that tab, a send to it, or within seconds a `goal` agent there |
+| Agent's first hook runs | Handle chosen (`<kind>-<NN>`; the role, from the pane label, kept in the record), mailbox created, `amq wake` started, pane relabeled `<role>(<handle>)` (then `… \| <task>` once the agent names its task); it is told its session-mates and its crew and role briefing, and its session-mates are told it joined |
+| Agent exits | `SessionEnd` retires its waker and tells its session-mates it left; the handle stays reserved for its session for 7 days |
+| Agent crashes or its pane closes | The next adoption or `collect` notices and does the same, as does `who` in that session, a send to it, or within seconds a `goal` agent there |
 | Session resumed (`claude --resume`, `codex resume`), in any pane | Gets its handle back, with the mail that arrived meanwhile; so does a Claude conversation that moved to a new session id, found through its transcript, and an agy conversation `/resume`d by a new agy in the same pane, whose next hook adopts it |
-| Mail sent to an agent that left | The sender's next hook says so once, naming who now runs in that pane and who is in its tab |
+| Mail sent to an agent that left | The sender's next hook says so once, naming who now runs in that pane and who is in its session |
 | New session in a used pane | Gets a new handle; the previous session keeps its own |
 | Claude Code session moved to the background (`←`, `/bg`, `claude --bg`) | The pane that shows it, found by its title, is its pane; it is named afresh there, and the terminal session it came from departs. Until a pane shows it, it has no AMQ identity |
 

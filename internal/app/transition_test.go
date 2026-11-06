@@ -26,12 +26,12 @@ func amqThat(t *testing.T, e *Env, fail, condition string) {
 	e.AmqBin = script
 }
 
-func windowAgent(t *testing.T, e Env, h core.Handle, kind core.Kind) store.Record {
+func windowAgent(t *testing.T, e Env, h core.Handle, kind core.Kind, role string) store.Record {
 	t.Helper()
 	if err := amq.EnsureMailbox(context.Background(), e.AmqBin, e.Paths.Root(), string(h)); err != nil {
 		t.Fatal(err)
 	}
-	r := store.Record{Handle: h, Kind: kind, Server: "unix:///fake.sock", BlockID: "block:" + string(h), WindowID: "window:1", AgentPID: os.Getpid(), AgentSessionID: "s-" + string(h)}
+	r := store.Record{Handle: h, Kind: kind, Role: role, Server: "unix:///fake.sock", BlockID: "block:" + string(h), SessionID: "session:s", WindowID: "window:1", AgentPID: os.Getpid(), AgentSessionID: "s-" + string(h)}
 	if err := e.Store.PutRecord(r); err != nil {
 		t.Fatal(err)
 	}
@@ -71,11 +71,11 @@ func TestADepartureFinishesAfterItsMailFailed(t *testing.T) {
 	if err := os.WriteFile(fail, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	windowAgent(t, e, "claude-goal-01", core.Claude)
-	peer := windowAgent(t, e, "codex-reviewer-01", core.Codex)
+	windowAgent(t, e, "claude-goal-01", core.Claude, core.GoalRole)
+	peer := windowAgent(t, e, "codex-reviewer-01", core.Codex, "reviewer")
 	amqThat(t, &e, fail, `*" send "*`)
 
-	if err := e.park(ctx, peer); err != nil {
+	if err := e.park(ctx, peer, store.DepartSessionEnd); err != nil {
 		t.Fatalf("a failed notice must not fail the departure: %v", err)
 	}
 	if r := recordNamed(t, e, peer.Handle); r.Live() || r.Unfinished != store.Departing {
@@ -110,9 +110,9 @@ func TestADepartureFinishesAfterItsMailFailed(t *testing.T) {
 // An ordinary tab has nothing to finish, whatever the mailers do.
 func TestADepartureWithoutAGoalAgentFinishesAtOnce(t *testing.T) {
 	e := realAmqEnv(t, &fakeTerm{})
-	windowAgent(t, e, "claude-01", core.Claude)
-	peer := windowAgent(t, e, "codex-reviewer-01", core.Codex)
-	if err := e.park(context.Background(), peer); err != nil {
+	windowAgent(t, e, "claude-01", core.Claude, "")
+	peer := windowAgent(t, e, "codex-reviewer-01", core.Codex, "reviewer")
+	if err := e.park(context.Background(), peer, store.DepartSessionEnd); err != nil {
 		t.Fatal(err)
 	}
 	if r := recordNamed(t, e, peer.Handle); r.Live() || r.Unfinished != "" {
@@ -125,7 +125,7 @@ func TestADepartureWithoutAGoalAgentFinishesAtOnce(t *testing.T) {
 func TestAnInterruptedAdoptionFinishesOnTheNextPrompt(t *testing.T) {
 	term := &fakeTerm{state: "idle", label: "reviewer"}
 	e := realAmqEnv(t, term)
-	mate := windowAgent(t, e, "claude-01", core.Claude)
+	mate := windowAgent(t, e, "claude-01", core.Claude, "")
 	term.windows = map[string]string{block: mate.WindowID, mate.BlockID: mate.WindowID}
 	ctx := context.Background()
 	loc := Location{Block: block}
@@ -162,8 +162,8 @@ func TestAnInterruptedAdoptionFinishesOnTheNextPrompt(t *testing.T) {
 	if got := recordNamed(t, e, rec.Handle); got.Unfinished != "" {
 		t.Fatalf("the adoption stayed unfinished: %q", got.Unfinished)
 	}
-	if term.label != string(rec.Handle) {
-		t.Fatalf("pane label %q", term.label)
+	if want := core.PaneLabel(rec.Handle, "reviewer", ""); term.label != want {
+		t.Fatalf("pane label %q, want %q", term.label, want)
 	}
 	if !wakerLive(t, e, string(rec.Handle)) {
 		t.Fatal("no waker after the adoption finished")
@@ -179,7 +179,7 @@ func TestAnInterruptedAdoptionFinishesOnTheNextPrompt(t *testing.T) {
 func TestARepeatedAdoptionThatFailsIsNotAnArrival(t *testing.T) {
 	term := &fakeTerm{state: "idle", label: "reviewer"}
 	e := realAmqEnv(t, term)
-	mate := windowAgent(t, e, "claude-01", core.Claude)
+	mate := windowAgent(t, e, "claude-01", core.Claude, "")
 	term.windows = map[string]string{block: mate.WindowID, mate.BlockID: mate.WindowID}
 	ctx := context.Background()
 	loc := Location{Block: block}
@@ -257,16 +257,16 @@ func TestSupervisingAWindowHoldsTheLockBriefly(t *testing.T) {
 	e := realAmqEnv(t, &fakeTerm{})
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	r := windowAgent(t, e, "codex-reviewer-01", core.Codex)
+	r := windowAgent(t, e, "codex-reviewer-01", core.Codex, "reviewer")
 	// A started waker exits at once, so it never comes up.
 	flag := filepath.Join(t.TempDir(), "on")
 	if err := os.WriteFile(flag, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	amqThat(t, &e, flag, `*" wake --root "*`)
-	w := Window{server: r.Server, id: r.WindowID, windowOf: map[string]string{r.BlockID: r.WindowID}}
+	s := Session{server: r.Server, id: r.SessionID, windowOf: map[string]string{r.BlockID: r.WindowID}}
 	start := time.Now()
-	err := e.SuperviseWindow(ctx, w)
+	err := e.SuperviseSession(ctx, s)
 	if took := time.Since(start); took > 2*superviseFor {
 		t.Fatalf("held the lifecycle lock for %v", took)
 	}
@@ -287,7 +287,7 @@ func TestAPiGoalAgentsWatcherComesBackWhenItSettles(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.SelfBin = self
-	r := windowAgent(t, e, "pi-goal-01", core.Pi)
+	r := windowAgent(t, e, "pi-goal-01", core.Pi, core.GoalRole)
 	r.BlockID = block
 	if err := e.Store.PutRecord(r); err != nil {
 		t.Fatal(err)
@@ -306,8 +306,8 @@ func TestAPiGoalAgentsWatcherComesBackWhenItSettles(t *testing.T) {
 	}
 }
 
-// The role that briefs an agent is the one its handle carries, which is the one
-// every other rule reads: a pane's label is overwritten at adoption and a
+// The role that briefs an agent is the one its record carries, which is the
+// one every other rule reads: a pane's label is overwritten at adoption and a
 // resumed session may land in a pane labelled for something else.
 func TestAResumedAgentKeepsItsRoleWhateverThePaneSays(t *testing.T) {
 	term := &fakeTerm{state: "idle", label: "goal"}
@@ -315,10 +315,10 @@ func TestAResumedAgentKeepsItsRoleWhateverThePaneSays(t *testing.T) {
 	ctx := context.Background()
 	loc := Location{Block: block}
 	departed := time.Now().Add(-time.Hour)
-	if err := amq.EnsureMailbox(ctx, e.AmqBin, e.Paths.Root(), "codex-reviewer-01"); err != nil {
+	if err := amq.EnsureMailbox(ctx, e.AmqBin, e.Paths.Root(), "codex-01"); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.Store.PutRecord(store.Record{Handle: "codex-reviewer-01", Kind: core.Codex, Server: "unix:///fake.sock", BlockID: "block:gone", AgentSessionID: "s1", DepartedAt: &departed}); err != nil {
+	if err := e.Store.PutRecord(store.Record{Handle: "codex-01", Kind: core.Codex, Role: "reviewer", Server: "unix:///fake.sock", BlockID: "block:gone", AgentSessionID: "s1", DepartedAt: &departed}); err != nil {
 		t.Fatal(err)
 	}
 	a, err := e.Adopt(ctx, loc, core.Codex, HookInput{SessionID: "s1"})
@@ -326,7 +326,7 @@ func TestAResumedAgentKeepsItsRoleWhateverThePaneSays(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = e.Depart(ctx, loc, HookInput{}) })
-	if a.Record.Handle != "codex-reviewer-01" || a.Role != "reviewer" {
+	if a.Record.Handle != "codex-01" || a.Role != "reviewer" {
 		t.Fatalf("handle %s role %q", a.Record.Handle, a.Role)
 	}
 }
@@ -342,5 +342,38 @@ func TestAwaitWaitsForTheAdoptionToFinish(t *testing.T) {
 	s, err := e.AwaitStartup(ctx, block)
 	if err != nil || s.Status != core.StartupTimeout {
 		t.Fatalf("got %+v %v", s, err)
+	}
+}
+
+// A goal agent owns its session's task, so it hears of a departure from any
+// tab of the session and from none outside it.
+func TestAGoalAgentHearsOfADepartureAnywhereInItsSession(t *testing.T) {
+	for _, c := range []struct {
+		name                    string
+		goalSession, goalWindow string
+		peerSession, peerWindow string
+		want                    int
+	}{
+		{"another tab", "session:s", "window:1", "session:s", "window:2", 1},
+		{"another session", "session:s", "window:1", "session:t", "window:1", 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e := realAmqEnv(t, &fakeTerm{})
+			goal := windowAgent(t, e, "claude-goal-01", core.Claude, core.GoalRole)
+			goal.SessionID, goal.WindowID = c.goalSession, c.goalWindow
+			peer := windowAgent(t, e, "codex-reviewer-01", core.Codex, "reviewer")
+			peer.SessionID, peer.WindowID = c.peerSession, c.peerWindow
+			for _, r := range []store.Record{goal, peer} {
+				if err := e.Store.PutRecord(r); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := e.park(context.Background(), peer, store.DepartSessionEnd); err != nil {
+				t.Fatal(err)
+			}
+			if n := unreadOf(t, e, "claude-goal-01"); n != c.want {
+				t.Errorf("the goal agent got %d messages, want %d", n, c.want)
+			}
+		})
 	}
 }

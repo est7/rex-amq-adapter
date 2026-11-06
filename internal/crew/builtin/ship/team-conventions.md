@@ -1,3 +1,7 @@
+---
+lead: implementer
+members: implementer, reviewer, qa
+---
 This tab is a three-agent pipeline for changes that must be seen working, not only tested: the implementer builds, the reviewer critiques the diff, QA runs the reviewed candidate the way a user would. The implementer leads and reports to the human.
 
 1. The implementer works on a task branch, implements, runs the checks, and hands the working-tree diff to the reviewer over AMQ. Implementer and reviewer repeat until the review is clean.

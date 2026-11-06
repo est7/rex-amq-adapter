@@ -32,7 +32,7 @@ func briefed(t *testing.T, tab, label string) (Env, *string) {
 func TestStartNoticeCarriesCrewAndRole(t *testing.T) {
 	e, dir := briefed(t, "Pair", "reviewer")
 	_, n := startPi(t, e, "block:a", "s1")
-	id, conv, role := strings.Index(n, "you are pi-reviewer-01"), strings.Index(n, `crew "pair"`), strings.Index(n, "Project pair reviewer prompt.")
+	id, conv, role := strings.Index(n, "you are pi-01"), strings.Index(n, `crew "pair"`), strings.Index(n, "Project pair reviewer prompt.")
 	if id < 0 || conv < id || role < conv || !strings.Contains(n, "implementer builds, the reviewer critiques") {
 		t.Fatalf("start notice:\n%s", n)
 	}

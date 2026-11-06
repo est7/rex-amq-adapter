@@ -9,10 +9,12 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"syscall"
 	"text/tabwriter"
 	"time"
 
@@ -28,19 +30,29 @@ const usage = `rex-amq-adapter: AMQ messaging between coding agents in Rex termi
 
 Agent and user commands:
   env                       print the AMQ identity of this Rex block (eval it)
-  title [TASK...]           show TASK after your handle in this pane's label
-                            ("<handle> | <task>"); no TASK clears it
-  who [--all]               list agents in this Rex tab only;
-                            --all adds this tab's departed agents reserved for a resume
+  title [TASK...]           show TASK after your role and handle in this pane's
+                            label ("<role>(<handle>) | <task>"); no TASK clears it
+  who [--all]               list agents in this Rex session only, with their tabs;
+                            --all adds this session's departed agents reserved for a resume
+  events --json [--session S | --tab | --all]
+                            stream this Rex session's agents and mail as NDJSON
+                            (snapshot, then upsert/remove/event/heartbeat
+                            frames); read-only. --tab: this tab only; --all:
+                            every agent of the server
   await <block> [--timeout D]
                             wait for the agent started in a block, then print
                             its outcome as JSON; exits 0 only when adopted
   collect                   reconcile records with Rex now
+  join [CREW] [--role R]    take role R in crew CREW where you stand: name this
+                            tab after CREW (while no other agent is in it),
+                            relabel your pane, and print the briefing; without
+                            --role, take the crew's lead
   tab <crew> [--role R] [-c DIR] -- COMMAND...
                             open a Rex tab for a crew, its first pane labelled
                             with role R, running COMMAND (an agent and its brief)
-  crews [dir]               list the crews (named by a Rex tab) and roles (named
-                            by a pane label) that brief agents working in dir
+  crews [dir]               list the crews (named by a Rex tab), their lead and
+                            members, and the roles (named by a pane label) that
+                            brief agents working in dir
 
 Installation:
   setup|status|remove       install, inspect, or remove the skill, hooks, and
@@ -74,6 +86,8 @@ func run(args []string) int {
 		return runTitle(rest)
 	case "who":
 		return runWho(rest)
+	case "events":
+		return runEvents(rest)
 	case "await":
 		return runAwait(rest)
 	case "collect":
@@ -82,6 +96,8 @@ func run(args []string) int {
 		return runCrews(rest)
 	case "tab":
 		return runTab(rest)
+	case "join":
+		return runJoin(rest)
 	case "setup", "status", "remove":
 		return runInstall(cmd, rest)
 	case "__internal":
@@ -240,26 +256,30 @@ func runInject(args []string) int {
 }
 
 // caller resolves the Rex location of the agent running a command (see
-// app.Env.Caller) and an Env for it.
+// app.Env.Caller) and an Env that talks to its server.
 func caller() (app.Env, app.Location, error) {
-	here, err := app.Here()
-	if err != nil {
-		return app.Env{}, app.Location{}, err
-	}
-	env, err := app.NewEnv(here.Server)
+	env, err := app.NewEnv(os.Getenv("REX_SERVER"))
 	if err != nil {
 		return app.Env{}, app.Location{}, err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	loc, err := env.Caller(ctx, here, os.Getenv("CLAUDE_CODE_SESSION_ID"))
-	return env, loc, err
+	loc, err := env.Caller(ctx, os.Getenv)
+	if err != nil {
+		return app.Env{}, app.Location{}, err
+	}
+	if loc.Server != "" && loc.Server != os.Getenv("REX_SERVER") {
+		env.Rex = env.RexOn(loc.Server)
+	}
+	return env, loc, nil
 }
 
 // runEnv prints the shell text agents eval. A failure prints `false` as well,
-// because `eval ""` succeeds and `eval "$(… env)" && …` would carry on; a
-// background job no pane shows also unsets the inherited Rex location, which
-// names another agent's pane.
+// because `eval ""` succeeds and `eval "$(… env)" && …` would carry on. A
+// caller located by its session, whose REX_BLOCK names another pane or
+// nothing, also gets the Rex location of its own pane; a background job no
+// pane shows has the inherited one unset, because it names another agent's
+// pane.
 func runEnv() int {
 	failEnv := func(err error) int {
 		if errors.Is(err, app.ErrJobNotShown) {
@@ -276,7 +296,7 @@ func runEnv() int {
 	if err != nil {
 		return failEnv(err)
 	}
-	if here, _ := app.Here(); here.Block != loc.Block {
+	if loc.Block != os.Getenv("REX_BLOCK") || os.Getenv("REX_SESSION") == "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		rexOut, err := env.RexExports(ctx, loc.Block)
@@ -306,7 +326,7 @@ func runTitle(args []string) int {
 
 func runWho(args []string) int {
 	fs := flag.NewFlagSet("who", flag.ContinueOnError)
-	all := fs.Bool("all", false, "also list this tab's departed agents still reserved for a resume")
+	all := fs.Bool("all", false, "also list this session's departed agents still reserved for a resume")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -316,32 +336,90 @@ func runWho(args []string) int {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	window, err := env.FindWindow(ctx, loc.Block)
+	session, err := env.FindSession(ctx, loc.Block)
 	if err != nil {
 		return fail(err)
 	}
 	// Reconcile first, so an agent whose pane closed is listed as departed.
 	// Collection is housekeeping; the listing must still happen.
-	if err := env.CollectWindow(ctx, window); err != nil {
+	if err := env.CollectSession(ctx, session); err != nil {
 		fmt.Fprintf(os.Stderr, "rex-amq-adapter: collect: %v\n", err)
 	}
-	if err := env.SuperviseWindow(ctx, window); err != nil {
+	if err := env.SuperviseSession(ctx, session); err != nil {
 		fmt.Fprintf(os.Stderr, "rex-amq-adapter: supervise: %v\n", err)
 	}
-	agents, err := env.WindowAgents(window, *all)
+	agents, err := env.SessionAgents(session, *all)
 	if err != nil {
 		return fail(err)
 	}
+	now := env.Now()
 	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "HANDLE\tKIND\tSTATE\tUNREAD\tLAST DOORBELL\tBLOCK")
+	fmt.Fprintln(tw, "HANDLE\tKIND\tROLE\tTAB\tSTATE\tUNREAD\tLAST DOORBELL\tBLOCK")
 	for _, a := range agents {
 		state := "live"
-		if a.DepartedAt != nil {
-			state = "departed " + a.DepartedAt.Local().Format("01-02 15:04")
+		if d := a.Lifecycle.DepartedAt; d != nil {
+			state = "departed " + d.Local().Format("01-02 15:04")
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%s\n", a.Handle, a.Kind, state, a.Unread, a.LastDoorbell, a.Block)
+		role := a.Role
+		if role == "" {
+			role = "-"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n", a.Handle, a.Kind, role, a.Tab, state, a.Delivery.Unread, a.DoorbellSummary(now), a.BlockID)
 	}
 	if err := tw.Flush(); err != nil {
+		return fail(err)
+	}
+	return 0
+}
+
+// runEvents streams the projection of a scope. It only reads: it takes no
+// adapter lock and writes nothing but its frames, so watching changes nothing.
+func runEvents(args []string) int {
+	fs := flag.NewFlagSet("events", flag.ContinueOnError)
+	asJSON := fs.Bool("json", false, "write NDJSON frames (the only format)")
+	session := fs.String("session", "", "watch Rex session S")
+	tab := fs.Bool("tab", false, "watch the caller's tab only")
+	all := fs.Bool("all", false, "watch every agent of the Rex server")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	picked := 0
+	for _, set := range []bool{*session != "", *tab, *all} {
+		if set {
+			picked++
+		}
+	}
+	if !*asJSON || picked > 1 || fs.NArg() > 0 {
+		fmt.Fprintln(os.Stderr, "usage: rex-amq-adapter events --json [--session S | --tab | --all]")
+		return 2
+	}
+	kind := app.ScopeSession
+	switch {
+	case *tab:
+		kind = app.ScopeTab
+	case *all:
+		kind = app.ScopeAll
+	}
+	var env app.Env
+	var loc app.Location
+	var err error
+	if kind == app.ScopeAll || *session != "" {
+		env, err = app.NewEnv(os.Getenv("REX_SERVER"))
+	} else {
+		env, loc, err = caller()
+	}
+	if err != nil {
+		return fail(err)
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	rctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	sc, err := env.ResolveScope(rctx, kind, loc, *session)
+	cancel()
+	if err != nil {
+		return fail(err)
+	}
+	if err := env.Stream(ctx, os.Stdout, sc, app.StreamTicks{}); err != nil {
 		return fail(err)
 	}
 	return 0
@@ -445,6 +523,39 @@ func runTab(args []string) int {
 	return 0
 }
 
+func runJoin(args []string) int {
+	fs := flag.NewFlagSet("join", flag.ContinueOnError)
+	role := fs.String("role", "", "the role to take (default: the crew's lead)")
+	crewName := ""
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		crewName, args = args[0], args[1:]
+	}
+	if err := fs.Parse(args); err != nil || fs.NArg() > 0 || crewName == "" && *role == "" {
+		fmt.Fprintln(os.Stderr, "usage: rex-amq-adapter join [CREW] [--role R]")
+		return 2
+	}
+	env, loc, err := caller()
+	if err != nil {
+		return fail(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	j, err := env.Join(ctx, loc, crewName, *role)
+	if err != nil {
+		return fail(err)
+	}
+	fmt.Printf("Your pane shows %s", j.Label)
+	if j.Crew.Name != "" {
+		fmt.Printf("; this tab is crew %s", j.Crew.Name)
+	}
+	fmt.Println(".")
+	if j.Briefing != "" {
+		fmt.Println()
+		fmt.Println(j.Briefing)
+	}
+	return 0
+}
+
 func runCrews(args []string) int {
 	dir, err := os.Getwd()
 	if len(args) > 0 {
@@ -458,20 +569,28 @@ func runCrews(args []string) int {
 		return fail(err)
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "CREW\tCONVENTIONS\tROLES\tFROM")
+	fmt.Fprintln(tw, "CREW\tCONVENTIONS\tLEAD\tROLES\tFROM")
 	for _, e := range entries {
-		name, conv := e.Crew, "-"
+		name, conv, lead := e.Crew, "-", e.Lead
 		if name == "" {
 			name = "(any tab)"
 		}
 		if e.Conventions {
 			conv = "yes"
 		}
-		roles := strings.Join(e.Roles, ", ")
+		if lead == "" {
+			lead = "-"
+		}
+		// A crew's roles are its members; one that declares none has the
+		// role prompts of its own directory.
+		roles := strings.Join(e.Members, ", ")
+		if roles == "" {
+			roles = strings.Join(e.Roles, ", ")
+		}
 		if roles == "" {
 			roles = "-"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", name, conv, roles, e.Layer)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", name, conv, lead, roles, e.Layer)
 	}
 	if err := tw.Flush(); err != nil {
 		return fail(err)

@@ -10,18 +10,18 @@ import (
 // that task was the earlier agent's.
 func TestInitialTask(t *testing.T) {
 	for label, want := range map[string]string{
-		"architect | v0.8.2 review":     "v0.8.2 review",
-		"| fix login":                   "fix login",
-		"Reviewer-2 |  fix   login ":    "fix login",
-		"codex | fix login":             "fix login",
-		"reviewer":                      "",
-		"architect |   ":                "",
-		"codex-reviewer-01 | fix login": "",
-		"claude-06 | adapter docs":      "",
-		"agy-architect-06 | pane label": "",
-		"pi-goal-ship-v1-02 | ship":     "",
-		"shell":                         "",
-		"implementer | a|b":             "a/b",
+		"architect | v0.8.2 review":      "v0.8.2 review",
+		"| fix login":                    "fix login",
+		"Reviewer-2 |  fix   login ":     "fix login",
+		"codex | fix login":              "fix login",
+		"reviewer":                       "",
+		"architect |   ":                 "",
+		"reviewer(codex-01) | fix login": "",
+		"claude-06 | adapter docs":       "",
+		"architect(agy-06) | pane label": "",
+		"goal(pi-02) | ship":             "",
+		"shell":                          "",
+		"implementer | a|b":              "a/b",
 	} {
 		if got := InitialTask(label); got != want {
 			t.Errorf("InitialTask(%q) = %q, want %q", label, got, want)
@@ -36,12 +36,12 @@ func TestTaskNoticeAsksForATaskOrSaysWhatThePaneShows(t *testing.T) {
 	if amq := SessionNotice("claude-06", "x env", 0); strings.Contains(amq, "Pane label") || strings.Contains(amq, "title") {
 		t.Errorf("the AMQ notice carries the pane-label request:\n%s", amq)
 	}
-	asked := TaskNotice("claude-06", "x title", "")
+	asked := TaskNotice("claude-06", "", "x title", "")
 	if !strings.HasPrefix(asked, "Pane label:") || !strings.Contains(asked, `x title "<task in a few words>"`) {
 		t.Errorf("no request for a task:\n%s", asked)
 	}
-	told := TaskNotice("codex-architect-01", "x title", "v0.8.2 review")
-	if !strings.Contains(told, "`codex-architect-01 | v0.8.2 review`") || strings.Contains(told, "<task in a few words>") {
+	told := TaskNotice("codex-01", "architect", "x title", "v0.8.2 review")
+	if !strings.Contains(told, "`architect(codex-01) | v0.8.2 review`") || strings.Contains(told, "<task in a few words>") {
 		t.Errorf("an agent with a task was asked for one:\n%s", told)
 	}
 }

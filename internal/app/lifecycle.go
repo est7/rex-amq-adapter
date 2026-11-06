@@ -112,23 +112,24 @@ func (e Env) Depart(ctx context.Context, loc Location, in HookInput) error {
 	if in.SessionID != "" && rec.AgentSessionID != "" && in.SessionID != rec.AgentSessionID {
 		return nil
 	}
-	return e.park(ctx, rec)
+	return e.park(ctx, rec, store.DepartSessionEnd)
 }
 
-// park retires the block's waker and marks the record departed. What follows
-// can fail without undoing that: the departure stands, and collection finishes
-// it.
-func (e Env) park(ctx context.Context, rec store.Record) error {
+// park retires the block's waker and marks the record departed, for reason
+// (store.Record.DepartReason). What follows can fail without undoing that:
+// the departure stands, and collection finishes it.
+func (e Env) park(ctx context.Context, rec store.Record, reason string) error {
 	if _, err := amq.RetireFor(ctx, e.AmqBin, e.Paths.Root(), string(rec.Handle), rec.BlockID); err != nil {
 		return err
 	}
 	now := e.Now().UTC()
 	rec.DepartedAt = &now
+	rec.DepartReason = reason
 	rec.Unfinished = store.Departing
 	if err := e.Store.PutRecord(rec); err != nil {
 		return err
 	}
-	e.leaveWindow(ctx, rec)
+	e.leaveSession(ctx, rec)
 	if err := e.finishDeparture(ctx, rec); err != nil {
 		fmt.Fprintf(Diagnostics, "finish the departure of %s: %v\n", rec.Handle, err)
 	}
@@ -139,7 +140,7 @@ func (e Env) park(ctx context.Context, rec store.Record) error {
 // tell an idle goal agent, so this runs until it succeeds, which may tell it
 // twice. Notes about leaving are advice and are not repeated here.
 func (e Env) finishDeparture(ctx context.Context, rec store.Record) error {
-	// Notes about who joined are about the window it was in; a resume may
+	// Notes about who joined are about the session it was in; a resume may
 	// be elsewhere, much later.
 	if err := e.clearWindowNotes(ctx, rec.Handle); err != nil {
 		return err
@@ -160,22 +161,22 @@ func (e Env) clearWindowNotes(ctx context.Context, h core.Handle) error {
 	return e.Store.ClearWindowNotes(h)
 }
 
-// leaveWindow queues, for each live agent recorded in rec's window, a note
+// leaveSession queues, for each live agent recorded in rec's session, a note
 // that rec's agent left. It reads only records, so a crash found by
 // collection, whose block is gone, is told like a SessionEnd. Like a join
 // it is advice: a failure is reported, and the departure stands.
-func (e Env) leaveWindow(ctx context.Context, rec store.Record) {
-	if rec.WindowID == "" {
+func (e Env) leaveSession(ctx context.Context, rec store.Record) {
+	if !placed(rec) {
 		return
 	}
 	recs, err := e.Store.Records()
 	if err != nil {
-		fmt.Fprintf(Diagnostics, "tell the window that %s left: %v\n", rec.Handle, err)
+		fmt.Fprintf(Diagnostics, "tell the session that %s left: %v\n", rec.Handle, err)
 		return
 	}
-	note := core.LeftNotice(core.Peer{Handle: rec.Handle, Kind: rec.Kind, Block: rec.BlockID})
+	note := core.LeftNotice(peerOf(rec))
 	for _, r := range recs {
-		if r.Live() && r.Handle != rec.Handle && r.WindowID == rec.WindowID {
+		if r.Live() && r.Handle != rec.Handle && together(r, rec) {
 			if err := e.noteWindow(ctx, r.Handle, note); err != nil {
 				fmt.Fprintf(Diagnostics, "tell %s that %s left: %v\n", r.Handle, rec.Handle, err)
 			}
@@ -245,7 +246,7 @@ func (e Env) parkIfGone(ctx context.Context, rec store.Record) (observed bool, e
 		return false, nil
 	}
 	if o, bound := core.CheckBinding(b); !bound && o.Progress == core.Failed {
-		return true, e.park(ctx, rec)
+		return true, e.park(ctx, rec, o.Code)
 	}
 	return true, nil
 }

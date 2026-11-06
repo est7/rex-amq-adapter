@@ -57,6 +57,7 @@ func Spawn(amqBin string, w Waker, logDir string) error {
 	defer logf.Close()
 	fmt.Fprintf(logf, "\n=== %s spawn handle=%s block=%s server=%s\n", time.Now().Format(time.RFC3339), w.Handle, w.Block, w.Server)
 	cmd := exec.Command(amqBin, append([]string{"--no-update-check"}, w.WakeArgs()...)...)
+	cmd.Env = amqEnv()
 	cmd.Dir = w.Root
 	cmd.Stdout, cmd.Stderr = logf, logf
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
@@ -154,6 +155,7 @@ func EnsureMailbox(ctx context.Context, amqBin, root, handle string) error {
 		return err
 	}
 	cmd := exec.CommandContext(ctx, amqBin, "--no-update-check", "init", "--root", root, "--agents", strings.Join(agents, ","), "--force")
+	cmd.Env = amqEnv()
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
 	if err := cmd.Run(); err != nil {
@@ -257,24 +259,10 @@ func Recipients(root, handle, id string) ([]string, error) {
 	return parseRecipients(b)
 }
 
-// parseRecipients reads amq's message format: a JSON header between "---json"
-// and "---" lines, then the body.
+// parseRecipients reads who a message is addressed to.
 func parseRecipients(b []byte) ([]string, error) {
-	rest, ok := bytes.CutPrefix(b, []byte("---json\n"))
-	if !ok {
-		return nil, errors.New("message has no JSON header")
-	}
-	header, _, ok := bytes.Cut(rest, []byte("\n---"))
-	if !ok {
-		return nil, errors.New("message header is not closed")
-	}
-	var h struct {
-		To []string `json:"to"`
-	}
-	if err := json.Unmarshal(header, &h); err != nil {
-		return nil, fmt.Errorf("decode message header: %w", err)
-	}
-	return h.To, nil
+	h, err := parseHeader(b)
+	return h.To, err
 }
 
 func messageIDs(dir string) ([]string, error) {

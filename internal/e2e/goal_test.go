@@ -25,6 +25,28 @@ func goalTab(w *world) (tb *tab, reviewer string) {
 	return tb, reviewer
 }
 
+// handleOf is the handle the scripted agent called name holds: its session
+// id is its name. Handles are numbered by adoption order, so tests ask.
+func (w *world) handleOf(name string) string {
+	w.t.Helper()
+	entries, _ := os.ReadDir(filepath.Join(w.home, "records"))
+	for _, e := range entries {
+		b, err := os.ReadFile(filepath.Join(w.home, "records", e.Name()))
+		if err != nil {
+			continue
+		}
+		var r struct {
+			Handle  string `json:"handle"`
+			Session string `json:"agent_session_id"`
+		}
+		if json.Unmarshal(b, &r) == nil && r.Session == name {
+			return r.Handle
+		}
+	}
+	w.t.Fatalf("no record for agent %s\n%s", name, w.dump())
+	return ""
+}
+
 func (w *world) unread(handle string) int {
 	entries, _ := os.ReadDir(filepath.Join(w.root(), "agents", handle, "inbox", "new"))
 	return len(entries)
@@ -48,8 +70,8 @@ func TestAnIdleGoalAgentIsWokenWhenAPeerExits(t *testing.T) {
 	_, reviewer := goalTab(w)
 	w.typeInto(reviewer, "quit")
 	w.until("the goal agent to be woken", goalHears, func() bool { return w.doorbell("lead") })
-	mail := w.drain("claude-goal-01")
-	for _, want := range []string{"claude-reviewer-01", "left your Rex tab", "session rev"} {
+	mail := w.drain(w.handleOf("lead"))
+	for _, want := range []string{w.handleOf("rev") + " (claude, reviewer)", "left your Rex session", "session rev"} {
 		if !strings.Contains(mail, want) {
 			t.Errorf("mail lacks %q:\n%s", want, mail)
 		}
@@ -75,8 +97,8 @@ func TestAPeerReportsWhenTheGoalAgentIsGone(t *testing.T) {
 	tb, _ := goalTab(w)
 	w.typeInto(tb.first, "crash")
 	w.until("the surviving peer to be told", goalHears, func() bool { return w.doorbell("rev") })
-	mail := w.drain("claude-reviewer-01")
-	if !strings.Contains(mail, "claude-goal-01") || !strings.Contains(mail, "do not take over") {
+	mail := w.drain(w.handleOf("rev"))
+	if !strings.Contains(mail, w.handleOf("lead")) || !strings.Contains(mail, "do not take over") {
 		t.Fatalf("mail:\n%s", mail)
 	}
 }
@@ -89,21 +111,21 @@ func TestOnlyTheGoalAgentIsWokenWhenAPeerExits(t *testing.T) {
 	w.typeInto(reviewer, "quit")
 	w.until("the goal agent to be woken", goalHears, func() bool { return w.doorbell("lead") })
 	time.Sleep(time.Second)
-	if n := w.unread("claude-qa-01"); n != 0 || w.doorbell("qa") {
+	if n := w.unread(w.handleOf("qa")); n != 0 || w.doorbell("qa") {
 		t.Fatalf("another peer was mailed: %d unread, typed %q", n, w.got("qa"))
 	}
 }
 
-func TestAGoalAgentInAnotherTabHearsNothing(t *testing.T) {
+func TestAGoalAgentInAnotherSessionHearsNothing(t *testing.T) {
 	w := newWorld(t)
 	_, reviewer := goalTab(w)
-	w.newTab("other", "goal")
+	w.newTab("other", "goal") // a new session
 	w.ready("other")
 	w.typeInto(reviewer, "quit")
-	w.until("the tab's own goal agent to be woken", goalHears, func() bool { return w.doorbell("lead") })
+	w.until("the session's own goal agent to be woken", goalHears, func() bool { return w.doorbell("lead") })
 	time.Sleep(time.Second)
-	if n := w.unread("claude-goal-02"); n != 0 {
-		t.Fatalf("a goal agent in another tab got %d messages", n)
+	if n := w.unread(w.handleOf("other")); n != 0 {
+		t.Fatalf("a goal agent in another session got %d messages", n)
 	}
 }
 
@@ -115,7 +137,7 @@ func TestADepartedGoalAgentIsNotMailed(t *testing.T) {
 	w.typeInto(reviewer, "quit")
 	w.until("the peer to depart", 5*time.Second, func() bool { return strings.Contains(w.got("rev"), "quit") })
 	time.Sleep(time.Second)
-	if n := w.unread("claude-goal-01"); n != 0 {
+	if n := w.unread(w.handleOf("lead")); n != 0 {
 		t.Fatalf("a departed goal agent got %d messages", n)
 	}
 }
@@ -187,27 +209,25 @@ func TestAGoalAgentHearsAPeerMovedIntoItsTab(t *testing.T) {
 	w.ready("rev")
 	tb.move(peer, tb.first)
 	w.until("the watcher to see the move", goalHears, func() bool {
-		return w.recordedWindow("claude-reviewer-01") == w.recordedWindow("claude-goal-01")
+		return w.recordedWindow(w.handleOf("rev")) == w.recordedWindow(w.handleOf("lead"))
 	})
 	w.typeInto(peer, "crash")
 	w.until("the goal agent to be woken", goalHears, func() bool { return w.doorbell("lead") })
 }
 
-func TestAGoalAgentDoesNotHearAPeerMovedOutOfItsTab(t *testing.T) {
+// A peer moved to another tab of the session is still on the goal agent's
+// task: its departure is the goal agent's news.
+func TestAGoalAgentHearsAPeerMovedToAnotherTabOfItsSession(t *testing.T) {
 	w := newWorld(t)
 	tb, reviewer := goalTab(w)
 	away := tb.otherTab("away", "implementer")
 	w.ready("away")
 	tb.move(reviewer, away)
 	w.until("the watcher to see the move", goalHears, func() bool {
-		return w.recordedWindow("claude-reviewer-01") == w.recordedWindow("claude-implementer-01")
+		return w.recordedWindow(w.handleOf("rev")) == w.recordedWindow(w.handleOf("away"))
 	})
 	w.typeInto(reviewer, "quit")
-	w.until("the peer to depart", goalHears, func() bool { return strings.Contains(w.got("rev"), "quit") })
-	time.Sleep(watcherTick)
-	if n := w.unread("claude-goal-01"); n != 0 || w.doorbell("lead") {
-		t.Fatalf("the goal agent heard of an agent in another tab: %d unread\n%s", n, w.dump())
-	}
+	w.until("the goal agent to be woken", goalHears, func() bool { return w.doorbell("lead") })
 }
 
 // Without a watcher, the agent who looks brings the records up to date.
@@ -218,10 +238,10 @@ func TestWhoFollowsAPeerMovedIntoItsTab(t *testing.T) {
 	peer := tb.otherTab("rev", "reviewer")
 	w.ready("rev")
 	tb.move(peer, tb.first)
-	if out, code := w.who(tb.first); code != 0 || !strings.Contains(out, "claude-reviewer-01") {
+	if out, code := w.who(tb.first); code != 0 || !strings.Contains(out, w.handleOf("rev")) {
 		t.Fatalf("who: %d\n%s", code, out)
 	}
-	if got, want := w.recordedWindow("claude-reviewer-01"), w.recordedWindow("claude-implementer-01"); got != want {
+	if got, want := w.recordedWindow(w.handleOf("rev")), w.recordedWindow(w.handleOf("lead")); got != want {
 		t.Fatalf("the record stayed in %s, the agent is in %s", got, want)
 	}
 }

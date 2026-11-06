@@ -59,7 +59,7 @@ func newJobWorld(t *testing.T) jobWorld {
 		recs, _ := e.Store.Records()
 		for _, r := range recs {
 			if r.Live() {
-				_ = e.park(ctx, r)
+				_ = e.park(ctx, r, store.DepartSessionEnd)
 			}
 		}
 	})
@@ -161,10 +161,10 @@ func TestJobDoorbellBindsWhileItsPaneShowsIt(t *testing.T) {
 	w.jobHook(t, EventSessionStart)
 	rec, _, _ := w.e.liveRecordOf(core.Claude, jobSess)
 	for title, bound := range map[string]bool{
-		"✳ " + jobName:                        true,
-		"✳ " + core.PaneLabel(rec.Handle, ""): true,
-		"2 awaiting input · claude agents":    false,
-		"another conversation":                false,
+		"✳ " + jobName: true,
+		"✳ " + core.PaneLabel(rec.Handle, "", ""): true,
+		"2 awaiting input · claude agents":        false,
+		"another conversation":                    false,
 	} {
 		w.term.titles[viewBlock] = title
 		b, err := w.e.observeBinding(context.Background(), rec)
@@ -185,9 +185,9 @@ func TestATerminalSessionThatMovedToTheBackgroundLeftItsPane(t *testing.T) {
 	w := newJobWorld(t)
 	rec := w.tuiRecord(t)
 	for title, want := range map[string]string{
-		"2 awaiting input · claude agents":    "agent_left_pane",
-		"✳ " + jobName:                        "agent_left_pane",
-		"✳ " + core.PaneLabel(rec.Handle, ""): "",
+		"2 awaiting input · claude agents":        "agent_left_pane",
+		"✳ " + jobName:                            "agent_left_pane",
+		"✳ " + core.PaneLabel(rec.Handle, "", ""): "",
 	} {
 		w.term.titles[tuiBlock] = title
 		b, err := w.e.observeBinding(context.Background(), rec)
@@ -257,26 +257,28 @@ func TestANestedClaudeIsNotThePanesAgent(t *testing.T) {
 func TestCallerOfABackgroundJob(t *testing.T) {
 	w := newJobWorld(t)
 	ctx := context.Background()
-	here := Location{Block: tuiBlock}
-	if _, err := w.e.Caller(ctx, here, jobSess); err == nil {
+	here := func(session string) func(string) string {
+		return envOf("REX_BLOCK", tuiBlock, "CLAUDE_CODE_SESSION_ID", session)
+	}
+	if _, err := w.e.Caller(ctx, here(jobSess)); err == nil {
 		t.Error("an unadopted job was given a location")
 	}
 	w.jobHook(t, EventSessionStart)
-	if loc, err := w.e.Caller(ctx, here, jobSess); err != nil || loc.Block != viewBlock {
+	if loc, err := w.e.Caller(ctx, here(jobSess)); err != nil || loc.Block != viewBlock {
 		t.Errorf("adopted job: %+v %v", loc, err)
 	}
 	w.term.titles[viewBlock] = "2 awaiting input · claude agents"
-	if _, err := w.e.Caller(ctx, here, jobSess); err == nil {
+	if _, err := w.e.Caller(ctx, here(jobSess)); err == nil {
 		t.Error("a job its pane no longer shows was given that pane")
 	}
-	if loc, err := w.e.Caller(ctx, here, "tui-session"); err != nil || loc.Block != tuiBlock {
+	if loc, err := w.e.Caller(ctx, here("tui-session")); err != nil || loc.Block != tuiBlock {
 		t.Errorf("terminal session: %+v %v", loc, err)
 	}
 	// A `claude -p` an agent runs in the pane has a session no hook adopted.
-	if _, err := w.e.Caller(ctx, here, "nested"); err == nil {
+	if _, err := w.e.Caller(ctx, here("nested")); err == nil {
 		t.Error("a nested session was given the pane's identity")
 	}
-	if loc, err := w.e.Caller(ctx, here, ""); err != nil || loc.Block != tuiBlock {
+	if loc, err := w.e.Caller(ctx, here("")); err != nil || loc.Block != tuiBlock {
 		t.Errorf("a shell with no Claude session: %+v %v", loc, err)
 	}
 }
@@ -362,7 +364,7 @@ func TestATerminalSessionShowingAnotherAgentLeftItsPane(t *testing.T) {
 	w.jobHook(t, EventSessionStart)
 	job, _, _ := w.e.liveRecordOf(core.Claude, jobSess)
 	tui := w.tuiRecord(t)
-	w.term.titles[tuiBlock] = "✳ " + core.PaneLabel(job.Handle, "fix the linker")
+	w.term.titles[tuiBlock] = "✳ " + core.PaneLabel(job.Handle, "", "fix the linker")
 	b, err := w.e.observeBinding(context.Background(), tui)
 	if err != nil {
 		t.Fatal(err)
@@ -371,7 +373,7 @@ func TestATerminalSessionShowingAnotherAgentLeftItsPane(t *testing.T) {
 		t.Errorf("a terminal session whose pane shows %s: %+v", job.Handle, o)
 	}
 	// The job's last pane closed and its record departed; it still runs.
-	if err := w.e.park(context.Background(), job); err != nil {
+	if err := w.e.park(context.Background(), job, store.DepartSessionEnd); err != nil {
 		t.Fatal(err)
 	}
 	if b, err = w.e.observeBinding(context.Background(), tui); err != nil {

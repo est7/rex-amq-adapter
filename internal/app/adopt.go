@@ -20,10 +20,11 @@ type Adoption struct {
 	// Known is set when this agent session already held the handle: it was
 	// told the handle when it first took it, so it needs no identity notice.
 	Known bool
-	// Mates are the live agents in the same Rex window.
+	// Mates are the live agents in the same Rex session.
 	Mates []core.Peer
 	// Role is what the pane label said the agent is for; Window and
-	// Session are where its block is. They choose its briefing.
+	// Session are where its block is. The role and the window's crew choose
+	// its briefing.
 	Role, Window, Session string
 	// LabelErr is set when the handle could not be shown as the block
 	// label. The handle works regardless; callers report it.
@@ -63,6 +64,19 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 			return Adoption{}, fmt.Errorf("the hook's agent (pid %d) is not the foreground of block %s (pid %d), so it is not that pane's agent", agentPID, loc.Block, fg.PID)
 		}
 		agentPID = fg.PID
+		// A Codex hook reports no pid, and the block is the one its harness
+		// inherited: a shared daemon runs other panes' threads under the first
+		// pane's location. Taking the foreground on trust would hand that
+		// pane's handle and mail to another thread (claim matches it by pid).
+		if kind == core.Codex && localServer(serverOf(srv, loc)) {
+			ancestors, err := e.ancestors()
+			if err != nil {
+				return Adoption{}, fmt.Errorf("read this hook's process ancestry: %w", err)
+			}
+			if err := runsUnder(kind, ancestors, agentPID); err != nil {
+				return Adoption{}, fmt.Errorf("block %s: its foreground (pid %d) is not this hook's agent: %w", loc.Block, agentPID, err)
+			}
+		}
 	}
 	blk, err := e.Rex.InspectBlock(ctx, loc.Block)
 	if err != nil {
@@ -105,22 +119,23 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 		if err != nil {
 			return Adoption{}, err
 		}
-		handle = core.NameHandle(kind, blk.Label, taken)
+		handle = core.NameHandle(kind, taken)
 	}
 	// Any other live record of this block is an agent this one replaced, or
 	// the session this process switched away from: it keeps its handle as a
 	// reservation for a resume.
 	for _, r := range recs {
 		if r.BlockID == loc.Block && r.Live() && r.Handle != handle {
-			if err := e.park(ctx, r); err != nil {
+			if err := e.park(ctx, r, store.DepartReplaced); err != nil {
 				return Adoption{}, fmt.Errorf("park %s, replaced in this block: %w", r.Handle, err)
 			}
 		}
 	}
 	// The moved job's waker follows it: amq.Ensure below replaces the one
 	// that targets its old block.
-	if moved && own.WindowID != blk.WindowID {
-		e.leaveWindow(ctx, own)
+	shownAt := store.Record{SessionID: blk.SessionID}
+	if moved && !together(own, shownAt) {
+		e.leaveSession(ctx, own)
 	}
 	if err := amq.EnsureMailbox(ctx, e.AmqBin, e.Paths.Root(), string(handle)); err != nil {
 		return Adoption{}, err
@@ -128,10 +143,7 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	if !hasOwn {
 		e.seedSentCursor(handle)
 	}
-	server := srv.Endpoint
-	if server == "" {
-		server = loc.Server
-	}
+	server := serverOf(srv, loc)
 	// What this adoption means. The live record of this block coming back is a
 	// repeated start hook or a compaction: nothing changes, unless the adoption
 	// that wrote it never finished. Then the agent was not told, and nor was
@@ -141,7 +153,7 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	unfinished := hasOwn && own.Unfinished == store.Adopting
 	arrived := !again || unfinished
 	if moved {
-		arrived = own.WindowID != blk.WindowID || unfinished // a move within the tab is no news
+		arrived = !together(own, shownAt) || unfinished // a move within the session is no news
 	}
 	known := hasOwn && in.SessionID != "" && own.AgentSessionID == in.SessionID && !unfinished
 	rec := store.Record{
@@ -149,15 +161,24 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 		Kind:           kind,
 		Server:         server,
 		BlockID:        loc.Block,
+		SessionID:      blk.SessionID,
 		WindowID:       blk.WindowID,
 		AgentPID:       agentPID,
 		AgentSessionID: in.SessionID,
 		AdoptedAt:      e.Now().UTC(),
 	}
+	// A resumed agent keeps its task and role, in any pane. One without a
+	// role takes the one its launcher wrote in the label; a label the adapter
+	// wrote is an earlier agent's and gives it nothing. A new agent takes the
+	// role the pane is labelled with, whoever wrote it, so a pane keeps its
+	// purpose across agents.
 	if hasOwn {
-		rec.Task = own.Task // a resumed agent keeps its task, in any pane
+		rec.Task, rec.Role = own.Task, own.Role
+		if rec.Role == "" && core.LauncherLabel(blk.Label) {
+			rec.Role = core.Role(blk.Label)
+		}
 	} else {
-		rec.Task = core.InitialTask(blk.Label)
+		rec.Task, rec.Role = core.InitialTask(blk.Label), core.Role(blk.Label)
 	}
 	if again && own.AgentPID == agentPID {
 		rec.AdoptedAt = own.AdoptedAt
@@ -193,11 +214,12 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	if err := e.ensureGoalWatcher(rec); err != nil {
 		fmt.Fprintf(Diagnostics, "%v\n", err)
 	}
-	// The handle carries the role, so briefing and goal behaviour read one fact:
-	// the label is overwritten below, and a resumed agent may land in any pane.
-	out := Adoption{Decision: decision, Known: known, Role: core.Role(string(handle)), Window: blk.WindowID, Session: blk.SessionID}
-	out.Mates = e.joinWindow(ctx, rec, blk, recs, arrived)
-	if label := core.PaneLabel(handle, rec.Task); blk.Label != label {
+	// The record carries the role, so briefing and goal behaviour read one
+	// fact: the label is overwritten below, and a resumed agent may land in
+	// any pane.
+	out := Adoption{Decision: decision, Known: known, Role: rec.Role, Window: blk.WindowID, Session: blk.SessionID}
+	out.Mates = e.joinSession(ctx, rec, blk, recs, arrived)
+	if label := core.PaneLabel(handle, rec.Role, rec.Task); blk.Label != label {
 		out.LabelErr = e.Rex.RenameBlock(ctx, loc.Block, label)
 	}
 	unread, err := amq.Unread(e.Paths.Root(), string(handle))
@@ -215,13 +237,26 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	return out, nil
 }
 
-// joinWindow returns the live agents in the window of rec's block and, when
-// the agent has just arrived in its block, queues a note for each of them that
-// it started beside them. The window is advice, not a binding: when
-// Rex cannot list it, adoption stands without mates and the failure is
-// reported.
-func (e Env) joinWindow(ctx context.Context, rec store.Record, blk rex.Block, recs []store.Record, arrived bool) []core.Peer {
-	if blk.WindowID == "" || blk.SessionID == "" {
+// peerOf is r's agent as the session policy sees it.
+func peerOf(r store.Record) core.Peer {
+	return core.Peer{Handle: r.Handle, Kind: r.Kind, Role: r.Role, Block: r.BlockID}
+}
+
+// serverOf is the address a record names: the server's own endpoint, else
+// the caller's.
+func serverOf(srv rex.Server, loc Location) string {
+	if srv.Endpoint != "" {
+		return srv.Endpoint
+	}
+	return loc.Server
+}
+
+// joinSession returns the live agents in the session of rec's block and,
+// when the agent has just arrived in its block, queues a note for each of them
+// that it started beside them. The session is advice, not a binding: when Rex
+// cannot list it, adoption stands without mates and the failure is reported.
+func (e Env) joinSession(ctx context.Context, rec store.Record, blk rex.Block, recs []store.Record, arrived bool) []core.Peer {
+	if blk.SessionID == "" {
 		return nil
 	}
 	blocks, err := e.Rex.ListBlocks(ctx, blk.SessionID)
@@ -236,14 +271,14 @@ func (e Env) joinWindow(ctx context.Context, rec store.Record, blk rex.Block, re
 	var peers []core.Peer
 	for _, r := range recs {
 		if r.Live() && r.Handle != rec.Handle {
-			peers = append(peers, core.Peer{Handle: r.Handle, Kind: r.Kind, Block: r.BlockID})
+			peers = append(peers, peerOf(r))
 		}
 	}
-	mates := core.WindowMates(rec.BlockID, blk.WindowID, windowOf, peers)
+	mates := core.SessionMates(rec.BlockID, windowOf, peers)
 	if !arrived {
 		return mates
 	}
-	note := core.JoinedNotice(core.Peer{Handle: rec.Handle, Kind: rec.Kind, Block: rec.BlockID})
+	note := core.JoinedNotice(peerOf(rec))
 	for _, m := range mates {
 		if err := e.noteWindow(ctx, m.Handle, note); err != nil {
 			fmt.Fprintf(Diagnostics, "tell %s that %s joined: %v\n", m.Handle, rec.Handle, err)
@@ -361,7 +396,7 @@ func (e Env) SetTask(ctx context.Context, loc Location, task string) (string, er
 	if err := e.Store.PutRecord(rec); err != nil {
 		return "", err
 	}
-	label := core.PaneLabel(rec.Handle, rec.Task)
+	label := core.PaneLabel(rec.Handle, rec.Role, rec.Task)
 	if err := e.Rex.RenameBlock(ctx, loc.Block, label); err != nil {
 		return "", fmt.Errorf("the task is recorded, but the pane label could not be set: %w", err)
 	}

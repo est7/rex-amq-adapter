@@ -41,7 +41,7 @@ func TestAwaitNamesAnAdoptedAgent(t *testing.T) {
 	w := newWorld(t)
 	tb := w.newTab("alice", "reviewer")
 	out, code := w.adapterRun("await", tb.first, "--timeout", "15s")
-	if code != 0 || !strings.Contains(out, `"handle":"claude-reviewer-01"`) {
+	if code != 0 || !strings.Contains(out, `"handle":"claude-01"`) {
 		t.Fatalf("code=%d out=%s\n%s", code, out, w.dump())
 	}
 	w.ready("alice") // the hook goes on to start the waker after the record exists

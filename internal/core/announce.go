@@ -125,9 +125,9 @@ func SessionNotice(h Handle, envCmd string, unread int) string {
 
 // TaskNotice is what an agent is told about its pane label: the task it
 // shows, or a request for one once the agent knows what it is working on.
-func TaskNotice(h Handle, titleCmd, task string) string {
+func TaskNotice(h Handle, role, titleCmd, task string) string {
 	if task != "" {
-		return fmt.Sprintf("Pane label: your pane shows `%s`. When your task changes, run `%s \"<new task in a few words>\"`.", PaneLabel(h, task), titleCmd)
+		return fmt.Sprintf("Pane label: your pane shows `%s`. When your task changes, run `%s \"<new task in a few words>\"`.", PaneLabel(h, role, task), titleCmd)
 	}
-	return fmt.Sprintf("Pane label: your pane shows only `%s`. As soon as you know what you are working on (usually from the user's first request), show it after your handle with `%s \"<task in a few words>\"`, and again when it changes. Do this even if you never use AMQ.", h, titleCmd)
+	return fmt.Sprintf("Pane label: your pane shows only `%s`. As soon as you know what you are working on (usually from the user's first request), show it after your handle with `%s \"<task in a few words>\"`, and again when it changes. Do this even if you never use AMQ.", PaneHead(h, role), titleCmd)
 }

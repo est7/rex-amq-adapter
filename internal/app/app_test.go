@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -20,23 +21,25 @@ import (
 // fakeTerm is one Codex terminal. Its input box holds box; a write lands in
 // the box unless the agent submits it (submit), and ctrl+u empties it.
 type fakeTerm struct {
-	mu        sync.Mutex
-	gone      bool
-	fgPID     int
-	state     string // "" means no program status record
-	box       string
-	submit    bool // a written doorbell is submitted: box stays empty, state becomes working
-	statusErr bool // ProgramStatus fails after the first write
-	writes    []string
-	keys      []string
-	label     string                 // the block label; "" reads as Rex's default
-	windows   map[string]string      // block -> window, all in session:s; nil: none known
-	listErr   error                  // ListBlocks fails
-	tabs      map[string]string      // window -> tab label
-	cwd       string                 // the foreground process's directory
-	titles    map[string]string      // block -> terminal title
-	fgs       map[string]rex.Process // block -> foreground, overriding fgPID
-	renamed   map[string]string      // block -> the last label set on it
+	mu          sync.Mutex
+	gone        bool
+	fgPID       int
+	state       string // "" means no program status record
+	box         string
+	submit      bool // a written doorbell is submitted: box stays empty, state becomes working
+	statusErr   bool // ProgramStatus fails after the first write
+	writes      []string
+	keys        []string
+	label       string                 // the block label; "" reads as Rex's default
+	windows     map[string]string      // block -> window; nil: none known
+	sessions    map[string]string      // window -> session; unlisted: session:s
+	listErr     error                  // ListBlocks fails
+	tabs        map[string]string      // window -> tab label
+	cwd         string                 // the foreground process's directory
+	titles      map[string]string      // block -> terminal title
+	fgs         map[string]rex.Process // block -> foreground, overriding fgPID
+	renamed     map[string]string      // block -> the last label set on it
+	renamedTabs []string               // "window=label", in order
 }
 
 func (f *fakeTerm) Whoami(context.Context) (rex.Server, error) {
@@ -110,12 +113,20 @@ func (f *fakeTerm) InspectBlock(_ context.Context, id string) (rex.Block, error)
 	}
 	b := rex.Block{ID: id, Label: label}
 	if w, ok := f.windows[id]; ok {
-		b.WindowID, b.SessionID = w, "session:s"
+		b.WindowID, b.SessionID = w, f.sessionOf(w)
 	}
 	return b, nil
 }
 
-func (f *fakeTerm) ListBlocks(context.Context, string) ([]rex.Block, error) {
+// sessionOf is the session window w is in. The caller holds f.mu.
+func (f *fakeTerm) sessionOf(w string) string {
+	if s, ok := f.sessions[w]; ok {
+		return s
+	}
+	return "session:s"
+}
+
+func (f *fakeTerm) ListBlocks(_ context.Context, session string) ([]rex.Block, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.listErr != nil {
@@ -123,7 +134,9 @@ func (f *fakeTerm) ListBlocks(context.Context, string) ([]rex.Block, error) {
 	}
 	var out []rex.Block
 	for b, w := range f.windows {
-		out = append(out, rex.Block{ID: b, WindowID: w, SessionID: "session:s"})
+		if f.sessionOf(w) == session {
+			out = append(out, rex.Block{ID: b, WindowID: w, SessionID: session})
+		}
 	}
 	return out, nil
 }
@@ -134,16 +147,39 @@ func (f *fakeTerm) Title(_ context.Context, block string) (string, error) {
 	return f.titles[block], nil
 }
 
-func (f *fakeTerm) ListSessions(context.Context) ([]string, error) { return []string{"session:s"}, nil }
+func (f *fakeTerm) ListSessions(context.Context) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := []string{"session:s"}
+	for _, s := range f.sessions {
+		if !slices.Contains(out, s) {
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
 
 func (f *fakeTerm) InspectSession(_ context.Context, id string) (rex.Session, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	s := rex.Session{ID: id}
 	for w, label := range f.tabs {
-		s.Windows = append(s.Windows, rex.Window{ID: w, Label: label})
+		if f.sessionOf(w) == id {
+			s.Windows = append(s.Windows, rex.Window{ID: w, Label: label})
+		}
 	}
 	return s, nil
+}
+
+func (f *fakeTerm) RenameWindow(_ context.Context, window, label string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.tabs == nil {
+		f.tabs = map[string]string{}
+	}
+	f.tabs[window] = label
+	f.renamedTabs = append(f.renamedTabs, window+"="+label)
+	return nil
 }
 
 func (f *fakeTerm) RenameBlock(_ context.Context, block string, label string) error {

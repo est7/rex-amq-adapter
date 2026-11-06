@@ -1,3 +1,7 @@
+---
+lead: architect
+members: architect, writer, editor
+---
 This tab writes documentation: writers draft, the editor checks the drafts against the code and against each other. With an architect in the tab, the architect leads: it partitions the work, briefs each writer, and assembles the index. Without one, the writer the human briefed leads. The lead reports back to the human.
 
 1. Each writer drafts the page it was given, in the repository's documentation language and conventions, and tells the lead when it is ready, with the path and the scope covered.

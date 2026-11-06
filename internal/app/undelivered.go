@@ -33,7 +33,7 @@ const checkSentFor = time.Minute
 // checkableSent is the mail of rec's to tell about now: what it sent since the
 // last check, once its recipients are settled. Mail that lands later is the
 // next hook's. It reaches Rex only when there is new mail. It must run outside
-// any ledger lock: parking takes the ledger locks of the parked agent's window,
+// any ledger lock: parking takes the ledger locks of the parked agent's session,
 // which can include rec's.
 func (e Env) checkableSent(ctx context.Context, rec store.Record) []string {
 	cursor, begun, err := e.Store.SentCursor(rec.Handle)
@@ -176,7 +176,7 @@ func (e Env) undeliveredNotice(rec store.Record, sent []string) (string, error) 
 	}
 	notices := make([]string, 0, len(missed))
 	for _, r := range missed {
-		notices = append(notices, core.UndeliveredNotice(r.Handle, occupant(recs, r.BlockID), tabMates(recs, rec)))
+		notices = append(notices, core.UndeliveredNotice(r.Handle, occupant(recs, r.BlockID), sessionMates(recs, rec)))
 	}
 	return joinNotices(notices...), nil
 }
@@ -207,21 +207,20 @@ func (e Env) departedRecipients(rec store.Record, sent []string, recs []store.Re
 func occupant(recs []store.Record, block string) *core.Peer {
 	for _, r := range recs {
 		if r.Live() && r.BlockID == block {
-			return &core.Peer{Handle: r.Handle, Kind: r.Kind, Block: r.BlockID}
+			p := peerOf(r)
+			return &p
 		}
 	}
 	return nil
 }
 
-// tabMates are the live agents recorded in rec's window, other than rec's.
-func tabMates(recs []store.Record, rec store.Record) []core.Peer {
-	if rec.WindowID == "" {
-		return nil
-	}
+// sessionMates are the live agents recorded in rec's session, other than
+// rec's.
+func sessionMates(recs []store.Record, rec store.Record) []core.Peer {
 	var mates []core.Peer
 	for _, r := range recs {
-		if r.Live() && r.Handle != rec.Handle && r.WindowID == rec.WindowID {
-			mates = append(mates, core.Peer{Handle: r.Handle, Kind: r.Kind, Block: r.BlockID})
+		if r.Live() && r.Handle != rec.Handle && together(r, rec) {
+			mates = append(mates, peerOf(r))
 		}
 	}
 	return mates

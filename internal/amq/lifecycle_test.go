@@ -95,3 +95,32 @@ func TestLifecycleAgainstRealAmq(t *testing.T) {
 		t.Fatalf("waker still live after retire: %+v %v", after, err)
 	}
 }
+
+// An agent that loaded its identity (AM_ROOT names its own tree) and then
+// runs the adapter against another root, as `go test` does, must not have
+// amq refuse the send: every call names its root.
+func TestSendIgnoresAnInheritedRoot(t *testing.T) {
+	bin, err := ResolveBin()
+	if err != nil {
+		t.Skip("amq is not installed")
+	}
+	ctx := context.Background()
+	dir := t.TempDir()
+	own, other := filepath.Join(dir, "root"), filepath.Join(dir, "other")
+	for _, r := range []string{own, other} {
+		if err := EnsureMailbox(ctx, bin, r, "a"); err != nil {
+			t.Fatal(err)
+		}
+		if err := EnsureMailbox(ctx, bin, r, "b"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("AM_ROOT", other)
+	t.Setenv("AM_ME", "a")
+	if err := Send(ctx, bin, own, "a", "b", "s", "x"); err != nil {
+		t.Fatalf("send with an inherited AM_ROOT: %v", err)
+	}
+	if ids, err := Unread(own, "b"); err != nil || len(ids) != 1 {
+		t.Fatalf("delivered to %v (%v), want one message in the named root", ids, err)
+	}
+}

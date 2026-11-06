@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -168,7 +169,9 @@ func TestRecordedProcessFurtherUpTheAncestryIsCurrent(t *testing.T) {
 		t.Fatal(err)
 	}
 	const adapter, shell = 0x3ffffff1, 0x3ffffff2
-	e.Ancestors = func() ([]int, error) { return []int{adapter, shell, rec.AgentPID}, nil }
+	e.Ancestors = func() ([]proc, error) {
+		return []proc{{adapter, "rex-amq-adapter"}, {shell, "sh"}, {rec.AgentPID, "codex"}}, nil
+	}
 	r, err := e.Hook(context.Background(), EventPostTool, core.Codex, Location{Block: block}, HookInput{SessionID: "s1"})
 	if err != nil {
 		t.Fatal(err)
@@ -202,7 +205,7 @@ func TestUnreadableAncestryAdoptsAgain(t *testing.T) {
 	if before, _, _ := e.Store.Record(block); before.AgentPID != os.Getpid() {
 		t.Fatalf("setup: pid %d", before.AgentPID)
 	}
-	e.Ancestors = func() ([]int, error) { return nil, errors.New("sysctl failed") }
+	e.Ancestors = func() ([]proc, error) { return nil, errors.New("sysctl failed") }
 	term.mu.Lock()
 	term.fgPID = other.Process.Pid
 	term.mu.Unlock()
@@ -219,7 +222,20 @@ func TestProcessAncestorsStartAtThisProcess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(a) < 2 || a[0] != os.Getpid() || a[1] != os.Getppid() {
+	if len(a) < 2 || a[0].PID != os.Getpid() || a[1].PID != os.Getppid() {
 		t.Fatalf("ancestry %v: want this process, then its parent", a)
+	}
+}
+
+// The Codex check compares process names, so they must be read: names that
+// all came back empty would take every Codex hook's shell for a second Codex.
+func TestProcessAncestorsAreNamed(t *testing.T) {
+	a, err := processAncestors()
+	if err != nil {
+		t.Fatal(err)
+	}
+	self := filepath.Base(os.Args[0])
+	if a[0].Name == "" || !strings.HasPrefix(self, a[0].Name) {
+		t.Errorf("this process is named %q, want a prefix of %q", a[0].Name, self)
 	}
 }

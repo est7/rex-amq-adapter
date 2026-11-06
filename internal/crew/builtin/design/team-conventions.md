@@ -1,3 +1,7 @@
+---
+lead: architect
+members: architect, architect
+---
 This tab argues a design to a decision. Two or more agents, usually architects, work the same question; the human decides. The agent the human briefed leads: it forwards the question to the others over AMQ, keeps the exchange moving, and writes the final report.
 
 1. Independent proposals first. Each agent studies the question and the code and sends its proposal to all the others at once: the recommendation, the alternatives it rejected and why, the assumptions it rests on, and file:line evidence. Do not read another proposal before sending yours, so that nobody anchors on the first one.

@@ -341,6 +341,12 @@ func (c Client) RenameBlock(ctx context.Context, block, label string) error {
 	return err
 }
 
+// RenameWindow sets the label of window, the tab's name.
+func (c Client) RenameWindow(ctx context.Context, window, label string) error {
+	_, err := c.run(ctx, nil, "window", "rename", window, label)
+	return err
+}
+
 // Server identifies the connected server process.
 type Server struct {
 	InstanceID string `json:"instance_id"`

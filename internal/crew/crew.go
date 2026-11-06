@@ -3,7 +3,14 @@
 // the crew, and a role prompt for the role its pane label names.
 //
 // A crew is a directory: team-conventions.md, plus <role>.md for roles that
-// work differently in this crew. roles/<role>.md holds the role prompts used
+// work differently in this crew. The conventions may open with a header that
+// declares the crew's shape, which is not part of the prompt:
+//
+//	---
+//	lead: implementer
+//	members: implementer, reviewer
+//	--- roles/<role>.md holds the role prompts used
+//
 // in any tab. Directories are searched in order, the first file found wins
 // whole: the project's .agents/crews (from the agent's directory upwards),
 // the user's ~/.config/rex-amq-adapter/crews, then the prompts built in.
@@ -12,6 +19,7 @@ package crew
 import (
 	"embed"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path"
@@ -62,12 +70,72 @@ func Load(dir string) Library {
 	return append(lib, Layer{Name: "built-in", FS: sub})
 }
 
-// Conventions returns the team conventions of crew.
-func (l Library) Conventions(crew string) (Prompt, bool, error) {
-	if crew == "" {
-		return Prompt{}, false, nil
+// Crew is a crew's declared shape and its conventions.
+type Crew struct {
+	Name string
+	// Lead is the role that leads it, Members the roles it is made of (a role
+	// may repeat); empty when its conventions declare none.
+	Lead        string
+	Members     []string
+	Conventions Prompt
+}
+
+// Crew returns crew name: its header and its conventions without it.
+func (l Library) Crew(name string) (Crew, bool, error) {
+	if name == "" {
+		return Crew{}, false, nil
 	}
-	return l.find(path.Join(crew, Conventions))
+	p, ok, err := l.find(path.Join(name, Conventions))
+	if !ok || err != nil {
+		return Crew{}, ok, err
+	}
+	c := Crew{Name: name}
+	if c.Lead, c.Members, p.Text, err = parseHeader(p.Text); err != nil {
+		return Crew{}, false, fmt.Errorf("%s: %w", path.Join(name, Conventions), err)
+	}
+	c.Conventions = p
+	return c, true, nil
+}
+
+// Conventions returns the team conventions of crew, without their header.
+func (l Library) Conventions(crew string) (Prompt, bool, error) {
+	c, ok, err := l.Crew(crew)
+	return c.Conventions, ok, err
+}
+
+// parseHeader splits a conventions file into its header's lead and members
+// and the text after it. A file without a header declares nothing.
+func parseHeader(text string) (lead string, members []string, body string, err error) {
+	rest, ok := strings.CutPrefix(text, "---\n")
+	if !ok {
+		return "", nil, text, nil
+	}
+	head, body, ok := strings.Cut(rest, "\n---")
+	if !ok {
+		return "", nil, "", errors.New("the header is not closed with ---")
+	}
+	for _, line := range strings.Split(head, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		key, value, ok := strings.Cut(line, ":")
+		if !ok {
+			return "", nil, "", fmt.Errorf("header line %q is not key: value", line)
+		}
+		switch strings.TrimSpace(key) {
+		case "lead":
+			lead = Name(value)
+		case "members":
+			for _, m := range strings.Split(value, ",") {
+				if m := Name(m); m != "" {
+					members = append(members, m)
+				}
+			}
+		default:
+			return "", nil, "", fmt.Errorf("unknown header key %q (want lead or members)", strings.TrimSpace(key))
+		}
+	}
+	return lead, members, strings.TrimSpace(body), nil
 }
 
 // Role returns the prompt for role in crew: the crew's own, else the shared
@@ -106,7 +174,10 @@ func (l Library) find(name string) (Prompt, bool, error) {
 type Entry struct {
 	Crew  string // "" for the shared roles
 	Roles []string
-	Layer string
+	// Lead and Members are what the crew's conventions declare.
+	Lead    string
+	Members []string
+	Layer   string
 	// Conventions is set when the crew has team conventions.
 	Conventions bool
 }
@@ -145,6 +216,13 @@ func (l Library) List() ([]Entry, error) {
 					seen[crew+"/"+name] = true
 					e.Roles = append(e.Roles, strings.TrimSuffix(name, ".md"))
 				}
+			}
+			if e.Conventions {
+				c, _, err := l.Crew(crew)
+				if err != nil {
+					return nil, err
+				}
+				e.Lead, e.Members = c.Lead, c.Members
 			}
 			if len(e.Roles) > 0 || e.Conventions {
 				out = append(out, e)

@@ -17,48 +17,26 @@ func set(hs ...Handle) map[Handle]bool {
 	return m
 }
 
+// A handle is the agent's kind and the lowest free number; the role lives in
+// the record, so a pane label never shapes it.
 func TestNameHandle(t *testing.T) {
 	cases := []struct {
 		name  string
 		kind  Kind
-		label string
 		taken map[Handle]bool
 		want  Handle
 	}{
-		{"default label gets the kind and a number", Codex, "shell", nil, "codex-01"},
-		{"empty label counts as default", Claude, "", nil, "claude-01"},
-		{"a label is the role", Codex, "reviewer", nil, "codex-reviewer-01"},
-		{"the role is lowercased and folded", Claude, "Lark Impl", nil, "claude-lark-impl-01"},
-		{"taken handles are skipped, never shared", Codex, "reviewer", set("codex-reviewer-01", "codex-reviewer-02"), "codex-reviewer-03"},
-		{"the lowest free number is reused", Claude, "shell", set("claude-02"), "claude-01"},
-		{"a composed handle reads back as its role", Codex, "codex-reviewer-01", nil, "codex-reviewer-01"},
-		{"a pane relabeled for another kind keeps the role, not the kind", Claude, "codex-reviewer-01", nil, "claude-reviewer-01"},
-		{"an old automatic name carries no role", Claude, "codex-10", nil, "claude-01"},
-		{"a bare kind carries no role", Pi, "codex", nil, "pi-01"},
-		{"a peer's own numbering is dropped", Codex, "reviewer-2", nil, "codex-reviewer-01"},
-		{"inner numbers stay part of the role", Agy, "v2-audit", nil, "agy-v2-audit-01"},
+		{"the first of a kind", Codex, nil, "codex-01"},
+		{"taken handles are skipped, never shared", Codex, set("codex-01", "codex-02"), "codex-03"},
+		{"the lowest free number is reused", Claude, set("claude-02"), "claude-01"},
+		{"other kinds' numbers do not count", Pi, set("claude-01", "codex-01"), "pi-01"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := NameHandle(c.kind, c.label, c.taken); got != c.want {
-				t.Fatalf("NameHandle(%s, %q) = %q, want %q", c.kind, c.label, got, c.want)
+			if got := NameHandle(c.kind, c.taken); got != c.want {
+				t.Fatalf("NameHandle(%s) = %q, want %q", c.kind, got, c.want)
 			}
 		})
-	}
-}
-
-func TestLongRoleStaysAValidHandle(t *testing.T) {
-	long := strings.Repeat("ab-", 20)
-	taken := map[Handle]bool{}
-	for i := 0; i < 120; i++ {
-		h := NameHandle(Claude, long, taken)
-		if _, err := ParseHandle(string(h)); err != nil {
-			t.Fatalf("handle %q is invalid: %v", h, err)
-		}
-		if !strings.HasPrefix(string(h), "claude-ab-") || taken[h] {
-			t.Fatalf("handle %q lost its role or was shared", h)
-		}
-		taken[h] = true
 	}
 }
 
@@ -275,7 +253,7 @@ func TestLastDelivery(t *testing.T) {
 	}
 }
 
-func TestWindowMatesAreTheOtherAgentsInTheSameWindow(t *testing.T) {
+func TestSessionMatesAreTheOtherAgentsInTheSameSession(t *testing.T) {
 	windowOf := map[string]string{"b:self": "w1", "b:right": "w1", "b:below": "w1", "b:tab2": "w2"}
 	peers := []Peer{
 		{Handle: "codex-01", Kind: Codex, Block: "b:right"},
@@ -284,13 +262,14 @@ func TestWindowMatesAreTheOtherAgentsInTheSameWindow(t *testing.T) {
 		{Handle: "agy-01", Kind: Agy, Block: "b:below"},
 		{Handle: "codex-02", Kind: Codex, Block: "b:other-session"},
 	}
-	got := WindowMates("b:self", "w1", windowOf, peers)
-	if len(got) != 2 || got[0].Handle != "codex-01" || got[1].Handle != "agy-01" {
-		t.Fatalf("got %+v, want codex-01 and agy-01", got)
+	got := SessionMates("b:self", windowOf, peers)
+	if len(got) != 3 || got[0].Handle != "codex-01" || got[1].Handle != "pi-01" || got[2].Handle != "agy-01" {
+		t.Fatalf("got %+v, want codex-01, pi-01 (another tab), and agy-01", got)
 	}
-	if got := WindowMates("b:self", "", windowOf, peers); got != nil {
-		t.Fatalf("an unknown window has no mates, got %+v", got)
+	if got := SessionMates("b:self", nil, peers); got != nil {
+		t.Fatalf("an unknown session has no mates, got %+v", got)
 	}
+	got = []Peer{got[0], got[2]}
 	if s := MatesNotice(got); !strings.Contains(s, "codex-01 (codex), agy-01 (agy)") || !strings.Contains(s, "amq send") {
 		t.Fatalf("mates notice %q", s)
 	}
@@ -377,8 +356,8 @@ func TestDecideStartup(t *testing.T) {
 }
 
 func TestDepartureMailGoesToTheGoalAgentOrItsReportingPeer(t *testing.T) {
-	goal := Peer{Handle: "claude-goal-01", Kind: Claude}
-	goal2 := Peer{Handle: "codex-goal-01", Kind: Codex}
+	goal := Peer{Handle: "claude-02", Kind: Claude, Role: GoalRole}
+	goal2 := Peer{Handle: "codex-02", Kind: Codex, Role: GoalRole}
 	pi := Peer{Handle: "pi-01", Kind: Pi}
 	agy := Peer{Handle: "agy-01", Kind: Agy}
 	claude := Peer{Handle: "claude-01", Kind: Claude}
@@ -389,13 +368,13 @@ func TestDepartureMailGoesToTheGoalAgentOrItsReportingPeer(t *testing.T) {
 		to      []Handle
 		subject string
 	}{
-		"a peer leaves":            {claude, []Peer{pi, goal}, []Handle{goal.Handle}, "claude-01 left your Rex tab"},
-		"every goal agent hears":   {claude, []Peer{goal, goal2}, []Handle{goal.Handle, goal2.Handle}, "claude-01 left your Rex tab"},
+		"a peer leaves":            {claude, []Peer{pi, goal}, []Handle{goal.Handle}, "claude-01 left your Rex session"},
+		"every goal agent hears":   {claude, []Peer{goal, goal2}, []Handle{goal.Handle, goal2.Handle}, "claude-01 left your Rex session"},
 		"no goal agent":            {claude, []Peer{pi, codex}, nil, ""},
-		"goal leaves: prefers one": {goal, []Peer{pi, claude}, []Handle{claude.Handle}, "claude-goal-01 left your Rex tab"},
-		"goal leaves: codex too":   {goal, []Peer{agy, pi, codex}, []Handle{codex.Handle}, "claude-goal-01 left your Rex tab"},
-		"goal leaves: keeps first": {goal, []Peer{codex, claude}, []Handle{codex.Handle}, "claude-goal-01 left your Rex tab"},
-		"goal leaves: none notify": {goal, []Peer{agy, pi}, []Handle{agy.Handle}, "claude-goal-01 left your Rex tab"},
+		"goal leaves: prefers one": {goal, []Peer{pi, claude}, []Handle{claude.Handle}, "claude-02 left your Rex session"},
+		"goal leaves: codex too":   {goal, []Peer{agy, pi, codex}, []Handle{codex.Handle}, "claude-02 left your Rex session"},
+		"goal leaves: keeps first": {goal, []Peer{codex, claude}, []Handle{codex.Handle}, "claude-02 left your Rex session"},
+		"goal leaves: none notify": {goal, []Peer{agy, pi}, []Handle{agy.Handle}, "claude-02 left your Rex session"},
 		"goal leaves alone":        {goal, nil, nil, ""},
 	} {
 		to, subject, body := DepartureMail(tc.left, "s", tc.others)
@@ -414,12 +393,50 @@ func TestDepartureMailGoesToTheGoalAgentOrItsReportingPeer(t *testing.T) {
 	}
 }
 
-func TestPaneLabelIsTheHandleThenTheTask(t *testing.T) {
-	if got := PaneLabel("claude-reviewer-01", ""); got != "claude-reviewer-01" {
-		t.Errorf("no task: %q", got)
+func TestPaneLabelIsTheRoleAndHandleThenTheTask(t *testing.T) {
+	for _, c := range []struct {
+		h          Handle
+		role, task string
+		want       string
+	}{
+		{"claude-04", "", "", "claude-04"},
+		{"claude-04", "", "fix login", "claude-04 | fix login"},
+		{"claude-04", "architect", "", "architect(claude-04)"},
+		{"claude-04", "architect", "stream design", "architect(claude-04) | stream design"},
+	} {
+		if got := PaneLabel(c.h, c.role, c.task); got != c.want {
+			t.Errorf("PaneLabel(%s, %q, %q) = %q, want %q", c.h, c.role, c.task, got, c.want)
+		}
 	}
-	if got := PaneLabel("claude-reviewer-01", "fix login redirect"); got != "claude-reviewer-01 | fix login redirect" {
-		t.Errorf("with a task: %q", got)
+}
+
+// What the adapter writes reads back as written: the role it shows, the
+// handle it names, and no task for the next agent in the pane.
+func TestAdapterLabelsReadBack(t *testing.T) {
+	for _, c := range []struct {
+		h          Handle
+		role, task string
+	}{{"claude-04", "", "x"}, {"codex-12", "reviewer", "fix login"}, {"agy-01", "v2-audit", ""}, {"pi-03", "goal", "ship"}} {
+		label := PaneLabel(c.h, c.role, c.task)
+		if got := Role(label); got != c.role {
+			t.Errorf("Role(%q) = %q, want %q", label, got, c.role)
+		}
+		if LauncherLabel(label) || InitialTask(label) != "" {
+			t.Errorf("%q was taken for a launcher's label", label)
+		}
+		if !TitleNamesHandle("✳ "+label, c.h) {
+			t.Errorf("title %q does not name %s", label, c.h)
+		}
+		if other := Handle(string(c.h) + "9"); TitleNamesHandle(label, other) {
+			t.Errorf("title %q names %s", label, other)
+		}
+	}
+	// A role taken since the harness drew its title still names the agent.
+	if !TitleNamesHandle("claude-04 | old", "claude-04") || !TitleNamesHandle("implementer(claude-04) | old", "claude-04") {
+		t.Error("a title drawn before a role change no longer names its agent")
+	}
+	if TitleNamesHandle("(claude-04)", "claude-04") || TitleNamesHandle("fix claude-04", "claude-04") {
+		t.Error("a title that is not a pane label named an agent")
 	}
 }
 
@@ -440,12 +457,24 @@ func TestTaskFitsAPaneLabel(t *testing.T) {
 	}
 }
 
-// A label the adapter wrote, task included, reads back as the same role, so
-// the next agent started in that pane is named for the role and not the task.
-func TestRoleIgnoresTheTask(t *testing.T) {
-	for _, label := range []string{"codex-reviewer-01 | fix login", "reviewer | 修复登录", "reviewer|x"} {
-		if got := Role(label); got != "reviewer" {
-			t.Errorf("Role(%q) = %q, want reviewer", label, got)
+// A launcher's label names the role; its task, the agent's numbering, and
+// Rex's defaults do not.
+func TestRoleOfALaunchersLabel(t *testing.T) {
+	for label, want := range map[string]string{
+		"reviewer | 修复登录": "reviewer",
+		"reviewer|x":      "reviewer",
+		"Reviewer":        "reviewer",
+		"reviewer-2":      "reviewer",
+		"Lark Impl":       "lark-impl",
+		"v2-audit":        "v2-audit",
+		"goal":            "goal",
+		"shell":           "",
+		"codex":           "",
+		"":                "",
+		"| fix login":     "",
+	} {
+		if got := Role(label); got != want {
+			t.Errorf("Role(%q) = %q, want %q", label, got, want)
 		}
 	}
 }

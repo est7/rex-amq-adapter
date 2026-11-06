@@ -102,13 +102,13 @@ func TestSessionSwitchInOneProcessFollowsTheSession(t *testing.T) {
 	}
 }
 
-// A peer labels the pane with a role; the handle carries it, the kind, and a
-// number, and re-adopting the same agent keeps it.
+// A peer labels the pane with a role; the record keeps it, the handle is the
+// kind and a number, the pane shows both, and re-adopting the agent keeps it.
 func TestPaneLabelIsTheRole(t *testing.T) {
 	term := &fakeTerm{label: "reviewer"}
 	e := realAmqEnv(t, term)
 	a := adoptIn(t, e, block, "s1", 0)
-	if a.Handle != "codex-reviewer-01" || term.label != "codex-reviewer-01" {
+	if a.Handle != "codex-01" || a.Role != "reviewer" || term.label != "reviewer(codex-01)" {
 		t.Fatalf("handle %s, pane label %q", a.Handle, term.label)
 	}
 	again := adoptIn(t, e, block, "s1", 0)

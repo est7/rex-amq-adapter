@@ -256,7 +256,7 @@ func (e Env) withWindowNotes(h core.Handle, window bool, identity, mail string) 
 // and what its crew and role ask of it.
 func (e Env) identityNotice(ctx context.Context, a Adoption, unread int) string {
 	notice := joinNotices(core.SessionNotice(a.Record.Handle, e.EnvCommand(), unread), core.MatesNotice(a.Mates)) +
-		"\n" + core.TaskNotice(a.Record.Handle, e.SelfBin+" title", a.Record.Task)
+		"\n" + core.TaskNotice(a.Record.Handle, a.Record.Role, e.SelfBin+" title", a.Record.Task)
 	if brief := core.BriefNotice(e.briefing(ctx, a)); brief != "" {
 		notice += "\n\n" + brief
 	}
@@ -264,31 +264,31 @@ func (e Env) identityNotice(ctx context.Context, a Adoption, unread int) string 
 }
 
 // briefing finds the agent's crew (named by its Rex tab) and its role
-// prompt. Like window-mates it is advice: what cannot be read is reported
+// prompt. Like session-mates it is advice: what cannot be read is reported
 // and left out, and the agent keeps its handle.
 func (e Env) briefing(ctx context.Context, a Adoption) core.Briefing {
-	b := core.Briefing{Role: a.Role}
-	if e.Crews == nil {
-		return b
-	}
-	if a.Session != "" && a.Window != "" {
+	name := ""
+	if e.Crews != nil && a.Session != "" && a.Window != "" {
 		s, err := e.Rex.InspectSession(ctx, a.Session)
 		if err != nil {
 			fmt.Fprintf(Diagnostics, "read the tab of %s: %v\n", a.Record.Handle, err)
 		}
 		for _, w := range s.Windows {
 			if w.ID == a.Window {
-				b.Crew = crew.Name(w.Label)
+				name = crew.Name(w.Label)
 			}
 		}
 	}
-	dir := ""
-	if p, ok, err := e.Rex.Foreground(ctx, a.Record.BlockID); err != nil {
-		fmt.Fprintf(Diagnostics, "read the directory of %s: %v\n", a.Record.Handle, err)
-	} else if ok {
-		dir = p.Cwd
+	return e.briefingIn(ctx, a.Record, a.Role, name)
+}
+
+// briefingIn is rec's briefing as role in the crew named name ("" for none).
+func (e Env) briefingIn(ctx context.Context, rec store.Record, role, name string) core.Briefing {
+	b := core.Briefing{Role: role, Crew: name}
+	if e.Crews == nil {
+		return b
 	}
-	lib := e.Crews(dir)
+	lib := e.Crews(e.agentDir(ctx, rec))
 	if p, ok, err := lib.Conventions(b.Crew); err != nil {
 		fmt.Fprintf(Diagnostics, "read the conventions of crew %s: %v\n", b.Crew, err)
 	} else if ok {
@@ -300,6 +300,20 @@ func (e Env) briefing(ctx context.Context, a Adoption) core.Briefing {
 		b.RolePrompt, b.RolePath = p.Text, p.Path
 	}
 	return b
+}
+
+// agentDir is the directory rec's agent works in: where its crews are
+// looked up. "" when Rex cannot say.
+func (e Env) agentDir(ctx context.Context, rec store.Record) string {
+	p, ok, err := e.Rex.Foreground(ctx, rec.BlockID)
+	if err != nil {
+		fmt.Fprintf(Diagnostics, "read the directory of %s: %v\n", rec.Handle, err)
+		return ""
+	}
+	if !ok {
+		return ""
+	}
+	return p.Cwd
 }
 
 // joinNotices joins the non-empty notices into one line.

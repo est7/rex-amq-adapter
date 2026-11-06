@@ -23,13 +23,13 @@ func TestTitleShowsTheTaskAfterTheHandle(t *testing.T) {
 	term := &fakeTerm{label: "reviewer"}
 	e := realAmqEnv(t, term)
 	a := adoptIn(t, e, block, "s1", 0)
-	if label := setTask(t, e, block, "  fix login\nredirect "); label != "codex-reviewer-01 | fix login redirect" || term.label != label {
+	if label := setTask(t, e, block, "  fix login\nredirect "); label != "reviewer(codex-01) | fix login redirect" || term.label != label {
 		t.Fatalf("label %q, pane %q", label, term.label)
 	}
 	if rec := recordOf(t, e, a.Handle); rec.Task != "fix login redirect" {
 		t.Errorf("task not recorded: %+v", rec)
 	}
-	if label := setTask(t, e, block, ""); label != "codex-reviewer-01" || term.label != label {
+	if label := setTask(t, e, block, ""); label != "reviewer(codex-01)" || term.label != label {
 		t.Errorf("a blank task left %q, pane %q", label, term.label)
 	}
 }
@@ -64,7 +64,7 @@ func TestResumedAgentShowsItsTaskInANewPane(t *testing.T) {
 }
 
 // A new agent started in a pane whose label still shows the last agent's
-// task is named for the role alone and starts without a task.
+// task takes the role alone and starts without a task.
 func TestNewAgentInADescribedPaneKeepsOnlyTheRole(t *testing.T) {
 	term := &fakeTerm{label: "reviewer"}
 	e := realAmqEnv(t, term)
@@ -72,7 +72,7 @@ func TestNewAgentInADescribedPaneKeepsOnlyTheRole(t *testing.T) {
 	setTask(t, e, block, "fix login")
 	depart(t, e, block, "s1")
 	next := adoptIn(t, e, block, "s2", 0)
-	if next.Handle != "codex-reviewer-02" || next.Task != "" || term.label != "codex-reviewer-02" {
+	if next.Handle != "codex-02" || next.Role != "reviewer" || next.Task != "" || term.label != "reviewer(codex-02)" {
 		t.Errorf("new agent %s, task %q, label %q", next.Handle, next.Task, term.label)
 	}
 }
@@ -99,13 +99,13 @@ func TestIdentityNoticeNamesTheTitleCommand(t *testing.T) {
 	}
 }
 
-// A peer launched in a pane labelled "<role> | <task>" is named for the role
-// and starts with the task, so its pane and harness title show it at once.
+// A peer launched in a pane labelled "<role> | <task>" takes the role and
+// starts with the task, so its pane and harness title show it at once.
 func TestAPeerStartsWithTheTaskItsLauncherGave(t *testing.T) {
 	term := &fakeTerm{label: "architect | v0.8.2 review"}
 	e := realAmqEnv(t, term)
 	rec := adoptIn(t, e, block, "s1", 0)
-	if rec.Handle != "codex-architect-01" || rec.Task != "v0.8.2 review" || term.label != "codex-architect-01 | v0.8.2 review" {
+	if rec.Handle != "codex-01" || rec.Role != "architect" || rec.Task != "v0.8.2 review" || term.label != "architect(codex-01) | v0.8.2 review" {
 		t.Errorf("peer %s, task %q, label %q", rec.Handle, rec.Task, term.label)
 	}
 }

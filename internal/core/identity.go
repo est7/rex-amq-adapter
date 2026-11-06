@@ -59,94 +59,116 @@ func ParseHandle(s string) (Handle, error) {
 // labeled explicitly, including `rex run -- cmd` blocks.
 const DefaultBlockLabel = "shell"
 
-// NameHandle names an agent that holds no handle yet:
-// <kind>-<role>-<NN>, or <kind>-<NN> without a role, with the lowest NN
-// (from 01) not in taken. The role is what the pane label says the agent is
-// for (see Role). The kind is always the agent's own, so a handle never
-// claims a harness it does not run on.
-func NameHandle(kind Kind, label string, taken map[Handle]bool) Handle {
-	role := Role(label)
+// NameHandle names an agent that holds no handle yet: <kind>-<NN>, with the
+// lowest NN (from 01) not in taken. The kind is always the agent's own, so a
+// handle never claims a harness it does not run on. The role is not part of
+// the handle: it is the record's (store.Record.Role), so an agent can take a
+// role, or change it, and keep its handle.
+func NameHandle(kind Kind, taken map[Handle]bool) Handle {
 	for n := 1; ; n++ {
-		if h := composeHandle(kind, role, n); !taken[h] {
+		if h := Handle(fmt.Sprintf("%s-%02d", kind, n)); !taken[h] {
 			return h
 		}
 	}
 }
 
 // Role reads an agent's role from its pane label: the part before the task
-// (see PaneLabel), lowercased, runs of other characters folded to "-", a
-// leading kind and a trailing number dropped. So "Reviewer", "reviewer-2", and
-// a label the adapter composed earlier ("codex-reviewer-01 | fix login") all
-// read as "reviewer", and Rex's default label, a bare kind, or "codex-10" read
-// as no role.
+// (see PaneLabel), lowercased, runs of other characters folded to "-", and a
+// trailing number dropped, so "Reviewer" and "reviewer-2" read as "reviewer".
+// A label the adapter wrote reads as the role it shows: "architect(claude-04)
+// | x" as "architect", "claude-04" as none. Rex's default label and a bare
+// kind read as no role.
 func Role(label string) string {
-	label, _, _ = strings.Cut(label, "|")
-	words := strings.FieldsFunc(strings.ToLower(label), func(r rune) bool {
-		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9')
-	})
-	if len(words) == 1 && words[0] == DefaultBlockLabel {
-		return ""
+	head, _, _ := strings.Cut(label, "|")
+	if _, role, ok := adapterHead(head); ok {
+		return role
 	}
-	if len(words) > 0 {
-		if _, err := ParseKind(words[0]); err == nil {
-			words = words[1:]
-		}
-	}
+	words := labelWords(head)
 	if n := len(words); n > 0 && strings.Trim(words[n-1], "0123456789") == "" {
 		words = words[:n-1]
+	}
+	if len(words) == 1 {
+		if _, err := ParseKind(words[0]); err == nil || words[0] == DefaultBlockLabel {
+			return ""
+		}
 	}
 	return strings.Join(words, "-")
 }
 
 // InitialTask is the task a launcher wrote in a new agent's pane label,
-// "<role> | <task>", so the agent starts with it. A label whose head has the
-// shape of a handle (a kind first, a number last) is one the adapter wrote for
-// an earlier agent in the pane, and its task was that agent's: none.
+// "<role> | <task>", so the agent starts with it. A label the adapter wrote
+// (LauncherLabel is false) was an earlier agent's, and so was its task: none.
 func InitialTask(label string) string {
 	head, tail, ok := strings.Cut(label, "|")
-	if !ok {
+	if !ok || !LauncherLabel(head) {
 		return ""
-	}
-	words := strings.FieldsFunc(strings.ToLower(head), func(r rune) bool {
-		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9')
-	})
-	if n := len(words); n >= 2 && strings.Trim(words[n-1], "0123456789") == "" {
-		if _, err := ParseKind(words[0]); err == nil {
-			return ""
-		}
 	}
 	return Task(tail)
 }
 
-// composeHandle is <kind>[-<role>]-<NN>, the role cut to keep the handle
-// within its 32 characters.
-func composeHandle(kind Kind, role string, n int) Handle {
-	num := fmt.Sprintf("%02d", n)
-	base := string(kind)
-	if room := 32 - len(base) - len("-") - len("-") - len(num); role != "" && room > 0 {
-		if len(role) > room {
-			role = strings.TrimRight(role[:room], "-")
-		}
-		base += "-" + role
-	}
-	return Handle(base + "-" + num)
+// LauncherLabel reports whether a pane label was written by whoever started
+// the agent ("reviewer | fix login", "goal") rather than by the adapter for an
+// agent in the pane before ("claude-04 | x", "architect(claude-04)"): a role
+// named there is the new agent's to take.
+func LauncherLabel(label string) bool {
+	head, _, _ := strings.Cut(label, "|")
+	_, _, adapter := adapterHead(head)
+	return !adapter
 }
 
-// PaneSeparator divides an agent's pane label into its handle and its task.
+// adapterHead recognizes the head of a pane label the adapter writes:
+// "<kind>-<NN>", or "<role>(<kind>-<NN>)". It returns the handle and the
+// role, "" for none.
+func adapterHead(head string) (Handle, string, bool) {
+	head = strings.TrimSpace(head)
+	role := ""
+	if open := strings.IndexByte(head, '('); open >= 0 && strings.HasSuffix(head, ")") {
+		if role = strings.Join(labelWords(head[:open]), "-"); role == "" {
+			return "", "", false
+		}
+		head = head[open+1 : len(head)-1]
+	}
+	kind, num, ok := strings.Cut(head, "-")
+	if !ok || len(num) < 2 || strings.Trim(num, "0123456789") != "" {
+		return "", "", false
+	}
+	if _, err := ParseKind(kind); err != nil {
+		return "", "", false
+	}
+	return Handle(head), role, true
+}
+
+func labelWords(s string) []string {
+	return strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9')
+	})
+}
+
+// PaneSeparator divides an agent's pane label into its head and its task.
 const PaneSeparator = " | "
 
 // MaxTaskWidth bounds a task in terminal columns (a CJK character takes two),
 // so the label stays readable in a narrow pane.
 const MaxTaskWidth = 32
 
-// PaneLabel is what an agent's pane is labelled: its handle, then what it is
-// doing when it has said so. The handle comes first, so a label cut short in a
-// narrow pane still names the agent.
-func PaneLabel(h Handle, task string) string {
+// PaneLabel is what an agent's pane is labelled: "<role>(<handle>)", or the
+// handle without a role, then what it is doing when it has said so. The
+// role leads, so a label cut short in a narrow pane still says what the agent
+// is for; the handle follows in brackets, which is what peers mail.
+func PaneLabel(h Handle, role, task string) string {
+	head := PaneHead(h, role)
 	if task == "" {
+		return head
+	}
+	return head + PaneSeparator + task
+}
+
+// PaneHead is a pane label without its task.
+func PaneHead(h Handle, role string) string {
+	if role == "" {
 		return string(h)
 	}
-	return string(h) + PaneSeparator + task
+	return role + "(" + string(h) + ")"
 }
 
 // Task is what an agent says it is doing, made fit for its pane label: one
@@ -217,9 +239,16 @@ func AgentViewTitle(title string) bool {
 }
 
 // TitleNamesHandle reports whether a title, without its state glyph, is h's
-// pane label with any task or none. The handle is unique and comes first, so
-// a task changed since the harness last drew its title still names h.
+// pane label with any role and task, or none. The handle is unique, so a role
+// or task changed since the harness last drew its title still names h.
 func TitleNamesHandle(title string, h Handle) bool {
-	t := ShownTitle(title)
-	return h != "" && (t == string(h) || strings.HasPrefix(t, string(h)+PaneSeparator))
+	if h == "" {
+		return false
+	}
+	head, _, _ := strings.Cut(ShownTitle(title), PaneSeparator)
+	if head == string(h) {
+		return true
+	}
+	named, role, ok := adapterHead(head)
+	return ok && role != "" && named == h
 }

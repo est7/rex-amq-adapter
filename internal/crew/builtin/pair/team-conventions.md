@@ -1,3 +1,7 @@
+---
+lead: implementer
+members: implementer, reviewer
+---
 This tab is a two-agent loop: the implementer builds, the reviewer critiques. The human gives the brief to the implementer, who leads and reports back.
 
 1. The implementer checks the repository status, works on a task branch, implements, and runs the relevant checks.

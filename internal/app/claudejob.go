@@ -297,51 +297,6 @@ func onceATurn(event string) bool {
 	return event == EventSessionStart || event == EventPrompt || event == EventStop
 }
 
-// Caller is where the agent running a command is. A command runs in the
-// agent's tool shell, where Claude Code sets CLAUDE_CODE_SESSION_ID afresh;
-// REX_BLOCK there is inherited, and in a background job it names the pane of
-// whichever terminal started the supervisor. So a Claude session with a live
-// record is where that record is, and for a background job only while that
-// pane shows it; a job without such a pane is refused rather than given
-// another agent's identity.
-func (e Env) Caller(ctx context.Context, loc Location, claudeSession string) (Location, error) {
-	rec, hasRec, err := e.liveRecordOf(core.Claude, claudeSession)
-	if err != nil {
-		return loc, err
-	}
-	job, isJob, err := e.claudeJob(claudeSession)
-	if err != nil {
-		return loc, err
-	}
-	switch {
-	case isJob && hasRec:
-		if shown, err := e.showsJob(ctx, rec.BlockID, rec, job); err != nil || !shown {
-			return loc, fmt.Errorf("%w now (it was last in %s), so it has no AMQ identity until one does", ErrJobNotShown, rec.BlockID)
-		}
-		return Location{Server: loc.Server, Block: rec.BlockID}, nil
-	case isJob:
-		return loc, fmt.Errorf("%w yet, so it has no AMQ identity; it gets one at its next prompt once a pane shows it", ErrJobNotShown)
-	case hasRec:
-		return Location{Server: loc.Server, Block: rec.BlockID}, nil
-	case claudeSession != "":
-		// A Claude Code session no hook adopted: a `claude -p` that another
-		// program in the pane runs, or one that has not started a turn. The
-		// pane's identity is not its.
-		return loc, fmt.Errorf("this Claude Code session (%s) has no AMQ identity: its hooks have not adopted it, and the pane's agent is another", claudeSession)
-	}
-	return loc, nil
-}
-
-// RexExports is the shell text that points rex at block and its session, for
-// a caller whose inherited REX_BLOCK names another pane.
-func (e Env) RexExports(ctx context.Context, block string) (string, error) {
-	b, err := e.Rex.InspectBlock(ctx, block)
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("export REX_BLOCK=%s REX_SESSION=%s\n", shellQuote(block), shellQuote(b.SessionID)), nil
-}
-
 // jobStatus is the program status a doorbell for rec reads. The terminal
 // client showing a background job reports none of its own, or a stale one
 // from before its conversation moved to the background, so a job's status is

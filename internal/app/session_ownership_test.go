@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -207,5 +208,105 @@ func TestTurnEndRetriesAFailedAdoption(t *testing.T) {
 	}
 	if rec, ok, _ := e.Store.Record(block); !ok || !rec.Live() {
 		t.Fatal("the end of the first turn must adopt an agent whose start failed")
+	}
+}
+
+// Codex without --no-daemon runs every pane's threads in one shared daemon,
+// which the first pane's Codex started: the daemon descends from that pane's
+// agent and inherited its REX_BLOCK. A thread of another pane fires its hooks
+// from there, so they name the first pane's block and descend from its agent.
+func sharedDaemon(agent int) func() ([]proc, error) {
+	return func() ([]proc, error) {
+		return []proc{{0x3ffffff1, "rex-amq-adapter"}, {0x3ffffff2, "zsh"}, {0x3ffffff3, "codex"}, {agent, "codex"}}, nil
+	}
+}
+
+func TestSharedCodexDaemonThreadDoesNotTakeThePanesIdentity(t *testing.T) {
+	e := fixture(t, &fakeTerm{state: "working"}, "m1")
+	rec, _, _ := e.Store.Record(block)
+	rec.AgentSessionID = "pane-a"
+	if err := e.Store.PutRecord(rec); err != nil {
+		t.Fatal(err)
+	}
+	e.Ancestors = sharedDaemon(rec.AgentPID)
+	ctx := context.Background()
+	loc := Location{Block: block}
+	paneB := HookInput{SessionID: "pane-b", TranscriptPath: []byte(`"/tmp/pane-b.jsonl"`)}
+	for _, event := range []string{EventSessionStart, EventPrompt, EventPostTool} {
+		r, _ := e.Hook(ctx, event, core.Codex, loc, paneB)
+		if r.Notice != "" {
+			t.Errorf("%s: another pane's thread was told of this pane's mail: %q", event, r.Notice)
+		}
+	}
+	after, _, _ := e.Store.Record(block)
+	if after.Handle != rec.Handle || after.AgentSessionID != "pane-a" || after.AgentPID != rec.AgentPID || !after.Live() {
+		t.Errorf("another pane's thread took the record: before %+v, after %+v", rec, after)
+	}
+	if ledger, err := e.Store.Announced(rec.Handle); err != nil || ledger.IDs["m1"] {
+		t.Errorf("another pane's thread marked the mail announced (err %v)", err)
+	}
+}
+
+func TestSharedCodexDaemonThreadIsNotAdopted(t *testing.T) {
+	e := realAmqEnv(t, &fakeTerm{state: "working"})
+	e.Ancestors = sharedDaemon(os.Getpid())
+	ctx := context.Background()
+	loc := Location{Block: block}
+	_, err := e.Hook(ctx, EventSessionStart, core.Codex, loc, HookInput{SessionID: "pane-b", TranscriptPath: []byte(`"/tmp/pane-b.jsonl"`)})
+	if !errors.Is(err, ErrSharedHarness) || !strings.Contains(err.Error(), "--no-daemon") {
+		t.Errorf("adoption under a shared daemon: %v, want ErrSharedHarness naming --no-daemon", err)
+	}
+	if rec, ok, _ := e.Store.Record(block); ok {
+		t.Errorf("a shared daemon's thread was adopted into the pane: %+v", rec)
+	}
+}
+
+func TestCodexHookUnderItsShellIsAdopted(t *testing.T) {
+	e := realAmqEnv(t, &fakeTerm{state: "working"})
+	e.Ancestors = func() ([]proc, error) {
+		return []proc{{0x3ffffff1, "rex-amq-adapter"}, {0x3ffffff2, "zsh"}, {os.Getpid(), "codex"}}, nil
+	}
+	ctx := context.Background()
+	loc := Location{Block: block}
+	if _, err := e.Hook(ctx, EventSessionStart, core.Codex, loc, HookInput{SessionID: "s1", TranscriptPath: []byte(`"/tmp/s1.jsonl"`)}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = e.Depart(ctx, loc, HookInput{SessionID: "s1"}) })
+	rec, ok, _ := e.Store.Record(block)
+	if !ok || !rec.Adopted() || rec.AgentPID != os.Getpid() || rec.AgentSessionID != "s1" {
+		t.Fatalf("codex --no-daemon was not adopted: %+v", rec)
+	}
+	r, err := e.Hook(ctx, EventPostTool, core.Codex, loc, HookInput{SessionID: "s1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after, _, _ := e.Store.Record(block); after.AdoptedAt != rec.AdoptedAt || after.Handle != rec.Handle {
+		t.Errorf("the lease of codex --no-daemon was not kept: %+v -> %+v (%+v)", rec, after, r)
+	}
+}
+
+func TestRunsUnder(t *testing.T) {
+	const self, sh, agent, mid = 10, 11, 12, 13
+	for _, c := range []struct {
+		name      string
+		kind      core.Kind
+		ancestors []proc
+		want      error
+	}{
+		{"codex under its shell", core.Codex, []proc{{self, "rex-amq-adapter"}, {sh, "zsh"}, {agent, "codex"}, {1, "launchd"}}, nil},
+		{"codex under a login shell", core.Codex, []proc{{self, "rex-amq-adapter"}, {sh, "-zsh"}, {agent, "codex"}}, nil},
+		{"codex directly", core.Codex, []proc{{self, "rex-amq-adapter"}, {agent, "codex"}}, nil},
+		{"codex shared daemon", core.Codex, []proc{{self, "rex-amq-adapter"}, {sh, "zsh"}, {mid, "codex"}, {agent, "codex"}}, ErrSharedHarness},
+		{"codex shared daemon under a launcher", core.Codex, []proc{{self, "rex-amq-adapter"}, {sh, "sh"}, {mid, "codex"}, {14, "codex"}, {agent, "node"}}, ErrSharedHarness},
+		{"codex native under its launcher", core.Codex, []proc{{self, "rex-amq-adapter"}, {sh, "sh"}, {mid, "codex"}, {agent, "node"}}, nil},
+		{"codex daemon reparented", core.Codex, []proc{{self, "rex-amq-adapter"}, {sh, "zsh"}, {mid, "codex"}, {1, "launchd"}}, errNotUnder},
+		{"agy through anything", core.Agy, []proc{{self, "rex-amq-adapter"}, {mid, "agy"}, {agent, "agy"}}, nil},
+		{"agy elsewhere", core.Agy, []proc{{self, "rex-amq-adapter"}, {mid, "agy"}}, errNotUnder},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if err := runsUnder(c.kind, c.ancestors, agent); !errors.Is(err, c.want) || (c.want == nil) != (err == nil) {
+				t.Errorf("runsUnder = %v, want %v", err, c.want)
+			}
+		})
 	}
 }

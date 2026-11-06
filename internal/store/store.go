@@ -68,12 +68,19 @@ type Record struct {
 	Kind    core.Kind   `json:"kind"`
 	Server  string      `json:"server"`
 	BlockID string      `json:"block_id"`
-	// WindowID is the Rex window (tab) the block was last seen in: at adoption,
-	// then whenever its window is reconciled. Departure tells the agents
+	// SessionID and WindowID are the Rex session and window (tab) the block
+	// was last seen in: at adoption, then whenever its session is reconciled.
+	// The session is the agent's awareness boundary: departure tells the agents
 	// recorded in it, because a crashed agent's block can no longer be placed.
+	SessionID      string `json:"session_id,omitempty"`
 	WindowID       string `json:"window_id,omitempty"`
 	AgentPID       int    `json:"agent_pid"`
 	AgentSessionID string `json:"agent_session_id,omitempty"`
+	// Role is what the agent is for ("reviewer", "goal"; "" for none): the
+	// launcher's pane label at adoption, or a crew role taken with join. It
+	// chooses the agent's briefing and makes a goal agent; the pane label
+	// shows it before the handle.
+	Role string `json:"role,omitempty"`
 	// Task is what the agent said it is doing (core.Task), shown after the
 	// handle in its pane label. It follows the handle, so a resume in another
 	// pane shows it again and a newly named agent starts without one.
@@ -83,6 +90,10 @@ type Record struct {
 	// handle reserved for its agent session (a resume, in any block) until
 	// collected.
 	DepartedAt *time.Time `json:"departed_at,omitempty"`
+	// DepartReason says why: DepartSessionEnd, DepartReplaced, or the binding
+	// check's code when collection found the agent gone (block_gone,
+	// agent_gone, agent_left_pane). Shown to observers; nothing decides on it.
+	DepartReason string `json:"depart_reason,omitempty"`
 	// Unfinished names the transition this record was committed in the middle
 	// of, so whoever reads it next can finish it.
 	Unfinished Transition `json:"unfinished,omitempty"`
@@ -95,6 +106,12 @@ type Transition string
 const (
 	Adopting  Transition = "adoption"
 	Departing Transition = "departure"
+)
+
+// Reasons a departure records that are not a binding check's code.
+const (
+	DepartSessionEnd = "session_end" // the harness ended the session
+	DepartReplaced   = "replaced"    // another agent or session took the block
 )
 
 // Live reports whether the record describes a running agent.
@@ -181,6 +198,20 @@ func (s Store) Records() ([]Record, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Handle < out[j].Handle })
 	return out, nil
+}
+
+// RecordsChanged is when a record was last written or removed: the records
+// directory's modification time, which every write moves because it renames a
+// file into place. Zero when there is no directory yet.
+func (s Store) RecordsChanged() (time.Time, error) {
+	st, err := os.Stat(s.P.records())
+	if errors.Is(err, fs.ErrNotExist) {
+		return time.Time{}, nil
+	}
+	if err != nil {
+		return time.Time{}, err
+	}
+	return st.ModTime(), nil
 }
 
 type recordFile struct {

@@ -25,7 +25,7 @@ func hookTitle(t *testing.T, e Env, kind core.Kind, event string, in HookInput) 
 func TestClaudeIsGivenItsTitleOnceAndAgainWhenTheTaskChanges(t *testing.T) {
 	e := realAmqEnv(t, &fakeTerm{label: "reviewer", state: "working"})
 	in := HookInput{SessionID: "s1"}
-	if got := hookTitle(t, e, core.Claude, EventSessionStart, in); got != "claude-reviewer-01" {
+	if got := hookTitle(t, e, core.Claude, EventSessionStart, in); got != "reviewer(claude-01)" {
 		t.Fatalf("start: title %q", got)
 	}
 	t.Cleanup(func() { _ = e.Depart(context.Background(), Location{Block: block}, HookInput{}) })
@@ -36,7 +36,7 @@ func TestClaudeIsGivenItsTitleOnceAndAgainWhenTheTaskChanges(t *testing.T) {
 	if got := hookTitle(t, e, core.Claude, EventPostTool, in); got != "" {
 		t.Errorf("PostToolUse cannot carry a title, got %q", got)
 	}
-	if got := hookTitle(t, e, core.Claude, EventPrompt, in); got != "claude-reviewer-01 | fix login" {
+	if got := hookTitle(t, e, core.Claude, EventPrompt, in); got != "reviewer(claude-01) | fix login" {
 		t.Errorf("after the task changed: title %q", got)
 	}
 	if got := hookTitle(t, e, core.Claude, EventPrompt, in); got != "" {
@@ -48,12 +48,12 @@ func TestClaudeIsGivenItsTitleOnceAndAgainWhenTheTaskChanges(t *testing.T) {
 func TestPiIsGivenItsTitleOnAnyHook(t *testing.T) {
 	e := realAmqEnv(t, &fakeTerm{label: "reviewer"})
 	in := HookInput{SessionID: "p1", AgentPID: 0}
-	if got := hookTitle(t, e, core.Pi, EventSessionStart, in); got != "pi-reviewer-01" {
+	if got := hookTitle(t, e, core.Pi, EventSessionStart, in); got != "reviewer(pi-01)" {
 		t.Fatalf("start: title %q", got)
 	}
 	t.Cleanup(func() { _ = e.Depart(context.Background(), Location{Block: block}, HookInput{}) })
 	setTask(t, e, block, "write docs")
-	if got := hookTitle(t, e, core.Pi, EventMail, in); got != "pi-reviewer-01 | write docs" {
+	if got := hookTitle(t, e, core.Pi, EventMail, in); got != "reviewer(pi-01) | write docs" {
 		t.Errorf("mail after the task changed: title %q", got)
 	}
 }
@@ -159,7 +159,7 @@ func TestPaneTitleIgnoresAnotherProcessesRecord(t *testing.T) {
 	if err := e.Store.PutRecord(store.Record{Handle: "agy-old-01", Kind: core.Agy, Server: "unix:///fake.sock", BlockID: block, AgentPID: 12345, AgentSessionID: "old"}); err != nil {
 		t.Fatal(err)
 	}
-	e.Ancestors = func() ([]int, error) { return []int{20000, 19999}, nil }
+	e.Ancestors = func() ([]proc, error) { return []proc{{20000, "agy"}, {19999, "zsh"}}, nil }
 	if got := e.PaneTitle(Location{Block: block}, core.Agy, "/w/proj"); got != "proj" {
 		t.Errorf("a new agy process was titled with another agent's label %q", got)
 	}

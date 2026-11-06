@@ -17,33 +17,22 @@ type Attempt struct {
 // 23 minutes found no input box, which no other signal reveals; a few seconds
 // of agent_working is ordinary. history is oldest first.
 func LastDelivery(history []Attempt, now time.Time) string {
-	if len(history) == 0 {
+	last, since, ok := lastRun(history)
+	if !ok {
 		return "-"
 	}
-	last := history[len(history)-1]
-	since := last.At
-	for i := len(history) - 2; i >= 0; i-- {
-		a := history[i]
-		if a.Progress != last.Progress || a.Code != last.Code {
-			break
-		}
-		since = a.At
-	}
-	what := string(last.Progress)
-	if last.Code != "" {
-		what += " " + last.Code
-	}
-	return what + " " + Ago(now.Sub(since))
+	return summarize(&DoorbellState{Progress: last.Progress, Code: last.Code, Since: since}, 1, now)
 }
 
 // DeliveryStatus is LastDelivery for an agent holding unread mail. An outcome
 // short of accepted explains why a doorbell did not ring; with nothing unread
 // none is due, so that outcome is history and no sign of a stuck delivery.
 func DeliveryStatus(history []Attempt, unread int, now time.Time) string {
-	if unread == 0 && len(history) > 0 && history[len(history)-1].Progress != Accepted {
+	last, since, ok := lastRun(history)
+	if !ok {
 		return "-"
 	}
-	return LastDelivery(history, now)
+	return summarize(&DoorbellState{Progress: last.Progress, Code: last.Code, Since: since}, unread, now)
 }
 
 // Ago is a compact duration: 40s, 23m, 5h, 2d.

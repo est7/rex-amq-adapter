@@ -28,6 +28,8 @@ func TestPaneTitleAlwaysAnswers(t *testing.T) {
 // identity.
 func TestAFailingEnvStopsTheEvalChain(t *testing.T) {
 	t.Setenv("REX_BLOCK", "")
+	clearHarnessSessions(t)
+	t.Setenv("REX_AMQ_ADAPTER_HOME", t.TempDir())
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)

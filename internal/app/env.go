@@ -6,7 +6,6 @@ package app
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -31,6 +30,7 @@ type Terminal interface {
 	InspectSession(ctx context.Context, session string) (rex.Session, error)
 	ListBlocks(ctx context.Context, session string) ([]rex.Block, error)
 	RenameBlock(ctx context.Context, block, label string) error
+	RenameWindow(ctx context.Context, window, label string) error
 	Title(ctx context.Context, block string) (string, error)
 	ListSessions(ctx context.Context) ([]string, error)
 }
@@ -50,7 +50,7 @@ type Env struct {
 	Now     func() time.Time
 	// Ancestors is the calling process and its ancestors, nearest first; nil
 	// reads them from the OS.
-	Ancestors func() ([]int, error)
+	Ancestors func() ([]proc, error)
 	// ClaudeDir is Claude Code's configuration directory, where its
 	// supervisor lists background sessions; "" knows of none.
 	ClaudeDir string
@@ -188,22 +188,4 @@ func ReadHookInput(r io.Reader) (HookInput, error) {
 		return HookInput{}, fmt.Errorf("decode hook input: %w", err)
 	}
 	return in, nil
-}
-
-// ErrNotInRex: the caller's terminal is not a Rex block.
-var ErrNotInRex = errors.New("not running in a Rex terminal (REX_BLOCK is unset)")
-
-// Location is the Rex terminal the caller runs in.
-type Location struct {
-	Server string
-	Block  string
-}
-
-// Here reads the caller's Rex location from the environment Rex sets.
-func Here() (Location, error) {
-	l := Location{Server: os.Getenv("REX_SERVER"), Block: os.Getenv("REX_BLOCK")}
-	if l.Block == "" {
-		return Location{}, ErrNotInRex
-	}
-	return l, nil
 }

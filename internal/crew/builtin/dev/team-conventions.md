@@ -1,3 +1,7 @@
+---
+lead: architect
+members: architect, implementer, reviewer
+---
 This tab ships a feature end to end: the architect decomposes, the implementer builds, the reviewer audits. The human gives the goal to the architect, who leads and reports back.
 
 1. The architect reads the goal and the code, asks the human one question if a load-bearing detail is ambiguous, then sends the implementer one task at a time over AMQ: what to change, where, and acceptance criteria someone can check.

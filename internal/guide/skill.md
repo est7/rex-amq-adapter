@@ -1,12 +1,14 @@
 # rex-amq-adapter
 
 Every Claude Code, Codex, Antigravity (`agy`), or Pi session started in a Rex terminal is reachable over
-AMQ under a handle of its kind, its role, and a number: `codex-reviewer-01`, or
-`claude-01` for a pane with no role. The role comes from the label a peer gave
-the pane; the adapter then relabels the pane with the handle. A resumed session
-gets its handle back, in any pane. The adapter owns one AMQ root per user,
+AMQ under a handle of its kind and a number: `codex-01`. Its role comes from
+the label a peer gave the pane (or from `rex-amq-adapter join`) and is kept
+apart from the handle; the adapter relabels the pane `<role>(<handle>)`, such
+as `reviewer(codex-01)`, or just the handle without a role. Mail the handle,
+never the label. A resumed session gets its handle and role back, in any
+pane. The adapter owns one AMQ root per user,
 provisions your mailbox when your session starts, and tells you when mail
-arrives. Use `rex-amq-adapter who` to discover agents in your tab and bare
+arrives. Use `rex-amq-adapter who` to discover agents in your Rex session and bare
 `amq` with your identity loaded to exchange mail. `amq coop`,
 `--project` / `--session` routing, and AMQ skills written
 for other environments do not apply here: in a Rex terminal ignore
@@ -41,19 +43,21 @@ them, so ask the user where to place a peer instead.
 ## Show your task in your pane
 
 Once you know what you are working on, usually from the user's first request,
-put it after your handle in your pane's label, in a few words, and run it
+put it after your role and handle in your pane's label, in a few words, and run it
 again when the task changes. Do it whether or not you use AMQ:
 
 ```bash
-rex-amq-adapter title "fix login redirect"   # pane: claude-reviewer-01 | fix login redirect
+rex-amq-adapter title "fix login redirect"   # pane: reviewer(claude-01) | fix login redirect
 rex-amq-adapter title                        # clear it
 ```
 
-The adapter composes the label and keeps the handle in front; it cuts a long
+The adapter composes the label, `<role>(<handle>) | <task>`; it cuts a long
 task to 32 columns. A peer you start gets its task from its launch label
 (Start a peer, step 1), so it shows one from its first turn. The task follows your handle, so a resume in another pane
 shows it again. Do not rename your pane with `rex block rename`: the next
-adoption would write the adapter's label back. The Rex session's name is not
+adoption would write the adapter's label back. To take a role yourself, run
+`rex-amq-adapter join --role <role>` (or `join <crew>`, see Start a peer); it
+relabels the pane and prints your briefing. The Rex session's name is not
 the adapter's: name it as Rex's own guidance says.
 
 ## When you are told about mail
@@ -95,17 +99,19 @@ eval "$(rex-amq-adapter env)" && amq reply --id <message-id> --body "<answer>"
 ## Find peers and send
 
 ```bash
-rex-amq-adapter who      # agents in this Rex tab only, including yourself
-eval "$(rex-amq-adapter env)" && amq send --to codex-reviewer-01 --subject "<short subject>" --body "<request>"
-rex-amq-adapter who --all  # also this tab's departed agents reserved for a resume
+rex-amq-adapter who      # agents in this Rex session only, including yourself
+eval "$(rex-amq-adapter env)" && amq send --to codex-01 --subject "<short subject>" --body "<request>"
+rex-amq-adapter who --all  # also this session's departed agents reserved for a resume
 ```
 
-The Rex tab is the awareness boundary. Only agents in other blocks of your
-tab are your peers; agents in another tab or session are not discovered or
-announced. If `who` lists only you, report that this tab has no peers. Never
-use `amq who` for discovery: its shared mailbox directory spans tabs. If
-the adapter cannot resolve your tab, report the error instead of using a
-global listing.
+The Rex session is the awareness boundary: a session holds one task, a tab
+in it one team (its label can name a crew), and a pane one member. Agents in
+other blocks of your session, in any of its tabs, are your peers; `who`
+shows each one's tab. Agents in another session are not discovered or
+announced. If `who` lists only you, report that this session has no peers.
+Never use `amq who` for discovery: its shared mailbox directory spans
+sessions. If the adapter cannot resolve your session, report the error
+instead of using a global listing.
 
 After you send, end your turn: the reply arrives as a notice, so never sleep or
 poll for it. The only waits inside a turn are bounded ones a check itself needs,
@@ -121,28 +127,29 @@ adapter cannot deliver (tell the user, quoting the line); `deferred
 draft_in_box` or `agent_blocked` means the user must clear the peer's input
 box or answer its dialog (tell the user which pane).
 
-To follow one message, in any tab, use the id `amq send` printed:
+To follow one message, in any session, use the id `amq send` printed:
 `eval "$(rex-amq-adapter env)" && amq trace <message-id>`. Its receipts show
 who drained it and its thread shows any reply. Each step is evidence of that
 step only: a drained message may still be unanswered, and a reply is not
 finished work until you read it.
 
-Agents in your Rex tab are your window-mates. Your start notice names those
-already there ("Agents beside you in this Rex tab: …"), and a notice with
-your next prompt names each that joins or leaves ("… joined your Rex tab",
-"… left your Rex tab"). Stop waiting for a reply from an agent that left. In a
-tab with a `goal` agent, it hears of a departure by mail at once, even when
-idle; if that agent itself leaves, one peer is told to report and stop. When the
-user says "the one beside you", "旁边那个", or "隔壁", they mean these. Reach
-them with `amq send`, not with your harness's own agent messaging, which does
-not know AMQ handles. Use `rex-amq-adapter who` for the current list of your
-tab's agents.
+Agents in your Rex session are your session-mates. Your start notice names
+those already there ("Agents beside you in this Rex session: …"), and a notice
+with your next prompt names each that joins or leaves ("… joined your Rex
+session", "… left your Rex session"). Stop waiting for a reply from an agent
+that left. In a session with a `goal` agent, it hears of a departure by mail at
+once, even when idle; if that agent itself leaves, one peer is told to report
+and stop. When the user says "the one beside you", "旁边那个", or "隔壁", they
+mean the agents in your tab; `who`'s TAB column tells them apart. Reach them
+with `amq send`, not with your harness's own agent messaging, which does not
+know AMQ handles. Use `rex-amq-adapter who` for the current list of your
+session's agents.
 
 Send only to a handle `rex-amq-adapter who` lists. A departed agent (`who
 --all`) keeps its handle for 7 days so its session can be resumed, and mail to
 it waits unread until then; start a peer instead unless the user is resuming
 it. If you do mail one, a notice says so after your send and names who now runs
-in that pane and who is in your tab: resend to the agent you meant. Several
+in that pane and who is in your session: resend to the agent you meant. Several
 recipients: `--to a,b`.
 
 ## Start a peer
@@ -158,23 +165,23 @@ this needs is below; no other skill is required.
    `<label>` below, written `"<role> | <task>"`: a word or two for what the
    peer does (`reviewer`, `test-writer`), then its task in a few words
    (`"reviewer | fix login redirect"`). The adapter names the peer
-   `<kind>-<role>-<NN>` (`codex-reviewer-01`) and relabels the pane
-   `codex-reviewer-01 | <task>`; step 4 prints the handle. A role with a
+   `<kind>-<NN>` (`codex-02`), records its role, and relabels the pane
+   `reviewer(codex-02) | <task>`; step 4 prints the handle. A role with a
    prompt briefs the peer when it starts: `implementer`, `reviewer`, `qa`,
    `architect`, `writer`, `editor`, and `goal` are built in, and
    `rex-amq-adapter crews` lists every role and crew available here. Prefer
    one of these names when it fits; the peer then knows its job and how to
    hand off before it reads your brief, so keep the brief to the task. Use
    `goal` only when the user wants work to run on its own: it owns the goal and
-   decides how to recover, and a tab with no `goal` agent means the user is
-   there.
+   decides how to recover, and a session with no `goal` agent means the user
+   is there.
 2. **Write the brief** as the peer's first prompt: the task, the files or diff,
-   and, for a peer in your tab, that it should report back with
+   and, for a peer in your session, that it should report back with
    `amq send --to <your handle>` (or `amq reply` to your mail). An agent is
    adopted when its first turn starts, and Codex does not start a turn on its
    own, so a peer launched without a prompt never gets a mailbox.
-   An independent task in another tab or session reports to its own user;
-   do not pass it the handles from your tab.
+   An independent task in another session reports to its own user; do not
+   pass it the handles from your session.
 3. **Place it** by how the work relates to yours. The user reads related
    agents side by side, so placement is part of the request. Run the
    command in the same shell right after `eval "$(rex-amq-adapter env)"`: in a
@@ -186,8 +193,10 @@ this needs is below; no other skill is required.
    |---|---|---|
    | the same task (review, tests, second opinion) | a pane in your window | `rex split -s "$REX_SESSION" -b "$REX_BLOCK" --split=right --focus=false --label "<label>" -c "$PWD" --json -- codex --no-daemon "<brief>"` |
    | another peer on the same task | a pane in the same window, below the last peer | the same, with `-b <last peer's block> --split=below` |
-   | another task in the same project | a new tab in your session | `rex run -s "$REX_SESSION" --label "<label>" -c "$PWD" --focus=false --json -- codex --no-daemon "<brief>"` |
-   | a team the user asked for by crew ("开个 pair 组", "a ship crew for this fix") | a new tab named after the crew, then the other members as panes in it | `rex-amq-adapter tab <crew> --role "<label>" -c "$PWD" -- codex --no-daemon "<brief>"` for the first, then `rex split -b <its block> --label "<label>" …` for each other member |
+   | more collaborators, or another team, on the same task when your tab is full | a new tab in your session | `rex run -s "$REX_SESSION" --label "<label>" -c "$PWD" --focus=false --json -- codex --no-daemon "<brief>"` |
+   | another task in the same project | a new session | `rex new <task> -c "$PWD" --json`, then `rex run -s <its .session_id> --label "<label>" -c "$PWD" --focus=false --json -- codex --no-daemon "<brief>"` |
+   | a team the user asked for by crew ("开个 pair 组", "a ship crew for this fix"), when no other agent is in your tab | your own tab, with you as the crew's lead | `rex-amq-adapter join <crew>` (it names the tab, takes the crew's lead role, or `--role R`, and prints your briefing and the members still to start), then `rex split -s "$REX_SESSION" -b "$REX_BLOCK" --label "<label>" …` for each other member |
+   | the same, when other agents already share your tab (`join` refuses) | a new tab named after the crew, then the other members as panes in it | `rex-amq-adapter tab <crew> --role "<label>" -c "$PWD" -- codex --no-daemon "<brief>"` for the first, then `rex split -b <its block> --label "<label>" …` for each other member |
    | another project (other repository or directory) | a new session | `rex new <project> -c <dir> --json`, then `rex run -s <its .session_id> --label "<label>" -c <dir> --focus=false --json -- codex --no-daemon "<brief>"` |
 
    A tab named after a crew (`pair`, `ship`, `dev`, `docs`, `design` are
@@ -214,28 +223,22 @@ this needs is below; no other skill is required.
    ```
 
    It prints one JSON line and exits 0 only for `adopted`, which also gives the
-   `handle`. This works in any tab, because you name a block you started.
+   `handle`. This works in any session, because you name a block you started.
    `adopted` means the mailbox and its waker are ready, so mail is safe to send,
    not that the peer read your brief. `trust_screen` and `blocked` need the user
    in that pane; `exited` means the pane is gone; `timeout` means no adoption
    finished: a Codex peer whose hooks were never approved stays there, so tell
    the user to approve them with `/hooks` in that pane. The peer's report arrives as a notice. An agent
-   placed in another tab or session is independent and does not appear in this
-   tab's `who`.
+   placed in another session is independent and does not appear in this
+   session's `who`.
 
 ## Rex commands
 
-`REX_SESSION` and `REX_BLOCK` name your own session and pane; every Rex terminal
-sets them. In Rex, a window is a tab and a block is a pane. In a Claude Code
-background session they are inherited from another terminal: load them with
-`eval "$(rex-amq-adapter env)"` first, and if `env` says no pane shows you, you
-have no AMQ identity until the user opens you in one.
-
-If these variables are missing from your tools, resolve your pane from verified
-session or process identity before using a placement command. A process name,
-working directory, or captured terminal text alone does not identify your pane.
-If no verified mapping is available, ask the user for the target pane instead
-of choosing among other Codex panes.
+`REX_SESSION` and `REX_BLOCK` name your own session and pane. In Rex, a window
+is a tab and a block is a pane. Inherited values can name another pane, so run
+`eval "$(rex-amq-adapter env)"` first: it sets both to your own pane. If `env`
+fails or leaves them unset, ask the user for the target pane; never pick one by
+process name, working directory, or screen text.
 
 | To | Run |
 |---|---|
