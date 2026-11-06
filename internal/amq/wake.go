@@ -313,6 +313,7 @@ func AwaitLive(ctx context.Context, amqBin, root, handle string, want WakeTarget
 
 func runAmq(ctx context.Context, amqBin string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, amqBin, append([]string{"--no-update-check"}, args...)...)
+	cmd.Env = amqEnv()
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	err := cmd.Run()
@@ -326,6 +327,21 @@ func runAmq(ctx context.Context, amqBin string, args ...string) ([]byte, error) 
 		return nil, fmt.Errorf("amq %s: %w", strings.Join(args, " "), err)
 	}
 	return out.Bytes(), nil
+}
+
+// amqEnv is the environment amq runs in: this process's, without the
+// identity an agent loaded with `rex-amq-adapter env`. Every call names its
+// root and agent on the command line, and amq refuses a send to a root other
+// than $AM_ROOT, so an inherited identity (an agent running the tests, a hook
+// of an agent whose shell exported it) must not stand for the adapter's.
+func amqEnv() []string {
+	var out []string
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "AM_ROOT=") && !strings.HasPrefix(kv, "AM_ME=") {
+			out = append(out, kv)
+		}
+	}
+	return out
 }
 
 func parseStatusReason(out []byte) (status, reason string) {
