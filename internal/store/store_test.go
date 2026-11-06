@@ -70,36 +70,6 @@ func TestRecordPrefersTheLiveAgentOfABlock(t *testing.T) {
 	}
 }
 
-// Earlier versions stored a record under its block's name. Writing or
-// deleting its handle must not leave that file behind as a second record.
-func TestBlockNamedRecordIsReplaced(t *testing.T) {
-	s := Store{P: Paths{Home: t.TempDir()}}
-	if err := os.MkdirAll(s.P.records(), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	legacy := []byte(`{"handle":"codex-2","kind":"codex","block_id":"block:a","agent_pid":7}`)
-	if err := os.WriteFile(filepath.Join(s.P.records(), "block_a.json"), legacy, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if got, ok, _ := s.Record("block:a"); !ok || got.Handle != "codex-2" {
-		t.Fatalf("legacy record unreadable: %+v", got)
-	}
-	gone := time.Date(2026, 10, 18, 1, 0, 0, 0, time.UTC)
-	if err := s.PutRecord(Record{Handle: "codex-2", BlockID: "block:a", AgentPID: 7, DepartedAt: &gone}); err != nil {
-		t.Fatal(err)
-	}
-	all, err := s.Records()
-	if err != nil || len(all) != 1 || all[0].Live() {
-		t.Fatalf("after rewrite: %+v %v", all, err)
-	}
-	if err := s.DeleteRecord("codex-2"); err != nil {
-		t.Fatal(err)
-	}
-	if all, _ := s.Records(); len(all) != 0 {
-		t.Fatalf("after delete: %+v", all)
-	}
-}
-
 // A handle is reused once its record is collected; the next agent must not
 // inherit the previous one's doorbell history or announcements.
 func TestDeleteRecordForgetsDeliveryHistory(t *testing.T) {
@@ -253,5 +223,37 @@ func TestPathsForRootRoundTrips(t *testing.T) {
 		if _, err := PathsForRoot(bad); err == nil {
 			t.Errorf("%q accepted", bad)
 		}
+	}
+}
+
+// A handle has one file: writing it again replaces it, deleting it removes it
+// and leaves other handles alone.
+func TestARecordIsItsHandlesFile(t *testing.T) {
+	s := Store{P: Paths{Home: t.TempDir()}}
+	gone := time.Date(2026, 10, 18, 1, 0, 0, 0, time.UTC)
+	for _, r := range []Record{
+		{Handle: "codex-01", BlockID: "block:a"},
+		{Handle: "codex-01", BlockID: "block:b", DepartedAt: &gone},
+		{Handle: "pi-01", BlockID: "block:c"},
+	} {
+		if err := s.PutRecord(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entries, err := os.ReadDir(s.P.records())
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("record files %v (%v), want one per handle", entries, err)
+	}
+	if all, _ := s.Records(); len(all) != 2 || all[0].BlockID != "block:b" || all[0].Live() {
+		t.Fatalf("after rewrite: %+v", all)
+	}
+	if err := s.DeleteRecord("codex-01"); err != nil {
+		t.Fatal(err)
+	}
+	if all, _ := s.Records(); len(all) != 1 || all[0].Handle != "pi-01" {
+		t.Fatalf("after delete: %+v", all)
+	}
+	if err := s.DeleteRecord("codex-01"); err != nil {
+		t.Errorf("deleting a handle twice: %v", err)
 	}
 }

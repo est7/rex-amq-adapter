@@ -133,14 +133,13 @@ func (s Store) recordPath(h core.Handle) string {
 // Record returns the record bound to block: its live one, else the one that
 // departed last. ok is false when there is none.
 func (s Store) Record(block string) (Record, bool, error) {
-	files, err := s.recordFiles()
+	recs, err := s.readRecords()
 	if err != nil {
 		return Record{}, false, err
 	}
 	var best Record
 	ok := false
-	for _, f := range files {
-		r := f.rec
+	for _, r := range recs {
 		if r.BlockID != block {
 			continue
 		}
@@ -163,20 +162,14 @@ func (s Store) PutRecord(r Record) error {
 	if err != nil {
 		return err
 	}
-	if err := fsutil.WriteAtomic(s.recordPath(r.Handle), append(b, '\n')); err != nil {
-		return err
-	}
-	return s.removeRecordFiles(r.Handle, s.recordPath(r.Handle))
+	return fsutil.WriteAtomic(s.recordPath(r.Handle), append(b, '\n'))
 }
 
 // DeleteRecord forgets handle h: its record and its delivery history (the
 // announcement ledger and the inject log), so a later agent given h starts
 // clean. Its mailbox is amq's and stays.
 func (s Store) DeleteRecord(h core.Handle) error {
-	if err := s.removeRecordFiles(h, ""); err != nil {
-		return err
-	}
-	for _, p := range []string{s.ledgerPath(h), s.sentCursorPath(h), s.injectLog(h), s.titlePath(h), s.taskAskedPath(h)} {
+	for _, p := range []string{s.recordPath(h), s.ledgerPath(h), s.sentCursorPath(h), s.injectLog(h), s.titlePath(h), s.taskAskedPath(h)} {
 		if err := os.Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}
@@ -188,13 +181,9 @@ func (s Store) DeleteRecord(h core.Handle) error {
 // error rather than skipped: it may hold the generation needed to retire a
 // waker.
 func (s Store) Records() ([]Record, error) {
-	files, err := s.recordFiles()
+	out, err := s.readRecords()
 	if err != nil {
 		return nil, err
-	}
-	out := make([]Record, 0, len(files))
-	for _, f := range files {
-		out = append(out, f.rec)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Handle < out[j].Handle })
 	return out, nil
@@ -214,15 +203,8 @@ func (s Store) RecordsChanged() (time.Time, error) {
 	return st.ModTime(), nil
 }
 
-type recordFile struct {
-	path string
-	rec  Record
-}
-
-// recordFiles reads every record file. Files are named by handle; earlier
-// versions named them by block, so the name is never trusted for the
-// handle: PutRecord and DeleteRecord match on the content.
-func (s Store) recordFiles() ([]recordFile, error) {
+// readRecords reads every record file (recordPath: one per handle).
+func (s Store) readRecords() ([]Record, error) {
 	entries, err := os.ReadDir(s.P.records())
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
@@ -230,13 +212,12 @@ func (s Store) recordFiles() ([]recordFile, error) {
 	if err != nil {
 		return nil, err
 	}
-	var out []recordFile
+	var out []Record
 	for _, e := range entries {
 		if !strings.HasSuffix(e.Name(), ".json") || strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
-		p := filepath.Join(s.P.records(), e.Name())
-		b, err := os.ReadFile(p)
+		b, err := os.ReadFile(filepath.Join(s.P.records(), e.Name()))
 		if err != nil {
 			return nil, err
 		}
@@ -244,26 +225,9 @@ func (s Store) recordFiles() ([]recordFile, error) {
 		if err := json.Unmarshal(b, &r); err != nil {
 			return nil, fmt.Errorf("decode record %s: %w", e.Name(), err)
 		}
-		out = append(out, recordFile{path: p, rec: r})
+		out = append(out, r)
 	}
 	return out, nil
-}
-
-// removeRecordFiles removes every record file for h except keep.
-func (s Store) removeRecordFiles(h core.Handle, keep string) error {
-	files, err := s.recordFiles()
-	if err != nil {
-		return err
-	}
-	for _, f := range files {
-		if f.rec.Handle != h || f.path == keep {
-			continue
-		}
-		if err := os.Remove(f.path); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return err
-		}
-	}
-	return nil
 }
 
 // LockWatch is held by h's goal watcher, so there is at most one.
