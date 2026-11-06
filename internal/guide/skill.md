@@ -23,17 +23,22 @@ Each shell needs it; tool calls run in fresh shells:
 eval "$(rex-amq-adapter env)" && rex-amq-adapter who
 ```
 
-That exports `AM_ROOT` and `AM_ME`. Notices from the adapter quote the absolute
-path of `rex-amq-adapter`; use it when the bare command is not on `PATH`.
-Codex must run with `--no-daemon` so its hooks and tools inherit the pane's Rex
-environment. Its shared background server can lack that environment even when
-the visible Codex terminal is inside Rex.
+That exports `AM_ROOT` and `AM_ME`. Your identity is your own session's,
+found from the session id your harness sets in each tool shell, so when the
+inherited `REX_BLOCK` names another pane, or none, `env` also sets
+`REX_BLOCK` and `REX_SESSION` to yours. A session no hook adopted (a
+`claude -p` that another agent runs, an Antigravity subagent) has no
+identity, even in an adopted agent's pane. Notices from the adapter quote the
+absolute path of `rex-amq-adapter`; use it when the bare command is not on
+`PATH`. Codex must run with `--no-daemon`: under its shared daemon one Codex
+process runs every pane's threads, so the adapter refuses to adopt it rather
+than hand one pane's identity to another, and `env` reports none.
 
-If `env` reports no identity, stop AMQ operations. If Codex tools lack
-`REX_BLOCK` / `REX_SESSION`, have the user exit and resume in the same Rex pane
-with `codex --no-daemon resume <session-id>`, using the actual conversation id.
-If the Rex environment is present, check that the adapter's hooks are installed
-and approved; restart the agent in Rex if it started before installation.
+If `env` reports no identity, stop AMQ operations. For Codex without
+`--no-daemon`, have the user exit and resume in the same Rex pane with
+`codex --no-daemon resume <session-id>`, using the actual conversation id.
+Otherwise check that the adapter's hooks are installed and approved; restart
+the agent in Rex if it started before installation.
 A missing identity does not prevent launching a peer requested by the user;
 its reply over AMQ must wait until your identity is available. The exception
 is a Claude Code background session that `env` says no pane shows: its
@@ -169,7 +174,8 @@ this needs is below; no other skill is required.
    `reviewer(codex-02) | <task>`; step 4 prints the handle. A role with a
    prompt briefs the peer when it starts: `implementer`, `reviewer`, `qa`,
    `architect`, `writer`, `editor`, and `goal` are built in, and
-   `rex-amq-adapter crews` lists every role and crew available here. Prefer
+   `rex-amq-adapter crews` lists every role and crew available here, with each
+   crew's lead and members. Prefer
    one of these names when it fits; the peer then knows its job and how to
    hand off before it reads your brief, so keep the brief to the task. Use
    `goal` only when the user wants work to run on its own: it owns the goal and
@@ -204,8 +210,9 @@ this needs is below; no other skill is required.
    the order of handoffs, when to stop. Brief the crew's lead, which the
    conventions name; the others wait for its handoff, so give them a short
    brief naming the task. Label the pane and name the tab when you create
-   them, never afterwards: the agent takes its role and crew when its first
-   hook runs, which can be before a later rename. The program after `--` takes the brief as its first
+   them, never by hand afterwards: the agent takes its role and crew when its
+   first hook runs, which can be before a later rename. Your own role and
+   crew change only with `rex-amq-adapter join`. The program after `--` takes the brief as its first
    prompt: `codex --no-daemon "<brief>"`, `claude "<brief>"`, `pi "<brief>"`, or
    `agy --dangerously-skip-permissions -i "<brief>"` (Antigravity needs `-i`,
    and without the skip flag it stops to ask before every `amq` command it

@@ -29,10 +29,12 @@ import (
 const usage = `rex-amq-adapter: AMQ messaging between coding agents in Rex terminals
 
 Agent and user commands:
-  env                       print the AMQ identity of this Rex block (eval it)
+  env                       print the AMQ identity of the agent running it, and its
+                            Rex pane when REX_BLOCK names another (eval it)
   title [TASK...]           show TASK after your role and handle in this pane's
                             label ("<role>(<handle>) | <task>"); no TASK clears it
-  who [--all]               list agents in this Rex session only, with their tabs;
+  who [--all]               list agents in this Rex session only, with their roles
+                            and tabs;
                             --all adds this session's departed agents reserved for a resume
   events --json [--session S | --tab | --all]
                             stream this Rex session's agents and mail as NDJSON
@@ -47,7 +49,7 @@ Agent and user commands:
                             tab after CREW (while no other agent is in it),
                             relabel your pane, and print the briefing; without
                             --role, take the crew's lead
-  tab <crew> [--role R] [-c DIR] -- COMMAND...
+  tab <crew> [--role R] [-c DIR] [-s SESSION] -- COMMAND...
                             open a Rex tab for a crew, its first pane labelled
                             with role R, running COMMAND (an agent and its brief)
   crews [dir]               list the crews (named by a Rex tab), their lead and

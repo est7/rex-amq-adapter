@@ -383,7 +383,7 @@ last drew), or before that a job's current name
 | Adopting a Claude session | Its pid is `CLAUDE_PID`, the harness process. A job is adopted only into a pane whose title shows it, whatever hook asks: a hook on every tool call trusts the block of the job's record, which may be stale or an older adapter's (found on the real system after the v0.8.0 upgrade). A terminal session must be its pane's foreground, so a `claude -p` another program runs in the pane is not the pane's agent and reads none of its mail (`recordFit` compares pids exactly when the hook reports one) |
 | The doorbell for a job | Typed only while the pane's foreground is a `claude` client whose title names the job, and while the job's supervisor state is not `working`: the client reports no OSC 7501 of its own, so an emptied box confirms it |
 | A terminal session whose pane title is agent view (`claude agents`, `<n> awaiting input · claude agents`) or another conversation (a job's name, another record's handle) | Its process is now a client and its conversation moved to the background for good: it departs (`agent_left_pane`) |
-| A command in a harness's tool shell (`env`, `title`, `who`, `tab`) | See **How an agent finds its identity** below; for a job, its record counts only while its pane shows it. A job no pane shows has no identity, and its failing `env` also unsets the Rex variables |
+| A command in a harness's tool shell (`env`, `title`, `who`, `tab`, `join`, `events`) | See **How an agent finds its identity** below; for a job, its record counts only while its pane shows it. A job no pane shows has no identity, and its failing `env` also unsets the Rex variables |
 | SessionEnd of a job | Parks the job's own record, found by session: the supervisor may drop the job from its roster first |
 
 A conversation moved to the background keeps no handle: `--fork-session`
@@ -611,7 +611,7 @@ stood by.
 **How an agent finds its identity.** `rex-amq-adapter env` resolves the
 caller's record (`Caller`) and prints `export AM_ROOT=… AM_ME=…`. Agents run
 `eval "$(rex-amq-adapter env)"` before each `amq` command. No identity files.
-The same resolution places `title`, `who`, and `tab`.
+The same resolution places `title`, `who`, `tab`, `join`, and `events`.
 
 Each harness sets its session id afresh in its tool shells, overwriting an
 inherited value: `CLAUDE_CODE_SESSION_ID`, `CODEX_THREAD_ID`, `PI_SESSION_ID`
@@ -742,7 +742,7 @@ with a timeout (both harnesses run hook commands through a shell). Outside Rex
 | `SessionStart` | Garbage-collect, adopt this block (handle, mailbox, record, waker, session-mates), print identity, unread count, session-mates, and the crew and role briefing as context | 5 s / 4.5 s |
 | `UserPromptSubmit`, `PostToolUse` | Announce new ids from the ledger; `UserPromptSubmit` also delivers queued window notes. Filesystem only, no subprocess, unless the agent must be adopted first or has just sent mail (measured p50 6.8 ms, max 16.7 ms over 30 runs, before the outbox check) | 3 s / 2.5 s |
 | `Stop` | Block once per section 3, then supervise the waker: one `amq wake check` (about 60 ms), and `Ensure` when it is dead or runs an older binary; a goal agent's missing watcher is started here too | 3 s / 2.5 s (supervision bounded to 1.5 s) |
-| `SessionEnd` | Retire the block's waker (identified by amq's saved target), set `departed_at`, drop the agent's undelivered window notes, queue "left" notes for its session-mates, and mail the goal agent if the session has one | 3 s / 2.5 s (Codex clamps to 3 s) |
+| `SessionEnd` | Retire the block's waker (identified by amq's saved target), set `departed_at` and `depart_reason` (`session_end`), drop the agent's undelivered window notes, queue "left" notes for its session-mates, and mail the goal agent if the session has one | 3 s / 2.5 s (Codex clamps to 3 s) |
 
 **Antigravity** has no `SessionEnd` hook and no `stop_hook_active`. Its agents
 depart through collection, and its Stop hook blocks only for mail never
@@ -936,7 +936,7 @@ Overridable with `REX_AMQ_ADAPTER_HOME` (tests use a temporary directory).
 ~/.local/state/rex-amq-adapter/
 ├── amq-root/                 shared AMQ root (agents/, meta/config.json)
 ├── bin/inject                the wrapper amq wake runs as --inject-via
-├── records/<handle>.json     one record per handle (earlier versions named it by block)
+├── records/<handle>.json     one record per handle
 ├── ledger/<handle>.json      announced message ids
 ├── ledger/<handle>.sent      the last sent message checked for a departed recipient
 ├── inject/<handle>.jsonl     injector outcomes
@@ -954,12 +954,12 @@ Overridable with `REX_AMQ_ADAPTER_HOME` (tests use a temporary directory).
 ## 9. Module layout
 
 ```
-cmd/rex-amq-adapter/   subcommands: hook, inject, env, who, await, collect, crews, tab, setup, status, remove, __internal, version
-internal/app/          entry points: observe, ask core, act (adopt, inject, announce, depart, collect, discovery, await, goal, the events stream); the hook's process ancestry (golang.org/x/sys)
-internal/core/         pure policy: handle choice, inject decision, announce decision, session-mates, notice text, the observer's projection and diff
-internal/crew/         crew and role prompt lookup across project, user, and built-in layers; built-in prompts
+cmd/rex-amq-adapter/   subcommands: hook, inject, env, title, who, events, await, collect, crews, tab, join, setup, status, remove, __internal, version
+internal/app/          entry points: observe, ask core, act (adopt, inject, announce, depart, collect, discovery, await, goal, join, the events stream); who runs a command (Caller); the hook's process ancestry (golang.org/x/sys)
+internal/core/         pure policy: handle choice, roles and pane labels, inject decision, announce decision, session-mates, notice text, the observer's projection and diff
+internal/crew/         crew and role prompt lookup across project, user, and built-in layers; crew headers (lead, members); built-in prompts
 internal/fsutil/       flock and atomic replace
-internal/rex/          rex CLI client: process, program_status, capture, write, labels, whoami, block list, new window
+internal/rex/          rex CLI client: process, program_status, capture, write, block and window labels, whoami, block list, new window
 internal/amq/          wake check/start/repair/retire, mailbox registration, inbox listing (ported); read-only mailbox, header, and receipt readers
 internal/screen/       input-box classifier (ported from herdr-amq-adapter)
 internal/store/        records, ledger, inject log, window notes, reservations, locks

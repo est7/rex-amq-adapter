@@ -16,13 +16,13 @@ over.
 
 | Duty | Purpose | Provided today by |
 |---|---|---|
-| **Adopt** | Give the agent a handle, mailbox, record, and (unless in-process) a waker; tell it its identity, its window-mates, and its crew and role briefing | `SessionStart` hook; lazily by the first other hook (`announce` in `internal/app/hook.go`) |
+| **Adopt** | Give the agent a handle, mailbox, record, and (unless in-process) a waker; tell it its identity, its session-mates, and its crew and role briefing | `SessionStart` hook; lazily by the first other hook (`announce` in `internal/app/hook.go`) |
 | **Announce in-band** | Tell a *working* agent about new mail without typing into its terminal | Claude/Codex `PostToolUse` + `UserPromptSubmit`; agy `PreInvocation`; Pi extension `sendMessage` |
-| **Tell at the prompt** | Deliver window notes (an agent joined or left the tab) where the agent takes a prompt, never mid-turn and never by starting a turn | Claude/Codex `UserPromptSubmit`; agy `PreInvocation` (no prompt hook: every model call, an accepted exception); Pi `before_agent_start` |
+| **Tell at the prompt** | Deliver window notes (an agent joined or left the session) where the agent takes a prompt, never mid-turn and never by starting a turn | Claude/Codex `UserPromptSubmit`; agy `PreInvocation` (no prompt hook: every model call, an accepted exception); Pi `before_agent_start` |
 | **Hold the turn end** | Keep an agent that is about to stop with unread mail going, exactly once (loop guard) | Claude/Codex `Stop` + `stop_hook_active`; agy `Stop` (`decision: continue`, guard emulated in `normalize`); Pi `agent_before_settle` |
 | **Wake at rest** | Reach an *idle* agent | typed doorbell via `amq wake --inject-via` (needs OSC 7501 status + an input-box classifier); Pi: `sendMessage(…, {triggerTurn: true})` |
 | **Tell a sender** | After the agent sends mail, say once which of it no agent will read, without starting a turn of its own | every `announce` hook but Pi's mail watcher (`announcing.undelivered`); the agent's outbox is read, never the send intercepted |
-| **Depart and supervise** | Retire the waker when the agent ends and tell its window-mates; revive a dead waker | `SessionEnd`; `collect` when there is none (agy); `Stop` runs `SuperviseWaker` |
+| **Depart and supervise** | Retire the waker when the agent ends and tell its session-mates; revive a dead waker | `SessionEnd`; `collect` when there is none (agy); `Stop` runs `SuperviseWaker` |
 
 ## 2. Probe the agent
 
@@ -100,8 +100,15 @@ official pages), find and then exercise:
   turns it off and give the agent a `SupervisorFile` so setup turns it off
   (`internal/install/supervisor.go`);
 - that every hook descends from the pane's foreground process (`ps -o
-  ppid=` up from the hook against `rex block call -b <block> process`): a
-  hook's check of its record depends on it;
+  pid=,ppid=,comm=` up from the hook against `rex block call -b <block>
+  process`): a hook's check of its record depends on it. Record what sits
+  between them: a hook that reports no pid of its own is checked by ancestry
+  (`runsUnder` in `internal/app/lease.go`), which for Codex also refuses a
+  second process of the harness's name in between (its shared daemon);
+- the variable the harness sets afresh in its tool shells naming the session
+  (`CLAUDE_CODE_SESSION_ID`, `CODEX_THREAD_ID`, `PI_SESSION_ID`,
+  `ANTIGRAVITY_CONVERSATION_ID`), and that it equals the hooks' session id:
+  `env`, `title`, `who`, `join`, and `events` find their caller by it;
 - how the harness's own title can be set: a hook output field (Claude's
   `sessionTitle`), an extension API (Pi's `setSessionName`), or a command it
   runs for its window title (agy's `"title"` block); see `titleCarried` and
@@ -153,7 +160,9 @@ Make the changes in this order; each step has tests before the next.
    wrapped draft, and the cleared box in `internal/screen/rex_test.go`.
 3. **Hook input** — `internal/app/env.go` `HookInput` and
    `internal/app/hook.go` `normalize`: map the agent's field names onto
-   `SessionID` and `StopHookActive`. Without a loop flag, set
+   `SessionID` and `StopHookActive`. Add the tool-shell session variable from
+   2.3 to `sessionVars` in `internal/app/caller.go` and a case to
+   `TestCallerIsTheSessionsRecord`. Without a loop flag, set
    `StopHookActive = true` (Stop then blocks only for never-announced mail, as
    for agy). Extend `HookInput.NormalStop` if its stop reasons differ.
 4. **Events** — if the agent's in-band event is new, add an `Event…` constant

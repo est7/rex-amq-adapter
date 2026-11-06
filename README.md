@@ -43,7 +43,7 @@ is erased only when the box holds exactly that doorbell. See
 
 ## Install
 
-Requirements: Rex (macOS), `amq` on `PATH` (tested with 0.126.1; needs
+Requirements: Rex (macOS), `amq` on `PATH` (tested with 0.127.2; needs
 `amq wake check --json-schema 2` and `retire --if-generation`, as in 0.81.2+),
 Go to build, and Claude Code (2.1.318), Codex (0.166.0), Antigravity CLI
 (1.5.1), or Pi (1.4.0) — the versions tested.
@@ -81,8 +81,11 @@ daemon (see Recommended configuration); and installs a skill stub whose guide
 ships inside the binary. Run it again after moving the binary.
 
 - **Codex** must be started with `codex --no-daemon` (resume:
-  `codex --no-daemon resume <session-id>`). The shared background server can
-  lack the pane's Rex environment even when the frontend runs inside Rex.
+  `codex --no-daemon resume <session-id>`). The shared background server runs
+  every pane's threads with the first terminal's Rex environment, so the
+  adapter refuses to adopt a thread it runs (`logs/hooks.log` says to restart
+  with `--no-daemon`) rather than give one pane's identity and mail to
+  another.
   Pass the flag explicitly when launching through Rex; fish abbreviations do
   not apply there. This mode cannot be combined with `--remote` or `codex agents`.
   Codex runs new hooks only after you approve them: run `/hooks` in Codex, or
@@ -108,7 +111,7 @@ already running is not stopped:
 | Harness | Setting | Why |
 |---|---|---|
 | Claude Code | `"disableAgentView": true` in `~/.claude/settings.json` (or `CLAUDE_CODE_DISABLE_AGENT_VIEW=1`) | Agent view (`←` on an empty prompt, `/bg`, `claude --bg`) moves a conversation under Claude's supervisor. The adapter still places such a session by its pane's title, but one key press is enough to move a conversation there, and each one costs a supervisor, a pty host, and a second process beside the terminal that shows it |
-| Codex | `daemon_auto_start = false` under `[features]` in `~/.codex/config.toml`; stop a running daemon with `codex app-server daemon stop` | The shared daemon runs every thread with the first terminal's environment. The setting keeps a plain `codex` from starting it; a daemon that is already running is still used unless Codex starts with `--no-daemon` |
+| Codex | `daemon_auto_start = false` under `[features]` in `~/.codex/config.toml`; stop a running daemon with `codex app-server daemon stop` | The shared daemon runs every thread with the first terminal's environment, and the adapter adopts none of them. The setting keeps a plain `codex` from starting it; a daemon that is already running is still used unless Codex starts with `--no-daemon` |
 
 Antigravity and Pi need nothing: each runs in its own pane's process.
 
@@ -188,7 +191,7 @@ rex split --split=right --focus=false --label "reviewer | review the diff" -- co
 Inspect state:
 
 ```bash
-rex-amq-adapter who          # running agents in this Rex session and their tabs, including yourself
+rex-amq-adapter who          # running agents in this Rex session with their roles and tabs, including yourself
 rex-amq-adapter who --all    # also this session's departed agents reserved for a resume
 rex-amq-adapter events --json # stream this session's agents and mail as NDJSON (read-only; --tab, --session S, --all)
 rex-amq-adapter await <block> # wait for an agent you started; prints its outcome as JSON
@@ -208,8 +211,8 @@ shared daemon.
 `who` resolves the caller's current session from its identity (see
 `env`); it requires a Rex terminal and fails if the session cannot be
 resolved. It uses the current layout, so moving a block to another session
-changes which session discovers it, and its TAB column shows each agent's tab
-now. `--all` includes departed agents last recorded in this session, never
+changes which session discovers it; its ROLE column shows each agent's role
+and its TAB column the tab it is in now. `--all` includes departed agents last recorded in this session, never
 agents from other sessions. A failure while reconciling the session is a
 warning on stderr; the session is still listed. `who` also brings back a dead
 waker in the session, so an idle agent hears its mail again once a peer checks
