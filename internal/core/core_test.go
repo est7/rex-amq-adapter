@@ -525,3 +525,22 @@ func TestAPaneThatShowsSomethingElse(t *testing.T) {
 		t.Errorf("agent view in the agent's own process: %+v %v", o, ok)
 	}
 }
+
+func TestGoalNoticeNamesEveryGoalAgentAndAFallback(t *testing.T) {
+	if GoalNotice([]Peer{{Handle: "codex-01", Role: "reviewer"}}) != "" {
+		t.Fatal("a session without a goal agent got a goal notice")
+	}
+	one := GoalNotice([]Peer{{Handle: "codex-01", Role: "reviewer"}, {Handle: "agy-02", Role: GoalRole}})
+	if !strings.Contains(one, "send it to agy-02 instead") || !strings.Contains(one, "overrides those texts") {
+		t.Fatalf("one goal agent: %q", one)
+	}
+	for _, want := range []string{"irreversible step", "uncommitted changes", "outward action", "credential, or permission", "nobody works around", "report chain"} {
+		if !strings.Contains(one, want) {
+			t.Errorf("the notice lacks %q: %q", want, one)
+		}
+	}
+	two := GoalNotice([]Peer{{Handle: "agy-02", Role: GoalRole}, {Handle: "claude-03", Role: GoalRole}})
+	if !strings.Contains(two, "one of agy-02, claude-03; if neither did, agy-02") {
+		t.Fatalf("two goal agents: %q", two)
+	}
+}

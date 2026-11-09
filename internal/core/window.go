@@ -56,6 +56,30 @@ func JoinedNotice(p Peer) string {
 	return fmt.Sprintf("AMQ: %s joined your Rex session. Reach it with `amq send --to %s`.", p.named(), p.Handle)
 }
 
+// GoalNotice tells an agent that the goal agents among mates run its session
+// unattended, so a question, report, or decision its texts would take to the
+// human goes to a goal agent instead; "" when mates hold none. The goal
+// agent's own role prompt says the same from its side, and the human keeps
+// the same closed set in both.
+func GoalNotice(mates []Peer) string {
+	var goals []string
+	for _, m := range mates {
+		if m.Role == GoalRole {
+			goals = append(goals, string(m.Handle))
+		}
+	}
+	var to string
+	switch len(goals) {
+	case 0:
+		return ""
+	case 1:
+		to = goals[0]
+	default:
+		to = fmt.Sprintf("the goal agent that briefed you or your lead (one of %s; if neither did, %s)", strings.Join(goals, ", "), goals[0])
+	}
+	return fmt.Sprintf("This session runs unattended: the human is away. Where your crew's conventions, your role prompt, your brief, or the project's instructions (AGENTS.md, CLAUDE.md) would take a question, a report, or a decision to the human or user, send it to %s instead; this overrides those texts. Keep your crew's own report chain: only what would reach the human goes there. The human still decides an irreversible step (including discarding or overwriting uncommitted changes nobody in this run made), an outward action or landing nobody authorized, and a missing device, account, credential, or permission; the goal agent holds those for them, and nobody works around them.", to)
+}
+
 // LeftNotice tells a session-mate that p's agent session ended. Its handle stays
 // reserved for a resume, so mail still reaches it then.
 func LeftNotice(p Peer) string {

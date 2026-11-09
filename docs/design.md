@@ -565,6 +565,22 @@ live goal agent is the mode, and it is also who to tell. (Runner's `goal.md` is 
 template and implies nothing about attendance; this meaning is the adapter's.
 The crew file stays out of the role lookup, and the prompt is `roles/goal.md`.)
 
+- A goal agent stands in for the human. Crew conventions, role prompts, briefs,
+  and project instructions (`AGENTS.md`, `CLAUDE.md`) all say "ask the human"
+  or "wait for the user", and an agent obeys the highest-ranked text it sees, so
+  one line in `roles/goal.md` cannot overrule them. Every other agent's start
+  notice therefore ends, after its briefing, with `core.GoalNotice`: what its
+  texts would take to the human goes to the goal agent (each one named, with a
+  fallback when there are several), the crew's own report chain stays, and the
+  human keeps a closed set (an irreversible step, discarding uncommitted
+  changes nobody in the run made included; an outward action or landing nobody
+  authorized; a missing device, account, credential, or permission), which
+  nobody works around. A goal agent that arrives later, or an agent that takes
+  the goal role with `join`, appends the same text, naming every goal agent in
+  the session, to a note for each non-goal mate; that note waits for the mate's
+  next prompt, so an idle peer learns it only then. `join` adds it to the
+  briefing it prints for any other role. `roles/goal.md` says the same from the goal's side, with the
+  brief's named checkpoints added to the closed set.
 - Departure (`park`) also mails every live goal agent in the record's session,
   naming the agent and the session to resume. A window note waits for a prompt,
   and an idle goal agent has none coming, so this is mail: the doorbell wakes it,

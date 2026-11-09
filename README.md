@@ -161,7 +161,7 @@ is yours to notice. Label a pane `goal` and the session runs unattended
 instead. That
 agent owns the goal and decides how to recover: it is woken at once when a peer
 quits, crashes, or has its pane closed, with the session to resume, and it
-restarts or replaces the peer itself. If the goal agent is the one that goes, one
+restarts or replaces the peer itself. Every other agent in the session is told that what its conventions, brief, or project rules would take to you goes to the goal agent instead; irreversible steps, outward actions nobody authorized, and a missing device, account, credential, or permission still wait for you. If the goal agent is the one that goes, one
 peer is told to report and stop; with no peer left, nobody is told. A small watcher process runs for each goal
 agent and ends with it.
 

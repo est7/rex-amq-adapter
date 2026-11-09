@@ -71,8 +71,18 @@ func (e Env) Join(ctx context.Context, loc Location, crewName, role string) (Joi
 	if role == "" {
 		return Joined{}, errors.New("name a crew, a role (--role), or both")
 	}
+	was := rec.Role
 	if rec, err = e.takeRole(ctx, loc, rec.Handle, role); err != nil {
 		return Joined{}, err
+	}
+	var mates []core.Peer
+	if recs, err := e.Store.Records(); err != nil {
+		fmt.Fprintf(Diagnostics, "read the records: %v\n", err)
+	} else {
+		mates = e.joinSession(ctx, rec, blk, recs, false)
+	}
+	if rec.Role == core.GoalRole && was != core.GoalRole {
+		e.tellMates(ctx, peerOf(rec), mates, "")
 	}
 	if err := e.ensureGoalWatcher(rec); err != nil {
 		fmt.Fprintf(Diagnostics, "%v\n", err)
@@ -83,6 +93,11 @@ func (e Env) Join(ctx context.Context, loc Location, crewName, role string) (Joi
 		name = e.tabCrew(ctx, blk.SessionID, blk.WindowID)
 	}
 	out.Briefing = joinNotices(core.BriefNotice(e.briefingIn(ctx, rec, rec.Role, name)))
+	if rec.Role != core.GoalRole {
+		if goal := core.GoalNotice(mates); goal != "" {
+			out.Briefing = strings.TrimSpace(out.Briefing + "\n\n" + goal)
+		}
+	}
 	if rest := othersNeeded(c.Members, rec.Role); len(rest) > 0 {
 		out.Briefing += fmt.Sprintf("\n\nCrew %s is %s; it still needs %s. Start each in a pane of this tab: `rex split -s \"$REX_SESSION\" -b \"$REX_BLOCK\" --label \"<role> | <task>\" … -- <agent> \"<brief>\"`, then `rex-amq-adapter await <block>`.",
 			c.Name, strings.Join(c.Members, ", "), strings.Join(rest, ", "))

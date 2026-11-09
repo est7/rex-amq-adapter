@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/core"
@@ -278,13 +279,31 @@ func (e Env) joinSession(ctx context.Context, rec store.Record, blk rex.Block, r
 	if !arrived {
 		return mates
 	}
-	note := core.JoinedNotice(peerOf(rec))
+	e.tellMates(ctx, peerOf(rec), mates, core.JoinedNotice(peerOf(rec)))
+	return mates
+}
+
+// tellMates queues note for each of mates, saying of joined, which just
+// started or took a role. When joined is a goal agent, each mate that is not
+// one also hears who now stands in for the human, naming every goal agent in
+// the session; another goal agent keeps its own goal.
+func (e Env) tellMates(ctx context.Context, joined core.Peer, mates []core.Peer, note string) {
+	goal := ""
+	if joined.Role == core.GoalRole {
+		goal = core.GoalNotice(append(slices.Clone(mates), joined))
+	}
 	for _, m := range mates {
-		if err := e.noteWindow(ctx, m.Handle, note); err != nil {
-			fmt.Fprintf(Diagnostics, "tell %s that %s joined: %v\n", m.Handle, rec.Handle, err)
+		n := note
+		if goal != "" && m.Role != core.GoalRole {
+			n = joinNotices(n, goal)
+		}
+		if n == "" {
+			continue
+		}
+		if err := e.noteWindow(ctx, m.Handle, n); err != nil {
+			fmt.Fprintf(Diagnostics, "tell %s about %s: %v\n", m.Handle, joined.Handle, err)
 		}
 	}
-	return mates
 }
 
 func (e Env) noteWindow(ctx context.Context, h core.Handle, note string) error {
