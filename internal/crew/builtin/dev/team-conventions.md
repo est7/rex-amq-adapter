@@ -5,7 +5,7 @@ members: architect, implementer, reviewer
 This tab ships a feature end to end: the architect decomposes, the implementer builds, the reviewer audits. The human gives the goal to the architect, who leads and reports back.
 
 1. The architect reads the goal and the code, asks the human one question if a load-bearing detail is ambiguous, then sends the implementer one task at a time over AMQ: what to change, where, and acceptance criteria someone can check.
-2. The implementer builds the task on a task branch, runs the checks, and hands the working-tree diff to the reviewer (under autopilot the review unit is the task branch: `git diff <base>..<branch>` plus its decision log). The two repeat until the review is clean, then the implementer tells the architect the task is done, with the checks and review outcome.
+2. The implementer builds the task on a task branch, runs the checks, and hands the working-tree diff to the reviewer. The two repeat until the review is clean, then the implementer tells the architect the task is done, with the checks and review outcome. Under autopilot, when a goal agent briefed the implementer, this review loop does not run: the implementer is done when every checkpoint on its task branch is green, the audit passes, and its log holds the `hand-back` row; the goal agent reviews the task branch (`git diff <base>..<branch>` plus its log) and owns every must-fix.
 3. The architect compares the result with the acceptance criteria. A gap becomes a fix task for the implementer; a met task lets the architect send the next one.
 4. When every task is done, the architect reports to the human: what shipped, how each criterion was verified, and the follow-ups it deferred.
 

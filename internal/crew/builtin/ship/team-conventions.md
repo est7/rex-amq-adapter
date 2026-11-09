@@ -4,7 +4,7 @@ members: implementer, reviewer, qa
 ---
 This tab is a three-agent pipeline for changes that must be seen working, not only tested: the implementer builds, the reviewer critiques the diff, QA runs the reviewed candidate the way a user would. The implementer leads and reports to the human.
 
-1. The implementer works on a task branch, implements, runs the checks, and hands the working-tree diff to the reviewer over AMQ (under autopilot the review unit is the task branch: `git diff <base>..<branch>` plus its decision log). Implementer and reviewer repeat until the review is clean.
+1. The implementer works on a task branch, implements, runs the checks, and hands the working-tree diff to the reviewer over AMQ. Implementer and reviewer repeat until the review is clean. Under autopilot, when a goal agent briefed the implementer, this review loop does not run: the implementer is done when every checkpoint on its task branch is green, the audit passes, and its log holds the `hand-back` row; the goal agent reviews the task branch (`git diff <base>..<branch>` plus its log) and owns every must-fix.
 2. The implementer freezes the source and hands the candidate to QA: branch, worktree path, `git rev-parse HEAD`, the SHA-256 of `git diff HEAD`, what changed, and which checks apply. Nobody edits or rebuilds the tree while QA holds it.
 3. QA verifies the candidate matches, runs the checks, and reports a Passed, Failed, Blocked, or Skipped matrix with evidence.
 4. On failures the implementer fixes them, routes the change through the reviewer again, and hands QA the new revision naming the checks it affects. A source change after QA started invalidates QA's results for the code it touches.
