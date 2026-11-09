@@ -136,7 +136,7 @@ conventions, shared by every agent in it:
 |---|---|
 | roles `implementer`, `reviewer`, `qa`, `architect`, `writer`, `editor` | work in any tab |
 | role `goal` | owns a goal and runs it unattended (below) |
-| crew `pair` | implementer builds, reviewer critiques the working-tree diff, until clean |
+| crew `pair` | implementer builds, reviewer critiques the working-tree diff (the task branch under autopilot), until clean |
 | crew `ship` | `pair`, then QA runs the reviewed candidate and reports a verdict with evidence |
 | crew `dev` | an architect decomposes the goal into tasks for an implementer and reviewer |
 | crew `docs` | writers draft, an editor checks against the code; an optional architect partitions |
@@ -159,14 +159,14 @@ the tab keeps its crew: `join` refuses, and the crew goes in a new tab with
 A session without a `goal` agent assumes you are watching: an agent that stops
 is yours to notice. Label a pane `goal` and the session runs unattended
 instead. That
-agent owns the goal and decides how to recover: it is woken at once when a peer
+agent owns the goal and decides how to recover (its brief has the make-goal shape: GOAL, CONTEXT, SCOPE, BOUNDARIES with a `Reserved:` line, DONE WHEN; it loads skill `autopilot`, reviews and lands each task branch itself, and hands back per that skill): it is woken at once when a peer
 quits, crashes, or has its pane closed, with the session to resume, and it
 restarts or replaces the peer itself. Every other agent in the session is told that what its conventions, brief, or project rules would take to you goes to the goal agent instead; irreversible steps, outward actions nobody authorized, and a missing device, account, credential, or permission still wait for you. If the goal agent is the one that goes, one
 peer is told to report and stop; with no peer left, nobody is told. A small watcher process runs for each goal
 agent and ends with it.
 
 ```bash
-rex-amq-adapter tab pair --role goal -- claude "Ship #42. Done when CI is green. You may open a PR but not merge. Stop after two failed attempts."
+rex-amq-adapter tab pair --role goal -- claude "GOAL: ship #42. CONTEXT: issue #42, app/. SCOPE: push+PR. BOUNDARIES: Reserved: none. DONE WHEN: CI green on the task branch."
 ```
 
 Your own crews and roles override the built-in ones by name: a crew is a
