@@ -275,3 +275,7 @@ process name, working directory, or screen text.
   empty input box, and waits while you show a question or permission dialog.
 - Delivery of a notice proves the recipient was told, not that it acted. Wait
   for its reply.
+- When another agent briefed you, what you produce is for that agent, even a
+  design doc or report: send it the result or the file's path by AMQ, and do
+  not open a preview or any other pane for it (`md-viewer open` included). The
+  agent that briefed you decides what the user sees.

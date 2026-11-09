@@ -179,7 +179,10 @@ built-in prompts are rewritten from.
 
 The agent's skill handles `amq send`, `amq drain`, and `amq reply`, and opens
 peers itself: a pane beside it for the same task, a new tab in its session for
-another team on that task, a new session for another task or project. To start one by hand,
+another team on that task, a new session for another task or project. A peer
+sends what it produces, a design doc or report included, back to the agent
+that briefed it instead of opening a preview pane, so that agent decides what
+you see. To start one by hand,
 label its pane `"<role> | <task>"` (the agent takes the role and shows it
 before its handle, the task after it) and give it a first prompt (an agent gets its mailbox
 when its first turn starts):
