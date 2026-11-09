@@ -77,7 +77,7 @@ func GoalNotice(mates []Peer) string {
 	default:
 		to = fmt.Sprintf("the goal agent that briefed you or your lead (one of %s; if neither did, %s)", strings.Join(goals, ", "), goals[0])
 	}
-	return fmt.Sprintf("This session runs unattended: the human is away. Where your crew's conventions, your role prompt, your brief, or the project's instructions (AGENTS.md, CLAUDE.md) would take a question, a report, or a decision to the human or user, send it to %s instead; this overrides those texts. Keep your crew's own report chain: only what would reach the human goes there. The human still decides an irreversible step (including discarding or overwriting uncommitted changes nobody in this run made), an outward action or landing nobody authorized, and a missing device, account, credential, or permission; the goal agent holds those for them, and nobody works around them.", to)
+	return fmt.Sprintf("This session runs unattended: the human is away. Where your crew's conventions, your role prompt, your brief, or the project's instructions (AGENTS.md, CLAUDE.md) would take a question, a report, or a decision to the human or user, send it to %s instead; this overrides those texts. Keep your crew's own report chain: only what would reach the human goes there. The human still decides the closed set in skill `autopilot` (Boundaries), and only it: an irreversible step, a landing or outward action the grant does not name, a missing device, account, credential, or permission, and a prompt that changes their setup; the goal agent holds those for them, and nobody works around them.", to)
 }
 
 // LeftNotice tells a session-mate that p's agent session ended. Its handle stays

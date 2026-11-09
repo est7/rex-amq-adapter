@@ -161,9 +161,9 @@ is yours to notice. Label a pane `goal` and the session runs unattended
 instead. That
 agent owns the goal and decides how to recover (its brief has the make-goal shape: GOAL, CONTEXT, SCOPE, BOUNDARIES with a `Reserved:` line, DONE WHEN; it loads skill `autopilot`, reviews and lands each task branch itself, and hands back per that skill): it is woken at once when a peer
 quits, crashes, or has its pane closed, with the session to resume, and it
-restarts or replaces the peer itself. Every other agent in the session is told that what its conventions, brief, or project rules would take to you goes to the goal agent instead; irreversible steps, outward actions nobody authorized, and a missing device, account, credential, or permission still wait for you. If the goal agent is the one that goes, one
+restarts or replaces the peer itself. Every other agent in the session is told that what its conventions, brief, or project rules would take to you goes to the goal agent instead; what still waits for you is the closed set in skill `autopilot` (Boundaries). If the goal agent is the one that goes, one
 peer is told to report and stop; with no peer left, nobody is told. A small watcher process runs for each goal
-agent and ends with it.
+agent and ends with it. In a crew tab the goal agent is the lead's stand-in for the human: its peer briefs open with make-goal's grant line, the implementer hands each task branch back to it, and the crew's reviewer (and QA, in `ship`) serves the goal agent, which asks them per task branch instead of the implementer's working-tree loop.
 
 ```bash
 rex-amq-adapter tab pair --role goal -- claude "GOAL: ship #42. CONTEXT: issue #42, app/. SCOPE: push+PR. BOUNDARIES: Reserved: none. DONE WHEN: CI green on the task branch."

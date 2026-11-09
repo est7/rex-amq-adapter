@@ -534,7 +534,7 @@ func TestGoalNoticeNamesEveryGoalAgentAndAFallback(t *testing.T) {
 	if !strings.Contains(one, "send it to agy-02 instead") || !strings.Contains(one, "overrides those texts") {
 		t.Fatalf("one goal agent: %q", one)
 	}
-	for _, want := range []string{"irreversible step", "uncommitted changes", "outward action", "credential, or permission", "nobody works around", "report chain"} {
+	for _, want := range []string{"closed set in skill `autopilot` (Boundaries)", "irreversible step", "outward action", "credential, or permission", "changes their setup", "nobody works around", "report chain"} {
 		if !strings.Contains(one, want) {
 			t.Errorf("the notice lacks %q: %q", want, one)
 		}
