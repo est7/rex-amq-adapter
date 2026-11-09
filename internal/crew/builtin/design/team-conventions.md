@@ -2,11 +2,16 @@
 lead: architect
 members: architect, architect
 ---
-This tab argues a design to a decision. Two or more agents, usually architects, work the same question; the human decides. The agent the human briefed leads: it forwards the question to the others over AMQ, keeps the exchange moving, and writes the final report.
+This tab argues a design to a decision. Two or more agents, usually architects, work the same question; the human decides. The agent the human briefed leads: it runs the rounds, keeps the claim ledger, and writes the report. Members send only to the lead; the lead relays, so every round starts from the same inputs.
 
-1. Independent proposals first. Each agent studies the question and the code and sends its proposal to all the others at once: the recommendation, the alternatives it rejected and why, the assumptions it rests on, and file:line evidence. Do not read another proposal before sending yours, so that nobody anchors on the first one.
-2. Critique. Each agent replies to every other proposal: the strongest objection, the requirement or failure it misses, and what evidence would change its mind. Attack the argument; concede a point the evidence settles.
-3. Converge. Revise your own proposal in light of the critiques and send the revision. Stop after the third round, or earlier when no agent changes its position.
-4. The lead reports to the human: the agreed design if there is one; otherwise each remaining position side by side in a table (requirement, mechanism, cost, risk), the crux the positions turn on, and the evidence that would settle it. Never present a disagreement as consensus.
+1. Seal. Before forwarding the question, the lead writes its own proposal and holds it unsent. Then it sends the question to every member.
+2. Proposals. Each agent studies the question and the code and sends the lead its proposal: the recommendation, the alternatives it rejected and why, and at most seven numbered claims. A claim is one falsifiable statement (a decision, risk, trade-off, or assumption) with its file:line evidence and what would change your mind.
+3. Ledger. When every proposal is in, the lead numbers the claims C1, C2, … and broadcasts the ledger with every proposal verbatim. Nobody sees another proposal before this broadcast.
+4. Debate. Each agent answers every active claim with agree, disagree, or revise (giving replacement text), each with a one-line rationale that cites evidence, and may add new claims. Changing a stance names the argument or evidence that changed it. The lead then applies the round: a revision replaces a claim only when its proposer accepts it; otherwise both versions stand as separate claims. Two claims merge only when both proposers agree. The lead broadcasts the updated ledger with the round's answers verbatim.
+5. Stop. After at least one debate round, stop when every answer is agree and nothing was revised or added; otherwise stop after the third debate round.
+6. Vote. Each agent votes accept or reject on every active claim, with a reason for each reject. A claim is agreed only when every remaining agent accepts it.
+7. Report. The lead drafts: status (consensus: every claim agreed; partial: some; unresolved: none; interrupted: fewer than two agents remained); the agreed claims as the design; each split claim with its votes, the crux, and the evidence that would settle it. Each member may return a dissent of at most five lines, which the lead includes verbatim. The lead does not reword claims at this stage. Never present a disagreement as consensus.
+
+When a member is gone (`rex-amq-adapter who`) or idle (`rex block call -b <block> program_status`) without its answer for the current round, the lead asks once; if the member goes idle again without answering, the lead continues without it and records the drop in the report.
 
 Nobody edits product code in this tab. The lead writes a design document only when the human asked for one. Messages are pushed to you as notices: after you send one, end your turn instead of waiting for replies. Wait inside a turn only for something bounded that a check itself needs, such as watching CI.

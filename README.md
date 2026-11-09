@@ -140,7 +140,7 @@ conventions, shared by every agent in it:
 | crew `ship` | `pair`, then QA runs the reviewed candidate and reports a verdict with evidence |
 | crew `dev` | an architect decomposes the goal into tasks for an implementer and reviewer |
 | crew `docs` | writers draft, an editor checks against the code; an optional architect partitions |
-| crew `design` | architects propose independently, critique each other, and report a decision or the crux |
+| crew `design` | architects send sealed proposals to the lead, debate a shared claim ledger, vote per claim, and report the agreed design and each split claim's crux |
 
 ```bash
 rex-amq-adapter tab pair --role "implementer | fix #42" -- codex --no-daemon "Fix #42: …"
