@@ -1,10 +1,13 @@
 package trust
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -74,16 +77,107 @@ func TestTrustedMainExtendsToItsLinkedWorktree(t *testing.T) {
 	}
 }
 
-func TestMainIsFoundWhateverItsCase(t *testing.T) {
+// An entry matches by file identity: another spelling of the main checkout
+// counts only where the volume makes it the same directory.
+func TestEntriesMatchByIdentityNotSpelling(t *testing.T) {
 	main, wt := repo(t)
 	home := t.TempDir()
-	p, _ := settings(t, home, strings.ToUpper(main))
+	other := filepath.Join(filepath.Dir(main), "APP")
+	p, text := settings(t, home, other)
+	a, errA := os.Stat(main)
+	b, errB := os.Stat(other)
+	same := errA == nil && errB == nil && os.SameFile(a, b)
+	r, err := Derive(home, wt)
+	if err != nil || r.Written != same {
+		t.Fatalf("same directory %v: %+v %v", same, r, err)
+	}
+	got, _ := os.ReadFile(p)
+	if same && !strings.Contains(string(got), "    \""+wt+"\"\n  ]") {
+		t.Fatalf("the worktree was not appended with its own spelling:\n%s", got)
+	}
+	if !same && string(got) != text {
+		t.Fatalf("a different directory's trust leaked:\n%s", got)
+	}
+}
+
+// A copied .git pointer does not make an unrelated directory a worktree.
+func TestCopiedGitPointerDerivesNothing(t *testing.T) {
+	main, wt := repo(t)
+	fake := t.TempDir()
+	raw, _ := os.ReadFile(filepath.Join(wt, ".git"))
+	if err := os.WriteFile(filepath.Join(fake, ".git"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	p, text := settings(t, home, main)
+	if r, err := Derive(home, fake); err != nil || r.Written || !strings.Contains(r.Note, "not a linked worktree") {
+		t.Fatalf("%+v %v", r, err)
+	}
+	if got, _ := os.ReadFile(p); string(got) != text {
+		t.Fatalf("settings changed:\n%s", got)
+	}
+	if _, ok, _ := MainCheckout(fake); ok {
+		t.Fatal("a copied pointer resolved to a main checkout")
+	}
+}
+
+// Peers start together; every derivation lands.
+func TestConcurrentDerivationsAllLand(t *testing.T) {
+	main, first := repo(t)
+	const n = 12
+	wts := []string{first}
+	for i := 1; i < n; i++ {
+		wt := filepath.Join(filepath.Dir(main), fmt.Sprintf("peer-%d", i))
+		if out, err := exec.Command("git", "-C", main, "worktree", "add", "-q", "--detach", wt).CombinedOutput(); err != nil {
+			t.Fatalf("%v %s", err, out)
+		}
+		wts = append(wts, wt)
+	}
+	home := t.TempDir()
+	p, _ := settings(t, home, main)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for _, wt := range wts {
+		wg.Add(1)
+		go func(w string) {
+			defer wg.Done()
+			<-start
+			if r, err := Derive(home, w); err != nil || !r.Written {
+				t.Errorf("%s: %+v %v", w, r, err)
+			}
+		}(wt)
+	}
+	close(start)
+	wg.Wait()
+	raw, _ := os.ReadFile(p)
+	var s struct {
+		Trusted []string `json:"trustedWorkspaces"`
+	}
+	if err := json.Unmarshal(raw, &s); err != nil || len(s.Trusted) != n+1 {
+		t.Fatalf("%d entries, want %d: %v\n%s", len(s.Trusted), n+1, err, raw)
+	}
+}
+
+// A managed store behind a symlink is updated through the link.
+func TestSymlinkedStoreKeepsItsLink(t *testing.T) {
+	main, wt := repo(t)
+	home := t.TempDir()
+	p, _ := settings(t, home, main)
+	target := filepath.Join(home, "managed-settings.json")
+	if err := os.Rename(p, target); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, p); err != nil {
+		t.Fatal(err)
+	}
 	if r, err := Derive(home, wt); err != nil || !r.Written {
 		t.Fatalf("%+v %v", r, err)
 	}
-	got, _ := os.ReadFile(p)
-	if !strings.Contains(string(got), "    \""+wt+"\"\n  ]") {
-		t.Fatalf("the worktree was not appended with its own spelling:\n%s", got)
+	if info, _ := os.Lstat(p); info.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("the symlink was replaced by a file")
+	}
+	if got, _ := os.ReadFile(target); !strings.Contains(string(got), wt) {
+		t.Fatalf("the target was not updated:\n%s", got)
 	}
 }
 

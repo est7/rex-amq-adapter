@@ -12,12 +12,14 @@ package trust
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/fsutil"
 )
@@ -52,11 +54,27 @@ func Derive(home, dir string) (Result, error) {
 		return r, nil
 	}
 	r.Main = main
+	// Adapter writers serialize on a lock of their own: the store is
+	// replaced by rename, so a lock on it would not outlive a write.
+	// Antigravity's own writes do not take it; a read inside the lock keeps
+	// that window to the write itself.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	unlock, err := fsutil.Flock(ctx, filepath.Join(home, ".local", "state", "rex-amq-adapter", "trust.lock"))
+	if err != nil {
+		return r, err
+	}
+	defer unlock()
 	raw, err := os.ReadFile(r.Store)
 	if errors.Is(err, os.ErrNotExist) {
 		r.Note = "no trust store; the user has trusted nothing in Antigravity"
 		return r, nil
 	}
+	if err != nil {
+		return r, err
+	}
+	// A managed store is a symlink: update the file it names, keep the link.
+	target, err := filepath.EvalSymlinks(r.Store)
 	if err != nil {
 		return r, err
 	}
@@ -78,14 +96,14 @@ func Derive(home, dir string) (Result, error) {
 	if err != nil {
 		return r, fmt.Errorf("%s: %w", r.Store, err)
 	}
-	info, err := os.Stat(r.Store)
+	info, err := os.Stat(target)
 	if err != nil {
 		return r, err
 	}
-	if err := fsutil.WriteAtomic(r.Store, out); err != nil {
+	if err := fsutil.WriteAtomic(target, out); err != nil {
 		return r, err
 	}
-	if err := os.Chmod(r.Store, info.Mode().Perm()); err != nil {
+	if err := os.Chmod(target, info.Mode().Perm()); err != nil {
 		return r, err
 	}
 	r.Written = true
@@ -93,12 +111,18 @@ func Derive(home, dir string) (Result, error) {
 	return r, nil
 }
 
-// lookup finds path among the trusted workspaces. Antigravity stores each
-// directory as the user opened it; a case-insensitive file system makes two
-// spellings one directory, so the comparison folds case.
+// lookup finds the entry that names path's directory. Antigravity stores
+// each directory as the user opened it, so entries compare by file identity:
+// on a case-insensitive volume two spellings are one directory, on a
+// case-sensitive one they are two, and an entry that no longer exists names
+// nothing.
 func lookup(trusted []string, path string) (string, bool) {
+	want, err := os.Stat(path)
+	if err != nil {
+		return "", false
+	}
 	for _, t := range trusted {
-		if strings.EqualFold(filepath.Clean(t), path) {
+		if info, err := os.Stat(t); err == nil && os.SameFile(info, want) {
 			return t, true
 		}
 	}
@@ -239,6 +263,24 @@ func MainCheckout(dir string) (main string, ok bool, err error) {
 		return "", false, nil
 	}
 	if info, err := os.Stat(filepath.Join(commonDir, "HEAD")); err != nil || info.IsDir() {
+		return "", false, nil
+	}
+	// The registration must point back at this very .git file: a copied
+	// pointer in another directory names a gitdir that registers someone else.
+	back, err := os.ReadFile(filepath.Join(gitdir, "gitdir"))
+	if err != nil {
+		return "", false, nil
+	}
+	registered := strings.TrimSpace(string(back))
+	if !filepath.IsAbs(registered) {
+		registered = filepath.Join(gitdir, registered)
+	}
+	regInfo, err := os.Stat(registered)
+	if err != nil {
+		return "", false, nil
+	}
+	ownInfo, err := os.Stat(filepath.Join(dir, ".git"))
+	if err != nil || !os.SameFile(regInfo, ownInfo) {
 		return "", false, nil
 	}
 	return filepath.Dir(commonDir), true, nil
