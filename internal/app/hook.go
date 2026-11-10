@@ -261,10 +261,10 @@ func (e Env) identityNotice(ctx context.Context, a Adoption, unread int) string 
 		notice += "\n\n" + brief
 	}
 	// After the briefing, so it reads as the word on whom "the human" means;
-	// a goal agent hears this from its own role prompt.
-	if a.Record.Role != core.GoalRole {
-		if goal := core.GoalNotice(a.Mates); goal != "" {
-			notice += "\n\n" + goal
+	// an orchestrator hears this from its own role prompt.
+	if a.Record.Role != core.OrchestratorRole {
+		if orch := core.OrchestratorNotice(a.Mates); orch != "" {
+			notice += "\n\n" + orch
 		}
 	}
 	return notice

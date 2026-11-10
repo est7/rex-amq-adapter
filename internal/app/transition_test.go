@@ -62,7 +62,7 @@ func recordNamed(t *testing.T, e Env, h core.Handle) store.Record {
 	return store.Record{}
 }
 
-// One failed send must not leave an idle goal agent unaware that its peer left:
+// One failed send must not leave an idle orchestrator unaware that its peer left:
 // nothing else would ever tell it.
 func TestADepartureFinishesAfterItsMailFailed(t *testing.T) {
 	e := realAmqEnv(t, &fakeTerm{})
@@ -71,7 +71,7 @@ func TestADepartureFinishesAfterItsMailFailed(t *testing.T) {
 	if err := os.WriteFile(fail, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	windowAgent(t, e, "claude-goal-01", core.Claude, core.GoalRole)
+	windowAgent(t, e, "claude-orch-01", core.Claude, core.OrchestratorRole)
 	peer := windowAgent(t, e, "codex-reviewer-01", core.Codex, "reviewer")
 	amqThat(t, &e, fail, `*" send "*`)
 
@@ -84,7 +84,7 @@ func TestADepartureFinishesAfterItsMailFailed(t *testing.T) {
 	if err := e.Collect(ctx); err == nil {
 		t.Fatal("collection hid that the departure is still unfinished")
 	}
-	if n := unreadOf(t, e, "claude-goal-01"); n != 0 {
+	if n := unreadOf(t, e, "claude-orch-01"); n != 0 {
 		t.Fatalf("setup: %d messages arrived while send failed", n)
 	}
 	if err := os.Remove(fail); err != nil {
@@ -93,8 +93,8 @@ func TestADepartureFinishesAfterItsMailFailed(t *testing.T) {
 	if err := e.Collect(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if n := unreadOf(t, e, "claude-goal-01"); n != 1 {
-		t.Fatalf("the goal agent got %d messages after the retry", n)
+	if n := unreadOf(t, e, "claude-orch-01"); n != 1 {
+		t.Fatalf("the orchestrator got %d messages after the retry", n)
 	}
 	if r := recordNamed(t, e, peer.Handle); r.Unfinished != "" {
 		t.Fatalf("the departure stayed unfinished: %q", r.Unfinished)
@@ -102,13 +102,13 @@ func TestADepartureFinishesAfterItsMailFailed(t *testing.T) {
 	if err := e.Collect(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if n := unreadOf(t, e, "claude-goal-01"); n != 1 {
+	if n := unreadOf(t, e, "claude-orch-01"); n != 1 {
 		t.Fatalf("a finished departure was told again: %d messages", n)
 	}
 }
 
 // An ordinary tab has nothing to finish, whatever the mailers do.
-func TestADepartureWithoutAGoalAgentFinishesAtOnce(t *testing.T) {
+func TestADepartureWithoutAnOrchestratorFinishesAtOnce(t *testing.T) {
 	e := realAmqEnv(t, &fakeTerm{})
 	windowAgent(t, e, "claude-01", core.Claude, "")
 	peer := windowAgent(t, e, "codex-reviewer-01", core.Codex, "reviewer")
@@ -275,9 +275,9 @@ func TestSupervisingAWindowHoldsTheLockBriefly(t *testing.T) {
 	}
 }
 
-// Pi has no Stop hook: settling is the end of its turn, so a goal watcher that
+// Pi has no Stop hook: settling is the end of its turn, so an orchestrator watcher that
 // gave up comes back there.
-func TestAPiGoalAgentsWatcherComesBackWhenItSettles(t *testing.T) {
+func TestAPiOrchestratorsWatcherComesBackWhenItSettles(t *testing.T) {
 	term := &fakeTerm{state: "idle"}
 	e := realAmqEnv(t, term)
 	ctx := context.Background()
@@ -287,7 +287,7 @@ func TestAPiGoalAgentsWatcherComesBackWhenItSettles(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.SelfBin = self
-	r := windowAgent(t, e, "pi-goal-01", core.Pi, core.GoalRole)
+	r := windowAgent(t, e, "pi-orch-01", core.Pi, core.OrchestratorRole)
 	r.BlockID = block
 	if err := e.Store.PutRecord(r); err != nil {
 		t.Fatal(err)
@@ -301,7 +301,7 @@ func TestAPiGoalAgentsWatcherComesBackWhenItSettles(t *testing.T) {
 			return
 		}
 		if time.Now().After(end) {
-			t.Fatal("settling did not start the goal watcher")
+			t.Fatal("settling did not start the orchestrator watcher")
 		}
 	}
 }
@@ -310,7 +310,7 @@ func TestAPiGoalAgentsWatcherComesBackWhenItSettles(t *testing.T) {
 // one every other rule reads: a pane's label is overwritten at adoption and a
 // resumed session may land in a pane labelled for something else.
 func TestAResumedAgentKeepsItsRoleWhateverThePaneSays(t *testing.T) {
-	term := &fakeTerm{state: "idle", label: "goal"}
+	term := &fakeTerm{state: "idle", label: "orchestrator"}
 	e := realAmqEnv(t, term)
 	ctx := context.Background()
 	loc := Location{Block: block}
@@ -345,9 +345,9 @@ func TestAwaitWaitsForTheAdoptionToFinish(t *testing.T) {
 	}
 }
 
-// A goal agent owns its session's task, so it hears of a departure from any
+// An orchestrator owns its session's task, so it hears of a departure from any
 // tab of the session and from none outside it.
-func TestAGoalAgentHearsOfADepartureAnywhereInItsSession(t *testing.T) {
+func TestAnOrchestratorHearsOfADepartureAnywhereInItsSession(t *testing.T) {
 	for _, c := range []struct {
 		name                    string
 		goalSession, goalWindow string
@@ -359,11 +359,11 @@ func TestAGoalAgentHearsOfADepartureAnywhereInItsSession(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			e := realAmqEnv(t, &fakeTerm{})
-			goal := windowAgent(t, e, "claude-goal-01", core.Claude, core.GoalRole)
-			goal.SessionID, goal.WindowID = c.goalSession, c.goalWindow
+			orch := windowAgent(t, e, "claude-orch-01", core.Claude, core.OrchestratorRole)
+			orch.SessionID, orch.WindowID = c.goalSession, c.goalWindow
 			peer := windowAgent(t, e, "codex-reviewer-01", core.Codex, "reviewer")
 			peer.SessionID, peer.WindowID = c.peerSession, c.peerWindow
-			for _, r := range []store.Record{goal, peer} {
+			for _, r := range []store.Record{orch, peer} {
 				if err := e.Store.PutRecord(r); err != nil {
 					t.Fatal(err)
 				}
@@ -371,8 +371,8 @@ func TestAGoalAgentHearsOfADepartureAnywhereInItsSession(t *testing.T) {
 			if err := e.park(context.Background(), peer, store.DepartSessionEnd); err != nil {
 				t.Fatal(err)
 			}
-			if n := unreadOf(t, e, "claude-goal-01"); n != c.want {
-				t.Errorf("the goal agent got %d messages, want %d", n, c.want)
+			if n := unreadOf(t, e, "claude-orch-01"); n != c.want {
+				t.Errorf("the orchestrator got %d messages, want %d", n, c.want)
 			}
 		})
 	}

@@ -98,7 +98,7 @@ func TestJoiningTheTabsOwnCrewOrARole(t *testing.T) {
 	}
 }
 
-func TestJoiningAsTheGoalAgentStartsItsWatcher(t *testing.T) {
+func TestJoiningAsTheOrchestratorStartsItsWatcher(t *testing.T) {
 	e, _ := joinWorld(t, "Window 1a2b")
 	started := filepath.Join(t.TempDir(), "started")
 	self := filepath.Join(t.TempDir(), "self.sh")
@@ -106,7 +106,7 @@ func TestJoiningAsTheGoalAgentStartsItsWatcher(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.SelfBin = self
-	if _, err := e.Join(context.Background(), Location{Block: "block:a"}, "", "goal"); err != nil {
+	if _, err := e.Join(context.Background(), Location{Block: "block:a"}, "", "orchestrator"); err != nil {
 		t.Fatal(err)
 	}
 	for end := time.Now().Add(3 * time.Second); ; time.Sleep(20 * time.Millisecond) {
@@ -114,7 +114,7 @@ func TestJoiningAsTheGoalAgentStartsItsWatcher(t *testing.T) {
 			return
 		}
 		if time.Now().After(end) {
-			t.Fatal("joining as the goal agent did not start its watcher")
+			t.Fatal("joining as the orchestrator did not start its watcher")
 		}
 	}
 }

@@ -181,7 +181,7 @@ agent. Adoption, in order:
 3. **New name.** `<kind>-<NN>`, with the lowest `NN` from `01` that is not
    taken. The kind is always the agent's own.
 
-**Role, owned by the record.** What an agent is for (`reviewer`, `goal`) is
+**Role, owned by the record.** What an agent is for (`reviewer`, `orchestrator`) is
 `record.role`, not part of the handle, so an agent can take a role, or
 change it, and keep its handle (`join`, below). A new agent takes the role its
 pane label names (`rex split --label reviewer -- codex --no-daemon` → handle
@@ -191,7 +191,7 @@ shows (`reviewer(codex-01)` → `reviewer`). Rex's default label `shell` and a
 bare kind carry no role. A resumed or re-adopted agent keeps its record's
 role; one that has none takes the role of a launcher-written label, never of
 a label the adapter wrote for an earlier agent in the pane
-(`core.LauncherLabel`). The role chooses the briefing and makes a goal agent;
+(`core.LauncherLabel`). The role chooses the briefing and makes an orchestrator;
 notices name it beside the kind (`codex-01 (codex, reviewer)`), and `who`
 shows it.
 
@@ -470,7 +470,7 @@ lifecycle lock, which also serialises agents that start together:
   live agent recorded in the same session. The record keeps the session and
   window its block was last seen in (`session_id`, `window_id`), because a
   crashed agent's block is already gone when collection finds it. Each session reconciliation
-  (`who`, a goal watcher) writes the layout into the records.
+  (`who`, an orchestrator watcher) writes the layout into the records.
 - A send to a departed handle succeeds in amq, and its mail waits for a resume
   that may never come. Sending is a tool call, so the sender's next hook reads
   its outbox past `ledger/<handle>.sent`. New mail makes it check the agents
@@ -486,7 +486,7 @@ lifecycle lock, which also serialises agents that start together:
   previous owner's mail nor that mail is told. Pi's mail watcher turns any
   notice into a turn, so there the bounce waits for its next run. Mail read before the agent left is not told, and
   mail that goes unread after the sender's check is covered by the note below;
-  an idle sender hears that only in a goal session. Mail to itself and to a handle
+  an idle sender hears that only in an orchestrator session. Mail to itself and to a handle
   with no record is not checked, and ids that sort before the cursor (a parallel
   send, a clock stepping back) are missed.
 - A queued note is delivered once, at the mate's next prompt:
@@ -512,7 +512,7 @@ labels say what kind of
 team it is and what each member does. The tab label names a crew, the pane
 label a role, which the record keeps. From then on the record is the role:
 the label is overwritten, a resumed agent may land in any pane, and briefing and
-goal behaviour both read it. An agent learns both with its identity, at
+orchestrator behaviour both read it. An agent learns both with its identity, at
 adoption:
 
 - The crew's `team-conventions.md` (who leads, the order of handoffs, when to
@@ -554,58 +554,60 @@ adoption:
   tab after the crew, unless another live agent is in the tab (that agent's
   crew would change under it: the error says to open a new tab with `tab`),
   and takes R or the crew's lead. The role goes into the record under the
-  lifecycle lock, the pane is relabelled, a goal agent's watcher starts, and
+  lifecycle lock, the pane is relabelled, an orchestrator's watcher starts, and
   the briefing is printed with the members still to start. Later adoptions
   keep the role.
 
-**Goal agents.** A session normally has the user present: they see an agent
-stop, so the adapter adds nothing. An agent in a pane labelled `goal` changes
-that. It owns a goal and runs it unattended, so the session needs no setting: a
-live goal agent is the mode, and it is also who to tell. (Runner's `goal.md` is a mission
-template and implies nothing about attendance; this meaning is the adapter's.
-The crew file stays out of the role lookup, and the prompt is `roles/goal.md`.)
+**Orchestrators.** A session normally has the user present: they see an agent
+stop, so the adapter adds nothing. An agent in a pane labelled `orchestrator` changes
+that. It owns a goal and coordinates the session, so it is who to tell: peers
+take to it what they would take to the user, and the watcher wakes it when an
+agent departs. Whether the user stays is the goal contract's to say, not the
+adapter's. (Runner's `goal.md` is a mission template and implies nothing about
+attendance. The crew file stays out of the role lookup, and the prompt is
+`roles/orchestrator.md`.)
 
-- A goal agent stands in for the human. Crew conventions, role prompts, briefs,
+- An orchestrator stands in for the human. Crew conventions, role prompts, briefs,
   and project instructions (`AGENTS.md`, `CLAUDE.md`) all say "ask the human"
   or "wait for the user", and an agent obeys the highest-ranked text it sees, so
   one line in `roles/goal.md` cannot overrule them. Every other agent's start
   notice therefore ends, after its briefing, with `core.GoalNotice`: what its
-  texts would take to the human goes to the goal agent (each one named, with a
+  texts would take to the human goes to the orchestrator (each one named, with a
   fallback when there are several), the crew's own report chain stays, and the
   human keeps a closed set (an irreversible step, discarding uncommitted
   changes nobody in the run made included; an outward action or landing nobody
   authorized; a missing device, account, credential, or permission), which
-  nobody works around. A goal agent that arrives later, or an agent that takes
-  the goal role with `join`, appends the same text, naming every goal agent in
-  the session, to a note for each non-goal mate; that note waits for the mate's
+  nobody works around. An orchestrator that arrives later, or an agent that takes
+  the orchestrator role with `join`, appends the same text, naming every orchestrator in
+  the session, to a note for each non-orchestrator mate; that note waits for the mate's
   next prompt, so an idle peer learns it only then. `join` adds it to the
-  briefing it prints for any other role. `roles/goal.md` says the same from the goal's side, with the
+  briefing it prints for any other role. `roles/goal.md` says the same from the orchestrator's side, with the
   brief's named checkpoints added to the closed set.
-- Departure (`park`) also mails every live goal agent in the record's session,
+- Departure (`park`) also mails every live orchestrator in the record's session,
   naming the agent and the session to resume. A window note waits for a prompt,
-  and an idle goal agent has none coming, so this is mail: the doorbell wakes it,
+  and an idle orchestrator has none coming, so this is mail: the doorbell wakes it,
   and a working one hears through its hooks. Nothing else would tell it, so a
-  failed send is retried by collection (section 6), and a goal agent may hear
-  twice. Recovery is the goal agent's decision; the adapter restarts nothing.
-- If the goal agent itself departs, the first other agent in the session is
+  failed send is retried by collection (section 6), and an orchestrator may hear
+  twice. Recovery is the orchestrator's decision; the adapter restarts nothing.
+- If the orchestrator itself departs, the first other agent in the session is
   mailed to report and stop, without taking over. Its turn ending reaches the
   user through their notification hooks.
 - A hook-less departure (a crash, and possibly a closed pane) has nothing to
-  react to, so each goal agent has a watcher: a detached
+  react to, so each orchestrator has a watcher: a detached
   `__internal watch <server> <handle>` that reconciles its session every 5 s. One
   `flock` per handle keeps it single; adoption and the end of a turn (`Stop`,
   Pi's settle) start it when missing.
-  It exits when the goal agent is no longer live, or after a minute of failed
+  It exits when the orchestrator is no longer live, or after a minute of failed
   looks, since without a Rex server it would otherwise run forever. It costs one
-  process and only goal sessions pay it.
+  process and only orchestrator sessions pay it.
 - Permission and question dialogs are not events here: the user's notification
-  hooks already report them, and a goal agent must not answer a peer's
+  hooks already report them, and an orchestrator must not answer a peer's
   permission dialog.
-- The adapter cannot tell who closed a pane, so a goal agent that closes its own
+- The adapter cannot tell who closed a pane, so an orchestrator that closes its own
   peer hears about it too, which costs it one short turn.
 - Sessions come from records, as for any departure, and a crashed agent's
   block can no longer be placed, so the watcher's reconciliation keeps them
-  current: an agent moved into a goal agent's session is announced there, and
+  current: an agent moved into an orchestrator's session is announced there, and
   one moved out is not. A block moved to another session keeps its record until
   that session is reconciled.
 - The peer told to report is the first Claude Code or Codex agent when there is
@@ -614,8 +616,8 @@ The crew file stays out of the role lookup, and the prompt is `roles/goal.md`.)
   nobody.
 
 Evidence (**reproduced**, `internal/e2e/goal_test.go`, scripted agents on a real
-Rex server and real `amq wake`): an idle goal agent hears a peer quit, crash, or
-have its pane closed; a peer hears the goal agent crash; a tab without a goal
+Rex server and real `amq wake`): an idle orchestrator hears a peer quit, crash, or
+have its pane closed; a peer hears the orchestrator crash; a tab without a goal
 agent stays silent; the watcher ends with its agent. Real agents: section 11.
 
 Evidence (2026-10-29, **reproduced**): `tab pair --role implementer` opened a
@@ -757,8 +759,8 @@ with a timeout (both harnesses run hook commands through a shell). Outside Rex
 |---|---|---|
 | `SessionStart` | Garbage-collect, adopt this block (handle, mailbox, record, waker, session-mates), print identity, unread count, session-mates, and the crew and role briefing as context | 5 s / 4.5 s |
 | `UserPromptSubmit`, `PostToolUse` | Announce new ids from the ledger; `UserPromptSubmit` also delivers queued window notes. Filesystem only, no subprocess, unless the agent must be adopted first or has just sent mail (measured p50 6.8 ms, max 16.7 ms over 30 runs, before the outbox check) | 3 s / 2.5 s |
-| `Stop` | Block once per section 3, then supervise the waker: one `amq wake check` (about 60 ms), and `Ensure` when it is dead or runs an older binary; a goal agent's missing watcher is started here too | 3 s / 2.5 s (supervision bounded to 1.5 s) |
-| `SessionEnd` | Retire the block's waker (identified by amq's saved target), set `departed_at` and `depart_reason` (`session_end`), drop the agent's undelivered window notes, queue "left" notes for its session-mates, and mail the goal agent if the session has one | 3 s / 2.5 s (Codex clamps to 3 s) |
+| `Stop` | Block once per section 3, then supervise the waker: one `amq wake check` (about 60 ms), and `Ensure` when it is dead or runs an older binary; an orchestrator's missing watcher is started here too | 3 s / 2.5 s (supervision bounded to 1.5 s) |
+| `SessionEnd` | Retire the block's waker (identified by amq's saved target), set `departed_at` and `depart_reason` (`session_end`), drop the agent's undelivered window notes, queue "left" notes for its session-mates, and mail the orchestrator if the session has one | 3 s / 2.5 s (Codex clamps to 3 s) |
 
 **Antigravity** has no `SessionEnd` hook and no `stop_hook_active`. Its agents
 depart through collection, and its Stop hook blocks only for mail never
@@ -848,12 +850,12 @@ Until then a hook adopts again, and that attempt is an arrival: the agent gets
 its identity and its mates their join note. It has a mailbox from the start, so
 a retry that fails is logged and its mail is still announced. Repeating an
 adoption of an agent already adopted tells nobody. A departure finishes when
-the agent's notes are dropped and any goal agent is mailed. Each retry has 1 s,
+the agent's notes are dropped and any orchestrator is mailed. Each retry has 1 s,
 because it runs inside an adoption's hook budget. "Left" notes are advice and
 go once. Records written before this field read as finished.
 
 **Garbage collection** runs over every record before every adoption and on
-`rex-amq-adapter collect`; `rex-amq-adapter who` and a goal watcher run it only
+`rex-amq-adapter collect`; `rex-amq-adapter who` and an orchestrator watcher run it only
 for their tab, and it finishes unfinished departures. A live record whose block is gone or now runs
 a different foreground process is parked like a departure (waker retired,
 `departed_at` set, session-mates told it left); a departed record older than 7 days is deleted with its
@@ -963,7 +965,7 @@ Overridable with `REX_AMQ_ADAPTER_HOME` (tests use a temporary directory).
 ├── task-asked/<handle>       the last Claude Code session asked for a task at its first prompt
 ├── pending/<block>           a doorbell written and not yet known to be submitted
 ├── adopt-failed/<block>      when adopting the block's agent last failed (back-off)
-├── watch/<handle>.lock       held by a goal agent's watcher
+├── watch/<handle>.lock       held by an orchestrator's watcher
 └── lifecycle.lock
 ```
 
@@ -1037,20 +1039,20 @@ file written by `setup`, Codex hooks passed inline with `-c`.
 | Pi `/quit` | record departed |
 | Mail to idle Pi with an unsent draft in its editor | delivered with a turn of its own; the draft stayed in the editor |
 
-Goal agents, run on 2026-11-01 with real Claude Code 2.1.314 (Sonnet goal, Haiku
+Orchestrators, run on 2026-11-01 with real Claude Code 2.1.314 (Sonnet goal, Haiku
 peers), Codex 0.166.0, and amq 0.120.0, on a private Rex server started with a
 fake `HOME` so that every agent and peer ran this build's hooks and guide:
 
 | Scenario | Observed |
 |---|---|
 | Claude started in an untrusted folder | `await` reported `trust_screen`; once the dialog was answered, `adopted` in 2 s |
-| Goal agent launched with `tab pair --role goal` | `claude-goal-01`, or `codex-goal-01` once its first turn started; watcher running in both cases (handles of the version tested, before roles left them) |
-| Goal agent starts a Codex peer whose hooks need review | it left the dialog to the user and said so; it resumed on its own after they were approved |
-| Claude goal, Codex peer killed with SIGKILL mid-`sleep` | parked in 3.7 s, doorbell `accepted` in 4.0 s; the goal agent counted a failed attempt, resumed the same session in a new pane, got its handle back, finished, verified the file, closed the peer |
+| Orchestrator launched with `tab pair --role orchestrator` | `claude-orch-01`, or `codex-orch-01` once its first turn started; watcher running in both cases (handles of the version tested, before roles left them) |
+| Orchestrator starts a Codex peer whose hooks need review | it left the dialog to the user and said so; it resumed on its own after they were approved |
+| Claude goal, Codex peer killed with SIGKILL mid-`sleep` | parked in 3.7 s, doorbell `accepted` in 4.0 s; the orchestrator counted a failed attempt, resumed the same session in a new pane, got its handle back, finished, verified the file, closed the peer |
 | Codex goal, Claude peer killed with SIGKILL mid-`sleep` | parked in 2.1 s, doorbell `accepted` in 2.7 s; same recovery, and it ran `await` on each peer |
-| Goal agent closes its finished peer | one more doorbell and a turn of 4 s; no loop |
-| Goal agent killed with SIGKILL, idle Claude peer beside it | parked within 1 s; the peer drained, said it would not take over, and ended its turn; watcher exited |
-| Tab without a goal agent, one agent killed | no mail, no doorbell, no watcher; the survivor has one window note waiting for its next prompt |
+| Orchestrator closes its finished peer | one more doorbell and a turn of 4 s; no loop |
+| Orchestrator killed with SIGKILL, idle Claude peer beside it | parked within 1 s; the peer drained, said it would not take over, and ended its turn; watcher exited |
+| Tab without an orchestrator, one agent killed | no mail, no doorbell, no watcher; the survivor has one window note waiting for its next prompt |
 
 Transitions, run on 2026-11-01 the same way, with the faults injected on real
 agents:
@@ -1058,9 +1060,9 @@ agents:
 | Scenario | Observed |
 |---|---|
 | Claude started while its waker could not start | `await` timed out, record `unfinished: adoption`, mailbox usable; after the fault cleared, the next prompt finished it in about 1 s and Claude named its handle |
-| Claude goal agent, idle, Codex peer reports | doorbell `accepted`, mail drained, the goal agent verified the file |
+| Claude orchestrator, idle, Codex peer reports | doorbell `accepted`, mail drained, the orchestrator verified the file |
 | Codex peer killed with SIGKILL while `amq send` failed | parked in 2.4 s, record `unfinished: departure`, waker gone, no mail; after the fault cleared, finished in 3.1 s, doorbell `accepted` in 3.6 s, one message |
-| `/exit` beside a goal agent, then `/exit` of the goal agent | `SessionEnd` parked each within about 1 s; the goal agent, then the surviving peer, was mailed; the watcher exited |
+| `/exit` beside an orchestrator, then `/exit` of the orchestrator | `SessionEnd` parked each within about 1 s; the orchestrator, then the surviving peer, was mailed; the watcher exited |
 | All agents gone | every record departed and finished, no waker, no watcher, no failed adoption |
 
 Identity continuity, run on 2026-11-01 against the working tree with real Rex
@@ -1098,5 +1100,5 @@ and Claude Code 2.1.316, adapter state isolated by `REX_AMQ_ADAPTER_HOME`:
 | Installing hooks invalidates Codex trust | Append-only placement |
 | A waker dies and an idle agent never hears of mail | Every `Stop` checks the waker and revives a dead one, and `who` does so for its session when a sender checks on a silent peer; nothing in Rex would notice (executed by the independent review, fixed and tested) |
 | A hook dies between writing a record and finishing | `unfinished` names the transition and a later hook or collection finishes it (executed in `transition_test.go`) |
-| One failed send leaves an idle goal agent unaware a peer left | The departure stays unfinished until the mail goes out; a duplicate costs one turn (executed in `transition_test.go`) |
+| One failed send leaves an idle orchestrator unaware a peer left | The departure stays unfinished until the mail goes out; a duplicate costs one turn (executed in `transition_test.go`) |
 | Pi's notice is lost after the ledger marks it announced | The ledger is written before `pi.sendMessage` returns; if delivery fails there, an idle Pi is reminded after 5 minutes, and `agent_before_settle` reminds at the end of the next run. While a Pi dialog is open (`ui_prompt_start` … `ui_prompt_end`) the extension asks the adapter nothing, so no mail is marked announced; it delivers when the dialog closes (not yet exercised end to end) |

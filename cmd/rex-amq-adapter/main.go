@@ -64,15 +64,6 @@ Agent and user commands:
                             then delivers. Guards: a request kind only, no cycle,
                             depth 2 at most, 6 live agents per session at most, and
                             a new agent only with the user's words or grant file
-  scoped [--scope push+PR|merge] -- PROGRAM [ARGS...]
-                            run PROGRAM (an agent you start by hand) under a
-                            scope: it may push its own branches and open MRs,
-                            and git refuses its write to the base branch unless
-                            the scope is merge (summon does this itself)
-  scope-worktree <dir> [--scope push+PR|merge]
-                            cap every push made in the linked worktree DIR,
-                            whoever makes it: git refuses a write to the base
-                            branch unless the scope is merge
   trust <dir>               derive, for a linked worktree of a repository the user
                             already trusts in Antigravity, that trust for DIR, so a
                             peer started there meets no folder dialog; writes
@@ -122,10 +113,6 @@ func run(args []string) int {
 		return runTab(rest)
 	case "trust":
 		return runTrust(rest)
-	case "scoped":
-		return runScoped(rest)
-	case "scope-worktree":
-		return runScopeWorktree(rest)
 	case "summon":
 		return runSummon(rest)
 	case "join":
@@ -458,8 +445,8 @@ func runEvents(args []string) int {
 	return 0
 }
 
-// runWatch is the goal watcher, started by a goal agent's hooks. It ends with
-// its goal agent.
+// runWatch is the orchestrator watcher, started by a orchestrator's hooks. It ends with
+// its orchestrator.
 func runWatch(server, handle string) int {
 	h, err := core.ParseHandle(handle)
 	if err != nil {
@@ -469,7 +456,7 @@ func runWatch(server, handle string) int {
 	if err != nil {
 		return fail(err)
 	}
-	if err := env.WatchGoal(context.Background(), h); err != nil {
+	if err := env.WatchOrchestrator(context.Background(), h); err != nil {
 		return fail(err)
 	}
 	return 0
@@ -612,7 +599,7 @@ func runSummon(args []string) int {
 	if err != nil {
 		return fail(err)
 	}
-	out := map[string]any{"scope": res.Scope, "scope_why": res.ScopeWhy, "action": res.Action, "handles": res.Handles, "block": res.Block, "reason": res.Reason, "parent": res.Parent, "depth": res.Depth, "mailed": res.Mailed}
+	out := map[string]any{"action": res.Action, "handles": res.Handles, "block": res.Block, "reason": res.Reason, "parent": res.Parent, "depth": res.Depth, "mailed": res.Mailed}
 	if res.Block != "" {
 		wctx, wcancel := context.WithTimeout(context.Background(), *timeout)
 		st, err := env.AwaitStartup(wctx, res.Block)
@@ -642,53 +629,6 @@ func runSummon(args []string) int {
 	if st, ok := out["startup"].(core.StartupStatus); ok && st != core.StartupAdopted {
 		return 1 // launched, not adopted: the mail waits, the user must look at the pane
 	}
-	return 0
-}
-
-// runScoped replaces itself with the program under the scope's environment,
-// so the agent keeps this process's place in the pane's process tree.
-func runScoped(args []string) int {
-	fs := flag.NewFlagSet("scoped", flag.ContinueOnError)
-	scope := fs.String("scope", app.ScopePR, "push+PR or merge")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	argv := fs.Args()
-	if len(argv) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: rex-amq-adapter scoped [--scope push+PR|merge] -- PROGRAM [ARGS...]")
-		return 2
-	}
-	env, err := app.NewEnv(os.Getenv("REX_SERVER"))
-	if err != nil {
-		return fail(err)
-	}
-	if err := env.ExecScoped(*scope, argv); err != nil {
-		return fail(err)
-	}
-	return 0
-}
-
-// runScopeWorktree caps every push made in a linked task worktree. It needs
-// no AMQ identity: a headless run calls it as well as an agent in Rex.
-func runScopeWorktree(args []string) int {
-	fs := flag.NewFlagSet("scope-worktree", flag.ContinueOnError)
-	scope := fs.String("scope", app.ScopePR, "push+PR or merge")
-	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		fmt.Fprintln(os.Stderr, "usage: rex-amq-adapter scope-worktree <dir> [--scope push+PR|merge]")
-		return 2
-	}
-	dir := args[0]
-	if err := fs.Parse(args[1:]); err != nil {
-		return 2
-	}
-	paths, err := store.DefaultPaths()
-	if err != nil {
-		return fail(err)
-	}
-	if err := (app.Env{Paths: paths}).ScopeWorktree(dir, *scope); err != nil {
-		return fail(err)
-	}
-	fmt.Printf("scoped %s: %s\n", dir, *scope)
 	return 0
 }
 

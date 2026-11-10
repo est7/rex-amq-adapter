@@ -13,7 +13,7 @@ import (
 	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
-// stuckWorld is a goal session: goal-01 in block:g, codex (the peer) in
+// stuckWorld is an orchestrator session: orch-01 in block:g, codex (the peer) in
 // block:a at 84x3, owned by the app, with unread mail. The clock stands at
 // *now and moves only when a test moves it. With history, 40 s of
 // box_not_found lie behind the peer; without, the test runs the real
@@ -28,19 +28,19 @@ func stuckWorld(t *testing.T, box, state string, history bool) (Env, *fakeTerm, 
 	e := realAmqEnv(t, term)
 	now := time.Date(2026, 11, 10, 2, 0, 0, 0, time.UTC)
 	e.Now = func() time.Time { return now }
-	goal := store.Record{Handle: "goal-01", Kind: core.Claude, Server: "unix:///fake.sock", BlockID: "block:g", SessionID: "session:s", WindowID: "window:1", AgentPID: 1, Role: core.GoalRole, AdoptedAt: now}
+	orch := store.Record{Handle: "orch-01", Kind: core.Claude, Server: "unix:///fake.sock", BlockID: "block:g", SessionID: "session:s", WindowID: "window:1", AgentPID: 1, Role: core.OrchestratorRole, AdoptedAt: now}
 	peer := store.Record{Handle: "codex", Kind: core.Codex, Server: "unix:///fake.sock", BlockID: block, SessionID: "session:s", WindowID: "window:1", AgentPID: term.fgPID, AdoptedAt: now}
-	for _, r := range []store.Record{goal, peer} {
+	for _, r := range []store.Record{orch, peer} {
 		if err := e.Store.PutRecord(r); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for _, h := range []string{"goal-01", "codex"} {
+	for _, h := range []string{"orch-01", "codex"} {
 		if err := amq.EnsureMailbox(context.Background(), e.AmqBin, e.Paths.Root(), h); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := amq.Send(context.Background(), e.AmqBin, e.Paths.Root(), "goal-01", "codex", "brief", "do the thing"); err != nil {
+	if err := amq.Send(context.Background(), e.AmqBin, e.Paths.Root(), "orch-01", "codex", "brief", "do the thing"); err != nil {
 		t.Fatal(err)
 	}
 	if history {
@@ -54,12 +54,12 @@ func stuckWorld(t *testing.T, box, state string, history bool) (Env, *fakeTerm, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	return e, term, goal, s, &now
+	return e, term, orch, s, &now
 }
 
 func goalInbox(t *testing.T, e Env) []string {
 	t.Helper()
-	ids, err := amq.Unread(e.Paths.Root(), "goal-01")
+	ids, err := amq.Unread(e.Paths.Root(), "orch-01")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,8 +83,8 @@ func acted(term *fakeTerm) string {
 // unowned, verified, delivered to, and placed in the overflow tab; nothing
 // the user looks at changes, and the goal hears nothing.
 func TestWatchdogRecoversATinyPaneOnce(t *testing.T) {
-	e, term, goal, s, _ := stuckWorld(t, "", "idle", true)
-	e.watchdog(context.Background(), goal, s)
+	e, term, orch, s, _ := stuckWorld(t, "", "idle", true)
+	e.watchdog(context.Background(), orch, s)
 	if got := acted(term); got != "detaches "+block+"; resizes "+block+":120x30; moves "+block+"->window:overflow; writes 1" && len(term.writes) != 1 {
 		t.Fatalf("%s", got)
 	}
@@ -107,37 +107,37 @@ func TestWatchdogRecoversATinyPaneOnce(t *testing.T) {
 		t.Fatal("the episode stayed open after delivery")
 	}
 	if len(goalInbox(t, e)) != 0 {
-		t.Fatal("the goal agent was reported to for a recovered pane")
+		t.Fatal("the orchestrator was reported to for a recovered pane")
 	}
-	e.watchdog(context.Background(), goal, s)
+	e.watchdog(context.Background(), orch, s)
 	if len(term.detaches) != 1 || len(term.moves) != 1 || len(term.writes) != 1 {
 		t.Fatalf("the second look acted again: %s", acted(term))
 	}
 }
 
 // (2) A draft in the box or a permission prompt, as the real injector records
-// them, gets zero keystrokes, zero detaches, and the goal agent one report.
+// them, gets zero keystrokes, zero detaches, and the orchestrator one report.
 func TestWatchdogOnlyReportsADraftOrADialog(t *testing.T) {
 	for name, tc := range map[string]struct{ box, state, code string }{
 		"draft":      {"half-typed question", "idle", core.ReportDraft},
 		"permission": {"", "blocked", core.ReportBlocked},
 	} {
 		t.Run(name, func(t *testing.T) {
-			e, term, goal, s, now := stuckWorld(t, tc.box, tc.state, false)
+			e, term, orch, s, now := stuckWorld(t, tc.box, tc.state, false)
 			term.rows[block] = 24
 			if o := inject(e); o.Progress != core.Deferred {
 				t.Fatalf("the injector should defer: %+v", o)
 			}
 			*now = now.Add(time.Minute)
-			e.watchdog(context.Background(), goal, s)
+			e.watchdog(context.Background(), orch, s)
 			*now = now.Add(core.StuckFor + time.Second) // the blocked look holds a block for StuckFor
-			e.watchdog(context.Background(), goal, s)
-			e.watchdog(context.Background(), goal, s)
+			e.watchdog(context.Background(), orch, s)
+			e.watchdog(context.Background(), orch, s)
 			if len(term.writes) != 0 || len(term.keys) != 0 || len(term.detaches) != 0 || len(term.moves) != 0 {
 				t.Fatalf("acted: %s keys %q", acted(term), term.keys)
 			}
 			if inbox := goalInbox(t, e); len(inbox) != 1 {
-				t.Fatalf("goal reports: %v (want exactly one)", inbox)
+				t.Fatalf("orchestrator reports: %v (want exactly one)", inbox)
 			}
 			if tc.code == core.ReportDraft {
 				if r := reported(t, e); len(r) != 1 || r[tc.code].IsZero() {
@@ -153,7 +153,7 @@ func TestWatchdogOnlyReportsADraftOrADialog(t *testing.T) {
 // detached record is still live after collection, the block is verified,
 // delivered to, and placed.
 func TestWatchdogRestartContinuesTheEpisodeWithoutASecondDetach(t *testing.T) {
-	e, term, goal, s, _ := stuckWorld(t, "", "idle", true)
+	e, term, orch, s, _ := stuckWorld(t, "", "idle", true)
 	term.windows[block] = ""
 	term.detached = map[string]bool{block: true}
 	delete(term.owner, block)
@@ -172,7 +172,7 @@ func TestWatchdogRestartContinuesTheEpisodeWithoutASecondDetach(t *testing.T) {
 	if rec, ok, _ := e.Store.Record(block); !ok || !rec.Live() {
 		t.Fatalf("a detached block's record was collected as departed: %+v %v", rec, ok)
 	}
-	e.watchdog(context.Background(), goal, s)
+	e.watchdog(context.Background(), orch, s)
 	if len(term.detaches) != 0 || len(term.resizes) != 0 {
 		t.Fatalf("acted on the layout again: %s", acted(term))
 	}
@@ -187,12 +187,12 @@ func TestWatchdogRestartContinuesTheEpisodeWithoutASecondDetach(t *testing.T) {
 // A journal written before the detach, with the block still placed, means
 // nothing happened: the episode runs once from the start.
 func TestWatchdogJournalBeforeDetachIsNotADetach(t *testing.T) {
-	e, term, goal, s, _ := stuckWorld(t, "", "idle", true)
+	e, term, orch, s, _ := stuckWorld(t, "", "idle", true)
 	ep := core.Episode{ID: "interrupted", Handle: "codex", Block: block, PID: term.fgPID, Session: "session:s", StartedAt: e.Now().Add(-time.Minute), Window: "window:1"}
 	if err := e.Store.PutEpisode(ep); err != nil {
 		t.Fatal(err)
 	}
-	e.watchdog(context.Background(), goal, s)
+	e.watchdog(context.Background(), orch, s)
 	if len(term.detaches) != 1 || len(term.writes) != 1 || term.windows[block] != "window:overflow" {
 		t.Fatalf("%s window %q", acted(term), term.windows[block])
 	}
@@ -201,21 +201,21 @@ func TestWatchdogJournalBeforeDetachIsNotADetach(t *testing.T) {
 // A placement that fails leaves the block detached, reports once, and is
 // retried on the next look without a second detach; delivery is not undone.
 func TestWatchdogReportsAPlacementThatFailedAndRetries(t *testing.T) {
-	e, term, goal, s, _ := stuckWorld(t, "", "idle", true)
+	e, term, orch, s, _ := stuckWorld(t, "", "idle", true)
 	term.moveErr = errors.New("rex busy")
-	e.watchdog(context.Background(), goal, s)
+	e.watchdog(context.Background(), orch, s)
 	if len(term.detaches) != 1 || len(term.writes) != 1 || term.windows[block] != "" {
 		t.Fatalf("%s window %q", acted(term), term.windows[block])
 	}
 	if inbox := goalInbox(t, e); len(inbox) != 1 || reported(t, e)[core.ReportRecoveryFailed].IsZero() {
-		t.Fatalf("goal reports: %v, reported %v", inbox, reported(t, e))
+		t.Fatalf("orchestrator reports: %v, reported %v", inbox, reported(t, e))
 	}
-	e.watchdog(context.Background(), goal, s) // still failing: no second report, no second detach
+	e.watchdog(context.Background(), orch, s) // still failing: no second report, no second detach
 	if len(term.detaches) != 1 || len(goalInbox(t, e)) != 1 {
 		t.Fatalf("second look: %s reports %v", acted(term), goalInbox(t, e))
 	}
 	term.moveErr = nil
-	e.watchdog(context.Background(), goal, s)
+	e.watchdog(context.Background(), orch, s)
 	if term.windows[block] != "window:overflow" || len(term.detaches) != 1 {
 		t.Fatalf("not placed on retry: %s window %q", acted(term), term.windows[block])
 	}
@@ -228,26 +228,26 @@ func TestWatchdogReportsAPlacementThatFailedAndRetries(t *testing.T) {
 // doorbell, the block is still placed in the overflow tab on the next look
 // so the user can find it, and the goal hears once that recovery failed.
 func TestWatchdogReportsAResizeThatDidNotTake(t *testing.T) {
-	e, term, goal, s, _ := stuckWorld(t, "", "idle", true)
+	e, term, orch, s, _ := stuckWorld(t, "", "idle", true)
 	term.resizeIgnored = true
-	e.watchdog(context.Background(), goal, s)
+	e.watchdog(context.Background(), orch, s)
 	if len(term.detaches) != 1 || len(term.writes) != 0 {
 		t.Fatalf("%s", acted(term))
 	}
-	e.watchdog(context.Background(), goal, s)
-	e.watchdog(context.Background(), goal, s)
+	e.watchdog(context.Background(), orch, s)
+	e.watchdog(context.Background(), orch, s)
 	if term.windows[block] != "window:overflow" || len(term.writes) != 0 || len(term.detaches) != 1 {
 		t.Fatalf("%s window %q", acted(term), term.windows[block])
 	}
 	if inbox := goalInbox(t, e); len(inbox) != 1 || reported(t, e)[core.ReportRecoveryFailed].IsZero() {
-		t.Fatalf("goal reports: %v, reported %v", inbox, reported(t, e))
+		t.Fatalf("orchestrator reports: %v, reported %v", inbox, reported(t, e))
 	}
 }
 
 // A pane the user moved out of the overflow tab mid-episode is left alone
 // and reported once, whatever its size now.
 func TestWatchdogLeavesAPaneTheUserMoved(t *testing.T) {
-	e, term, goal, s, _ := stuckWorld(t, "", "idle", true)
+	e, term, orch, s, _ := stuckWorld(t, "", "idle", true)
 	term.tabs["window:overflow"] = core.OverflowTab
 	term.windows["block:overflow-anchor"] = "window:overflow"
 	term.rows[block] = 24
@@ -255,27 +255,27 @@ func TestWatchdogLeavesAPaneTheUserMoved(t *testing.T) {
 	if err := e.Store.PutEpisode(ep); err != nil {
 		t.Fatal(err)
 	}
-	e.watchdog(context.Background(), goal, s) // block:a sits in window:1, not the overflow tab
-	e.watchdog(context.Background(), goal, s)
+	e.watchdog(context.Background(), orch, s) // block:a sits in window:1, not the overflow tab
+	e.watchdog(context.Background(), orch, s)
 	if len(term.detaches) != 0 || len(term.moves) != 0 || len(term.writes) != 0 {
 		t.Fatalf("acted: %s", acted(term))
 	}
 	if inbox := goalInbox(t, e); len(inbox) != 1 || reported(t, e)[core.ReportMovedByUser].IsZero() {
-		t.Fatalf("goal reports: %v, reported %v", inbox, reported(t, e))
+		t.Fatalf("orchestrator reports: %v, reported %v", inbox, reported(t, e))
 	}
 }
 
 // A normal-sized pane that still finds no box is reported, not touched; so
 // is a pane whose foreground is not the agent.
 func TestWatchdogDoesNotTouchAPaneItShouldNot(t *testing.T) {
-	e, term, goal, s, _ := stuckWorld(t, "", "idle", true)
+	e, term, orch, s, _ := stuckWorld(t, "", "idle", true)
 	term.rows[block] = 24
-	e.watchdog(context.Background(), goal, s)
+	e.watchdog(context.Background(), orch, s)
 	if len(term.detaches) != 0 || len(term.moves) != 0 || len(term.writes) != 0 {
 		t.Fatalf("acted: %s", acted(term))
 	}
 	if inbox := goalInbox(t, e); len(inbox) != 1 || reported(t, e)[core.ReportBoxNotFound].IsZero() {
-		t.Fatalf("goal reports: %v, reported %v", inbox, reported(t, e))
+		t.Fatalf("orchestrator reports: %v, reported %v", inbox, reported(t, e))
 	}
 	e2, term2, goal2, s2, _ := stuckWorld(t, "", "idle", true)
 	term2.fgs = map[string]rex.Process{block: {PID: term2.fgPID + 100000, Name: "vim"}}
@@ -291,7 +291,7 @@ func TestWatchdogDoesNotTouchAPaneItShouldNot(t *testing.T) {
 func TestWatchdogRestartContinuesBeforeTheResize(t *testing.T) {
 	for name, journaled := range map[string]bool{"detach journaled": true, "detach not journaled": false} {
 		t.Run(name, func(t *testing.T) {
-			e, term, goal, s, _ := stuckWorld(t, "", "idle", true)
+			e, term, orch, s, _ := stuckWorld(t, "", "idle", true)
 			term.windows[block] = ""
 			term.detached = map[string]bool{block: true}
 			delete(term.owner, block)
@@ -299,7 +299,7 @@ func TestWatchdogRestartContinuesBeforeTheResize(t *testing.T) {
 			if err := e.Store.PutEpisode(ep); err != nil {
 				t.Fatal(err)
 			}
-			e.watchdog(context.Background(), goal, s)
+			e.watchdog(context.Background(), orch, s)
 			if len(term.detaches) != 0 || len(term.resizes) != 1 || len(term.writes) != 1 || term.windows[block] != "window:overflow" {
 				t.Fatalf("%s window %q", acted(term), term.windows[block])
 			}
@@ -310,7 +310,7 @@ func TestWatchdogRestartContinuesBeforeTheResize(t *testing.T) {
 // A detached block the user placed in a window of their own is theirs: no
 // doorbell from the watchdog, one moved_by_user report, nothing else.
 func TestWatchdogLeavesAManualPlacementAlone(t *testing.T) {
-	e, term, goal, s, _ := stuckWorld(t, "", "idle", true)
+	e, term, orch, s, _ := stuckWorld(t, "", "idle", true)
 	term.windows[block] = "window:user-chosen"
 	term.tabs["window:user-chosen"] = "User"
 	term.rows[block] = 24
@@ -318,46 +318,46 @@ func TestWatchdogLeavesAManualPlacementAlone(t *testing.T) {
 	if err := e.Store.PutEpisode(ep); err != nil {
 		t.Fatal(err)
 	}
-	e.watchdog(context.Background(), goal, s)
-	e.watchdog(context.Background(), goal, s)
+	e.watchdog(context.Background(), orch, s)
+	e.watchdog(context.Background(), orch, s)
 	if len(term.writes) != 0 || len(term.moves) != 0 || len(term.detaches) != 0 || term.windows[block] != "window:user-chosen" {
 		t.Fatalf("%s window %q", acted(term), term.windows[block])
 	}
 	if inbox := goalInbox(t, e); len(inbox) != 1 || reported(t, e)[core.ReportMovedByUser].IsZero() {
-		t.Fatalf("goal reports: %v, reported %v", inbox, reported(t, e))
+		t.Fatalf("orchestrator reports: %v, reported %v", inbox, reported(t, e))
 	}
 	if cur, _, _ := e.Store.Episode(block); !cur.Taken {
 		t.Fatalf("episode: %+v", cur)
 	}
 }
 
-// The goal agent's own pane can be recovered too: after a detach the
+// The orchestrator's own pane can be recovered too: after a detach the
 // watcher's next look still finds its session, and the block is placed
 // before the look ends even when the resize did not take.
-func TestWatchdogRecoversTheGoalsOwnPane(t *testing.T) {
-	e, term, goal, s, _ := stuckWorld(t, "", "idle", false)
-	goal.AgentPID = term.fgPID
-	if err := e.Store.PutRecord(goal); err != nil {
+func TestWatchdogRecoversTheOrchestratorsOwnPane(t *testing.T) {
+	e, term, orch, s, _ := stuckWorld(t, "", "idle", false)
+	orch.AgentPID = term.fgPID
+	if err := e.Store.PutRecord(orch); err != nil {
 		t.Fatal(err)
 	}
-	term.rows[goal.BlockID] = 3
-	term.owner[goal.BlockID] = "client:app"
+	term.rows[orch.BlockID] = 3
+	term.owner[orch.BlockID] = "client:app"
 	term.resizeIgnored = true
-	if err := amq.Send(context.Background(), e.AmqBin, e.Paths.Root(), "codex", "goal-01", "brief", "do this"); err != nil {
+	if err := amq.Send(context.Background(), e.AmqBin, e.Paths.Root(), "codex", "orch-01", "brief", "do this"); err != nil {
 		t.Fatal(err)
 	}
 	for _, at := range []time.Time{e.Now().Add(-40 * time.Second), e.Now().Add(-10 * time.Second)} {
-		if err := e.Store.RecordInject(goal.Handle, core.Outcome{Progress: core.Deferred, Code: "box_not_found"}, at); err != nil {
+		if err := e.Store.RecordInject(orch.Handle, core.Outcome{Progress: core.Deferred, Code: "box_not_found"}, at); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := e.watchPeer(context.Background(), goal, s, goal); err != nil {
+	if err := e.watchPeer(context.Background(), orch, s, orch); err != nil {
 		t.Fatal(err)
 	}
-	if term.windows[goal.BlockID] != "window:overflow" {
-		t.Fatalf("the goal's block was left detached: window %q, %s", term.windows[goal.BlockID], acted(term))
+	if term.windows[orch.BlockID] != "window:overflow" {
+		t.Fatalf("the orchestrator's block was left detached: window %q, %s", term.windows[orch.BlockID], acted(term))
 	}
-	if err := e.watchOnce(context.Background(), goal); err != nil {
+	if err := e.watchOnce(context.Background(), orch); err != nil {
 		t.Fatalf("the watcher cannot look again: %v", err)
 	}
 }

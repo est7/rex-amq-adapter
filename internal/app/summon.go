@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -30,35 +29,6 @@ import (
 
 // SummonEnv is the environment variable a launched agent carries.
 const SummonEnv = "REX_AMQ_SUMMON"
-
-// scopeLine is a contract's SCOPE line: its first word is the scope.
-var scopeLine = regexp.MustCompile(`(?m)^\s*-?\s*SCOPE:\s*(push\+PR|merge)\b`)
-
-// peerScope is the scope (REX_AMQ_SCOPE) a summoned peer runs under. Every peer may
-// commit, push its own branches and open MRs (push+PR); writing the base
-// (merge) needs both the brief and the user's own grant file it cites to say
-// merge (skill autopilot, Enter 2). Only structure is read: the file must
-// exist, the brief must name its path, and each must hold a SCOPE line.
-func peerScope(r SummonRequest) (scope, why string) {
-	if r.Grant == "" {
-		return ScopePR, "no grant file"
-	}
-	raw, err := os.ReadFile(r.Grant)
-	if err != nil {
-		return ScopePR, "the grant file is not readable: " + err.Error()
-	}
-	if !strings.Contains(r.Body, r.Grant) {
-		return ScopePR, "the brief does not cite " + r.Grant
-	}
-	m := scopeLine.FindSubmatch(raw)
-	if m == nil || string(m[1]) != ScopeMerge {
-		return ScopePR, r.Grant + " has no SCOPE: merge line"
-	}
-	if b := scopeLine.FindStringSubmatch(r.Body); b == nil || b[1] != ScopeMerge {
-		return ScopePR, "the brief's SCOPE is not merge"
-	}
-	return ScopeMerge, "the brief and the grant's SCOPE are merge"
-}
 
 // SummonRequest is what the summoner asks.
 type SummonRequest struct {
@@ -82,12 +52,9 @@ type SummonResult struct {
 	Label   string        `json:"label,omitempty"`
 	Token   string        `json:"-"`
 	Reason  string        `json:"reason,omitempty"`
-	// Scope is the scope a launched agent runs under, and why.
-	Scope    string      `json:"scope,omitempty"`
-	ScopeWhy string      `json:"scope_why,omitempty"`
-	Parent   core.Handle `json:"parent,omitempty"`
-	Depth    int         `json:"depth"`
-	Mailed   bool        `json:"mailed"` // the message is in a mailbox already
+	Parent  core.Handle   `json:"parent,omitempty"`
+	Depth   int           `json:"depth"`
+	Mailed  bool          `json:"mailed"` // the message is in a mailbox already
 }
 
 // Summon resolves r.Target in the caller's session and acts.
@@ -280,9 +247,7 @@ func (e Env) resume(ctx context.Context, caller store.Record, s Session, r Summo
 		return res, e.summonLog(caller, r, res)
 	}
 	label := core.PaneLabel(departed.Handle, departed.Role, departed.Task)
-	scope, why := peerScope(r)
-	res.Scope, res.ScopeWhy = scope, why
-	block, err := e.launch(ctx, caller, s, label, cwd, res.Token, scope, cmd)
+	block, err := e.launch(ctx, caller, s, label, cwd, res.Token, cmd)
 	if err != nil {
 		_ = e.Store.DeleteSummon(res.Token)
 		return res, err
@@ -319,9 +284,7 @@ func (e Env) start(ctx context.Context, caller store.Record, s Session, r Summon
 	}
 	brief := r.Body + "\n\nYou were started by " + string(caller.Handle) + " (summon on send). Report back with `amq send --to " + string(caller.Handle) + "`; the same request waits in your mailbox once you are adopted, so you can `amq reply` to it."
 	label := role + " | " + core.Task(r.Subject)
-	scope, why := peerScope(r)
-	res.Scope, res.ScopeWhy = scope, why
-	block, err := e.launch(ctx, caller, s, label, caller.Cwd, res.Token, scope, startCommand(kind, brief))
+	block, err := e.launch(ctx, caller, s, label, caller.Cwd, res.Token, startCommand(kind, brief))
 	if err != nil {
 		_ = e.Store.DeleteSummon(res.Token)
 		return res, err
@@ -332,17 +295,12 @@ func (e Env) start(ctx context.Context, caller store.Record, s Session, r Summon
 
 // launch opens the pane beside the caller, or in a new tab when the
 // caller's pane is too small to split, running cmd with the token in its
-// environment and under scope (peerScope, scopeEnv): whatever the peer types,
-// git refuses its write to the base branch unless the scope is merge.
-func (e Env) launch(ctx context.Context, caller store.Record, s Session, label, cwd, token, scope string, cmd []string) (string, error) {
+// environment.
+func (e Env) launch(ctx context.Context, caller store.Record, s Session, label, cwd, token string, cmd []string) (string, error) {
 	if cwd == "" {
 		cwd, _ = os.Getwd()
 	}
-	senv, err := e.scopeEnv(scope, nil)
-	if err != nil {
-		return "", err
-	}
-	cmd = append(append([]string{"env", SummonEnv + "=" + token}, senv...), cmd...)
+	cmd = append([]string{"env", SummonEnv + "=" + token}, cmd...)
 	if size, err := e.Rex.Size(ctx, caller.BlockID); err == nil && size.Rows > 0 && size.Rows < 2*core.TinyRows {
 		_, shell, err := e.Rex.NewTab(ctx, s.id, label)
 		if err != nil {
@@ -403,7 +361,7 @@ func (e Env) Deliver(ctx context.Context, loc Location, h core.Handle, kind, sub
 
 // summonLog appends one JSON line per summon to logs/summon.log.
 func (e Env) summonLog(caller store.Record, r SummonRequest, res SummonResult) error {
-	entry := map[string]any{"scope": res.Scope, "scope_why": res.ScopeWhy, "at": e.Now().UTC().Format(time.RFC3339), "summoner": caller.Handle, "parent": caller.Parent, "depth": caller.Depth, "target": r.Target, "kind": r.Kind, "subject": r.Subject, "action": res.Action, "handles": res.Handles, "block": res.Block, "reason": res.Reason, "grant": r.Grant, "asked": r.Asked}
+	entry := map[string]any{"at": e.Now().UTC().Format(time.RFC3339), "summoner": caller.Handle, "parent": caller.Parent, "depth": caller.Depth, "target": r.Target, "kind": r.Kind, "subject": r.Subject, "action": res.Action, "handles": res.Handles, "block": res.Block, "reason": res.Reason, "grant": r.Grant, "asked": r.Asked}
 	b, _ := json.Marshal(entry)
 	if err := os.MkdirAll(e.Paths.Logs(), 0o700); err != nil {
 		return err

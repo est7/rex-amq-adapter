@@ -76,9 +76,9 @@ type Record struct {
 	WindowID       string `json:"window_id,omitempty"`
 	AgentPID       int    `json:"agent_pid"`
 	AgentSessionID string `json:"agent_session_id,omitempty"`
-	// Role is what the agent is for ("reviewer", "goal"; "" for none): the
+	// Role is what the agent is for ("reviewer", "orchestrator"; "" for none): the
 	// launcher's pane label at adoption, or a crew role taken with join. It
-	// chooses the agent's briefing and makes a goal agent; the pane label
+	// chooses the agent's briefing and makes an orchestrator; the pane label
 	// shows it before the handle.
 	Role string `json:"role,omitempty"`
 	// Task is what the agent said it is doing (core.Task), shown after the
@@ -239,7 +239,7 @@ func (s Store) readRecords() ([]Record, error) {
 	return out, nil
 }
 
-// LockWatch is held by h's goal watcher, so there is at most one.
+// LockWatch is held by h's orchestrator watcher, so there is at most one.
 func (s Store) LockWatch(ctx context.Context, h core.Handle) (func(), error) {
 	return fsutil.Flock(ctx, filepath.Join(s.P.Home, "watch", string(h)+".lock"))
 }
@@ -557,7 +557,7 @@ func (s Store) taskAskedPath(h core.Handle) string {
 }
 
 // LockInject serialises the writers of one block's prompt: the injector that
-// amq wake runs and the goal watchdog, which re-reads the block under it.
+// amq wake runs and the orchestrator watchdog, which re-reads the block under it.
 func (s Store) LockInject(ctx context.Context, block string) (func(), error) {
 	return fsutil.Flock(ctx, filepath.Join(s.P.injects(), "."+fileKey(block)+".lock"))
 }
@@ -603,7 +603,7 @@ func (s Store) ClearEpisode(block string) error {
 	return err
 }
 
-// HealthMark is what the watchdog last told the goal agent about an
+// HealthMark is what the watchdog last told the orchestrator about an
 // agent's transcript, so each finding is reported once.
 type HealthMark struct {
 	LastErrorID string    `json:"last_error_id,omitempty"`

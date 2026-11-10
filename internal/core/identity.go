@@ -107,7 +107,7 @@ func InitialTask(label string) string {
 }
 
 // LauncherLabel reports whether a pane label was written by whoever started
-// the agent ("reviewer | fix login", "goal") rather than by the adapter for an
+// the agent ("reviewer | fix login", "orchestrator") rather than by the adapter for an
 // agent in the pane before ("claude-04 | x", "architect(claude-04)"): a role
 // named there is the new agent's to take.
 func LauncherLabel(label string) bool {

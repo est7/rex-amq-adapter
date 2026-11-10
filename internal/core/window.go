@@ -56,28 +56,28 @@ func JoinedNotice(p Peer) string {
 	return fmt.Sprintf("AMQ: %s joined your Rex session. Reach it with `amq send --to %s`.", p.named(), p.Handle)
 }
 
-// GoalNotice tells an agent that the goal agents among mates run its session
-// unattended, so a question, report, or decision its texts would take to the
-// human goes to a goal agent instead; "" when mates hold none. The goal
-// agent's own role prompt says the same from its side, and the human keeps
-// the same closed set in both.
-func GoalNotice(mates []Peer) string {
-	var goals []string
+// OrchestratorNotice tells an agent that an orchestrator among mates
+// coordinates its session, so a question, report, or decision its texts would
+// take to the human goes to that orchestrator instead; "" when mates hold
+// none. The orchestrator's role prompt says the same from its side, and it
+// alone says what still waits for the human.
+func OrchestratorNotice(mates []Peer) string {
+	var orchs []string
 	for _, m := range mates {
-		if m.Role == GoalRole {
-			goals = append(goals, string(m.Handle))
+		if m.Role == OrchestratorRole {
+			orchs = append(orchs, string(m.Handle))
 		}
 	}
 	var to string
-	switch len(goals) {
+	switch len(orchs) {
 	case 0:
 		return ""
 	case 1:
-		to = goals[0]
+		to = orchs[0]
 	default:
-		to = fmt.Sprintf("the goal agent that briefed you or your lead (one of %s; if neither did, %s)", strings.Join(goals, ", "), goals[0])
+		to = fmt.Sprintf("the orchestrator that briefed you or your lead (one of %s; if neither did, %s)", strings.Join(orchs, ", "), orchs[0])
 	}
-	return fmt.Sprintf("This session runs unattended: the human is away. Where your crew's conventions, your role prompt, your brief, or the project's instructions (AGENTS.md, CLAUDE.md) would take a question, a report, or a decision to the human or user, send it to %s instead; this overrides those texts. Keep your crew's own report chain: only what would reach the human goes there. The human still decides the closed set in skill `autopilot` (Boundaries), and only it; the goal agent holds those for them, and nobody works around them.", to)
+	return fmt.Sprintf("An orchestrator coordinates this session. Where your crew's conventions, your role prompt, your brief, or the project's instructions (AGENTS.md, CLAUDE.md) would take a question, a report, or a decision to the human or user, send it to %s instead; this overrides those texts. Keep your crew's own report chain: only what would reach the human goes there. What still waits for the human is the orchestrator's to say, and a permission or trust dialog always does: nobody approves it or works around it for them.", to)
 }
 
 // LeftNotice tells a session-mate that p's agent session ended. Its handle stays
@@ -100,13 +100,13 @@ func UndeliveredNotice(to Handle, occupant *Peer, mates []Peer) string {
 	return notice + " Run `rex-amq-adapter who` for the agents in your Rex session."
 }
 
-// GoalRole is the pane label of the agent that owns a goal. A session holding
-// one runs unattended.
-const GoalRole = "goal"
+// OrchestratorRole is the pane label of the agent that owns a goal. A session holding
+// one routes to it what its other agents would take to the user.
+const OrchestratorRole = "orchestrator"
 
-// GoalPeerLeft is the mail telling a goal agent that p departed. session is
+// OrchestratorPeerLeft is the mail telling an orchestrator that p departed. session is
 // p's agent session, "" when unknown.
-func GoalPeerLeft(p Peer, session string) (subject, body string) {
+func OrchestratorPeerLeft(p Peer, session string) (subject, body string) {
 	subject = fmt.Sprintf("%s left your Rex session", p.Handle)
 	body = fmt.Sprintf("%s left your Rex session: it quit, crashed, or its pane closed. You own the goal, so decide what happens next: resume it, start a new agent, or change the plan.", p.named())
 	if session != "" {
@@ -115,27 +115,27 @@ func GoalPeerLeft(p Peer, session string) (subject, body string) {
 	return subject, body + " It cannot read a reply to this mail."
 }
 
-// GoalAgentLeft is the mail telling a surviving agent that the goal agent
+// OrchestratorLeft is the mail telling a surviving agent that the orchestrator
 // departed.
-func GoalAgentLeft(p Peer) (subject, body string) {
+func OrchestratorLeft(p Peer) (subject, body string) {
 	return fmt.Sprintf("%s left your Rex session", p.Handle), fmt.Sprintf("%s, which owned this session's goal, left your Rex session: it quit, crashed, or its pane closed, and nobody is running the goal. Finish the step you are on, say in your final message that the goal stopped and where the work stands, then end your turn: do not take over the goal. It cannot read a reply to this mail.", p.Handle)
 }
 
-// DepartureMail says who hears at once that left departed: every goal agent
+// DepartureMail says who hears at once that left departed: every orchestrator
 // among others, the other live agents in its session, or, when left owned the
-// goal, one peer to report that. to is empty when no goal agent is involved.
+// goal, one peer to report that. to is empty when no orchestrator is involved.
 func DepartureMail(left Peer, session string, others []Peer) (to []Handle, subject, body string) {
 	for _, p := range others {
-		if p.Role == GoalRole {
+		if p.Role == OrchestratorRole {
 			to = append(to, p.Handle)
 		}
 	}
 	switch {
 	case len(to) > 0:
-		subject, body = GoalPeerLeft(left, session)
-	case left.Role == GoalRole && len(others) > 0:
+		subject, body = OrchestratorPeerLeft(left, session)
+	case left.Role == OrchestratorRole && len(others) > 0:
 		to = []Handle{reportingPeer(others).Handle}
-		subject, body = GoalAgentLeft(left)
+		subject, body = OrchestratorLeft(left)
 	}
 	return to, subject, body
 }

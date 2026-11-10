@@ -35,7 +35,7 @@ var builtin embed.FS
 const Conventions = "team-conventions.md"
 
 // notRoles are files in a crew directory that are not role prompts. A crew's
-// goal.md describes a mission (Runner's format); the goal role's prompt is
+// goal.md describes a mission (Runner's format); the orchestrator role's prompt is
 // roles/goal.md.
 var notRoles = map[string]bool{Conventions: true, "goal.md": true, "readme.md": true}
 

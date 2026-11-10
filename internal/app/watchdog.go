@@ -17,8 +17,8 @@ import (
 	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
-// The goal watchdog runs inside the goal watcher's tick (goal.go). For every
-// live agent of the goal's session it looks for mail the injector could not
+// The orchestrator watchdog runs inside the orchestrator watcher's tick (goal.go). For every
+// live agent of the orchestrator's session it looks for mail the injector could not
 // deliver for StuckFor, and acts only on the one shape it can fix without
 // the user: a pane too small to draw the input box. Without touching what
 // the user looks at, it detaches that block from its window (the program
@@ -27,7 +27,7 @@ import (
 // verifies the size and an empty box, hands the mail to the injector, and
 // places the block in the session's overflow tab, where it keeps that size
 // until the user opens the tab. Every other stuck shape it only reports to
-// the goal agent: a trust or permission dialog, a draft in the box, a box
+// the orchestrator: a trust or permission dialog, a draft in the box, a box
 // that stays missing at a normal size, a pane the user moved meanwhile, a
 // recovery that did not take.
 
@@ -40,11 +40,11 @@ const actBudget = 20 * time.Second
 const settleFor = 3 * time.Second
 
 // watchdog runs one look over every live agent in s. Errors are reported and
-// swallowed: a failing watchdog must not stop the goal watcher.
-func (e Env) watchdog(ctx context.Context, goal store.Record, s Session) {
+// swallowed: a failing watchdog must not stop the orchestrator watcher.
+func (e Env) watchdog(ctx context.Context, orch store.Record, s Session) {
 	recs, err := e.Store.Records()
 	if err != nil {
-		e.wdLog(goal, store.Record{}, "records", "", err.Error())
+		e.wdLog(orch, store.Record{}, "records", "", err.Error())
 		return
 	}
 	for _, r := range recs {
@@ -52,15 +52,15 @@ func (e Env) watchdog(ctx context.Context, goal store.Record, s Session) {
 			continue
 		}
 		if !r.Kind.InProcess() {
-			if err := e.watchPeer(ctx, goal, s, r); err != nil {
-				e.wdLog(goal, r, "error", "", err.Error())
+			if err := e.watchPeer(ctx, orch, s, r); err != nil {
+				e.wdLog(orch, r, "error", "", err.Error())
 			}
 		}
-		if err := e.health(ctx, goal, s, r); err != nil {
-			e.wdLog(goal, r, "error", "", err.Error())
+		if err := e.health(ctx, orch, s, r); err != nil {
+			e.wdLog(orch, r, "error", "", err.Error())
 		}
-		if err := e.blocked(ctx, goal, s, r); err != nil {
-			e.wdLog(goal, r, "error", "", err.Error())
+		if err := e.blocked(ctx, orch, s, r); err != nil {
+			e.wdLog(orch, r, "error", "", err.Error())
 		}
 	}
 }
@@ -114,13 +114,13 @@ func (e Env) observe(ctx context.Context, rec store.Record, unread int, history 
 
 // watchPeer decides and acts for one agent. Whatever happens after a
 // detach, the block is placed in a window again before the look ends.
-func (e Env) watchPeer(ctx context.Context, goal store.Record, s Session, rec store.Record) (err error) {
+func (e Env) watchPeer(ctx context.Context, orch store.Record, s Session, rec store.Record) (err error) {
 	defer func() {
 		ep, open, perr := e.Store.Episode(rec.BlockID)
 		if perr != nil || !open || !ep.Detached || ep.Placed || ep.Taken {
 			return
 		}
-		if perr := e.place(ctx, goal, rec, &ep, s); perr != nil && err == nil {
+		if perr := e.place(ctx, orch, rec, &ep, s); perr != nil && err == nil {
 			err = perr
 		}
 	}()
@@ -138,7 +138,7 @@ func (e Env) watchPeer(ctx context.Context, goal store.Record, s Session, rec st
 	}
 	if open {
 		// The journal says what was attempted; the block says what took.
-		if err := e.reconcile(ctx, goal, rec, &ep); err != nil {
+		if err := e.reconcile(ctx, orch, rec, &ep); err != nil {
 			return err
 		}
 		if ep.Detached && ep.Resized && !ep.Placed && !ep.Taken {
@@ -146,14 +146,14 @@ func (e Env) watchPeer(ctx context.Context, goal store.Record, s Session, rec st
 			// not: the user must be able to find it. One not yet resized
 			// gets its resize first (below), and is placed when the look
 			// ends (the deferred placement above).
-			if err := e.place(ctx, goal, rec, &ep, s); err != nil {
+			if err := e.place(ctx, orch, rec, &ep, s); err != nil {
 				return err
 			}
 		}
 	}
 	if open && (len(unread) == 0 || core.Delivered(history)) {
 		// The mail arrived: the episode is over, whatever it did.
-		e.wdLog(goal, rec, "episode-end", ep.ID, "mail delivered")
+		e.wdLog(orch, rec, "episode-end", ep.ID, "mail delivered")
 		return e.Store.ClearEpisode(rec.BlockID)
 	}
 	l, stuck, err := e.observe(ctx, rec, len(unread), history)
@@ -164,13 +164,13 @@ func (e Env) watchPeer(ctx context.Context, goal store.Record, s Session, rec st
 		now := e.Now()
 		ep = core.Episode{ID: fmt.Sprintf("%s-%d", rec.Handle, now.Unix()), Handle: rec.Handle, Block: rec.BlockID, PID: rec.AgentPID, Session: s.id, StartedAt: now, Reported: map[string]time.Time{}}
 	}
-	e.wdLog(goal, rec, "observe", ep.ID, fmt.Sprintf("unread %d, deferred %s since %s, %dx%d owner %q in %q, status %s/%s, box %s", l.unread, l.code, core.Ago(e.Now().Sub(l.since)), l.columns, l.rows, l.owner, l.window, l.status, l.kind, l.box))
+	e.wdLog(orch, rec, "observe", ep.ID, fmt.Sprintf("unread %d, deferred %s since %s, %dx%d owner %q in %q, status %s/%s, box %s", l.unread, l.code, core.Ago(e.Now().Sub(l.since)), l.columns, l.rows, l.owner, l.window, l.status, l.kind, l.box))
 
 	// A pane the user took (placed themselves, or moved out of the overflow
 	// tab) is theirs, whatever its size.
 	if ep.Taken || ep.Placed && l.window != ep.Overflow {
 		ep.Taken = true
-		return e.report(ctx, goal, rec, &ep, core.ReportMovedByUser, fmt.Sprintf("Its pane is no longer where the watchdog put it (the %s tab), so the watchdog leaves it alone.", core.OverflowTab), l.lines)
+		return e.report(ctx, orch, rec, &ep, core.ReportMovedByUser, fmt.Sprintf("Its pane is no longer where the watchdog put it (the %s tab), so the watchdog leaves it alone.", core.OverflowTab), l.lines)
 	}
 
 	// Zero keystrokes on any dialog or draft. A trust screen or a blocked
@@ -180,7 +180,7 @@ func (e Env) watchPeer(ctx context.Context, goal store.Record, s Session, rec st
 	case l.trust != "", l.status == core.StateBlocked:
 		return nil
 	case l.box == screen.Typed:
-		return e.report(ctx, goal, rec, &ep, core.ReportDraft, "Its input box holds a draft, so no doorbell can be typed.", l.lines)
+		return e.report(ctx, orch, rec, &ep, core.ReportDraft, "Its input box holds a draft, so no doorbell can be typed.", l.lines)
 	}
 
 	if ep.Detached {
@@ -189,36 +189,36 @@ func (e Env) watchPeer(ctx context.Context, goal store.Record, s Session, rec st
 		var inject bool
 		var err error
 		if !ep.Resized && l.window == "" {
-			inject, err = e.resize(ctx, goal, rec, &ep)
+			inject, err = e.resize(ctx, orch, rec, &ep)
 		} else {
-			inject, err = e.verify(ctx, goal, rec, &ep)
+			inject, err = e.verify(ctx, orch, rec, &ep)
 		}
 		if err != nil {
-			return e.handOff(ctx, goal, rec, &ep, s, false, err)
+			return e.handOff(ctx, orch, rec, &ep, s, false, err)
 		}
 		if inject {
-			return e.handOff(ctx, goal, rec, &ep, s, true, nil)
+			return e.handOff(ctx, orch, rec, &ep, s, true, nil)
 		}
-		return e.report(ctx, goal, rec, &ep, core.ReportRecoveryFailed, fmt.Sprintf("Its pane was resized to %dx%d, yet doorbells still find no input box (it measures %dx%d now).", core.RecoverColumns, core.RecoverRows, l.columns, l.rows), l.lines)
+		return e.report(ctx, orch, rec, &ep, core.ReportRecoveryFailed, fmt.Sprintf("Its pane was resized to %dx%d, yet doorbells still find no input box (it measures %dx%d now).", core.RecoverColumns, core.RecoverRows, l.columns, l.rows), l.lines)
 	}
 	if !core.MayMove(l.code, l.columns, l.rows) {
 		if l.code == "box_not_found" {
-			return e.report(ctx, goal, rec, &ep, core.ReportBoxNotFound, fmt.Sprintf("Its pane measures %dx%d, large enough, yet doorbells find no input box.", l.columns, l.rows), l.lines)
+			return e.report(ctx, orch, rec, &ep, core.ReportBoxNotFound, fmt.Sprintf("Its pane measures %dx%d, large enough, yet doorbells find no input box.", l.columns, l.rows), l.lines)
 		}
-		return e.report(ctx, goal, rec, &ep, core.ReportUndelivered, fmt.Sprintf("Every doorbell since %s deferred with %s.", core.Ago(e.Now().Sub(l.since)), l.code), l.lines)
+		return e.report(ctx, orch, rec, &ep, core.ReportUndelivered, fmt.Sprintf("Every doorbell since %s deferred with %s.", core.Ago(e.Now().Sub(l.since)), l.code), l.lines)
 	}
 	if ep.Attempts >= core.MaxAttempts {
-		return e.report(ctx, goal, rec, &ep, core.ReportRecoveryFailed, fmt.Sprintf("Its pane could not be recovered after %d attempts.", ep.Attempts), l.lines)
+		return e.report(ctx, orch, rec, &ep, core.ReportRecoveryFailed, fmt.Sprintf("Its pane could not be recovered after %d attempts.", ep.Attempts), l.lines)
 	}
 	ep.Columns, ep.Rows = l.columns, l.rows
-	inject, err := e.recover(ctx, goal, rec, &ep, s, l)
-	return e.handOff(ctx, goal, rec, &ep, s, inject, err)
+	inject, err := e.recover(ctx, orch, rec, &ep, s, l)
+	return e.handOff(ctx, orch, rec, &ep, s, inject, err)
 }
 
 // handOff gives the mail to the injector once a step verified the pane,
 // then places the pane. It runs after that step returned, so the injector
 // takes the block's lock itself.
-func (e Env) handOff(ctx context.Context, goal store.Record, rec store.Record, ep *core.Episode, s Session, inject bool, err error) error {
+func (e Env) handOff(ctx context.Context, orch store.Record, rec store.Record, ep *core.Episode, s Session, inject bool, err error) error {
 	if err != nil {
 		ep.Attempts++
 		_ = e.Store.PutEpisode(*ep)
@@ -228,7 +228,7 @@ func (e Env) handOff(ctx context.Context, goal store.Record, rec store.Record, e
 		return nil
 	}
 	o := e.Inject(ctx, InjectRequest{Block: rec.BlockID, Handle: rec.Handle, Root: e.Paths.Root()})
-	e.wdLog(goal, rec, "inject", ep.ID, string(o.Progress)+" "+o.Code)
+	e.wdLog(orch, rec, "inject", ep.ID, string(o.Progress)+" "+o.Code)
 	if o.Progress == core.Accepted {
 		ep.Outcome = "recovered"
 	}
@@ -236,12 +236,12 @@ func (e Env) handOff(ctx context.Context, goal store.Record, rec store.Record, e
 		return err
 	}
 	if !ep.Placed {
-		if err := e.place(ctx, goal, rec, ep, s); err != nil {
+		if err := e.place(ctx, orch, rec, ep, s); err != nil {
 			return err
 		}
 	}
 	if o.Progress == core.Accepted {
-		e.wdLog(goal, rec, "episode-end", ep.ID, "recovered: mail delivered")
+		e.wdLog(orch, rec, "episode-end", ep.ID, "recovered: mail delivered")
 		return e.Store.ClearEpisode(rec.BlockID)
 	}
 	return nil
@@ -249,7 +249,7 @@ func (e Env) handOff(ctx context.Context, goal store.Record, rec store.Record, e
 
 // recover detaches rec's block and resizes it, once, under the injector's
 // lock and after re-reading everything the decision rested on.
-func (e Env) recover(ctx context.Context, goal store.Record, rec store.Record, ep *core.Episode, s Session, l look) (inject bool, err error) {
+func (e Env) recover(ctx context.Context, orch store.Record, rec store.Record, ep *core.Episode, s Session, l look) (inject bool, err error) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), actBudget)
 	defer cancel()
 	unlock, err := e.Store.LockInject(ctx, rec.BlockID)
@@ -263,11 +263,11 @@ func (e Env) recover(ctx context.Context, goal store.Record, rec store.Record, e
 		return false, err
 	}
 	if !ok || cur.Handle != rec.Handle || cur.AgentPID != rec.AgentPID || cur.AgentSessionID != rec.AgentSessionID || !cur.Live() {
-		e.wdLog(goal, rec, "abort", ep.ID, "the record changed under the lock")
+		e.wdLog(orch, rec, "abort", ep.ID, "the record changed under the lock")
 		return false, nil
 	}
 	if o, ok := e.checkBinding(ctx, rec); !ok {
-		e.wdLog(goal, rec, "abort", ep.ID, "the pane does not show the agent: "+o.Code)
+		e.wdLog(orch, rec, "abort", ep.ID, "the pane does not show the agent: "+o.Code)
 		return false, nil
 	}
 	status, _, err := e.Rex.ProgramStatus(ctx, rec.BlockID)
@@ -275,7 +275,7 @@ func (e Env) recover(ctx context.Context, goal store.Record, rec store.Record, e
 		return false, err
 	}
 	if st := core.AgentState(status.State); st == core.StateWorking || st == core.StateBlocked {
-		e.wdLog(goal, rec, "abort", ep.ID, "the agent is "+status.State)
+		e.wdLog(orch, rec, "abort", ep.ID, "the agent is "+status.State)
 		return false, nil
 	}
 	size, err := e.Rex.Size(ctx, rec.BlockID)
@@ -283,7 +283,7 @@ func (e Env) recover(ctx context.Context, goal store.Record, rec store.Record, e
 		return false, err
 	}
 	if !core.TinyPane(size.Columns, size.Rows) {
-		e.wdLog(goal, rec, "abort", ep.ID, fmt.Sprintf("the pane grew to %dx%d on its own", size.Columns, size.Rows))
+		e.wdLog(orch, rec, "abort", ep.ID, fmt.Sprintf("the pane grew to %dx%d on its own", size.Columns, size.Rows))
 		return false, nil
 	}
 	vt, err := e.Rex.CaptureVT(ctx, rec.BlockID)
@@ -293,11 +293,11 @@ func (e Env) recover(ctx context.Context, goal store.Record, rec store.Record, e
 	// At this size the box cannot be seen, so a draft cannot be ruled out
 	// here; the capture after the resize is the gate that matters (verify).
 	if _, trust := screen.TrustScreen(string(rec.Kind), vt); trust || screen.Check(string(rec.Kind), vt) == screen.Typed {
-		e.wdLog(goal, rec, "abort", ep.ID, "a dialog or draft appeared")
+		e.wdLog(orch, rec, "abort", ep.ID, "a dialog or draft appeared")
 		return false, nil
 	}
 	if pending, ok, _ := e.Store.Pending(rec.BlockID); ok && pending != "" {
-		e.wdLog(goal, rec, "abort", ep.ID, "the injector has a doorbell pending in this box")
+		e.wdLog(orch, rec, "abort", ep.ID, "the injector has a doorbell pending in this box")
 		return false, nil
 	}
 	blk, err := e.Rex.InspectBlock(ctx, rec.BlockID)
@@ -305,7 +305,7 @@ func (e Env) recover(ctx context.Context, goal store.Record, rec store.Record, e
 		return false, err
 	}
 	if blk.WindowID != l.window {
-		e.wdLog(goal, rec, "abort", ep.ID, "the pane moved between the look and the lock")
+		e.wdLog(orch, rec, "abort", ep.ID, "the pane moved between the look and the lock")
 		return false, nil
 	}
 	ep.Window = blk.WindowID
@@ -314,7 +314,7 @@ func (e Env) recover(ctx context.Context, goal store.Record, rec store.Record, e
 	if err := e.Store.PutEpisode(*ep); err != nil {
 		return false, err
 	}
-	e.wdLog(goal, rec, "detach", ep.ID, fmt.Sprintf("from %s (was %dx%d, owner %q)", ep.Window, size.Columns, size.Rows, size.Owner))
+	e.wdLog(orch, rec, "detach", ep.ID, fmt.Sprintf("from %s (was %dx%d, owner %q)", ep.Window, size.Columns, size.Rows, size.Owner))
 	if err := e.Rex.DetachBlock(ctx, s.id, rec.BlockID); err != nil {
 		return false, fmt.Errorf("detach: %w", err)
 	}
@@ -322,12 +322,12 @@ func (e Env) recover(ctx context.Context, goal store.Record, rec store.Record, e
 	if err := e.Store.PutEpisode(*ep); err != nil {
 		return false, err
 	}
-	return e.resize(ctx, goal, rec, ep)
+	return e.resize(ctx, orch, rec, ep)
 }
 
 // resize gives the detached block its recovery size; a terminal still owned
 // by a client would ignore it, so that is checked first.
-func (e Env) resize(ctx context.Context, goal store.Record, rec store.Record, ep *core.Episode) (inject bool, err error) {
+func (e Env) resize(ctx context.Context, orch store.Record, rec store.Record, ep *core.Episode) (inject bool, err error) {
 	size, err := e.Rex.Size(ctx, rec.BlockID)
 	if err != nil {
 		return false, err
@@ -342,13 +342,13 @@ func (e Env) resize(ctx context.Context, goal store.Record, rec store.Record, ep
 	if err := e.Store.PutEpisode(*ep); err != nil {
 		return false, err
 	}
-	e.wdLog(goal, rec, "resize", ep.ID, fmt.Sprintf("%dx%d requested", core.RecoverColumns, core.RecoverRows))
-	return e.verify(ctx, goal, rec, ep)
+	e.wdLog(orch, rec, "resize", ep.ID, fmt.Sprintf("%dx%d requested", core.RecoverColumns, core.RecoverRows))
+	return e.verify(ctx, orch, rec, ep)
 }
 
 // verify waits, briefly, for the agent to redraw at the new size; large
 // enough with an empty box means the mail can be handed to the injector.
-func (e Env) verify(ctx context.Context, goal store.Record, rec store.Record, ep *core.Episode) (inject bool, err error) {
+func (e Env) verify(ctx context.Context, orch store.Record, rec store.Record, ep *core.Episode) (inject bool, err error) {
 	var size rexSize
 	var box screen.Draft
 	// Bounded by polls, not the clock: tests freeze Env.Now.
@@ -363,17 +363,17 @@ func (e Env) verify(ctx context.Context, goal store.Record, rec store.Record, ep
 		}
 		size, box = rexSize{sz.Columns, sz.Rows}, screen.Check(string(rec.Kind), vt)
 		if box == screen.Typed {
-			return false, e.report(ctx, goal, rec, ep, core.ReportDraft, "After the resize, its input box holds a draft, so no doorbell can be typed.", lastLines(vt, core.ReportLines))
+			return false, e.report(ctx, orch, rec, ep, core.ReportDraft, "After the resize, its input box holds a draft, so no doorbell can be typed.", lastLines(vt, core.ReportLines))
 		}
 		if !core.TinyPane(size.columns, size.rows) && box == screen.Empty {
 			break
 		}
 		if left <= 0 || !sleep(ctx, pollEvery) {
-			e.wdLog(goal, rec, "verify", ep.ID, fmt.Sprintf("%dx%d, box %s: not ready", size.columns, size.rows, box))
+			e.wdLog(orch, rec, "verify", ep.ID, fmt.Sprintf("%dx%d, box %s: not ready", size.columns, size.rows, box))
 			return false, nil
 		}
 	}
-	e.wdLog(goal, rec, "verify", ep.ID, fmt.Sprintf("%dx%d, box empty", size.columns, size.rows))
+	e.wdLog(orch, rec, "verify", ep.ID, fmt.Sprintf("%dx%d, box empty", size.columns, size.rows))
 	ep.Verified = true
 	return true, e.Store.PutEpisode(*ep)
 }
@@ -383,7 +383,7 @@ type rexSize struct{ columns, rows int }
 // reconcile brings the journal up to what the block shows: a detach that
 // took before the journal said so, a placement by the user, a block that
 // sits where the watchdog wanted it.
-func (e Env) reconcile(ctx context.Context, goal store.Record, rec store.Record, ep *core.Episode) error {
+func (e Env) reconcile(ctx context.Context, orch store.Record, rec store.Record, ep *core.Episode) error {
 	blk, err := e.Rex.InspectBlock(ctx, rec.BlockID)
 	if err != nil {
 		return err
@@ -393,16 +393,16 @@ func (e Env) reconcile(ctx context.Context, goal store.Record, rec store.Record,
 	case blk.Placement == "detached" || blk.WindowID == "":
 		if !ep.Detached {
 			ep.Detached, changed = true, true
-			e.wdLog(goal, rec, "reconcile", ep.ID, "the block is detached; the journal did not say so")
+			e.wdLog(orch, rec, "reconcile", ep.ID, "the block is detached; the journal did not say so")
 		}
 	case ep.Detached && !ep.Placed && !ep.Taken:
 		changed = true
 		if ep.Overflow != "" && blk.WindowID == ep.Overflow {
 			ep.Placed = true
-			e.wdLog(goal, rec, "reconcile", ep.ID, "the block sits in the overflow tab; the journal did not say so")
+			e.wdLog(orch, rec, "reconcile", ep.ID, "the block sits in the overflow tab; the journal did not say so")
 		} else {
 			ep.Taken = true
-			e.wdLog(goal, rec, "reconcile", ep.ID, "the user placed the block in "+blk.WindowID+"; it is theirs")
+			e.wdLog(orch, rec, "reconcile", ep.ID, "the user placed the block in "+blk.WindowID+"; it is theirs")
 		}
 	}
 	if changed {
@@ -416,7 +416,7 @@ func (e Env) reconcile(ctx context.Context, goal store.Record, rec store.Record,
 // journaled before the move, so only a block found there counts as placed;
 // one found elsewhere was placed by the user. A failure is reported once
 // and retried on the next look.
-func (e Env) place(ctx context.Context, goal store.Record, rec store.Record, ep *core.Episode, s Session) error {
+func (e Env) place(ctx context.Context, orch store.Record, rec store.Record, ep *core.Episode, s Session) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), actBudget)
 	defer cancel()
 	blk, err := e.Rex.InspectBlock(ctx, rec.BlockID)
@@ -428,7 +428,7 @@ func (e Env) place(ctx context.Context, goal store.Record, rec store.Record, ep 
 			ep.Placed = true
 		} else {
 			ep.Taken = true
-			e.wdLog(goal, rec, "place", ep.ID, "the user placed the block in "+blk.WindowID+"; it is theirs")
+			e.wdLog(orch, rec, "place", ep.ID, "the user placed the block in "+blk.WindowID+"; it is theirs")
 		}
 		return e.Store.PutEpisode(*ep)
 	}
@@ -443,18 +443,18 @@ func (e Env) place(ctx context.Context, goal store.Record, rec store.Record, ep 
 	if err != nil {
 		ep.Attempts++
 		_ = e.Store.PutEpisode(*ep)
-		if rerr := e.report(ctx, goal, rec, ep, core.ReportRecoveryFailed, "Its pane is detached from every window and could not be placed in the "+core.OverflowTab+" tab: "+err.Error()+". The watchdog retries; `rex move` places it by hand.", nil); rerr != nil {
+		if rerr := e.report(ctx, orch, rec, ep, core.ReportRecoveryFailed, "Its pane is detached from every window and could not be placed in the "+core.OverflowTab+" tab: "+err.Error()+". The watchdog retries; `rex move` places it by hand.", nil); rerr != nil {
 			return rerr
 		}
 		return err
 	}
 	if shell != "" {
 		if err := e.Rex.CloseBlock(ctx, shell); err != nil {
-			e.wdLog(goal, rec, "warn", ep.ID, "the overflow tab's shell stays open: "+err.Error())
+			e.wdLog(orch, rec, "warn", ep.ID, "the overflow tab's shell stays open: "+err.Error())
 		}
 	}
 	ep.Placed = true
-	e.wdLog(goal, rec, "place", ep.ID, "in "+overflow)
+	e.wdLog(orch, rec, "place", ep.ID, "in "+overflow)
 	return e.Store.PutEpisode(*ep)
 }
 
@@ -484,9 +484,9 @@ func (e Env) overflowTab(ctx context.Context, session string) (window, anchor, s
 	return window, shell, shell, err
 }
 
-// report tells the goal agent once per code per episode, in the stuck peer's
+// report tells the orchestrator once per code per episode, in the stuck peer's
 // name, and notifies the user's desktop when a permission prompt waits.
-func (e Env) report(ctx context.Context, goal store.Record, rec store.Record, ep *core.Episode, code, detail string, lines []string) error {
+func (e Env) report(ctx context.Context, orch store.Record, rec store.Record, ep *core.Episode, code, detail string, lines []string) error {
 	if ep.Reported == nil {
 		ep.Reported = map[string]time.Time{}
 	}
@@ -494,7 +494,7 @@ func (e Env) report(ctx context.Context, goal store.Record, rec store.Record, ep
 		return nil
 	}
 	subject, body := core.WatchdogReport(peerOf(rec), *ep, code, detail, lines)
-	if err := amq.Send(ctx, e.AmqBin, e.Paths.Root(), string(rec.Handle), string(goal.Handle), subject, body); err != nil {
+	if err := amq.Send(ctx, e.AmqBin, e.Paths.Root(), string(rec.Handle), string(orch.Handle), subject, body); err != nil {
 		return err
 	}
 	e.seedSentCursor(rec.Handle)
@@ -502,7 +502,7 @@ func (e Env) report(ctx context.Context, goal store.Record, rec store.Record, ep
 	if err := e.Store.PutEpisode(*ep); err != nil {
 		return err
 	}
-	e.wdLog(goal, rec, "report", ep.ID, code+": "+detail)
+	e.wdLog(orch, rec, "report", ep.ID, code+": "+detail)
 	if code == core.ReportBlocked && strings.Contains(strings.ToLower(detail), "permission") {
 		e.desktop("rex-amq-adapter", string(rec.Handle)+" waits on a permission prompt")
 	}
@@ -534,8 +534,8 @@ func lastLines(vt string, n int) []string {
 
 // wdLog appends one JSON line per step to logs/watchdog.log: who looked,
 // at whom, what was seen, what was done. Drafts and raw screens stay out.
-func (e Env) wdLog(goal, rec store.Record, step, episode, detail string) {
-	entry := map[string]any{"at": e.Now().UTC().Format(time.RFC3339), "goal": goal.Handle, "handle": rec.Handle, "block": rec.BlockID, "step": step, "detail": detail}
+func (e Env) wdLog(orch, rec store.Record, step, episode, detail string) {
+	entry := map[string]any{"at": e.Now().UTC().Format(time.RFC3339), "orchestrator": orch.Handle, "handle": rec.Handle, "block": rec.BlockID, "step": step, "detail": detail}
 	if episode != "" {
 		entry["episode"] = episode
 	}

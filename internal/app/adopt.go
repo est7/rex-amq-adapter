@@ -227,10 +227,10 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 		}
 	}
 
-	if err := e.ensureGoalWatcher(rec); err != nil {
+	if err := e.ensureOrchestratorWatcher(rec); err != nil {
 		fmt.Fprintf(Diagnostics, "%v\n", err)
 	}
-	// The record carries the role, so briefing and goal behaviour read one
+	// The record carries the role, so briefing and orchestrator behaviour read one
 	// fact: the label is overwritten below, and a resumed agent may land in
 	// any pane.
 	out := Adoption{Decision: decision, Known: known, Role: rec.Role, Window: blk.WindowID, Session: blk.SessionID}
@@ -299,18 +299,18 @@ func (e Env) joinSession(ctx context.Context, rec store.Record, blk rex.Block, r
 }
 
 // tellMates queues note for each of mates, saying of joined, which just
-// started or took a role. When joined is a goal agent, each mate that is not
-// one also hears who now stands in for the human, naming every goal agent in
-// the session; another goal agent keeps its own goal.
+// started or took a role. When joined is an orchestrator, each mate that is not
+// one also hears who now stands in for the human, naming every orchestrator in
+// the session; another orchestrator keeps its own goal.
 func (e Env) tellMates(ctx context.Context, joined core.Peer, mates []core.Peer, note string) {
-	goal := ""
-	if joined.Role == core.GoalRole {
-		goal = core.GoalNotice(append(slices.Clone(mates), joined))
+	orch := ""
+	if joined.Role == core.OrchestratorRole {
+		orch = core.OrchestratorNotice(append(slices.Clone(mates), joined))
 	}
 	for _, m := range mates {
 		n := note
-		if goal != "" && m.Role != core.GoalRole {
-			n = joinNotices(n, goal)
+		if orch != "" && m.Role != core.OrchestratorRole {
+			n = joinNotices(n, orch)
 		}
 		if n == "" {
 			continue

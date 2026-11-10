@@ -16,9 +16,9 @@ import (
 	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
-// A live goal agent makes its Rex session unattended: it owns the goal, so it
+// A live orchestrator coordinates its Rex session: it owns the goal, so it
 // hears at once when an agent there departs, even when idle. A session
-// without one has the user present and gets nothing here. Session notes wait
+// without one reports departures to the user and gets nothing here. Session notes wait
 // for a prompt, so these go as mail, which rings a doorbell.
 
 const (
@@ -27,12 +27,12 @@ const (
 	// watchBudget bounds one look, including waiting for the lifecycle lock.
 	watchBudget = 10 * time.Second
 	// watchGiveUp is how many looks in a row may fail before the watcher
-	// exits: without a Rex server it would otherwise run forever. The goal
-	// agent's next turn starts a new one.
+	// exits: without a Rex server it would otherwise run forever. The
+	// orchestrator's next turn starts a new one.
 	watchGiveUp = 12
 )
 
-// wakeForDeparture tells rec's session that rec departed, when a goal agent
+// wakeForDeparture tells rec's session that rec departed, when an orchestrator
 // is involved.
 func (e Env) wakeForDeparture(ctx context.Context, rec store.Record) error {
 	if !placed(rec) {
@@ -62,12 +62,12 @@ func (e Env) wakeForDeparture(ctx context.Context, rec store.Record) error {
 	return errors.Join(errs...)
 }
 
-// ensureGoalWatcher starts the watcher of a goal agent unless one runs. An
+// ensureOrchestratorWatcher starts the watcher of an orchestrator unless one runs. An
 // agent that departs without a hook leaves nothing to react to, and a goal
 // agent is often idle, so its session needs a process of its own. Hooks call
-// this; the watcher ends with its goal agent.
-func (e Env) ensureGoalWatcher(rec store.Record) error {
-	if rec.Role != core.GoalRole {
+// this; the watcher ends with its orchestrator.
+func (e Env) ensureOrchestratorWatcher(rec store.Record) error {
+	if rec.Role != core.OrchestratorRole {
 		return nil
 	}
 	done, cancel := context.WithCancel(context.Background())
@@ -89,15 +89,15 @@ func (e Env) ensureGoalWatcher(rec store.Record) error {
 	cmd.Stdout, cmd.Stderr = logf, logf
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start the goal watcher: %w", err)
+		return fmt.Errorf("start the orchestrator watcher: %w", err)
 	}
 	return cmd.Process.Release()
 }
 
-// WatchGoal reconciles h's session until h is no longer a live goal agent, so
+// WatchOrchestrator reconciles h's session until h is no longer a live orchestrator, so
 // its departure and its peers' are noticed without a hook. A second watcher
 // finds the lock held and returns.
-func (e Env) WatchGoal(ctx context.Context, h core.Handle) error {
+func (e Env) WatchOrchestrator(ctx context.Context, h core.Handle) error {
 	lockCtx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
 	unlock, err := e.Store.LockWatch(lockCtx, h)
@@ -110,7 +110,7 @@ func (e Env) WatchGoal(ctx context.Context, h core.Handle) error {
 		if err != nil {
 			return err
 		}
-		if !ok || rec.Role != core.GoalRole {
+		if !ok || rec.Role != core.OrchestratorRole {
 			return nil // gone, or it joined a crew in another role
 		}
 		if err := e.watchOnce(ctx, rec); err != nil {
@@ -145,7 +145,7 @@ func (e Env) watchOnce(ctx context.Context, rec store.Record) error {
 	defer cancel()
 	s, err := e.FindSession(ctx, rec.BlockID)
 	if errors.Is(err, rex.ErrNotFound) {
-		// The goal agent's own pane closed; its session can no longer be found.
+		// The orchestrator's own pane closed; its session can no longer be found.
 		return e.collect(ctx, func(r store.Record) bool { return r.Handle == rec.Handle })
 	}
 	if err != nil {

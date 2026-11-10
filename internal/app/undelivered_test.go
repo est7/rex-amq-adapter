@@ -389,19 +389,19 @@ func TestOldOutboxIsNotBounced(t *testing.T) {
 	})
 }
 
-// A goal agent is told of a departure by mail in the departed agent's name. If
+// An orchestrator is told of a departure by mail in the departed agent's name. If
 // that agent resumes it did not write that mail, and is not told about it.
 func TestResumedAgentIsNotToldOfMailSentInItsName(t *testing.T) {
 	term := sameWindow("block:a", "block:b")
 	e := realAmqEnv(t, term)
 	agent := adoptIn(t, e, "block:a", "s-agent", 0)
-	term.label = core.GoalRole
-	goal := adoptIn(t, e, "block:b", "s-goal", 0)
+	term.label = core.OrchestratorRole
+	orch := adoptIn(t, e, "block:b", "s-goal", 0)
 	term.label = ""
 	depart(t, e, "block:a", "s-agent")
-	unread, err := amq.Unread(e.Paths.Root(), string(goal.Handle))
+	unread, err := amq.Unread(e.Paths.Root(), string(orch.Handle))
 	if err != nil || len(unread) == 0 {
-		t.Fatalf("goal agent was not mailed: %v %v", unread, err)
+		t.Fatalf("orchestrator was not mailed: %v %v", unread, err)
 	}
 	depart(t, e, "block:b", "s-goal")
 

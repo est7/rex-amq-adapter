@@ -78,7 +78,7 @@ func (e Env) SuperviseWaker(ctx context.Context, loc Location) error {
 	if err != nil || !ok || !rec.Live() {
 		return err
 	}
-	if err := e.ensureGoalWatcher(rec); err != nil {
+	if err := e.ensureOrchestratorWatcher(rec); err != nil {
 		fmt.Fprintf(Diagnostics, "%v\n", err)
 	}
 	return e.ensureWaker(ctx, rec)
@@ -150,7 +150,7 @@ func (e Env) park(ctx context.Context, rec store.Record, reason string) error {
 }
 
 // finishDeparture does what a departure must not lose. Nothing else would ever
-// tell an idle goal agent, so this runs until it succeeds, which may tell it
+// tell an idle orchestrator, so this runs until it succeeds, which may tell it
 // twice. Notes about leaving are advice and are not repeated here.
 func (e Env) finishDeparture(ctx context.Context, rec store.Record) error {
 	// Notes about who joined are about the session it was in; a resume may

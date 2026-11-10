@@ -355,9 +355,9 @@ func TestDecideStartup(t *testing.T) {
 	}
 }
 
-func TestDepartureMailGoesToTheGoalAgentOrItsReportingPeer(t *testing.T) {
-	goal := Peer{Handle: "claude-02", Kind: Claude, Role: GoalRole}
-	goal2 := Peer{Handle: "codex-02", Kind: Codex, Role: GoalRole}
+func TestDepartureMailGoesToTheOrchestratorOrItsReportingPeer(t *testing.T) {
+	orch := Peer{Handle: "claude-02", Kind: Claude, Role: OrchestratorRole}
+	goal2 := Peer{Handle: "codex-02", Kind: Codex, Role: OrchestratorRole}
 	pi := Peer{Handle: "pi-01", Kind: Pi}
 	agy := Peer{Handle: "agy-01", Kind: Agy}
 	claude := Peer{Handle: "claude-01", Kind: Claude}
@@ -368,14 +368,14 @@ func TestDepartureMailGoesToTheGoalAgentOrItsReportingPeer(t *testing.T) {
 		to      []Handle
 		subject string
 	}{
-		"a peer leaves":            {claude, []Peer{pi, goal}, []Handle{goal.Handle}, "claude-01 left your Rex session"},
-		"every goal agent hears":   {claude, []Peer{goal, goal2}, []Handle{goal.Handle, goal2.Handle}, "claude-01 left your Rex session"},
-		"no goal agent":            {claude, []Peer{pi, codex}, nil, ""},
-		"goal leaves: prefers one": {goal, []Peer{pi, claude}, []Handle{claude.Handle}, "claude-02 left your Rex session"},
-		"goal leaves: codex too":   {goal, []Peer{agy, pi, codex}, []Handle{codex.Handle}, "claude-02 left your Rex session"},
-		"goal leaves: keeps first": {goal, []Peer{codex, claude}, []Handle{codex.Handle}, "claude-02 left your Rex session"},
-		"goal leaves: none notify": {goal, []Peer{agy, pi}, []Handle{agy.Handle}, "claude-02 left your Rex session"},
-		"goal leaves alone":        {goal, nil, nil, ""},
+		"a peer leaves":            {claude, []Peer{pi, orch}, []Handle{orch.Handle}, "claude-01 left your Rex session"},
+		"every orchestrator hears": {claude, []Peer{orch, goal2}, []Handle{orch.Handle, goal2.Handle}, "claude-01 left your Rex session"},
+		"no orchestrator":          {claude, []Peer{pi, codex}, nil, ""},
+		"goal leaves: prefers one": {orch, []Peer{pi, claude}, []Handle{claude.Handle}, "claude-02 left your Rex session"},
+		"goal leaves: codex too":   {orch, []Peer{agy, pi, codex}, []Handle{codex.Handle}, "claude-02 left your Rex session"},
+		"goal leaves: keeps first": {orch, []Peer{codex, claude}, []Handle{codex.Handle}, "claude-02 left your Rex session"},
+		"goal leaves: none notify": {orch, []Peer{agy, pi}, []Handle{agy.Handle}, "claude-02 left your Rex session"},
+		"goal leaves alone":        {orch, nil, nil, ""},
 	} {
 		to, subject, body := DepartureMail(tc.left, "s", tc.others)
 		if !slices.Equal(to, tc.to) || subject != tc.subject {
@@ -385,11 +385,11 @@ func TestDepartureMailGoesToTheGoalAgentOrItsReportingPeer(t *testing.T) {
 			t.Errorf("%s: body %q for %v", name, body, to)
 		}
 	}
-	if _, _, body := DepartureMail(goal, "s", []Peer{codex}); !strings.Contains(body, "do not take over") {
+	if _, _, body := DepartureMail(orch, "s", []Peer{codex}); !strings.Contains(body, "do not take over") {
 		t.Errorf("a peer is not told to stay out of the goal: %q", body)
 	}
-	if _, _, body := DepartureMail(codex, "sess-1", []Peer{goal}); !strings.Contains(body, "sess-1") {
-		t.Errorf("the goal agent is not told the session: %q", body)
+	if _, _, body := DepartureMail(codex, "sess-1", []Peer{orch}); !strings.Contains(body, "sess-1") {
+		t.Errorf("the orchestrator is not told the session: %q", body)
 	}
 }
 
@@ -416,7 +416,7 @@ func TestAdapterLabelsReadBack(t *testing.T) {
 	for _, c := range []struct {
 		h          Handle
 		role, task string
-	}{{"claude-04", "", "x"}, {"codex-12", "reviewer", "fix login"}, {"agy-01", "v2-audit", ""}, {"pi-03", "goal", "ship"}} {
+	}{{"claude-04", "", "x"}, {"codex-12", "reviewer", "fix login"}, {"agy-01", "v2-audit", ""}, {"pi-03", "orchestrator", "ship"}} {
 		label := PaneLabel(c.h, c.role, c.task)
 		if got := Role(label); got != c.role {
 			t.Errorf("Role(%q) = %q, want %q", label, got, c.role)
@@ -467,7 +467,7 @@ func TestRoleOfALaunchersLabel(t *testing.T) {
 		"reviewer-2":      "reviewer",
 		"Lark Impl":       "lark-impl",
 		"v2-audit":        "v2-audit",
-		"goal":            "goal",
+		"orchestrator":    "orchestrator",
 		"shell":           "",
 		"codex":           "",
 		"":                "",
@@ -526,21 +526,21 @@ func TestAPaneThatShowsSomethingElse(t *testing.T) {
 	}
 }
 
-func TestGoalNoticeNamesEveryGoalAgentAndAFallback(t *testing.T) {
-	if GoalNotice([]Peer{{Handle: "codex-01", Role: "reviewer"}}) != "" {
-		t.Fatal("a session without a goal agent got a goal notice")
+func TestOrchestratorNoticeNamesEveryOrchestratorAndAFallback(t *testing.T) {
+	if OrchestratorNotice([]Peer{{Handle: "codex-01", Role: "reviewer"}}) != "" {
+		t.Fatal("a session without an orchestrator got its notice")
 	}
-	one := GoalNotice([]Peer{{Handle: "codex-01", Role: "reviewer"}, {Handle: "agy-02", Role: GoalRole}})
+	one := OrchestratorNotice([]Peer{{Handle: "codex-01", Role: "reviewer"}, {Handle: "agy-02", Role: OrchestratorRole}})
 	if !strings.Contains(one, "send it to agy-02 instead") || !strings.Contains(one, "overrides those texts") {
-		t.Fatalf("one goal agent: %q", one)
+		t.Fatalf("one orchestrator: %q", one)
 	}
-	for _, want := range []string{"closed set in skill `autopilot` (Boundaries)", "nobody works around", "report chain"} {
+	for _, want := range []string{"the orchestrator's to say", "nobody approves it or works around it", "report chain"} {
 		if !strings.Contains(one, want) {
 			t.Errorf("the notice lacks %q: %q", want, one)
 		}
 	}
-	two := GoalNotice([]Peer{{Handle: "agy-02", Role: GoalRole}, {Handle: "claude-03", Role: GoalRole}})
+	two := OrchestratorNotice([]Peer{{Handle: "agy-02", Role: OrchestratorRole}, {Handle: "claude-03", Role: OrchestratorRole}})
 	if !strings.Contains(two, "one of agy-02, claude-03; if neither did, agy-02") {
-		t.Fatalf("two goal agents: %q", two)
+		t.Fatalf("two orchestrators: %q", two)
 	}
 }

@@ -72,7 +72,7 @@ func TestBuiltinCrewsAreCompleteAndSmall(t *testing.T) {
 			t.Errorf("built-in crew %s has no conventions: %+v", crew, got[crew])
 		}
 	}
-	if roles := strings.Join(got[""].Roles, ","); roles != "architect,editor,goal,implementer,qa,reviewer,writer" {
+	if roles := strings.Join(got[""].Roles, ","); roles != "architect,editor,implementer,orchestrator,qa,reviewer,writer" {
 		t.Errorf("shared roles: %s", roles)
 	}
 	for _, e := range entries {
@@ -118,17 +118,17 @@ func TestNameFoldsTabLabels(t *testing.T) {
 	}
 }
 
-// The goal role is the shared prompt; a crew's goal.md is Runner's mission
+// The orchestrator role is the shared prompt; a crew's goal.md is Runner's mission
 // description and stays out of the role lookup.
-func TestGoalRoleComesFromTheSharedPromptOnly(t *testing.T) {
+func TestOrchestratorRoleComesFromTheSharedPromptOnly(t *testing.T) {
 	builtin := Load("")
-	p, ok, err := builtin.Role("pair", "goal")
-	if err != nil || !ok || !strings.Contains(p.Text, "unattended") {
-		t.Fatalf("built-in goal role: %v %v %q", ok, err, p.Text)
+	p, ok, err := builtin.Role("pair", "orchestrator")
+	if err != nil || !ok || !strings.Contains(p.Text, "coordinate") {
+		t.Fatalf("built-in orchestrator role: %v %v %q", ok, err, p.Text)
 	}
 	project := fstest.MapFS{"pair/goal.md": {Data: []byte("a mission description")}}
 	l := append(Library{{Name: "project", FS: project, Dir: "/p"}}, builtin...)
-	if p, _, _ := l.Role("pair", "goal"); strings.Contains(p.Text, "mission description") {
+	if p, _, _ := l.Role("pair", "orchestrator"); strings.Contains(p.Text, "mission description") {
 		t.Fatal("a crew's goal.md was read as the role prompt")
 	}
 	entries, err := builtin.List()
@@ -138,11 +138,11 @@ func TestGoalRoleComesFromTheSharedPromptOnly(t *testing.T) {
 	listed := false
 	for _, e := range entries {
 		if e.Crew == "" {
-			listed = slices.Contains(e.Roles, "goal")
+			listed = slices.Contains(e.Roles, "orchestrator")
 		}
 	}
 	if !listed {
-		t.Fatal("crews does not list the goal role")
+		t.Fatal("crews does not list the orchestrator role")
 	}
 }
 

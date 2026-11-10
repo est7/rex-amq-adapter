@@ -15,10 +15,10 @@ const (
 	watcherTick = 6 * time.Second
 )
 
-// goalTab starts a goal agent and a reviewer beside it.
+// goalTab starts an orchestrator and a reviewer beside it.
 func goalTab(w *world) (tb *tab, reviewer string) {
 	w.t.Helper()
-	tb = w.newTab("lead", "goal")
+	tb = w.newTab("lead", "orchestrator")
 	w.ready("lead")
 	reviewer = tb.split("rev", "reviewer")
 	w.ready("rev")
@@ -65,11 +65,11 @@ func (w *world) drain(handle string) string {
 	return string(out)
 }
 
-func TestAnIdleGoalAgentIsWokenWhenAPeerExits(t *testing.T) {
+func TestAnIdleOrchestratorIsWokenWhenAPeerExits(t *testing.T) {
 	w := newWorld(t)
 	_, reviewer := goalTab(w)
 	w.typeInto(reviewer, "quit")
-	w.until("the goal agent to be woken", goalHears, func() bool { return w.doorbell("lead") })
+	w.until("the orchestrator to be woken", goalHears, func() bool { return w.doorbell("lead") })
 	mail := w.drain(w.handleOf("lead"))
 	for _, want := range []string{w.handleOf("rev") + " (claude, reviewer)", "left your Rex session", "session rev"} {
 		if !strings.Contains(mail, want) {
@@ -78,21 +78,21 @@ func TestAnIdleGoalAgentIsWokenWhenAPeerExits(t *testing.T) {
 	}
 }
 
-func TestAnIdleGoalAgentIsWokenWhenAPeerCrashes(t *testing.T) {
+func TestAnIdleOrchestratorIsWokenWhenAPeerCrashes(t *testing.T) {
 	w := newWorld(t)
 	_, reviewer := goalTab(w)
 	w.typeInto(reviewer, "crash")
-	w.until("the goal agent to be woken", goalHears, func() bool { return w.doorbell("lead") })
+	w.until("the orchestrator to be woken", goalHears, func() bool { return w.doorbell("lead") })
 }
 
-func TestAnIdleGoalAgentIsWokenWhenAPeersPaneCloses(t *testing.T) {
+func TestAnIdleOrchestratorIsWokenWhenAPeersPaneCloses(t *testing.T) {
 	w := newWorld(t)
 	_, reviewer := goalTab(w)
 	w.rex("block", "close", reviewer)
-	w.until("the goal agent to be woken", goalHears, func() bool { return w.doorbell("lead") })
+	w.until("the orchestrator to be woken", goalHears, func() bool { return w.doorbell("lead") })
 }
 
-func TestAPeerReportsWhenTheGoalAgentIsGone(t *testing.T) {
+func TestAPeerReportsWhenTheOrchestratorIsGone(t *testing.T) {
 	w := newWorld(t)
 	tb, _ := goalTab(w)
 	w.typeInto(tb.first, "crash")
@@ -103,33 +103,33 @@ func TestAPeerReportsWhenTheGoalAgentIsGone(t *testing.T) {
 	}
 }
 
-func TestOnlyTheGoalAgentIsWokenWhenAPeerExits(t *testing.T) {
+func TestOnlyTheOrchestratorIsWokenWhenAPeerExits(t *testing.T) {
 	w := newWorld(t)
 	tb, reviewer := goalTab(w)
 	tb.split("qa", "qa")
 	w.ready("qa")
 	w.typeInto(reviewer, "quit")
-	w.until("the goal agent to be woken", goalHears, func() bool { return w.doorbell("lead") })
+	w.until("the orchestrator to be woken", goalHears, func() bool { return w.doorbell("lead") })
 	time.Sleep(time.Second)
 	if n := w.unread(w.handleOf("qa")); n != 0 || w.doorbell("qa") {
 		t.Fatalf("another peer was mailed: %d unread, typed %q", n, w.got("qa"))
 	}
 }
 
-func TestAGoalAgentInAnotherSessionHearsNothing(t *testing.T) {
+func TestAnOrchestratorInAnotherSessionHearsNothing(t *testing.T) {
 	w := newWorld(t)
 	_, reviewer := goalTab(w)
-	w.newTab("other", "goal") // a new session
+	w.newTab("other", "orchestrator") // a new session
 	w.ready("other")
 	w.typeInto(reviewer, "quit")
-	w.until("the session's own goal agent to be woken", goalHears, func() bool { return w.doorbell("lead") })
+	w.until("the session's own orchestrator to be woken", goalHears, func() bool { return w.doorbell("lead") })
 	time.Sleep(time.Second)
 	if n := w.unread(w.handleOf("other")); n != 0 {
-		t.Fatalf("a goal agent in another session got %d messages", n)
+		t.Fatalf("an orchestrator in another session got %d messages", n)
 	}
 }
 
-func TestADepartedGoalAgentIsNotMailed(t *testing.T) {
+func TestADepartedOrchestratorIsNotMailed(t *testing.T) {
 	w := newWorld(t)
 	tb, reviewer := goalTab(w)
 	w.typeInto(tb.first, "quit")
@@ -138,11 +138,11 @@ func TestADepartedGoalAgentIsNotMailed(t *testing.T) {
 	w.until("the peer to depart", 5*time.Second, func() bool { return strings.Contains(w.got("rev"), "quit") })
 	time.Sleep(time.Second)
 	if n := w.unread(w.handleOf("lead")); n != 0 {
-		t.Fatalf("a departed goal agent got %d messages", n)
+		t.Fatalf("a departed orchestrator got %d messages", n)
 	}
 }
 
-func TestWithoutAGoalAgentNobodyIsWoken(t *testing.T) {
+func TestWithoutAnOrchestratorNobodyIsWoken(t *testing.T) {
 	w := newWorld(t)
 	tb := w.newTab("alice", "implementer")
 	w.ready("alice")
@@ -151,11 +151,11 @@ func TestWithoutAGoalAgentNobodyIsWoken(t *testing.T) {
 	w.typeInto(reviewer, "quit")
 	time.Sleep(3 * time.Second)
 	if w.doorbell("alice") {
-		t.Fatalf("a tab without a goal agent rang a doorbell: %s", w.got("alice"))
+		t.Fatalf("a tab without an orchestrator rang a doorbell: %s", w.got("alice"))
 	}
 }
 
-func TestTheGoalWatcherEndsWithItsGoalAgent(t *testing.T) {
+func TestTheOrchestratorWatcherEndsWithItsOrchestrator(t *testing.T) {
 	w := newWorld(t)
 	tb, _ := goalTab(w)
 	w.until("a watcher to run", 5*time.Second, w.watcherRuns)
@@ -163,17 +163,17 @@ func TestTheGoalWatcherEndsWithItsGoalAgent(t *testing.T) {
 	w.until("the watcher to end", goalHears, func() bool { return !w.watcherRuns() })
 }
 
-func TestOnlyAGoalAgentGetsAWatcher(t *testing.T) {
+func TestOnlyAnOrchestratorGetsAWatcher(t *testing.T) {
 	w := newWorld(t)
 	w.newTab("alice", "implementer")
 	w.ready("alice")
 	time.Sleep(500 * time.Millisecond)
 	if w.watcherRuns() {
-		t.Fatal("an agent without the goal role started a watcher")
+		t.Fatal("an agent without the orchestrator role started a watcher")
 	}
 }
 
-func TestAGoalAgentDoesNotHearOfItsOwnTabsAfterItLeaves(t *testing.T) {
+func TestAnOrchestratorDoesNotHearOfItsOwnTabsAfterItLeaves(t *testing.T) {
 	w := newWorld(t)
 	tb, reviewer := goalTab(w)
 	w.typeInto(tb.first, "quit")
@@ -181,7 +181,7 @@ func TestAGoalAgentDoesNotHearOfItsOwnTabsAfterItLeaves(t *testing.T) {
 	w.typeInto(reviewer, "quit")
 	time.Sleep(2 * time.Second)
 	if w.doorbell("lead") {
-		t.Fatal("a departed goal agent got a doorbell")
+		t.Fatal("a departed orchestrator got a doorbell")
 	}
 }
 
@@ -201,9 +201,9 @@ func (w *world) recordedWindow(handle string) string {
 	return rec.Window
 }
 
-func TestAGoalAgentHearsAPeerMovedIntoItsTab(t *testing.T) {
+func TestAnOrchestratorHearsAPeerMovedIntoItsTab(t *testing.T) {
 	w := newWorld(t)
-	tb := w.newTab("lead", "goal")
+	tb := w.newTab("lead", "orchestrator")
 	w.ready("lead")
 	peer := tb.otherTab("rev", "reviewer")
 	w.ready("rev")
@@ -212,12 +212,12 @@ func TestAGoalAgentHearsAPeerMovedIntoItsTab(t *testing.T) {
 		return w.recordedWindow(w.handleOf("rev")) == w.recordedWindow(w.handleOf("lead"))
 	})
 	w.typeInto(peer, "crash")
-	w.until("the goal agent to be woken", goalHears, func() bool { return w.doorbell("lead") })
+	w.until("the orchestrator to be woken", goalHears, func() bool { return w.doorbell("lead") })
 }
 
-// A peer moved to another tab of the session is still on the goal agent's
-// task: its departure is the goal agent's news.
-func TestAGoalAgentHearsAPeerMovedToAnotherTabOfItsSession(t *testing.T) {
+// A peer moved to another tab of the session is still on the orchestrator's
+// task: its departure is the orchestrator's news.
+func TestAnOrchestratorHearsAPeerMovedToAnotherTabOfItsSession(t *testing.T) {
 	w := newWorld(t)
 	tb, reviewer := goalTab(w)
 	away := tb.otherTab("away", "implementer")
@@ -227,7 +227,7 @@ func TestAGoalAgentHearsAPeerMovedToAnotherTabOfItsSession(t *testing.T) {
 		return w.recordedWindow(w.handleOf("rev")) == w.recordedWindow(w.handleOf("away"))
 	})
 	w.typeInto(reviewer, "quit")
-	w.until("the goal agent to be woken", goalHears, func() bool { return w.doorbell("lead") })
+	w.until("the orchestrator to be woken", goalHears, func() bool { return w.doorbell("lead") })
 }
 
 // Without a watcher, the agent who looks brings the records up to date.

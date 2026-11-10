@@ -5,13 +5,13 @@ import (
 	"time"
 )
 
-// The goal watchdog's decisions. In an unattended session a peer whose pane
+// The orchestrator watchdog's decisions. In a session nobody watches, a peer whose pane
 // is too small cannot draw its input box, so every doorbell defers with
 // box_not_found and its mail never arrives: on 2026-11-09 two Claude panes
 // of 84x3 and 84x4 sat that way for 25 minutes and 2 hours, and drew the box
 // again at 172x17. The watchdog moves such a pane once to a tab of its own,
 // has the user's app render it, and hands it back to the injector. Every
-// other stuck shape is reported to the goal agent, never touched.
+// other stuck shape is reported to the orchestrator, never touched.
 
 const (
 	// TinyRows and TinyColumns bound the sizes at which the CLIs cannot draw
@@ -89,12 +89,12 @@ type Episode struct {
 	// Attempts counts layout actions that failed; past MaxAttempts the
 	// watchdog stops acting and reports.
 	Attempts int `json:"attempts,omitempty"`
-	// Reported holds each report code sent to the goal agent and when.
+	// Reported holds each report code sent to the orchestrator and when.
 	Reported map[string]time.Time `json:"reported,omitempty"`
 	Outcome  string               `json:"outcome,omitempty"`
 }
 
-// Report codes the goal agent receives.
+// Report codes the orchestrator receives.
 const (
 	ReportTrustScreen    = "trust_screen"
 	ReportBlocked        = "blocked"
@@ -108,12 +108,12 @@ const (
 // MaxAttempts bounds the layout actions one episode may retry.
 const MaxAttempts = 2
 
-// WatchdogReport is the mail a stuck peer's watchdog sends its goal agent.
+// WatchdogReport is the mail a stuck peer's watchdog sends its orchestrator.
 // It says what the watchdog did to the pane so far, so a moved pane is not
 // taken for an untouched one.
 func WatchdogReport(peer Peer, ep Episode, code, detail string, screen []string) (subject, body string) {
 	subject = "watchdog: " + string(peer.Handle) + " " + code
-	body = "The goal watchdog found " + peer.named() + " stuck: " + code + "."
+	body = "The orchestrator watchdog found " + peer.named() + " stuck: " + code + "."
 	if detail != "" {
 		body += " " + detail
 	}

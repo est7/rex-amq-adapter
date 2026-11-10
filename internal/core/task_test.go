@@ -19,7 +19,7 @@ func TestInitialTask(t *testing.T) {
 		"reviewer(codex-01) | fix login": "",
 		"claude-06 | adapter docs":       "",
 		"architect(agy-06) | pane label": "",
-		"goal(pi-02) | ship":             "",
+		"orchestrator(pi-02) | ship":     "",
 		"shell":                          "",
 		"implementer | a|b":              "a/b",
 	} {

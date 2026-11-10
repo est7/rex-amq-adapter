@@ -60,20 +60,6 @@ func tokenOf(l launch) string {
 	return strings.TrimPrefix(l.Command[1], SummonEnv+"=")
 }
 
-// launchEnv is the value the launch command's env prefix sets for key.
-func launchEnv(l launch, key string) string {
-	for _, a := range l.Command[1:] {
-		k, v, ok := strings.Cut(a, "=")
-		if !ok {
-			break
-		}
-		if k == key {
-			return v
-		}
-	}
-	return ""
-}
-
 // launchProgram is the launch command after its env prefix.
 func launchProgram(l launch) []string {
 	for i, a := range l.Command[1:] {
@@ -140,7 +126,7 @@ func TestSummonResumesADepartedPeer(t *testing.T) {
 		t.Fatalf("%+v", res)
 	}
 	l := term.launches[0]
-	if l.Dir != "/work/app" || l.Command[0] != "env" || !strings.HasPrefix(l.Command[1], SummonEnv+"=") || launchEnv(l, ScopeEnv) != ScopePR || launchEnv(l, "GIT_CONFIG_KEY_0") != "core.hooksPath" || strings.Join(launchProgram(l)[:3], " ") != "codex --no-daemon resume" || launchProgram(l)[3] != "thread-2" || !strings.Contains(launchProgram(l)[4], "amq drain") || l.Label != "reviewer(codex-02)" {
+	if l.Dir != "/work/app" || l.Command[0] != "env" || !strings.HasPrefix(l.Command[1], SummonEnv+"=") || strings.Join(launchProgram(l)[:3], " ") != "codex --no-daemon resume" || launchProgram(l)[3] != "thread-2" || !strings.Contains(launchProgram(l)[4], "amq drain") || l.Label != "reviewer(codex-02)" {
 		t.Fatalf("launch: %+v", l)
 	}
 	// Adopted, it is the same agent, lineage included.
@@ -179,7 +165,7 @@ func TestSummonStartsARoleOnceAuthorized(t *testing.T) {
 		t.Fatalf("%+v", res)
 	}
 	l := term.launches[0]
-	if l.Dir != "/work/app" || l.Label != "reviewer | look at #42" || l.Command[0] != "env" || launchEnv(l, ScopeEnv) != ScopePR || launchProgram(l)[0] != "codex" || !strings.Contains(l.Command[len(l.Command)-1], "please review #42") || !strings.Contains(l.Command[len(l.Command)-1], "amq send --to claude-01") {
+	if l.Dir != "/work/app" || l.Label != "reviewer | look at #42" || l.Command[0] != "env" || launchProgram(l)[0] != "codex" || !strings.Contains(l.Command[len(l.Command)-1], "please review #42") || !strings.Contains(l.Command[len(l.Command)-1], "amq send --to claude-01") {
 		t.Fatalf("launch: %+v", l)
 	}
 	if n, _ := e.Store.PendingSummons("session:s", e.Now()); n != 1 {
@@ -200,7 +186,7 @@ func TestSummonStartsARoleOnceAuthorized(t *testing.T) {
 	e3, term3, loc3 := summonWorld(t)
 	g3 := filepath.Join(t.TempDir(), "g.md")
 	os.WriteFile(g3, []byte("SCOPE: local\n"), 0o600)
-	if res := summon(t, e3, loc3, "writer", func(r *SummonRequest) { r.Grant = g3; r.Harness = "pi" }); res.Action != "start" || launchProgram(term3.launches[0])[0] != "pi" || launchEnv(term3.launches[0], ScopeEnv) != ScopePR {
+	if res := summon(t, e3, loc3, "writer", func(r *SummonRequest) { r.Grant = g3; r.Harness = "pi" }); res.Action != "start" || launchProgram(term3.launches[0])[0] != "pi" {
 		t.Fatalf("%+v %v", res, term3.launches)
 	}
 }
@@ -348,36 +334,9 @@ func TestSummonFailsClosedWithoutItsAncestry(t *testing.T) {
 	}
 }
 
-// A summoned peer runs under REX_AMQ_SCOPE=push+PR, and under merge only when
-// its brief says merge and cites the user's grant file whose SCOPE says merge.
-func TestSummonScopesThePeerByItsGrant(t *testing.T) {
+// A --grant that cannot be read authorizes no start.
+func TestSummonRefusesAStartOnAnUnreadableGrant(t *testing.T) {
 	dir := t.TempDir()
-	merge := filepath.Join(dir, "grant-merge.md")
-	os.WriteFile(merge, []byte("est9's words\nSCOPE: merge + release\n"), 0o600)
-	noScope := filepath.Join(dir, "grant-words.md")
-	os.WriteFile(noScope, []byte("想发版就发版\n"), 0o600)
-	for name, tc := range map[string]struct {
-		grant, body, want string
-	}{
-		"no grant":              {"", "SCOPE: merge\nreview #42", ScopePR},
-		"grant merge, cited":    {merge, "Load skill autopilot; grant: " + merge + "\nSCOPE: merge\n", "merge"},
-		"grant merge, brief PR": {merge, "grant: " + merge + "\nSCOPE: push+PR\n", ScopePR},
-		"grant merge, no SCOPE": {merge, "grant: " + merge + "\n", ScopePR},
-		"grant not cited":       {merge, "SCOPE: merge\n", ScopePR},
-		"grant without SCOPE":   {noScope, "grant: " + noScope + "\nSCOPE: merge\n", ScopePR},
-	} {
-		t.Run(name, func(t *testing.T) {
-			e, term, loc := summonWorld(t)
-			res := summon(t, e, loc, "implementer", func(r *SummonRequest) { r.Grant, r.Body, r.Asked = tc.grant, tc.body, "start one" })
-			if res.Action != "start" || len(term.launches) != 1 {
-				t.Fatalf("%+v", res)
-			}
-			if got := launchEnv(term.launches[0], ScopeEnv); got != tc.want || res.Scope != tc.want {
-				t.Fatalf("scope %s (%s), want %s", got, res.ScopeWhy, tc.want)
-			}
-		})
-	}
-	// A --grant that cannot be read authorizes no start.
 	e, term, loc := summonWorld(t)
 	if res := summon(t, e, loc, "implementer", func(r *SummonRequest) { r.Grant = filepath.Join(dir, "missing.md") }); res.Action != "refused" || len(term.launches) != 0 {
 		t.Fatalf("%+v", res)

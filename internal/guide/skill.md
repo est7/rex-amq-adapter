@@ -142,7 +142,7 @@ Agents in your Rex session are your session-mates. Your start notice names
 those already there ("Agents beside you in this Rex session: …"), and a notice
 with your next prompt names each that joins or leaves ("… joined your Rex
 session", "… left your Rex session"). Stop waiting for a reply from an agent
-that left. In a session with a `goal` agent, it hears of a departure by mail at
+that left. In a session with an orchestrator, it hears of a departure by mail at
 once, even when idle; if that agent itself leaves, one peer is told to report
 and stop. When the user says "the one beside you", "旁边那个", or "隔壁", they
 mean the agents in your tab; `who`'s TAB column tells them apart. Reach them
@@ -173,14 +173,14 @@ this needs is below; no other skill is required.
    `<kind>-<NN>` (`codex-02`), records its role, and relabels the pane
    `reviewer(codex-02) | <task>`; step 4 prints the handle. A role with a
    prompt briefs the peer when it starts: `implementer`, `reviewer`, `qa`,
-   `architect`, `writer`, `editor`, and `goal` are built in, and
+   `architect`, `writer`, `editor`, and `orchestrator` are built in, and
    `rex-amq-adapter crews` lists every role and crew available here, with each
    crew's lead and members. Prefer
    one of these names when it fits; the peer then knows its job and how to
    hand off before it reads your brief, so keep the brief to the task. Use
-   `goal` only when the user wants work to run on its own: it owns the goal and
-   decides how to recover, and a session with no `goal` agent means the user
-   is there.
+   `orchestrator` when one agent should own a goal and coordinate the others:
+   it records progress, reports, and starts and closes agents, and the others
+   take to it what they would take to the user.
 2. **Write the brief** as the peer's first prompt: the task, the files or diff,
    and, for a peer in your session, that it should report back with
    `amq send --to <your handle>` (or `amq reply` to your mail). An agent is
@@ -218,15 +218,7 @@ this needs is below; no other skill is required.
    and without the skip flag it stops to ask before every `amq` command it
    runs). Pass `--no-daemon` explicitly
    for Codex: Rex launches the binary without expanding fish abbreviations.
-   This mode cannot be combined with `--remote` or `codex agents`. When you
-   run under an autopilot grant or a goal brief, start the peer under a scope:
-   prefix its command with `rex-amq-adapter scoped --`
-   (`-- rex-amq-adapter scoped -- codex --no-daemon "<brief>"`). It may then
-   commit, push its own branches and open MRs, and git refuses its write to the
-   base branch; `--scope merge` lifts that only when your brief says merge
-   (skill `autopilot`). `rex-amq-adapter summon` does this for you, and
-   `rex-amq-adapter scope-worktree <dir>` caps every push made in a task
-   worktree, yours included, whoever makes it. Never take
+   This mode cannot be combined with `--remote` or `codex agents`. Never take
    focus. When your own pane has fewer than 10 rows (`rex block call -b
    "$REX_BLOCK" size`), a split would leave the peer unable to draw its input
    box: open it in a new tab (`rex run`) instead. For an Antigravity peer in a linked worktree, run
@@ -277,19 +269,13 @@ why; never retry a refused summon with other words:
 - 6 live agents per session at most;
 - a new agent starts only with the user's own words in this session asking
   for it (`--asked "<their words>"`, logged as your attestation) or a brief
-  that cites their grant file (`--grant <file>`: you checked it and the
-  brief names it); a summoned agent's scope is `push+PR` unless its brief
-  and that file both say `merge` (skill `autopilot`);
+  that cites their grant file (`--grant <file>`: it must exist, you checked
+  it, and the brief names it);
 - an agent whose own summoner is no longer recorded may deliver, not start
   or resume: its chain cannot be checked.
 
 A launched agent carries a token in its environment that binds its first
-hook to this summon, and runs under a scope: `push+PR`, so it may commit,
-push its own branches and open MRs while git refuses its write to the base
-branch, or `merge` when your brief says merge and cites the user's grant file
-(`--grant`) whose `SCOPE:` line says merge (even the user typing a merge into
-base in that pane is refused, so land from your own pane). It holds its place
-in the cap until it is adopted (or two minutes pass). A resumed agent gets a fixed first prompt that makes it
+hook to this summon. It holds its place in the cap until it is adopted (or two minutes pass). A resumed agent gets a fixed first prompt that makes it
 drain its mailbox, where your message waits. The command exits 0 only when
 the mail is delivered or the launched agent was adopted; a trust screen,
 blocked dialog or timeout exits 1 with the startup state in its JSON.
