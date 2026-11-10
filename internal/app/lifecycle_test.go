@@ -30,6 +30,18 @@ func realAmqEnv(t *testing.T, term *fakeTerm) Env {
 		t.Fatal(err)
 	}
 	e.AmqBin, e.SelfBin = amqBin, injector
+	// Wakers a test started under its root are stopped with it, so test runs
+	// leave no amq wake processes behind.
+	t.Cleanup(func() {
+		_ = e.prepareInjector()
+		entries, _ := os.ReadDir(filepath.Join(e.Paths.Root(), "agents"))
+		for _, entry := range entries {
+			_, _ = amq.RetireHandle(context.Background(), e.AmqBin, e.Paths.Root(), entry.Name())
+			if st, err := amq.WakeCheck(context.Background(), e.AmqBin, e.Paths.Root(), entry.Name()); err == nil && st.PID > 0 {
+				_ = syscall.Kill(st.PID, syscall.SIGKILL)
+			}
+		}
+	})
 	return e
 }
 

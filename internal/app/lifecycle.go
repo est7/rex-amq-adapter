@@ -115,11 +115,24 @@ func (e Env) Depart(ctx context.Context, loc Location, in HookInput) error {
 	return e.park(ctx, rec, store.DepartSessionEnd)
 }
 
-// park retires the block's waker and marks the record departed, for reason
-// (store.Record.DepartReason). What follows can fail without undoing that:
-// the departure stands, and collection finishes it.
+// park retires the handle's waker and marks the record departed, for reason
+// (store.Record.DepartReason). A moved job whose adoption failed after its
+// record took the new block still has a waker targeting the old one, so the
+// handle's waker is retired whichever block it wakes (amq.RetireHandle).
+// What follows can fail without undoing that: the departure stands, and
+// collection finishes it.
 func (e Env) park(ctx context.Context, rec store.Record, reason string) error {
-	if _, err := amq.RetireFor(ctx, e.AmqBin, e.Paths.Root(), string(rec.Handle), rec.BlockID); err != nil {
+	if !rec.Kind.InProcess() {
+		// amq wake retire checks the waker's --inject-via path exists; a
+		// wrapper that was removed (or never written, as when the adoption
+		// failed on it) would make the retire fail and keep the waker. A
+		// failure here is returned, so the record stays live and the next
+		// hook or collection tries again.
+		if err := e.prepareInjector(); err != nil {
+			return fmt.Errorf("restore the injector wrapper to retire %s's waker: %w", rec.Handle, err)
+		}
+	}
+	if _, err := amq.RetireHandle(ctx, e.AmqBin, e.Paths.Root(), string(rec.Handle)); err != nil {
 		return err
 	}
 	now := e.Now().UTC()

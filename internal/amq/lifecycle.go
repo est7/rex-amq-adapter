@@ -104,6 +104,20 @@ func Ensure(ctx context.Context, amqBin string, w Waker, logDir string) (WakeSta
 // handle was reused) is left alone. A lock that cannot be identified is an
 // error, so the caller keeps its record as the credential to try again.
 func RetireFor(ctx context.Context, amqBin, root, handle, block string) (retired bool, err error) {
+	return retire(ctx, amqBin, root, handle, func(t WakeTarget) bool { return wakes(t, block, handle, root) })
+}
+
+// RetireHandle stops the adapter's waker holding handle, whichever block it
+// wakes. A departing agent's record can name a block its waker no longer
+// targets (a job moved, and its adoption failed after the record was
+// written), and a handle belongs to one record, so a departure retires the
+// handle's waker wherever it points. Only a waker the adapter started for
+// handle under root is stopped.
+func RetireHandle(ctx context.Context, amqBin, root, handle string) (retired bool, err error) {
+	return retire(ctx, amqBin, root, handle, func(t WakeTarget) bool { return wakesAnyBlock(t, handle, root) })
+}
+
+func retire(ctx context.Context, amqBin, root, handle string, ours func(WakeTarget) bool) (retired bool, err error) {
 	st, err := WakeCheck(ctx, amqBin, root, handle)
 	if err != nil {
 		return false, err
@@ -113,7 +127,7 @@ func RetireFor(ctx context.Context, amqBin, root, handle, block string) (retired
 		return false, nil
 	case st.Generation == "" || !st.HasTarget:
 		return false, fmt.Errorf("wake lock for %s cannot be identified (generation %q, target present %v)", handle, st.Generation, st.HasTarget)
-	case !wakes(st.Target, block, handle, root):
+	case !ours(st.Target):
 		return false, nil
 	}
 	if err := WakeRetire(ctx, amqBin, root, handle, st); err != nil {
@@ -125,8 +139,14 @@ func RetireFor(ctx context.Context, amqBin, root, handle, block string) (retired
 // wakes reports whether t is an adapter target for block, handle and root
 // (argv: inject <server> <block> <handle> <root>).
 func wakes(t WakeTarget, block, handle, root string) bool {
+	return wakesAnyBlock(t, handle, root) && t.InjectArgs[2] == block
+}
+
+// wakesAnyBlock reports whether t is an adapter target for handle and root,
+// whatever block it names.
+func wakesAnyBlock(t WakeTarget, handle, root string) bool {
 	a := t.InjectArgs
-	return len(a) == 5 && a[0] == "inject" && a[2] == block && a[3] == handle && canonPath(a[4]) == canonPath(root)
+	return len(a) == 5 && a[0] == "inject" && a[3] == handle && canonPath(a[4]) == canonPath(root)
 }
 
 // EnsureMailbox makes handle a provisioned member of root. `amq init --force`

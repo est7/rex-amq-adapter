@@ -413,6 +413,68 @@ func TestAJobMoveThatFailsIsFinishedLater(t *testing.T) {
 	}
 }
 
+// A job that moves again and whose adoption fails right before it departs
+// leaves its record on the new pane while its waker still targets the old
+// one; its departure must still retire that waker, and a departure must
+// succeed when the injector wrapper was removed.
+func TestADepartureAfterAFailedMoveRetiresTheWaker(t *testing.T) {
+	w := newJobWorld(t)
+	w.term.windows[tuiBlock] = "window:2"
+	w.jobHook(t, EventSessionStart)
+	const next = "block:next"
+	w.term.windows[next] = "window:2"
+	w.term.fgs[next] = rex.Process{PID: 2, Name: "claude"}
+	w.term.titles[next] = w.term.titles[viewBlock]
+	w.term.titles[viewBlock] = "claude agents"
+	dir := filepath.Dir(w.e.injector())
+	breakInjector := func() {
+		t.Helper()
+		if err := os.RemoveAll(dir); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(dir, []byte("not a directory"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { _ = os.Remove(dir) })
+	breakInjector()
+	if _, err := w.e.Hook(context.Background(), EventPrompt, core.Claude, Location{Block: tuiBlock}, HookInput{SessionID: jobSess, AgentPID: w.jobPID}); err == nil {
+		t.Fatal("setup: the first move should fail")
+	}
+	if err := os.Remove(dir); err != nil {
+		t.Fatal(err)
+	}
+	w.jobHook(t, EventPrompt)
+	if rec, _, _ := w.e.liveRecordOf(core.Claude, jobSess); rec.BlockID != next || !rec.Adopted() {
+		t.Fatalf("after the retry: %+v, want it adopted in %s", rec, next)
+	}
+	const third = "block:third"
+	w.term.windows[third] = "window:2"
+	w.term.fgs[third] = rex.Process{PID: 3, Name: "claude"}
+	w.term.titles[third] = w.term.titles[next]
+	w.term.titles[next] = "claude agents"
+	breakInjector()
+	if _, err := w.e.Hook(context.Background(), EventPrompt, core.Claude, Location{Block: tuiBlock}, HookInput{SessionID: jobSess, AgentPID: w.jobPID}); err == nil {
+		t.Fatal("setup: the second move should fail")
+	}
+	if err := os.Remove(dir); err != nil {
+		t.Fatal(err)
+	}
+	rec, _, _ := w.e.liveRecordOf(core.Claude, jobSess)
+	if err := w.e.park(context.Background(), rec, store.DepartSessionEnd); err != nil {
+		t.Fatalf("departing after a failed move: %v", err)
+	}
+	if wakerLive(t, w.e, string(rec.Handle)) {
+		t.Errorf("waker for %s survived departure after a failed move", rec.Handle)
+	}
+	if err := w.e.park(context.Background(), w.tuiRecord(t), store.DepartSessionEnd); err != nil {
+		t.Fatalf("departing a peer after the injector wrapper was removed: %v", err)
+	}
+	if wakerLive(t, w.e, "claude-01") {
+		t.Error("waker for claude-01 survived departure")
+	}
+}
+
 // A job's record can name a pane that does not show it (written by an older
 // adapter, or left behind). A frequent hook trusts the record's block, and
 // its pid mismatch asks for an adoption: the job must not be adopted into a
