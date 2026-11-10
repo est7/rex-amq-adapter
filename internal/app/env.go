@@ -55,6 +55,11 @@ type Env struct {
 	AmqBin  string
 	SelfBin string // SelfPath(): absolute, stable across Homebrew upgrades
 	Now     func() time.Time
+	// TranscriptHome is the home directory the harnesses write their
+	// transcripts under; Notify reaches the user's desktop (nil: macOS
+	// notification center).
+	TranscriptHome string
+	Notify         func(title, text string)
 	// Ancestors is the calling process and its ancestors, nearest first; nil
 	// reads them from the OS.
 	Ancestors func() ([]proc, error)
@@ -91,17 +96,23 @@ func NewEnvAt(server string, paths store.Paths) (Env, error) {
 		return Env{}, err
 	}
 	return Env{
-		Paths:       paths,
-		Store:       store.Store{P: paths},
-		Rex:         rex.Client{Bin: rexBin, Server: server},
-		RexOn:       func(s string) Terminal { return rex.Client{Bin: rexBin, Server: s} },
-		Crews:       crew.Load,
-		AmqBin:      amqBin,
-		SelfBin:     self,
-		Now:         time.Now,
-		ClaudeDir:   claudeDir(),
-		AgyBrainDir: agyBrainDir(),
+		Paths:          paths,
+		Store:          store.Store{P: paths},
+		Rex:            rex.Client{Bin: rexBin, Server: server},
+		RexOn:          func(s string) Terminal { return rex.Client{Bin: rexBin, Server: s} },
+		Crews:          crew.Load,
+		AmqBin:         amqBin,
+		SelfBin:        self,
+		Now:            time.Now,
+		TranscriptHome: userHome(),
+		ClaudeDir:      claudeDir(),
+		AgyBrainDir:    agyBrainDir(),
 	}, nil
+}
+
+func userHome() string {
+	h, _ := os.UserHomeDir()
+	return h
 }
 
 // agyBrainDir is Antigravity's conversation store.

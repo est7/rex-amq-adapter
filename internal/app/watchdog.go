@@ -48,10 +48,15 @@ func (e Env) watchdog(ctx context.Context, goal store.Record, s Session) {
 		return
 	}
 	for _, r := range recs {
-		if !r.Live() || !s.holds(r) || r.Kind.InProcess() {
+		if !r.Live() || !s.holds(r) {
 			continue
 		}
-		if err := e.watchPeer(ctx, goal, s, r); err != nil {
+		if !r.Kind.InProcess() {
+			if err := e.watchPeer(ctx, goal, s, r); err != nil {
+				e.wdLog(goal, r, "error", "", err.Error())
+			}
+		}
+		if err := e.health(ctx, goal, s, r); err != nil {
 			e.wdLog(goal, r, "error", "", err.Error())
 		}
 	}
@@ -431,7 +436,7 @@ func (e Env) report(ctx context.Context, goal store.Record, rec store.Record, ep
 	}
 	e.wdLog(goal, rec, "report", ep.ID, code+": "+detail)
 	if code == core.ReportBlocked && strings.Contains(strings.ToLower(detail), "permission") {
-		notifyDesktop("rex-amq-adapter", string(rec.Handle)+" waits on a permission prompt")
+		e.desktop("rex-amq-adapter", string(rec.Handle)+" waits on a permission prompt")
 	}
 	return nil
 }

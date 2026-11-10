@@ -593,3 +593,39 @@ func (s Store) ClearEpisode(block string) error {
 	}
 	return err
 }
+
+// HealthMark is what the watchdog last told the goal agent about an
+// agent's transcript, so each finding is reported once.
+type HealthMark struct {
+	LastErrorID string    `json:"last_error_id,omitempty"`
+	LastHungID  string    `json:"last_hung_id,omitempty"`
+	LastStallAt time.Time `json:"last_stall_at,omitempty"`
+}
+
+func (s Store) healthPath(block string) string {
+	return filepath.Join(s.P.watchdog(), fileKey(block)+".health.json")
+}
+
+// HealthMark returns block's mark; a block never reported has an empty one.
+func (s Store) HealthMark(block string) (HealthMark, error) {
+	b, err := os.ReadFile(s.healthPath(block))
+	if errors.Is(err, fs.ErrNotExist) {
+		return HealthMark{}, nil
+	}
+	if err != nil {
+		return HealthMark{}, err
+	}
+	var m HealthMark
+	if err := json.Unmarshal(b, &m); err != nil {
+		return HealthMark{}, fmt.Errorf("%s: %w", s.healthPath(block), err)
+	}
+	return m, nil
+}
+
+func (s Store) PutHealthMark(block string, m HealthMark) error {
+	b, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	return fsutil.WriteAtomic(s.healthPath(block), b)
+}
