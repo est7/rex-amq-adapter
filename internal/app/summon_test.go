@@ -334,6 +334,21 @@ func TestSummonFailsClosedWithoutItsAncestry(t *testing.T) {
 	}
 }
 
+// --cwd starts the agent in that directory (a task worktree), and a path that
+// is not a directory starts nothing.
+func TestSummonStartsTheAgentInItsWorktree(t *testing.T) {
+	wt := t.TempDir()
+	e, term, loc := summonWorld(t)
+	res := summon(t, e, loc, "implementer", func(r *SummonRequest) { r.Asked = "start one"; r.Cwd = wt })
+	if res.Action != "start" || len(term.launches) != 1 || term.launches[0].Dir != wt {
+		t.Fatalf("%+v launches %+v", res, term.launches)
+	}
+	e2, term2, loc2 := summonWorld(t)
+	if res := summon(t, e2, loc2, "implementer", func(r *SummonRequest) { r.Asked = "start one"; r.Cwd = filepath.Join(wt, "missing") }); res.Action != "refused" || !strings.Contains(res.Reason, "is not a directory") || len(term2.launches) != 0 {
+		t.Fatalf("%+v", res)
+	}
+}
+
 // A --grant that cannot be read authorizes no start.
 func TestSummonRefusesAStartOnAnUnreadableGrant(t *testing.T) {
 	dir := t.TempDir()

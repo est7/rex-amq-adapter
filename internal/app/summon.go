@@ -41,6 +41,9 @@ type SummonRequest struct {
 	// agent needs one of them. Neither is verified here.
 	Grant, Asked string
 	Harness      string // overrides the role's default harness for a start
+	// Cwd is the working directory of a started agent (a task worktree);
+	// empty means the caller's. A resume keeps the departed agent's own.
+	Cwd string
 }
 
 // SummonResult is what happened. Block is set when an agent was launched
@@ -284,7 +287,15 @@ func (e Env) start(ctx context.Context, caller store.Record, s Session, r Summon
 	}
 	brief := r.Body + "\n\nYou were started by " + string(caller.Handle) + " (summon on send). Report back with `amq send --to " + string(caller.Handle) + "`; the same request waits in your mailbox once you are adopted, so you can `amq reply` to it."
 	label := role + " | " + core.Task(r.Subject)
-	block, err := e.launch(ctx, caller, s, label, caller.Cwd, res.Token, startCommand(kind, brief))
+	cwd := caller.Cwd
+	if r.Cwd != "" {
+		info, err := os.Stat(r.Cwd)
+		if err != nil || !info.IsDir() {
+			return refuse("--cwd " + r.Cwd + " is not a directory, so the agent was not started")
+		}
+		cwd = r.Cwd
+	}
+	block, err := e.launch(ctx, caller, s, label, cwd, res.Token, startCommand(kind, brief))
 	if err != nil {
 		_ = e.Store.DeleteSummon(res.Token)
 		return res, err

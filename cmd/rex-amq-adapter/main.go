@@ -56,7 +56,7 @@ Agent and user commands:
   crews [dir]               list the crews (named by a Rex tab), their lead and
                             members, and the roles (named by a pane label) that
                             brief agents working in dir
-  summon <handle|role> --subject S --body B [--kind K] [--grant FILE | --asked "WORDS"] [--harness H]
+  summon <handle|role> --subject S --body B [--kind K] [--grant FILE | --asked "WORDS"] [--harness H] [--cwd DIR]
                             send to a peer by handle or role: a live one gets the
                             mail; a departed one of this session is resumed in a
                             pane beside you, then gets it; none starts one for the
@@ -570,9 +570,10 @@ func runSummon(args []string) int {
 	grant := fs.String("grant", "", "the user's grant file the brief cites (allows a start)")
 	asked := fs.String("asked", "", "the user's own words asking for a new agent, quoted (allows a start)")
 	harness := fs.String("harness", "", "claude, codex, agy, or pi for a start (default: by role)")
+	cwd := fs.String("cwd", "", "the working directory of a started agent, such as its task worktree (default: yours)")
 	timeout := fs.Duration("timeout", 45*time.Second, "how long to wait for a launched agent's adoption")
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		fmt.Fprintln(os.Stderr, "usage: rex-amq-adapter summon <handle|role> --subject S --body B [--kind K] [--grant FILE | --asked WORDS] [--harness H]")
+		fmt.Fprintln(os.Stderr, "usage: rex-amq-adapter summon <handle|role> --subject S --body B [--kind K] [--grant FILE | --asked WORDS] [--harness H] [--cwd DIR]")
 		return 2
 	}
 	target := args[0]
@@ -594,7 +595,7 @@ func runSummon(args []string) int {
 		return fail(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	res, err := env.Summon(ctx, loc, app.SummonRequest{Target: target, Kind: *kind, Subject: *subject, Body: *body, Grant: *grant, Asked: *asked, Harness: *harness})
+	res, err := env.Summon(ctx, loc, app.SummonRequest{Target: target, Kind: *kind, Subject: *subject, Body: *body, Grant: *grant, Asked: *asked, Harness: *harness, Cwd: *cwd})
 	cancel()
 	if err != nil {
 		return fail(err)
