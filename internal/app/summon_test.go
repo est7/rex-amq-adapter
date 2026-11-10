@@ -347,6 +347,24 @@ func TestSummonStartsTheAgentInItsWorktree(t *testing.T) {
 	if res := summon(t, e2, loc2, "implementer", func(r *SummonRequest) { r.Asked = "start one"; r.Cwd = filepath.Join(wt, "missing") }); res.Action != "refused" || !strings.Contains(res.Reason, "is not a directory") || len(term2.launches) != 0 {
 		t.Fatalf("%+v", res)
 	}
+	// A departed agent of the role is not resumed in its old directory: a new one starts in wt.
+	e3, term3, loc3 := summonWorld(t)
+	add(t, e3, departed(store.Record{Handle: "claude-07", Kind: core.Claude, Server: "unix:///fake.sock", BlockID: "block:gone", SessionID: "session:s", Role: "implementer", AgentPID: 7, AgentSessionID: "sess-7", AdoptedAt: e3.Now().Add(-time.Hour), Cwd: "/old/worktree"}, e3.Now().Add(-time.Minute)))
+	if res := summon(t, e3, loc3, "implementer", func(r *SummonRequest) { r.Asked = "start one"; r.Cwd = wt }); res.Action != "start" || len(term3.launches) != 1 || term3.launches[0].Dir != wt {
+		t.Fatalf("a departed implementer stood in: %+v launches %+v", res, term3.launches)
+	}
+	// A live agent of the role is not handed the brief instead; a handle is refused.
+	e4, term4, loc4 := summonWorld(t)
+	if res := summon(t, e4, loc4, "implementer", func(r *SummonRequest) { r.Asked = "start one"; r.Cwd = wt }); res.Action != "start" {
+		t.Fatalf("setup: %+v", res)
+	}
+	adoptLaunch(t, e4, term4, term4.launches[0], core.Claude, "sess-live")
+	if res := summon(t, e4, loc4, "implementer", func(r *SummonRequest) { r.Asked = "start one"; r.Cwd = wt }); res.Action != "refused" || !strings.Contains(res.Reason, "start the second one there by hand") || len(term4.launches) != 1 {
+		t.Fatalf("a live implementer stood in: %+v", res)
+	}
+	if res := summon(t, e4, loc4, "codex-09", func(r *SummonRequest) { r.Asked = "x"; r.Cwd = wt }); res.Action != "refused" || !strings.Contains(res.Reason, "names an existing agent") {
+		t.Fatalf("a handle with --cwd: %+v", res)
+	}
 }
 
 // A --grant that cannot be read authorizes no start.

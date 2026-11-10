@@ -259,8 +259,10 @@ in the directory it ran in, and its mail waits for it. With none, a new agent
 is started for the role (`--harness` picks the CLI; reviewer, editor, qa and
 explorer default to Codex, the rest to Claude Code), with the message as its
 brief, in your directory or the one `--cwd` names (a task worktree), and told
-once it is adopted. Since a live agent of the role gets the mail, start a
-second agent of the same role by hand in its own directory. The guards decide, and a refusal says
+once it is adopted. With `--cwd` it only ever starts a new agent there: it
+refuses a handle, and refuses when a live agent of the role would get the
+mail instead (start that second agent by hand in its directory); a departed
+one is not resumed. The guards decide, and a refusal says
 why; never retry a refused summon with other words:
 
 - only a request summons (`--kind question`, `review_request`, `todo`,

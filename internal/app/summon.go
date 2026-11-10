@@ -101,6 +101,20 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 		}
 	}
 	res := SummonResult{Parent: caller.Handle, Depth: caller.Depth + 1}
+	if r.Cwd != "" {
+		// --cwd always means a new agent in that directory: a live one would get
+		// the mail in its own directory and a departed one would resume in its
+		// own, so neither may silently stand in.
+		switch {
+		case isHandle:
+			res.Action, res.Reason = "refused", "--cwd starts a new agent for a role; "+r.Target+" names an existing agent, which keeps its own directory"
+			return res, e.summonLog(caller, r, res)
+		case len(live) > 0:
+			res.Action, res.Reason = "refused", fmt.Sprintf("a live %s (%s) would get this instead of a new agent in %s; start the second one there by hand (rex split -c %s … then rex-amq-adapter await)", target, live[0].Handle, r.Cwd, r.Cwd)
+			return res, e.summonLog(caller, r, res)
+		}
+		departed = nil
+	}
 	if len(live) > 0 {
 		for _, rec := range live {
 			if err := amq.SendKind(ctx, e.AmqBin, e.Paths.Root(), string(caller.Handle), string(rec.Handle), r.Kind, r.Subject, r.Body); err != nil {
