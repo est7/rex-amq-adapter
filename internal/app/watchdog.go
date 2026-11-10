@@ -120,7 +120,13 @@ func (e Env) watchPeer(ctx context.Context, goal store.Record, s Session, rec st
 		return e.report(ctx, goal, rec, &ep, core.ReportBoxNotFound, fmt.Sprintf("Its pane measures %dx%d, large enough, yet doorbells find no input box.", size.Columns, size.Rows), lines, false)
 	}
 	if ep.Moved {
-		// Moved and still tiny: rendering did not take, or the user moved it.
+		// A pane the user moved out of the overflow tab is theirs now.
+		if blk, err := e.Rex.InspectBlock(ctx, rec.BlockID); err != nil {
+			return err
+		} else if blk.WindowID != ep.Overflow {
+			return e.report(ctx, goal, rec, &ep, core.ReportMovedByUser, fmt.Sprintf("Its pane left the %s tab after the watchdog moved it there, so the watchdog leaves it alone.", core.OverflowTab), lines, false)
+		}
+		// Moved and still tiny: rendering did not take.
 		if !ep.Rendered {
 			inject, err := e.render(ctx, goal, rec, &ep)
 			return e.handOff(ctx, goal, rec, &ep, inject, err)

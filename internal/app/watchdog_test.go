@@ -182,3 +182,24 @@ func TestWatchdogDoesNotMoveAPaneThatIsNotTiny(t *testing.T) {
 		t.Fatalf("goal reports: %v", inbox)
 	}
 }
+
+// A pane the user moved out of the overflow tab mid-episode is left alone
+// and reported once.
+func TestWatchdogLeavesAPaneTheUserMoved(t *testing.T) {
+	e, term, goal, s := stuckWorld(t, "", "idle")
+	term.tabs["window:overflow"] = core.OverflowTab
+	term.windows["block:overflow-anchor"] = "window:overflow"
+	ep := core.Episode{ID: "codex-old", Handle: "codex", Block: block, PID: term.fgPID, Session: "session:s", StartedAt: e.Now().Add(-time.Minute), Window: "window:1", PrevActive: "window:1", Overflow: "window:overflow", Moved: true, Rendered: true}
+	if err := e.Store.PutEpisode(ep); err != nil {
+		t.Fatal(err)
+	}
+	e.watchdog(context.Background(), goal, s) // block:a sits in window:1, not the overflow tab
+	e.watchdog(context.Background(), goal, s)
+	if len(term.moves) != 0 || len(term.selects) != 0 || len(term.writes) != 0 {
+		t.Fatalf("acted: %v %v %q", term.moves, term.selects, term.writes)
+	}
+	cur, _, _ := e.Store.Episode(block)
+	if _, ok := cur.Reported[core.ReportMovedByUser]; !ok || len(goalInbox(t, e)) != 1 {
+		t.Fatalf("reported %v, goal inbox %v", cur.Reported, goalInbox(t, e))
+	}
+}
