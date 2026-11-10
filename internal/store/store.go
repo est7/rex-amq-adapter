@@ -546,3 +546,50 @@ func (s Store) SetTaskAsked(h core.Handle, session string) error {
 func (s Store) taskAskedPath(h core.Handle) string {
 	return filepath.Join(s.P.taskAsked(), fileKey(string(h)))
 }
+
+// LockInject serialises the writers of one block's prompt: the injector that
+// amq wake runs and the goal watchdog, which re-reads the block under it.
+func (s Store) LockInject(ctx context.Context, block string) (func(), error) {
+	return fsutil.Flock(ctx, filepath.Join(s.P.injects(), "."+fileKey(block)+".lock"))
+}
+
+func (p Paths) watchdog() string { return filepath.Join(p.Home, "watchdog") }
+
+func (s Store) episodePath(block string) string {
+	return filepath.Join(s.P.watchdog(), fileKey(block)+".json")
+}
+
+// Episode returns the open watchdog episode of block, if any.
+func (s Store) Episode(block string) (core.Episode, bool, error) {
+	b, err := os.ReadFile(s.episodePath(block))
+	if errors.Is(err, fs.ErrNotExist) {
+		return core.Episode{}, false, nil
+	}
+	if err != nil {
+		return core.Episode{}, false, err
+	}
+	var ep core.Episode
+	if err := json.Unmarshal(b, &ep); err != nil {
+		return core.Episode{}, false, fmt.Errorf("%s: %w", s.episodePath(block), err)
+	}
+	return ep, true, nil
+}
+
+// PutEpisode writes an episode before and after each of its steps, so a
+// watchdog that restarts mid-episode continues it instead of repeating it.
+func (s Store) PutEpisode(ep core.Episode) error {
+	b, err := json.Marshal(ep)
+	if err != nil {
+		return err
+	}
+	return fsutil.WriteAtomic(s.episodePath(ep.Block), b)
+}
+
+// ClearEpisode ends block's episode.
+func (s Store) ClearEpisode(block string) error {
+	err := os.Remove(s.episodePath(block))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	return err
+}

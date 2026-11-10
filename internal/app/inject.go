@@ -37,7 +37,12 @@ const (
 // Every outcome, including errors, is reported as a progress marker: amq
 // needs one to decide whether to retry.
 func (e Env) Inject(ctx context.Context, r InjectRequest) core.Outcome {
+	unlock, err := e.Store.LockInject(ctx, r.Block)
+	if err != nil {
+		return deferredErr("inject_locked", err)
+	}
 	o := e.inject(ctx, r)
+	unlock()
 	_ = e.Store.RecordInject(r.Handle, o, e.Now()) // the log is diagnostic; the marker is the contract
 	return o
 }

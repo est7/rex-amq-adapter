@@ -151,5 +151,11 @@ func (e Env) watchOnce(ctx context.Context, rec store.Record) error {
 	if err != nil {
 		return err
 	}
-	return e.CollectSession(ctx, s)
+	if err := e.CollectSession(ctx, s); err != nil {
+		return err
+	}
+	// The watchdog's own failures are logged, never counted against the
+	// watcher: a layout call that times out must not end the session's watch.
+	e.watchdog(ctx, rec, s)
+	return nil
 }

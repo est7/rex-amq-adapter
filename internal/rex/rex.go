@@ -367,3 +367,116 @@ func (c Client) Whoami(ctx context.Context) (Server, error) {
 	}
 	return s, nil
 }
+
+// api calls a session method of the server's control API.
+func (c Client) api(ctx context.Context, session, method string, args any, into any) error {
+	b, err := json.Marshal(args)
+	if err != nil {
+		return err
+	}
+	out, err := c.run(ctx, nil, "api", "call", "-s", session, method, string(b))
+	if err != nil {
+		return err
+	}
+	if into == nil {
+		return nil
+	}
+	if err := json.Unmarshal(out, into); err != nil {
+		return fmt.Errorf("decode %s result: %w", method, err)
+	}
+	return nil
+}
+
+// Size is a terminal's size and the client that owns it ("" for none).
+type Size struct {
+	Columns int    `json:"columns"`
+	Rows    int    `json:"rows"`
+	Owner   string `json:"owner"`
+}
+
+// Size returns the block's terminal size.
+func (c Client) Size(ctx context.Context, block string) (Size, error) {
+	var s Size
+	err := c.blockCall(ctx, block, "size", nil, &s)
+	return s, err
+}
+
+// ActiveWindow is the window the session shows; "" when it has none.
+func (c Client) ActiveWindow(ctx context.Context, session string) (string, error) {
+	var res struct {
+		Active *string `json:"active_window_id"`
+	}
+	if err := c.api(ctx, session, "session.view", map[string]string{"session_id": session}, &res); err != nil {
+		return "", err
+	}
+	if res.Active == nil {
+		return "", nil
+	}
+	return *res.Active, nil
+}
+
+// NewTab opens a window labelled label in session, holding one shell block,
+// without making it active.
+func (c Client) NewTab(ctx context.Context, session, label string) (window, block string, err error) {
+	var res struct {
+		WindowID string   `json:"window_id"`
+		BlockIDs []string `json:"block_ids"`
+	}
+	args := map[string]any{
+		"session_id": session, "window_label": label, "focus": false,
+		"layout": map[string]any{"block": map[string]any{"flavor": "com.superlogical.terminal.shell", "label": label}},
+	}
+	if err := c.api(ctx, session, "session.new_window", args, &res); err != nil {
+		return "", "", err
+	}
+	if res.WindowID == "" || len(res.BlockIDs) != 1 {
+		return "", "", fmt.Errorf("new window returned %+v", res)
+	}
+	return res.WindowID, res.BlockIDs[0], nil
+}
+
+// MoveBlock places block beside anchor, which may be in another window of
+// the session.
+func (c Client) MoveBlock(ctx context.Context, session, block, anchor string) error {
+	args := map[string]any{"session_id": session, "block_id": block, "anchor_block_id": anchor, "direction": "horizontal"}
+	return c.api(ctx, session, "session.move_block", args, nil)
+}
+
+// CloseBlock closes block.
+func (c Client) CloseBlock(ctx context.Context, block string) error {
+	_, err := c.run(ctx, nil, "block", "close", block)
+	return err
+}
+
+// AppClients lists the ids of the app clients attached to session: the
+// windows the user looks at, as opposed to CLI connections.
+func (c Client) AppClients(ctx context.Context, session string) ([]string, error) {
+	var res struct {
+		Clients []struct {
+			ID   string `json:"client_id"`
+			Info struct {
+				Kind string `json:"kind"`
+			} `json:"info"`
+		} `json:"clients"`
+	}
+	if err := c.api(ctx, session, "session.list_clients", map[string]string{"session_id": session}, &res); err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, cl := range res.Clients {
+		if cl.Info.Kind == "app" && cl.ID != "" {
+			out = append(out, cl.ID)
+		}
+	}
+	return out, nil
+}
+
+// SelectView asks the app client to show window of session. Only a shown
+// window is laid out, so this is what gives a moved block its size.
+func (c Client) SelectView(ctx context.Context, client, session, window string) error {
+	args := map[string]any{
+		"client_id": client, "action": "session.select", "timeout_ms": 5000,
+		"args": map[string]string{"session_id": session, "window_id": window},
+	}
+	return c.api(ctx, session, "client.perform", args, nil)
+}

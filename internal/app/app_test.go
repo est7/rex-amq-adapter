@@ -21,25 +21,32 @@ import (
 // fakeTerm is one Codex terminal. Its input box holds box; a write lands in
 // the box unless the agent submits it (submit), and ctrl+u empties it.
 type fakeTerm struct {
-	mu          sync.Mutex
-	gone        bool
-	fgPID       int
-	state       string // "" means no program status record
-	box         string
-	submit      bool // a written doorbell is submitted: box stays empty, state becomes working
-	statusErr   bool // ProgramStatus fails after the first write
-	writes      []string
-	keys        []string
-	label       string                 // the block label; "" reads as Rex's default
-	windows     map[string]string      // block -> window; nil: none known
-	sessions    map[string]string      // window -> session; unlisted: session:s
-	listErr     error                  // ListBlocks fails
-	tabs        map[string]string      // window -> tab label
-	cwd         string                 // the foreground process's directory
-	titles      map[string]string      // block -> terminal title
-	fgs         map[string]rex.Process // block -> foreground, overriding fgPID
-	renamed     map[string]string      // block -> the last label set on it
-	renamedTabs []string               // "window=label", in order
+	mu           sync.Mutex
+	gone         bool
+	fgPID        int
+	state        string // "" means no program status record
+	box          string
+	submit       bool // a written doorbell is submitted: box stays empty, state becomes working
+	statusErr    bool // ProgramStatus fails after the first write
+	writes       []string
+	keys         []string
+	label        string                 // the block label; "" reads as Rex's default
+	windows      map[string]string      // block -> window; nil: none known
+	sessions     map[string]string      // window -> session; unlisted: session:s
+	listErr      error                  // ListBlocks fails
+	tabs         map[string]string      // window -> tab label
+	cwd          string                 // the foreground process's directory
+	titles       map[string]string      // block -> terminal title
+	fgs          map[string]rex.Process // block -> foreground, overriding fgPID
+	renamed      map[string]string      // block -> the last label set on it
+	renamedTabs  []string               // "window=label", in order
+	rows         map[string]int         // block -> rows (the watchdog's size reads); unlisted: 80x24
+	renderedRows int                    // rows a tiny block gets once its window is shown
+	active       string                 // the session's active window
+	moves        []string               // "block->window", in order
+	selects      []string               // windows the app was asked to show, in order
+	closed       []string
+	newTabs      []string
 }
 
 func (f *fakeTerm) Whoami(context.Context) (rex.Server, error) {
@@ -548,4 +555,77 @@ func TestPiHookFlow(t *testing.T) {
 	if len(f.writes) != 0 || len(f.keys) != 0 {
 		t.Fatalf("nothing may be typed into Pi: writes=%q keys=%v", f.writes, f.keys)
 	}
+}
+
+// The watchdog's layout calls. A block's size is rows[block] (0: 80x24);
+// a block the app was asked to show in the overflow tab takes renderedRows.
+func (f *fakeTerm) Size(_ context.Context, block string) (rex.Size, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.gone {
+		return rex.Size{}, rex.ErrNotFound
+	}
+	if r, ok := f.rows[block]; ok {
+		return rex.Size{Columns: 84, Rows: r, Owner: "client:app"}, nil
+	}
+	return rex.Size{Columns: 80, Rows: 24}, nil
+}
+
+func (f *fakeTerm) ActiveWindow(_ context.Context, session string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.active, nil
+}
+
+func (f *fakeTerm) NewTab(_ context.Context, session, label string) (string, string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	w, b := "window:"+label, "block:"+label+"-shell"
+	if f.tabs == nil {
+		f.tabs = map[string]string{}
+	}
+	f.tabs[w] = label
+	f.windows[b] = w
+	f.newTabs = append(f.newTabs, w)
+	return w, b, nil
+}
+
+func (f *fakeTerm) MoveBlock(_ context.Context, session, block, anchor string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	w, ok := f.windows[anchor]
+	if !ok {
+		return rex.ErrNotFound
+	}
+	f.windows[block] = w
+	f.moves = append(f.moves, block+"->"+w)
+	return nil
+}
+
+func (f *fakeTerm) CloseBlock(_ context.Context, block string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.windows, block)
+	f.closed = append(f.closed, block)
+	return nil
+}
+
+func (f *fakeTerm) AppClients(context.Context, string) ([]string, error) {
+	return []string{"client:app"}, nil
+}
+
+func (f *fakeTerm) SelectView(_ context.Context, client, session, window string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.selects = append(f.selects, window)
+	f.active = window
+	// Showing a window lays its blocks out: every block in it gets a full size.
+	for b, w := range f.windows {
+		if w == window && f.rows != nil {
+			if _, tiny := f.rows[b]; tiny {
+				f.rows[b] = f.renderedRows
+			}
+		}
+	}
+	return nil
 }

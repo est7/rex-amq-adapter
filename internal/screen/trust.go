@@ -37,7 +37,7 @@ func TrustScreen(kind, screen string) (string, bool) {
 	if Check(kind, screen) == Empty {
 		return "", false
 	}
-	plain := plainText(screen)
+	plain := PlainText(screen)
 	for _, p := range trustPhrases {
 		if strings.Contains(plain, p) {
 			return p, true
@@ -46,10 +46,10 @@ func TrustScreen(kind, screen string) (string, bool) {
 	return "", false
 }
 
-// plainText drops escape sequences, keeps cursor-forward moves as whitespace,
+// PlainText drops escape sequences, keeps cursor-forward moves as whitespace,
 // and joins runs of whitespace, so a phrase drawn with styled or padded words
 // still matches.
-func plainText(screen string) string {
+func PlainText(screen string) string {
 	var b strings.Builder
 	space := false
 	rs := []rune(screen)
