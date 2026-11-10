@@ -169,6 +169,8 @@ agent and ends with it, and carries a watchdog for mail that cannot be delivered
 rex-amq-adapter tab pair --role goal -- claude "GOAL: ship #42. CONTEXT: issue #42, app/. SCOPE: push+PR. BOUNDARIES: Reserved: none. DONE WHEN: CI green on the task branch."
 ```
 
+An agent reaches a peer that may not be running with `rex-amq-adapter summon <handle|role> --subject S --body B`: a live agent of that handle or role gets the mail; a departed one of this session is resumed in a pane beside the caller (in the directory it ran in, which adoption now records) and its mail waits for it; with none, a new agent is started for the role with the message as its brief and told once adopted. The guards are the boundary: only a request kind summons; no handle or role already in the caller's summon chain; depth 2 at most, the user's agents being 0; 6 live agents per session at most; a new agent only when the brief cites the user's grant file (`--grant`) or the caller quotes the user's own words asking for it (`--asked`, an attestation the log keeps). A summoned agent's record carries its parent and depth; every summon is logged in `logs/summon.log` and listed in the summoner's hand-back.
+
 Your own crews and roles override the built-in ones by name: a crew is a
 directory holding `team-conventions.md` and, optionally, `<role>.md` for a
 role that works differently in it; `roles/<role>.md` holds roles for any tab.

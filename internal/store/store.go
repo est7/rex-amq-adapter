@@ -86,6 +86,15 @@ type Record struct {
 	// pane shows it again and a newly named agent starts without one.
 	Task      string    `json:"task,omitempty"`
 	AdoptedAt time.Time `json:"adopted_at"`
+	// Cwd is the directory the agent runs in, from its foreground process at
+	// adoption; a resume starts there.
+	Cwd string `json:"cwd,omitempty"`
+	// Parent is the agent whose summon started this one ("" for an agent the
+	// user started), Depth how many summons lie between the user and it (the
+	// user's agents are 0), SummonedFor why the parent summoned it.
+	Parent      core.Handle `json:"parent,omitempty"`
+	Depth       int         `json:"depth,omitempty"`
+	SummonedFor string      `json:"summoned_for,omitempty"`
 	// DepartedAt is set when the agent ended. A departed record keeps its
 	// handle reserved for its agent session (a resume, in any block) until
 	// collected.
@@ -628,4 +637,44 @@ func (s Store) PutHealthMark(block string, m HealthMark) error {
 		return err
 	}
 	return fsutil.WriteAtomic(s.healthPath(block), b)
+}
+
+// Summon is what a summoner wrote before starting an agent in a block, for
+// the adoption of that block to copy into its record.
+type Summon struct {
+	Parent core.Handle `json:"parent"`
+	Depth  int         `json:"depth"`
+	For    string      `json:"for"`
+	At     time.Time   `json:"at"`
+}
+
+func (p Paths) summons() string { return filepath.Join(p.Home, "summons") }
+
+// PutSummon records, before the launch, that a pane labelled label in
+// session is about to run an agent parent summoned; the label is known
+// before the block is.
+func (s Store) PutSummon(session, label string, sm Summon) error {
+	b, err := json.Marshal(sm)
+	if err != nil {
+		return err
+	}
+	return fsutil.WriteAtomic(filepath.Join(s.P.summons(), fileKey(session+"|"+label)+".json"), b)
+}
+
+// TakeSummon returns and removes the summon of a pane labelled label in
+// session, if any.
+func (s Store) TakeSummon(session, label string) (Summon, bool, error) {
+	path := filepath.Join(s.P.summons(), fileKey(session+"|"+label)+".json")
+	b, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return Summon{}, false, nil
+	}
+	if err != nil {
+		return Summon{}, false, err
+	}
+	var sm Summon
+	if err := json.Unmarshal(b, &sm); err != nil {
+		return Summon{}, false, fmt.Errorf("%s: %w", path, err)
+	}
+	return sm, true, os.Remove(path)
 }

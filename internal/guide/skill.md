@@ -244,6 +244,38 @@ this needs is below; no other skill is required.
    placed in another session is independent and does not appear in this
    session's `who`.
 
+## Summon on send
+
+To reach a peer that may not be running, address it by handle or role and let
+the adapter deliver, resume, or start it:
+
+```bash
+eval "$(rex-amq-adapter env)" && rex-amq-adapter summon reviewer --subject "review #42" --body "<the request>" --kind review_request
+```
+
+A live agent of that handle or role in your session gets the mail (every one
+of a role). A departed one of this session is resumed in a pane beside you,
+in the directory it ran in, and its mail waits for it. With none, a new agent
+is started for the role (`--harness` picks the CLI; reviewer, editor, qa and
+explorer default to Codex, the rest to Claude Code), with the message as its
+brief, and told once it is adopted. The guards decide, and a refusal says
+why; never retry a refused summon with other words:
+
+- only a request summons (`--kind question`, `review_request`, `todo`,
+  `brainstorm`); an answer, review_response, status or decision delivers only;
+- no cycle: a handle or role already in your summon chain (the agents that
+  summoned you, and you) is refused;
+- depth 2 at most: the user's agents are depth 0, what they summon 1;
+- 6 live agents per session at most;
+- a new agent starts only with the user's own words in this session asking
+  for it (`--asked "<their words>"`, logged as your attestation) or a brief
+  that cites their grant file (`--grant <file>`); a summoned agent's scope is
+  at most `local` unless its brief cites that file (skill `autopilot`).
+
+Every summon is logged (`logs/summon.log`: who, why, parent, depth); list
+yours in your hand-back under Changed, one line each from the command's
+output.
+
 ## Rex commands
 
 `REX_SESSION` and `REX_BLOCK` name your own session and pane. In Rex, a window

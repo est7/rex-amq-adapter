@@ -56,6 +56,14 @@ Agent and user commands:
   crews [dir]               list the crews (named by a Rex tab), their lead and
                             members, and the roles (named by a pane label) that
                             brief agents working in dir
+  summon <handle|role> --subject S --body B [--kind K] [--grant FILE | --asked "WORDS"] [--harness H]
+                            send to a peer by handle or role: a live one gets the
+                            mail; a departed one of this session is resumed in a
+                            pane beside you, then gets it; none starts one for the
+                            role (its brief is the message), awaits its adoption,
+                            then delivers. Guards: a request kind only, no cycle,
+                            depth 2 at most, 6 live agents per session at most, and
+                            a new agent only with the user's words or grant file
   trust <dir>               derive, for a linked worktree of a repository the user
                             already trusts in Antigravity, that trust for DIR, so a
                             peer started there meets no folder dialog; writes
@@ -105,6 +113,8 @@ func run(args []string) int {
 		return runTab(rest)
 	case "trust":
 		return runTrust(rest)
+	case "summon":
+		return runSummon(rest)
 	case "join":
 		return runJoin(rest)
 	case "setup", "status", "remove":
@@ -549,6 +559,73 @@ func deriveTrust(dir string) trust.Result {
 		fmt.Fprintf(os.Stderr, "rex-amq-adapter: %s: %s\n", r.Harness, r.Note)
 	}
 	return r
+}
+
+func runSummon(args []string) int {
+	fs := flag.NewFlagSet("summon", flag.ContinueOnError)
+	subject := fs.String("subject", "", "the message's subject (a started peer's task label)")
+	body := fs.String("body", "", "the message (a started peer's brief); @file reads it")
+	kind := fs.String("kind", "question", "amq kind: question, review_request, todo, brainstorm summon; others deliver only")
+	grant := fs.String("grant", "", "the user's grant file the brief cites (allows a start)")
+	asked := fs.String("asked", "", "the user's own words asking for a new agent, quoted (allows a start)")
+	harness := fs.String("harness", "", "claude, codex, agy, or pi for a start (default: by role)")
+	timeout := fs.Duration("timeout", 45*time.Second, "how long to wait for a launched agent's adoption")
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		fmt.Fprintln(os.Stderr, "usage: rex-amq-adapter summon <handle|role> --subject S --body B [--kind K] [--grant FILE | --asked WORDS] [--harness H]")
+		return 2
+	}
+	target := args[0]
+	if err := fs.Parse(args[1:]); err != nil {
+		return 2
+	}
+	if strings.HasPrefix(*body, "@") {
+		b, err := os.ReadFile((*body)[1:])
+		if err != nil {
+			return fail(err)
+		}
+		*body = string(b)
+	}
+	if *subject == "" || *body == "" {
+		return fail(errors.New("summon needs --subject and --body"))
+	}
+	env, loc, err := caller()
+	if err != nil {
+		return fail(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	res, err := env.Summon(ctx, loc, app.SummonRequest{Target: target, Kind: *kind, Subject: *subject, Body: *body, Grant: *grant, Asked: *asked, Harness: *harness})
+	cancel()
+	if err != nil {
+		return fail(err)
+	}
+	out := map[string]any{"action": res.Action, "handles": res.Handles, "block": res.Block, "reason": res.Reason, "parent": res.Parent, "depth": res.Depth, "mailed": res.Mailed}
+	if res.Block != "" {
+		wctx, wcancel := context.WithTimeout(context.Background(), *timeout)
+		st, err := env.AwaitStartup(wctx, res.Block)
+		wcancel()
+		if err != nil {
+			return fail(err)
+		}
+		out["startup"] = st.Status
+		if st.Handle != "" {
+			out["handles"] = []core.Handle{st.Handle}
+			if !res.Mailed {
+				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+				err = env.Deliver(ctx, loc, st.Handle, *subject, *body)
+				cancel()
+				if err != nil {
+					return fail(err)
+				}
+				out["mailed"] = true
+			}
+		}
+	}
+	b, _ := json.Marshal(out)
+	fmt.Println(string(b))
+	if res.Action == "refused" {
+		return 3
+	}
+	return 0
 }
 
 func runTrust(args []string) int {

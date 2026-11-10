@@ -33,6 +33,7 @@ type Terminal interface {
 	RenameWindow(ctx context.Context, window, label string) error
 	Title(ctx context.Context, block string) (string, error)
 	ListSessions(ctx context.Context) ([]string, error)
+	NewSplit(ctx context.Context, session, anchor, label, dir string, command []string) (block string, err error)
 	// The goal watchdog's layout calls (internal/app/watchdog.go).
 	Size(ctx context.Context, block string) (rex.Size, error)
 	DetachBlock(ctx context.Context, session, block string) error

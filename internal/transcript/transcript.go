@@ -377,3 +377,50 @@ func hexDecode(s string) ([]byte, error) {
 	}
 	return out, nil
 }
+
+// Cwd is the working directory the transcript of session names: Claude rows
+// carry cwd, Codex's session_meta does; pi and Antigravity name none here.
+// home "" is the user's.
+func Cwd(ctx context.Context, home string, kind core.Kind, session string) string {
+	if home == "" {
+		home, _ = os.UserHomeDir()
+	}
+	var pattern, key string
+	switch kind {
+	case core.Claude:
+		pattern, key = filepath.Join(home, ".claude", "projects", "*", session+".jsonl"), "cwd"
+	case core.Codex:
+		pattern, key = filepath.Join(home, ".codex", "sessions", "*", "*", "*", "rollout-*-"+session+".jsonl"), "session_meta"
+	default:
+		return ""
+	}
+	matches, err := filepath.Glob(pattern)
+	if err != nil || len(matches) == 0 {
+		return ""
+	}
+	f, err := os.Open(newest(matches))
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	for n := 0; sc.Scan() && n < 200; n++ {
+		var m map[string]any
+		if json.Unmarshal(sc.Bytes(), &m) != nil {
+			continue
+		}
+		if key == "cwd" {
+			if c := str(m, "cwd"); c != "" {
+				return c
+			}
+			continue
+		}
+		if str(m, "type") == "session_meta" {
+			if p, _ := m["payload"].(map[string]any); p != nil {
+				return str(p, "cwd")
+			}
+		}
+	}
+	return ""
+}

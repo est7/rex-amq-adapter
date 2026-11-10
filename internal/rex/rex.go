@@ -448,3 +448,34 @@ func (c Client) DetachBlock(ctx context.Context, session, block string) error {
 func (c Client) ResizeBlock(ctx context.Context, block string, columns, rows int) error {
 	return c.blockCall(ctx, block, "resize", map[string]int{"columns": columns, "rows": rows}, nil)
 }
+
+// NewSplit opens a block labelled label beside anchor, running command in
+// dir, without taking focus. It is the launch primitive for peers: the
+// user reads related agents side by side.
+func (c Client) NewSplit(ctx context.Context, session, anchor, label, dir string, command []string) (block string, err error) {
+	opts := map[string]any{"cwd": dir}
+	if len(command) > 0 {
+		opts["command"] = command
+	}
+	args, err := json.Marshal(map[string]any{
+		"session_id": session, "anchor_id": anchor, "direction": "horizontal", "side": "after", "focus": false,
+		"layout": map[string]any{"block": map[string]any{"flavor": "com.superlogical.terminal.shell", "label": label, "options": opts}},
+	})
+	if err != nil {
+		return "", err
+	}
+	out, err := c.run(ctx, nil, "api", "call", "-s", session, "session.new_split", string(args))
+	if err != nil {
+		return "", err
+	}
+	var res struct {
+		BlockIDs []string `json:"block_ids"`
+	}
+	if err := json.Unmarshal(out, &res); err != nil {
+		return "", fmt.Errorf("decode new split: %w", err)
+	}
+	if len(res.BlockIDs) != 1 {
+		return "", fmt.Errorf("new split returned %s", out)
+	}
+	return res.BlockIDs[0], nil
+}

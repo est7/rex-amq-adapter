@@ -52,6 +52,7 @@ type fakeTerm struct {
 	moveErr       error    // MoveBlock fails
 	closed        []string
 	newTabs       []string
+	launches      []launch
 }
 
 func (f *fakeTerm) Whoami(context.Context) (rex.Server, error) {
@@ -651,4 +652,24 @@ func (f *fakeTerm) CloseBlock(_ context.Context, block string) error {
 	delete(f.windows, block)
 	f.closed = append(f.closed, block)
 	return nil
+}
+
+// NewSplit records the launch and places a block beside the anchor; the
+// test adopts it with startAs when the scenario needs a live agent.
+func (f *fakeTerm) NewSplit(_ context.Context, session, anchor, label, dir string, command []string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	w, ok := f.windows[anchor]
+	if !ok {
+		return "", rex.ErrNotFound
+	}
+	id := fmt.Sprintf("block:launch-%d", len(f.launches)+1)
+	f.windows[id] = w
+	f.launches = append(f.launches, launch{Block: id, Label: label, Dir: dir, Command: command})
+	return id, nil
+}
+
+type launch struct {
+	Block, Label, Dir string
+	Command           []string
 }

@@ -184,6 +184,21 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	if again && own.AgentPID == agentPID {
 		rec.AdoptedAt = own.AdoptedAt
 	}
+	// Where it runs, for a later resume; and who summoned it, for the guards.
+	if fg, ok, err := e.Rex.Foreground(ctx, loc.Block); err == nil && ok && fg.Cwd != "" {
+		rec.Cwd = fg.Cwd
+	}
+	if hasOwn {
+		rec.Parent, rec.Depth, rec.SummonedFor = own.Parent, own.Depth, own.SummonedFor
+		if rec.Cwd == "" {
+			rec.Cwd = own.Cwd
+		}
+	}
+	if sm, ok, err := e.Store.TakeSummon(blk.SessionID, blk.Label); err != nil {
+		fmt.Fprintf(Diagnostics, "read the summon of %s: %v\n", loc.Block, err)
+	} else if ok && !again {
+		rec.Parent, rec.Depth, rec.SummonedFor = sm.Parent, sm.Depth, sm.For
+	}
 	// Recorded as unfinished until the waker and label follow: a move within
 	// the tab tells no one but is a transition all the same.
 	if !again || unfinished {
