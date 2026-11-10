@@ -609,6 +609,10 @@ type HealthMark struct {
 	LastErrorID string    `json:"last_error_id,omitempty"`
 	LastHungID  string    `json:"last_hung_id,omitempty"`
 	LastStallAt time.Time `json:"last_stall_at,omitempty"`
+	// BlockedSince is when the agent was first seen on a blocked prompt or
+	// a trust screen in the current episode; BlockedTold that it was told.
+	BlockedSince time.Time `json:"blocked_since,omitempty"`
+	BlockedTold  bool      `json:"blocked_told,omitempty"`
 }
 
 func (s Store) healthPath(block string) string {

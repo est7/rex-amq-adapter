@@ -53,6 +53,7 @@ type fakeTerm struct {
 	closed        []string
 	newTabs       []string
 	launches      []launch
+	states        map[string]rex.Status // block -> program status, overriding state
 }
 
 func (f *fakeTerm) Whoami(context.Context) (rex.Server, error) {
@@ -71,9 +72,12 @@ func (f *fakeTerm) Foreground(_ context.Context, block string) (rex.Process, boo
 	return rex.Process{PID: f.fgPID, Name: "codex", Cwd: f.cwd}, true, nil
 }
 
-func (f *fakeTerm) ProgramStatus(context.Context, string) (rex.Status, bool, error) {
+func (f *fakeTerm) ProgramStatus(_ context.Context, block string) (rex.Status, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if st, ok := f.states[block]; ok {
+		return st, true, nil
+	}
 	if f.statusErr && len(f.writes) > 0 {
 		return rex.Status{}, false, errors.New("rex timed out")
 	}

@@ -59,6 +59,9 @@ func (e Env) watchdog(ctx context.Context, goal store.Record, s Session) {
 		if err := e.health(ctx, goal, s, r); err != nil {
 			e.wdLog(goal, r, "error", "", err.Error())
 		}
+		if err := e.blocked(ctx, goal, s, r); err != nil {
+			e.wdLog(goal, r, "error", "", err.Error())
+		}
 	}
 }
 
