@@ -218,7 +218,12 @@ this needs is below; no other skill is required.
    and without the skip flag it stops to ask before every `amq` command it
    runs). Pass `--no-daemon` explicitly
    for Codex: Rex launches the binary without expanding fish abbreviations.
-   This mode cannot be combined with `--remote` or `codex agents`. Never take
+   This mode cannot be combined with `--remote` or `codex agents`. When you
+   run under an autopilot grant or a goal brief, a peer you start gets at
+   most `local` (skill `autopilot`): prefix its command with
+   `env GITX_SCOPE=local` (`-- env GITX_SCOPE=local codex --no-daemon "<brief>"`),
+   so git-command refuses its push, propose and land; `rex-amq-adapter summon`
+   does this for you. Never take
    focus. When your own pane has fewer than 10 rows (`rex block call -b
    "$REX_BLOCK" size`), a split would leave the peer unable to draw its input
    box: open it in a new tab (`rex run`) instead. For an Antigravity peer in a linked worktree, run
