@@ -116,7 +116,7 @@ func TestSummonResumesADepartedPeer(t *testing.T) {
 		t.Fatalf("%+v", res)
 	}
 	l := term.launches[0]
-	if l.Dir != "/work/app" || l.Command[0] != "env" || !strings.HasPrefix(l.Command[1], SummonEnv+"=") || strings.Join(l.Command[2:5], " ") != "codex --no-daemon resume" || l.Command[5] != "thread-2" || !strings.Contains(l.Command[6], "amq drain") || l.Label != "reviewer(codex-02)" {
+	if l.Dir != "/work/app" || l.Command[0] != "env" || !strings.HasPrefix(l.Command[1], SummonEnv+"=") || l.Command[2] != GitxScopeEnv+"=local" || strings.Join(l.Command[3:6], " ") != "codex --no-daemon resume" || l.Command[6] != "thread-2" || !strings.Contains(l.Command[7], "amq drain") || l.Label != "reviewer(codex-02)" {
 		t.Fatalf("launch: %+v", l)
 	}
 	// Adopted, it is the same agent, lineage included.
@@ -155,7 +155,7 @@ func TestSummonStartsARoleOnceAuthorized(t *testing.T) {
 		t.Fatalf("%+v", res)
 	}
 	l := term.launches[0]
-	if l.Dir != "/work/app" || l.Label != "reviewer | look at #42" || l.Command[0] != "env" || l.Command[2] != "codex" || !strings.Contains(l.Command[len(l.Command)-1], "please review #42") || !strings.Contains(l.Command[len(l.Command)-1], "amq send --to claude-01") {
+	if l.Dir != "/work/app" || l.Label != "reviewer | look at #42" || l.Command[0] != "env" || l.Command[2] != GitxScopeEnv+"=local" || l.Command[3] != "codex" || !strings.Contains(l.Command[len(l.Command)-1], "please review #42") || !strings.Contains(l.Command[len(l.Command)-1], "amq send --to claude-01") {
 		t.Fatalf("launch: %+v", l)
 	}
 	if n, _ := e.Store.PendingSummons("session:s", e.Now()); n != 1 {
@@ -174,7 +174,7 @@ func TestSummonStartsARoleOnceAuthorized(t *testing.T) {
 	}
 	// A grant file authorizes a start too, and --harness picks the CLI.
 	e3, term3, loc3 := summonWorld(t)
-	if res := summon(t, e3, loc3, "writer", func(r *SummonRequest) { r.Grant = "/g.md"; r.Harness = "pi" }); res.Action != "start" || term3.launches[0].Command[2] != "pi" {
+	if res := summon(t, e3, loc3, "writer", func(r *SummonRequest) { r.Grant = "/g.md"; r.Harness = "pi" }); res.Action != "start" || term3.launches[0].Command[3] != "pi" || term3.launches[0].Command[2] != GitxScopeEnv+"=local" {
 		t.Fatalf("%+v %v", res, term3.launches)
 	}
 }

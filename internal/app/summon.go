@@ -30,6 +30,9 @@ import (
 // SummonEnv is the environment variable a launched agent carries.
 const SummonEnv = "REX_AMQ_SUMMON"
 
+// GitxScopeEnv is git-command's scope limit (3.4.5, spec 9.31).
+const GitxScopeEnv = "GITX_SCOPE"
+
 // SummonRequest is what the summoner asks.
 type SummonRequest struct {
 	Target  string // a handle or a role
@@ -290,12 +293,14 @@ func (e Env) start(ctx context.Context, caller store.Record, s Session, r Summon
 
 // launch opens the pane beside the caller, or in a new tab when the
 // caller's pane is too small to split, running cmd with the token in its
-// environment.
+// environment and GITX_SCOPE=local: a brief from another agent grants at
+// most local (skill autopilot, Enter 2), and git-command's gitx.py refuses
+// push, propose and land under it, whatever the brief says.
 func (e Env) launch(ctx context.Context, caller store.Record, s Session, label, cwd, token string, cmd []string) (string, error) {
 	if cwd == "" {
 		cwd, _ = os.Getwd()
 	}
-	cmd = append([]string{"env", SummonEnv + "=" + token}, cmd...)
+	cmd = append([]string{"env", SummonEnv + "=" + token, GitxScopeEnv + "=local"}, cmd...)
 	if size, err := e.Rex.Size(ctx, caller.BlockID); err == nil && size.Rows > 0 && size.Rows < 2*core.TinyRows {
 		_, shell, err := e.Rex.NewTab(ctx, s.id, label)
 		if err != nil {
