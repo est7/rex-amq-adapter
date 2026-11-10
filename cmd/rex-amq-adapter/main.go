@@ -24,6 +24,7 @@ import (
 	"github.com/est7/rex-amq-adapter/internal/install"
 	"github.com/est7/rex-amq-adapter/internal/rex"
 	"github.com/est7/rex-amq-adapter/internal/store"
+	"github.com/est7/rex-amq-adapter/internal/trust"
 )
 
 const usage = `rex-amq-adapter: AMQ messaging between coding agents in Rex terminals
@@ -55,6 +56,10 @@ Agent and user commands:
   crews [dir]               list the crews (named by a Rex tab), their lead and
                             members, and the roles (named by a pane label) that
                             brief agents working in dir
+  trust <dir>               derive, for a linked worktree of a repository the user
+                            already trusts in Antigravity, that trust for DIR, so a
+                            peer started there meets no folder dialog; writes
+                            nothing for any other directory (tab runs it for -c)
 
 Installation:
   setup|status|remove       install, inspect, or remove the skill, hooks, and
@@ -98,6 +103,8 @@ func run(args []string) int {
 		return runCrews(rest)
 	case "tab":
 		return runTab(rest)
+	case "trust":
+		return runTrust(rest)
 	case "join":
 		return runJoin(rest)
 	case "setup", "status", "remove":
@@ -517,11 +524,47 @@ func runTab(args []string) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	c := rex.Client{Bin: bin, Server: os.Getenv("REX_SERVER")}
+	deriveTrust(*dir)
 	w, b, err := c.NewWindow(ctx, *session, tabName, *role, *dir, fs.Args())
 	if err != nil {
 		return fail(err)
 	}
 	fmt.Printf("{\"window_id\":%q,\"block_ids\":[%q]}\n", w, b)
+	return 0
+}
+
+// deriveTrust extends the user's Antigravity trust of a repository to the
+// linked worktree a peer is about to start in. A failure is reported and does
+// not stop the launch: the peer then meets the dialog, as before.
+func deriveTrust(dir string) trust.Result {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "rex-amq-adapter: trust: %v\n", err)
+		return trust.Result{}
+	}
+	r, err := trust.Derive(home, dir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "rex-amq-adapter: trust: %v\n", err)
+	} else if r.Written {
+		fmt.Fprintf(os.Stderr, "rex-amq-adapter: %s: %s\n", r.Harness, r.Note)
+	}
+	return r
+}
+
+func runTrust(args []string) int {
+	if len(args) != 1 || strings.HasPrefix(args[0], "-") {
+		fmt.Fprintln(os.Stderr, "usage: rex-amq-adapter trust <dir>")
+		return 2
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fail(err)
+	}
+	r, err := trust.Derive(home, args[0])
+	if err != nil {
+		return fail(err)
+	}
+	fmt.Printf("%s: %s\n", r.Harness, r.Note)
 	return 0
 }
 

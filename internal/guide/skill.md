@@ -219,7 +219,10 @@ this needs is below; no other skill is required.
    runs). Pass `--no-daemon` explicitly
    for Codex: Rex launches the binary without expanding fish abbreviations.
    This mode cannot be combined with `--remote` or `codex agents`. Never take
-   focus. Save the returned block id. When unsure whether work is the same task,
+   focus. For an Antigravity peer in a linked worktree, run
+   `rex-amq-adapter trust <dir>` first: it extends the trust you already gave
+   that repository to the worktree (and nothing else), so the peer meets no
+   folder dialog; `tab` does this for its `-c` directory itself. Save the returned block id. When unsure whether work is the same task,
    prefer a pane: the user can move it (`rex move`), and an unseen peer is easy
    to forget. Tell the user where the peer is ("opened reviewer in a pane on the
    right", "started codex in a new session `billing-api`").
