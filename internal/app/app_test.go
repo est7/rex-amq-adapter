@@ -47,6 +47,8 @@ type fakeTerm struct {
 	selects      []string               // windows the app was asked to show, in order
 	closed       []string
 	newTabs      []string
+	selectErr    map[string]error // window -> SelectView fails
+	noClients    bool             // AppClients finds no app
 }
 
 func (f *fakeTerm) Whoami(context.Context) (rex.Server, error) {
@@ -611,6 +613,11 @@ func (f *fakeTerm) CloseBlock(_ context.Context, block string) error {
 }
 
 func (f *fakeTerm) AppClients(context.Context, string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.noClients {
+		return nil, nil
+	}
 	return []string{"client:app"}, nil
 }
 
@@ -618,6 +625,9 @@ func (f *fakeTerm) SelectView(_ context.Context, client, session, window string)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.selects = append(f.selects, window)
+	if err := f.selectErr[window]; err != nil {
+		return err
+	}
 	f.active = window
 	// Showing a window lays its blocks out: every block in it gets a full size.
 	for b, w := range f.windows {

@@ -29,18 +29,26 @@ func TinyPane(columns, rows int) bool {
 	return rows > 0 && rows < TinyRows || columns > 0 && columns < TinyColumns
 }
 
-// Undelivered reports whether mail is stuck on a missing input box: mail is
-// unread and every doorbell for at least StuckFor deferred box_not_found.
-// since is when that run of outcomes began.
-func Undelivered(history []Attempt, unread int, now time.Time) (since time.Time, ok bool) {
+// Stuck reports whether mail is undelivered: it is unread and every doorbell
+// for at least StuckFor deferred with the same code. code is that reason as
+// the injector recorded it (box_not_found, draft_in_box, agent_blocked,
+// trust_screen, …) and since when the run of outcomes began. Reports follow
+// from any code; a move follows only from box_not_found on a tiny pane.
+func Stuck(history []Attempt, unread int, now time.Time) (code string, since time.Time, ok bool) {
 	if unread == 0 {
-		return time.Time{}, false
+		return "", time.Time{}, false
 	}
 	last, since, ok := lastRun(history)
-	if !ok || last.Progress != Deferred || last.Code != "box_not_found" {
-		return time.Time{}, false
+	if !ok || last.Progress != Deferred {
+		return "", time.Time{}, false
 	}
-	return since, now.Sub(since) >= StuckFor
+	return last.Code, since, now.Sub(since) >= StuckFor
+}
+
+// MayMove reports whether a stuck pane is the one shape the watchdog fixes
+// itself: doorbells find no input box and the pane is too small to draw one.
+func MayMove(code string, columns, rows int) bool {
+	return code == "box_not_found" && TinyPane(columns, rows)
 }
 
 // Delivered reports whether the last doorbell was accepted.
@@ -69,7 +77,12 @@ type Episode struct {
 	// measured large enough with an empty box afterwards.
 	Moved    bool `json:"moved,omitempty"`
 	Rendered bool `json:"rendered,omitempty"`
+	// Restored: the app shows PrevActive again after rendering.
+	Restored bool `json:"restored,omitempty"`
 	Verified bool `json:"verified,omitempty"`
+	// Attempts counts layout actions that failed; past MaxAttempts the
+	// watchdog stops acting and reports.
+	Attempts int `json:"attempts,omitempty"`
 	// Reported holds each report code sent to the goal agent and when.
 	Reported map[string]time.Time `json:"reported,omitempty"`
 	Outcome  string               `json:"outcome,omitempty"`
@@ -83,16 +96,38 @@ const (
 	ReportBoxNotFound    = "box_not_found"
 	ReportRecoveryFailed = "recovery_failed"
 	ReportMovedByUser    = "moved_by_user"
+	ReportUndelivered    = "undelivered"
+	ReportNoClient       = "no_app_client"
+	ReportRestoreFailed  = "restore_failed"
 )
 
+// MaxAttempts bounds the layout actions one episode may retry.
+const MaxAttempts = 2
+
 // WatchdogReport is the mail a stuck peer's watchdog sends its goal agent.
-func WatchdogReport(peer Peer, code, detail string, screen []string) (subject, body string) {
+// It says what the watchdog did to the pane so far, so a moved pane is not
+// taken for an untouched one.
+func WatchdogReport(peer Peer, ep Episode, code, detail string, screen []string) (subject, body string) {
 	subject = "watchdog: " + string(peer.Handle) + " " + code
 	body = "The goal watchdog found " + peer.named() + " stuck: " + code + "."
 	if detail != "" {
 		body += " " + detail
 	}
-	body += " It pressed no key and moved nothing for this; the call is yours (the user still decides a dialog that asks for trust or a permission).\n\nLast lines on its screen:\n"
+	body += " It pressed no key."
+	switch {
+	case ep.Moved && ep.Rendered:
+		body += " It had moved the pane to the " + OverflowTab + " tab and had the app render it"
+		if ep.Restored {
+			body += ", then put the app back on its previous window."
+		} else {
+			body += "; the app may still show that tab."
+		}
+	case ep.Moved:
+		body += " It had moved the pane to the " + OverflowTab + " tab; the app has not rendered it."
+	default:
+		body += " It moved nothing."
+	}
+	body += " The call is yours (the user still decides a dialog that asks for trust or a permission).\n\nLast lines on its screen:\n"
 	for _, l := range screen {
 		body += "  " + l + "\n"
 	}
