@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -86,11 +87,14 @@ func TestPiTail(t *testing.T) {
 {"type":"message","id":"m3","timestamp":"2026-11-10T02:00:02.000Z","message":{"role":"toolResult","toolCallId":"tc_1","isError":true,"content":[{"type":"text","text":"exit 1"}]}}
 `)
 	tail, ok, err := Read(context.Background(), home, core.Pi, "sid-9", 10)
-	if err != nil || !ok || len(tail.Rows) != 3 {
+	if err != nil || !ok || len(tail.Rows) != 4 {
 		t.Fatalf("%v %v %+v", ok, err, tail.Rows)
 	}
-	if !tail.Rows[0].Error || tail.Rows[0].Text != "Upstream stream interrupted" || tail.Rows[1].ToolID != "tc_1" || !tail.Rows[2].Error || tail.Rows[2].ToolID != "tc_1" {
+	if !tail.Rows[0].Error || tail.Rows[0].Text != "Upstream stream interrupted" || tail.Rows[2].Kind != "tool_call" || tail.Rows[2].ToolID != "tc_1" || !tail.Rows[3].Error || tail.Rows[3].ToolID != "tc_1" {
 		t.Fatalf("rows: %+v", tail.Rows)
+	}
+	if len(tail.Pending) != 0 {
+		t.Fatalf("pending: %+v", tail.Pending)
 	}
 }
 
@@ -129,4 +133,63 @@ func hexOf(s string) string {
 		out = append(out, digits[s[i]>>4], digits[s[i]&15])
 	}
 	return string(out)
+}
+
+// Parallel tool calls answered out of order are both complete; a call whose
+// result never came stays pending even when more rows follow than a notice
+// shows.
+func TestPendingCallsKeepTheirPairing(t *testing.T) {
+	home := t.TempDir()
+	var rows []string
+	rows = append(rows, `{"type":"assistant","uuid":"u1","timestamp":"2026-11-10T01:00:00.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"A","name":"Bash"},{"type":"tool_use","id":"B","name":"Read"}]}}`)
+	rows = append(rows, `{"type":"user","uuid":"u2","timestamp":"2026-11-10T01:00:01.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"B","content":"b"},{"type":"tool_result","tool_use_id":"A","content":"a"}]}}`)
+	rows = append(rows, `{"type":"assistant","uuid":"u3","timestamp":"2026-11-10T01:00:02.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"C","name":"Bash"}]}}`)
+	for i := 0; i < 12; i++ {
+		rows = append(rows, `{"type":"assistant","uuid":"m`+string(rune('a'+i))+`","timestamp":"2026-11-10T01:01:00.000Z","message":{"role":"assistant","content":[{"type":"text","text":"chatter"}]}}`)
+	}
+	write(t, filepath.Join(home, ".claude/projects/-Users-x--app/sid-2.jsonl"), strings.Join(rows, "\n")+"\n")
+	tail, ok, err := Read(context.Background(), home, core.Claude, "sid-2", 8)
+	if err != nil || !ok || len(tail.Rows) != 8 {
+		t.Fatalf("%v %v %d rows", ok, err, len(tail.Rows))
+	}
+	if len(tail.Pending) != 1 || tail.Pending[0].ToolID != "C" {
+		t.Fatalf("pending: %+v", tail.Pending)
+	}
+	h := core.Assess(tail, false, time.Date(2026, 11, 10, 2, 0, 0, 0, time.UTC))
+	if h.Hung == nil || h.Hung.ToolID != "C" {
+		t.Fatalf("hung: %+v", h.Hung)
+	}
+}
+
+// An Antigravity database in WAL mode shows its activity in the -wal file;
+// the main file may stay old.
+func TestAgyActivityFollowsTheWAL(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not installed")
+	}
+	home := t.TempDir()
+	db := filepath.Join(home, ".gemini/antigravity-cli/conversations/conv-2.db")
+	os.MkdirAll(filepath.Dir(db), 0o700)
+	if out, err := exec.Command("sqlite3", db, "pragma journal_mode=wal; create table steps (idx integer primary key, step_type integer, status integer, error_details blob); insert into steps values (1, 17, 3, null);").CombinedOutput(); err != nil {
+		t.Fatalf("%v %s", err, out)
+	}
+	old := time.Now().Add(-2 * time.Hour)
+	os.Chtimes(db, old, old)
+	// The sqlite3 command checkpoints on exit; a writer that stays open
+	// leaves the -wal file, which is what the reader looks at.
+	if _, err := os.Stat(db + "-wal"); err != nil {
+		if err := os.WriteFile(db+"-wal", nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tail, ok, err := Read(context.Background(), home, core.Agy, "conv-2", 2)
+	if err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	if time.Since(tail.LastAt) > time.Hour {
+		t.Fatalf("activity read from the stale main file: %v", tail.LastAt)
+	}
+	if !tail.Rows[0].At.IsZero() {
+		t.Fatal("a step row claimed a time it does not have")
+	}
 }

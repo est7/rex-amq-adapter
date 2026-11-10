@@ -280,3 +280,80 @@ func TestWatchdogDoesNotTouchAPaneItShouldNot(t *testing.T) {
 		t.Fatalf("touched a pane that shows vim: %s", acted(term2))
 	}
 }
+
+// A restart after the detach but before the resize continues with the
+// resize, delivers and places; a pre-detach journal with the block already
+// detached does not detach again.
+func TestWatchdogRestartContinuesBeforeTheResize(t *testing.T) {
+	for name, journaled := range map[string]bool{"detach journaled": true, "detach not journaled": false} {
+		t.Run(name, func(t *testing.T) {
+			e, term, goal, s, _ := stuckWorld(t, "", "idle", true)
+			term.windows[block] = ""
+			term.detached = map[string]bool{block: true}
+			delete(term.owner, block)
+			ep := core.Episode{ID: "before-resize", Handle: "codex", Block: block, PID: term.fgPID, Session: "session:s", StartedAt: e.Now(), Window: "window:1", Detached: journaled}
+			if err := e.Store.PutEpisode(ep); err != nil {
+				t.Fatal(err)
+			}
+			e.watchdog(context.Background(), goal, s)
+			if len(term.detaches) != 0 || len(term.resizes) != 1 || len(term.writes) != 1 || term.windows[block] != "window:overflow" {
+				t.Fatalf("%s window %q", acted(term), term.windows[block])
+			}
+		})
+	}
+}
+
+// A detached block the user placed in a window of their own is theirs: no
+// doorbell from the watchdog, one moved_by_user report, nothing else.
+func TestWatchdogLeavesAManualPlacementAlone(t *testing.T) {
+	e, term, goal, s, _ := stuckWorld(t, "", "idle", true)
+	term.windows[block] = "window:user-chosen"
+	term.tabs["window:user-chosen"] = "User"
+	term.rows[block] = 24
+	ep := core.Episode{ID: "manual", Handle: "codex", Block: block, PID: term.fgPID, Session: "session:s", StartedAt: e.Now(), Window: "window:1", Overflow: "window:overflow", Detached: true, Resized: true}
+	if err := e.Store.PutEpisode(ep); err != nil {
+		t.Fatal(err)
+	}
+	e.watchdog(context.Background(), goal, s)
+	e.watchdog(context.Background(), goal, s)
+	if len(term.writes) != 0 || len(term.moves) != 0 || len(term.detaches) != 0 || term.windows[block] != "window:user-chosen" {
+		t.Fatalf("%s window %q", acted(term), term.windows[block])
+	}
+	if inbox := goalInbox(t, e); len(inbox) != 1 || reported(t, e)[core.ReportMovedByUser].IsZero() {
+		t.Fatalf("goal reports: %v, reported %v", inbox, reported(t, e))
+	}
+	if cur, _, _ := e.Store.Episode(block); !cur.Taken {
+		t.Fatalf("episode: %+v", cur)
+	}
+}
+
+// The goal agent's own pane can be recovered too: after a detach the
+// watcher's next look still finds its session, and the block is placed
+// before the look ends even when the resize did not take.
+func TestWatchdogRecoversTheGoalsOwnPane(t *testing.T) {
+	e, term, goal, s, _ := stuckWorld(t, "", "idle", false)
+	goal.AgentPID = term.fgPID
+	if err := e.Store.PutRecord(goal); err != nil {
+		t.Fatal(err)
+	}
+	term.rows[goal.BlockID] = 3
+	term.owner[goal.BlockID] = "client:app"
+	term.resizeIgnored = true
+	if err := amq.Send(context.Background(), e.AmqBin, e.Paths.Root(), "codex", "goal-01", "brief", "do this"); err != nil {
+		t.Fatal(err)
+	}
+	for _, at := range []time.Time{e.Now().Add(-40 * time.Second), e.Now().Add(-10 * time.Second)} {
+		if err := e.Store.RecordInject(goal.Handle, core.Outcome{Progress: core.Deferred, Code: "box_not_found"}, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := e.watchPeer(context.Background(), goal, s, goal); err != nil {
+		t.Fatal(err)
+	}
+	if term.windows[goal.BlockID] != "window:overflow" {
+		t.Fatalf("the goal's block was left detached: window %q, %s", term.windows[goal.BlockID], acted(term))
+	}
+	if err := e.watchOnce(context.Background(), goal); err != nil {
+		t.Fatalf("the watcher cannot look again: %v", err)
+	}
+}

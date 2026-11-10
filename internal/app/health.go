@@ -97,7 +97,12 @@ func (e Env) flagged(ctx context.Context, rec store.Record) bool {
 		return false
 	}
 	h := core.Assess(tail, false, e.Now())
-	return len(h.Errors) > 0 && e.Now().Sub(h.Errors[len(h.Errors)-1].At) < core.StalledFor
+	if len(h.Errors) == 0 {
+		return false
+	}
+	newest := h.Errors[len(h.Errors)-1]
+	// A row without a time of its own (Antigravity) cannot be shown fresh.
+	return !newest.At.IsZero() && e.Now().Sub(newest.At) < core.StalledFor
 }
 
 // otherFamily finds a live agent in s of a model family other than rec's

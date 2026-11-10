@@ -109,8 +109,18 @@ func (e Env) observe(ctx context.Context, rec store.Record, unread int, history 
 	return l, true, nil
 }
 
-// watchPeer decides and acts for one agent.
-func (e Env) watchPeer(ctx context.Context, goal store.Record, s Session, rec store.Record) error {
+// watchPeer decides and acts for one agent. Whatever happens after a
+// detach, the block is placed in a window again before the look ends.
+func (e Env) watchPeer(ctx context.Context, goal store.Record, s Session, rec store.Record) (err error) {
+	defer func() {
+		ep, open, perr := e.Store.Episode(rec.BlockID)
+		if perr != nil || !open || !ep.Detached || ep.Placed || ep.Taken {
+			return
+		}
+		if perr := e.place(ctx, goal, rec, &ep, s); perr != nil && err == nil {
+			err = perr
+		}
+	}()
 	unread, err := amq.Unread(e.Paths.Root(), string(rec.Handle))
 	if err != nil {
 		return err
@@ -123,11 +133,19 @@ func (e Env) watchPeer(ctx context.Context, goal store.Record, s Session, rec st
 	if err != nil {
 		return err
 	}
-	if open && ep.Detached && !ep.Placed {
-		// A detached block is placed before anything else, delivered or not:
-		// the user must be able to find it.
-		if err := e.place(ctx, goal, rec, &ep, s); err != nil {
+	if open {
+		// The journal says what was attempted; the block says what took.
+		if err := e.reconcile(ctx, goal, rec, &ep); err != nil {
 			return err
+		}
+		if ep.Detached && ep.Resized && !ep.Placed && !ep.Taken {
+			// A resized block is placed before anything else, delivered or
+			// not: the user must be able to find it. One not yet resized
+			// gets its resize first (below), and is placed when the look
+			// ends (the deferred placement above).
+			if err := e.place(ctx, goal, rec, &ep, s); err != nil {
+				return err
+			}
 		}
 	}
 	if open && (len(unread) == 0 || core.Delivered(history)) {
@@ -145,10 +163,11 @@ func (e Env) watchPeer(ctx context.Context, goal store.Record, s Session, rec st
 	}
 	e.wdLog(goal, rec, "observe", ep.ID, fmt.Sprintf("unread %d, deferred %s since %s, %dx%d owner %q in %q, status %s/%s, box %s", l.unread, l.code, core.Ago(e.Now().Sub(l.since)), l.columns, l.rows, l.owner, l.window, l.status, l.kind, l.box))
 
-	// An episode that placed the pane: is it still where the watchdog put it?
-	// A pane the user moved out is theirs, whatever its size.
-	if ep.Placed && l.window != ep.Overflow {
-		return e.report(ctx, goal, rec, &ep, core.ReportMovedByUser, fmt.Sprintf("Its pane left the %s tab after the watchdog placed it there, so the watchdog leaves it alone.", core.OverflowTab), l.lines)
+	// A pane the user took (placed themselves, or moved out of the overflow
+	// tab) is theirs, whatever its size.
+	if ep.Taken || ep.Placed && l.window != ep.Overflow {
+		ep.Taken = true
+		return e.report(ctx, goal, rec, &ep, core.ReportMovedByUser, fmt.Sprintf("Its pane is no longer where the watchdog put it (the %s tab), so the watchdog leaves it alone.", core.OverflowTab), l.lines)
 	}
 
 	// Zero keystrokes on any dialog or draft: these are reported, never answered.
@@ -162,11 +181,17 @@ func (e Env) watchPeer(ctx context.Context, goal store.Record, s Session, rec st
 	}
 
 	if ep.Detached {
-		// Resized earlier, still undelivered: verify again (the agent may
-		// have redrawn since), else report.
-		inject, err := e.verify(ctx, goal, rec, &ep)
+		// Detached earlier, still undelivered: resize if that never took,
+		// then verify again (the agent may have redrawn since), else report.
+		var inject bool
+		var err error
+		if !ep.Resized && l.window == "" {
+			inject, err = e.resize(ctx, goal, rec, &ep)
+		} else {
+			inject, err = e.verify(ctx, goal, rec, &ep)
+		}
 		if err != nil {
-			return err
+			return e.handOff(ctx, goal, rec, &ep, s, false, err)
 		}
 		if inject {
 			return e.handOff(ctx, goal, rec, &ep, s, true, nil)
@@ -196,7 +221,7 @@ func (e Env) handOff(ctx context.Context, goal store.Record, rec store.Record, e
 		_ = e.Store.PutEpisode(*ep)
 		return err
 	}
-	if !inject {
+	if !inject || ep.Taken {
 		return nil
 	}
 	o := e.Inject(ctx, InjectRequest{Block: rec.BlockID, Handle: rec.Handle, Root: e.Paths.Root()})
@@ -352,9 +377,42 @@ func (e Env) verify(ctx context.Context, goal store.Record, rec store.Record, ep
 
 type rexSize struct{ columns, rows int }
 
+// reconcile brings the journal up to what the block shows: a detach that
+// took before the journal said so, a placement by the user, a block that
+// sits where the watchdog wanted it.
+func (e Env) reconcile(ctx context.Context, goal store.Record, rec store.Record, ep *core.Episode) error {
+	blk, err := e.Rex.InspectBlock(ctx, rec.BlockID)
+	if err != nil {
+		return err
+	}
+	changed := false
+	switch {
+	case blk.Placement == "detached" || blk.WindowID == "":
+		if !ep.Detached {
+			ep.Detached, changed = true, true
+			e.wdLog(goal, rec, "reconcile", ep.ID, "the block is detached; the journal did not say so")
+		}
+	case ep.Detached && !ep.Placed && !ep.Taken:
+		changed = true
+		if ep.Overflow != "" && blk.WindowID == ep.Overflow {
+			ep.Placed = true
+			e.wdLog(goal, rec, "reconcile", ep.ID, "the block sits in the overflow tab; the journal did not say so")
+		} else {
+			ep.Taken = true
+			e.wdLog(goal, rec, "reconcile", ep.ID, "the user placed the block in "+blk.WindowID+"; it is theirs")
+		}
+	}
+	if changed {
+		return e.Store.PutEpisode(*ep)
+	}
+	return nil
+}
+
 // place puts the detached block in the session's overflow tab, which is not
-// rendered until the user opens it, so the block keeps its size. A failure
-// is reported once and retried on the next look.
+// rendered until the user opens it, so the block keeps its size. The tab is
+// journaled before the move, so only a block found there counts as placed;
+// one found elsewhere was placed by the user. A failure is reported once
+// and retried on the next look.
 func (e Env) place(ctx context.Context, goal store.Record, rec store.Record, ep *core.Episode, s Session) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), actBudget)
 	defer cancel()
@@ -363,12 +421,19 @@ func (e Env) place(ctx context.Context, goal store.Record, rec store.Record, ep 
 		return err
 	}
 	if blk.WindowID != "" {
-		// Placed already (by an earlier look that died before the journal,
-		// or by the user).
-		ep.Overflow, ep.Placed = blk.WindowID, true
+		if ep.Overflow != "" && blk.WindowID == ep.Overflow {
+			ep.Placed = true
+		} else {
+			ep.Taken = true
+			e.wdLog(goal, rec, "place", ep.ID, "the user placed the block in "+blk.WindowID+"; it is theirs")
+		}
 		return e.Store.PutEpisode(*ep)
 	}
 	overflow, anchor, shell, err := e.overflowTab(ctx, s.id)
+	if err == nil {
+		ep.Overflow = overflow
+		err = e.Store.PutEpisode(*ep)
+	}
 	if err == nil {
 		err = e.Rex.MoveBlock(ctx, s.id, rec.BlockID, anchor)
 	}
@@ -385,7 +450,7 @@ func (e Env) place(ctx context.Context, goal store.Record, rec store.Record, ep 
 			e.wdLog(goal, rec, "warn", ep.ID, "the overflow tab's shell stays open: "+err.Error())
 		}
 	}
-	ep.Overflow, ep.Placed = overflow, true
+	ep.Placed = true
 	e.wdLog(goal, rec, "place", ep.ID, "in "+overflow)
 	return e.Store.PutEpisode(*ep)
 }

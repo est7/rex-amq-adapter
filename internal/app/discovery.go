@@ -32,7 +32,7 @@ func (e Env) FindSession(ctx context.Context, block string) (Session, error) {
 	if err != nil {
 		return Session{}, err
 	}
-	if srv.Endpoint == "" || blk.WindowID == "" || blk.SessionID == "" {
+	if srv.Endpoint == "" || blk.SessionID == "" || blk.WindowID == "" && blk.Placement != "detached" {
 		return Session{}, errors.New("cannot determine this Rex session")
 	}
 	return e.loadSession(ctx, srv.Endpoint, blk.SessionID)

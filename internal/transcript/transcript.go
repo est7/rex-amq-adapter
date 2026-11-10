@@ -51,7 +51,7 @@ func Read(ctx context.Context, home string, kind core.Kind, session string, k in
 
 // readJSONL reads the last k rows that parse maps of the newest file
 // matching pattern.
-func readJSONL(pattern string, k int, parse func(map[string]any) (core.Row, bool)) (core.Tail, bool, error) {
+func readJSONL(pattern string, k int, parse func(map[string]any) []core.Row) (core.Tail, bool, error) {
 	matches, err := filepath.Glob(pattern)
 	if err != nil || len(matches) == 0 {
 		return core.Tail{}, false, err
@@ -84,10 +84,9 @@ func readJSONL(pattern string, k int, parse func(map[string]any) (core.Row, bool
 		if err := json.Unmarshal(sc.Bytes(), &m); err != nil {
 			continue
 		}
-		if r, ok := parse(m); ok {
-			t.Rows = append(t.Rows, r)
-		}
+		t.Rows = append(t.Rows, parse(m)...)
 	}
+	t.Pending = pending(t.Rows)
 	if len(t.Rows) > k {
 		t.Rows = t.Rows[len(t.Rows)-k:]
 	}
@@ -95,6 +94,24 @@ func readJSONL(pattern string, k int, parse func(map[string]any) (core.Row, bool
 		t.LastAt = t.Rows[n-1].At
 	}
 	return t, true, nil
+}
+
+// pending are the tool calls among rows whose result never came, oldest
+// first.
+func pending(rows []core.Row) []core.Row {
+	results := map[string]bool{}
+	for _, r := range rows {
+		if r.Kind == "tool_result" && r.ToolID != "" {
+			results[r.ToolID] = true
+		}
+	}
+	var out []core.Row
+	for _, r := range rows {
+		if r.Kind == "tool_call" && r.ToolID != "" && !results[r.ToolID] {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 func newest(paths []string) string {
@@ -115,6 +132,24 @@ func str(m map[string]any, key string) string {
 func when(s string) time.Time {
 	t, _ := time.Parse(time.RFC3339Nano, s)
 	return t
+}
+
+// textOnly joins the text blocks of a content array or string, leaving tool
+// blocks to their own rows.
+func textOnly(v any) string {
+	switch c := v.(type) {
+	case string:
+		return c
+	case []any:
+		var parts []string
+		for _, item := range c {
+			if m, ok := item.(map[string]any); ok && (str(m, "type") == "text" || str(m, "type") == "input_text" || str(m, "type") == "output_text") {
+				parts = append(parts, str(m, "text"))
+			}
+		}
+		return strings.Join(parts, " ")
+	}
+	return ""
 }
 
 // contentText joins the text of a content array or string, and the error
@@ -146,40 +181,50 @@ func contentText(v any) string {
 
 // claudeRow: assistant rows carry text and tool_use blocks (isApiErrorMessage
 // marks an API error); user rows carry tool_result blocks (is_error) or the
-// user's text.
-func claudeRow(m map[string]any) (core.Row, bool) {
+// user's text. Each tool block is its own row, so parallel calls keep their
+// pairing.
+func claudeRow(m map[string]any) []core.Row {
 	typ := str(m, "type")
 	if typ != "assistant" && typ != "user" {
-		return core.Row{}, false
+		return nil
 	}
 	msg, _ := m["message"].(map[string]any)
-	r := core.Row{ID: str(m, "uuid"), At: when(str(m, "timestamp")), Kind: "message", Text: contentText(msg["content"])}
+	id, at := str(m, "uuid"), when(str(m, "timestamp"))
+	var out []core.Row
+	text := textOnly(msg["content"])
 	if e, _ := m["isApiErrorMessage"].(bool); e {
-		r.Kind, r.Error = "error", true
+		return []core.Row{{ID: id, At: at, Kind: "error", Text: text, Error: true}}
 	}
+	n := 0
 	if items, ok := msg["content"].([]any); ok {
 		for _, item := range items {
 			b, _ := item.(map[string]any)
 			switch str(b, "type") {
 			case "tool_use":
-				r.Kind, r.ToolID = "tool_call", str(b, "id")
+				n++
+				out = append(out, core.Row{ID: id + "/" + str(b, "id"), At: at, Kind: "tool_call", Text: str(b, "name") + "(…)", ToolID: str(b, "id")})
 			case "tool_result":
-				r.Kind, r.ToolID = "tool_result", str(b, "tool_use_id")
+				n++
+				r := core.Row{ID: id + "/" + str(b, "tool_use_id"), At: at, Kind: "tool_result", Text: contentText(b["content"]), ToolID: str(b, "tool_use_id")}
 				if e, _ := b["is_error"].(bool); e {
 					r.Error = true
 				}
+				out = append(out, r)
 			}
 		}
 	}
-	return r, true
+	if n == 0 || strings.TrimSpace(text) != "" && typ == "assistant" {
+		out = append([]core.Row{{ID: id, At: at, Kind: "message", Text: text}}, out...)
+	}
+	return out
 }
 
 // codexRow: response_item rows carry messages, tool calls and their outputs;
 // an event_msg of type error is the harness's own error flag.
-func codexRow(m map[string]any) (core.Row, bool) {
+func codexRow(m map[string]any) []core.Row {
 	p, _ := m["payload"].(map[string]any)
 	if p == nil {
-		return core.Row{}, false
+		return nil
 	}
 	r := core.Row{ID: str(m, "ordinal"), At: when(str(m, "timestamp"))}
 	if r.ID == "" {
@@ -190,14 +235,14 @@ func codexRow(m map[string]any) (core.Row, bool) {
 	switch str(m, "type") {
 	case "event_msg":
 		if str(p, "type") != "error" {
-			return core.Row{}, false
+			return nil
 		}
 		r.Kind, r.Error, r.Text = "error", true, str(p, "message")
 	case "response_item":
 		switch str(p, "type") {
 		case "message", "agent_message":
 			if role := str(p, "role"); role != "" && role != "user" && role != "assistant" {
-				return core.Row{}, false // developer and system rows are the prompt, not the conversation
+				return nil // developer and system rows are the prompt, not the conversation
 			}
 			r.Kind, r.Text = "message", contentText(p["content"])
 			if r.Text == "" {
@@ -208,44 +253,49 @@ func codexRow(m map[string]any) (core.Row, bool) {
 		case "function_call_output", "custom_tool_call_output":
 			r.Kind, r.ToolID, r.Text = "tool_result", str(p, "call_id"), contentText(p["output"])
 		default:
-			return core.Row{}, false
+			return nil
 		}
 	default:
-		return core.Row{}, false
+		return nil
 	}
-	return r, true
+	return []core.Row{r}
 }
 
 // piRow: message rows carry the role; an assistant message's stopReason
-// "error" and errorMessage, and a toolResult's isError, are the flags.
-func piRow(m map[string]any) (core.Row, bool) {
+// "error" and errorMessage, and a toolResult's isError, are the flags. Each
+// toolCall block is its own row.
+func piRow(m map[string]any) []core.Row {
 	if str(m, "type") != "message" {
-		return core.Row{}, false
+		return nil
 	}
 	msg, _ := m["message"].(map[string]any)
-	r := core.Row{ID: str(m, "id"), At: when(str(m, "timestamp")), Kind: "message", Text: contentText(msg["content"])}
+	id, at := str(m, "id"), when(str(m, "timestamp"))
 	switch str(msg, "role") {
 	case "assistant":
+		r := core.Row{ID: id, At: at, Kind: "message", Text: contentText(msg["content"])}
 		if str(msg, "stopReason") == "error" {
 			r.Kind, r.Error = "error", true
 		}
 		if e := str(msg, "errorMessage"); e != "" {
 			r.Error, r.Text = true, strings.TrimSpace(r.Text+" "+e)
 		}
+		out := []core.Row{r}
 		if items, ok := msg["content"].([]any); ok {
 			for _, item := range items {
 				if b, _ := item.(map[string]any); str(b, "type") == "toolCall" {
-					r.Kind, r.ToolID = "tool_call", str(b, "id")
+					out = append(out, core.Row{ID: id + "/" + str(b, "id"), At: at, Kind: "tool_call", Text: str(b, "name") + "(…)", ToolID: str(b, "id")})
 				}
 			}
 		}
+		return out
 	case "toolResult":
-		r.Kind, r.ToolID = "tool_result", str(msg, "toolCallId")
+		r := core.Row{ID: id, At: at, Kind: "tool_result", Text: contentText(msg["content"]), ToolID: str(msg, "toolCallId")}
 		if e, _ := msg["isError"].(bool); e {
 			r.Error = true
 		}
+		return []core.Row{r}
 	}
-	return r, true
+	return []core.Row{{ID: id, At: at, Kind: "message", Text: contentText(msg["content"])}}
 }
 
 // readAgy reads the last k steps of a conversation database: a step with
@@ -264,14 +314,21 @@ func readAgy(ctx context.Context, path string, k int) (core.Tail, bool, error) {
 	if err != nil {
 		return core.Tail{}, false, err
 	}
-	t := core.Tail{Source: path, LastAt: info.ModTime()}
+	// New commits land in the -wal file first, and the main file may stay
+	// untouched for an hour: activity is the newer of the two. The rows
+	// carry no time of their own, so theirs stays unknown.
+	last := info.ModTime()
+	if wal, err := os.Stat(path + "-wal"); err == nil && wal.ModTime().After(last) {
+		last = wal.ModTime()
+	}
+	t := core.Tail{Source: path, LastAt: last}
 	lines := bytes.Split(bytes.TrimSpace(out), []byte("\n"))
 	for i := len(lines) - 1; i >= 0; i-- {
 		cells := strings.SplitN(string(lines[i]), "\t", 3)
 		if len(cells) < 2 {
 			continue
 		}
-		r := core.Row{ID: cells[0], At: info.ModTime(), Kind: "message", Text: "step status " + cells[1]}
+		r := core.Row{ID: cells[0], Kind: "message", Text: "step status " + cells[1]}
 		if len(cells) == 3 && cells[2] != "" && cells[2] != "NULL" && cells[2] != "''" {
 			r.Kind, r.Error = "error", true
 			r.Text += " " + printable(cells[2])

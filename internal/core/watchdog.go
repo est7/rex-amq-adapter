@@ -84,6 +84,8 @@ type Episode struct {
 	Resized  bool `json:"resized,omitempty"`
 	Verified bool `json:"verified,omitempty"`
 	Placed   bool `json:"placed,omitempty"`
+	// Taken: the user put the detached block somewhere else; it is theirs.
+	Taken bool `json:"taken,omitempty"`
 	// Attempts counts layout actions that failed; past MaxAttempts the
 	// watchdog stops acting and reports.
 	Attempts int `json:"attempts,omitempty"`
