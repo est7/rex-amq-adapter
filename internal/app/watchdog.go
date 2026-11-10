@@ -173,12 +173,12 @@ func (e Env) watchPeer(ctx context.Context, goal store.Record, s Session, rec st
 		return e.report(ctx, goal, rec, &ep, core.ReportMovedByUser, fmt.Sprintf("Its pane is no longer where the watchdog put it (the %s tab), so the watchdog leaves it alone.", core.OverflowTab), l.lines)
 	}
 
-	// Zero keystrokes on any dialog or draft: these are reported, never answered.
+	// Zero keystrokes on any dialog or draft. A trust screen or a blocked
+	// prompt is the blocked look's to report (blocked.go), mail or not; a
+	// draft is reported here.
 	switch {
-	case l.trust != "":
-		return e.report(ctx, goal, rec, &ep, core.ReportTrustScreen, "A trust dialog is on its screen: "+l.trust+".", l.lines)
-	case l.status == core.StateBlocked:
-		return e.report(ctx, goal, rec, &ep, core.ReportBlocked, "It waits on the user ("+l.kind+").", l.lines)
+	case l.trust != "", l.status == core.StateBlocked:
+		return nil
 	case l.box == screen.Typed:
 		return e.report(ctx, goal, rec, &ep, core.ReportDraft, "Its input box holds a draft, so no doorbell can be typed.", l.lines)
 	}

@@ -88,18 +88,72 @@ func TestABlockedGoalIsToldToAnotherFamily(t *testing.T) {
 	}
 }
 
-// A blocked peer with mail pending is the undelivered-mail path's: this
-// look stays out of it, so the goal hears once, not twice.
-func TestABlockedPeerWithMailIsLeftToTheMailPath(t *testing.T) {
+// A blocked peer with mail pending is reported once, by this look: the
+// undelivered-mail path leaves blocked prompts to it.
+func TestABlockedPeerWithMailIsReportedOnce(t *testing.T) {
 	e, term, goal, s, now, _ := healthWorld(t)
 	term.states = map[string]rex.Status{block: {State: "blocked", Kind: "permission"}}
 	if err := amq.Send(context.Background(), e.AmqBin, e.Paths.Root(), "goal-01", "codex", "task", "do it"); err != nil {
 		t.Fatal(err)
 	}
+	inject(e) // the injector records agent_blocked
 	e.watchdog(context.Background(), goal, s)
 	*now = now.Add(core.StuckFor + time.Second)
 	e.watchdog(context.Background(), goal, s)
-	if len(blockedLines(t, e)) != 0 {
-		t.Fatalf("blocked.log: %v", blockedLines(t, e))
+	*now = now.Add(time.Minute)
+	e.watchdog(context.Background(), goal, s)
+	if len(blockedLines(t, e)) != 1 || len(inboxOf(t, e, "goal-01")) != 1 {
+		t.Fatalf("blocked.log %v goal inbox %v", blockedLines(t, e), inboxOf(t, e, "goal-01"))
+	}
+	if len(term.writes) != 0 || len(term.keys) != 0 {
+		t.Fatalf("acted: %s keys %v", acted(term), term.keys)
+	}
+}
+
+// The goal agent blocked with mail pending reaches an outside observer (the
+// desktop), never a mail to itself.
+func TestTheGoalAgentBlockedWithMailReachesTheDesktop(t *testing.T) {
+	e, term, goal, s, now, desktop := healthWorld(t)
+	term.states = map[string]rex.Status{"block:g": {State: "blocked", Kind: "question"}}
+	if err := amq.Send(context.Background(), e.AmqBin, e.Paths.Root(), "codex", "goal-01", "report", "done"); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Store.RecordInject("goal-01", core.Outcome{Progress: core.Deferred, Code: "agent_blocked"}, e.Now()); err != nil {
+		t.Fatal(err)
+	}
+	e.watchdog(context.Background(), goal, s)
+	*now = now.Add(core.StuckFor + time.Second)
+	e.watchdog(context.Background(), goal, s)
+	if len(*desktop) != 1 || len(blockedLines(t, e)) != 1 {
+		t.Fatalf("desktop %v blocked.log %v", *desktop, blockedLines(t, e))
+	}
+	if got := inboxOf(t, e, "goal-01"); len(got) != 1 {
+		t.Fatalf("goal inbox (its one waiting mail only): %v", got)
+	}
+}
+
+// Mail coming and going does not end a block that never cleared: one
+// notice for one block.
+func TestMailDoesNotResetABlock(t *testing.T) {
+	e, term, goal, s, now, desktop := healthWorld(t)
+	term.states = map[string]rex.Status{"block:g": {State: "blocked", Kind: "question"}}
+	e.watchdog(context.Background(), goal, s)
+	*now = now.Add(core.StuckFor + time.Second)
+	e.watchdog(context.Background(), goal, s)
+	if err := amq.Send(context.Background(), e.AmqBin, e.Paths.Root(), "codex", "goal-01", "report", "done"); err != nil {
+		t.Fatal(err)
+	}
+	e.watchdog(context.Background(), goal, s)
+	inbox := filepath.Join(e.Paths.Root(), "agents", "goal-01", "inbox", "new")
+	entries, _ := os.ReadDir(inbox)
+	for _, en := range entries {
+		os.Remove(filepath.Join(inbox, en.Name()))
+	}
+	*now = now.Add(core.StuckFor + time.Second)
+	e.watchdog(context.Background(), goal, s)
+	*now = now.Add(core.StuckFor + time.Second)
+	e.watchdog(context.Background(), goal, s)
+	if len(*desktop) != 1 || len(blockedLines(t, e)) != 1 {
+		t.Fatalf("desktop %v blocked.log %v", *desktop, blockedLines(t, e))
 	}
 }

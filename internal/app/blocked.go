@@ -15,10 +15,10 @@ import (
 )
 
 // The watchdog's third look, at every live agent of a goal session, the goal
-// agent included: one sitting on a prompt only the user can answer while no
-// mail is pending for it. With mail pending the injector records the
-// deferral and the undelivered-mail path reports it; without, nothing
-// would. The signal is structural (program status blocked, or a trust
+// agent included: one sitting on a prompt only the user can answer, mail
+// pending or not. It is the one owner of these two shapes (blocked status,
+// trust screen); the undelivered-mail path leaves them to it, so each is
+// reported once and the goal agent's own is never mailed to itself. The signal is structural (program status blocked, or a trust
 // screen while the agent reports nothing else), held for StuckFor; the
 // notice says so once per episode, and a line lands in logs/blocked.log
 // with the time, so the user finds when the run stopped. A blocked goal
@@ -26,10 +26,6 @@ import (
 // desktop. Zero keys.
 
 func (e Env) blocked(ctx context.Context, goal store.Record, s Session, rec store.Record) error {
-	unread, err := amq.Unread(e.Paths.Root(), string(rec.Handle))
-	if err != nil {
-		return err
-	}
 	mark, err := e.Store.HealthMark(rec.BlockID)
 	if err != nil {
 		return err
@@ -55,8 +51,9 @@ func (e Env) blocked(ctx context.Context, goal store.Record, s Session, rec stor
 		}
 	}
 	now := e.Now()
-	if what == "" || len(unread) > 0 {
-		// Not blocked, or the undelivered-mail path owns it: the episode ends.
+	if what == "" {
+		// The prompt is gone: the episode ends. Mail coming or going does
+		// not end it, and does not change who reports it.
 		if !mark.BlockedSince.IsZero() {
 			mark.BlockedSince, mark.BlockedTold = time.Time{}, false
 			return e.Store.PutHealthMark(rec.BlockID, mark)

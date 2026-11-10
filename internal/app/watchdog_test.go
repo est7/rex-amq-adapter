@@ -130,6 +130,8 @@ func TestWatchdogOnlyReportsADraftOrADialog(t *testing.T) {
 			}
 			*now = now.Add(time.Minute)
 			e.watchdog(context.Background(), goal, s)
+			*now = now.Add(core.StuckFor + time.Second) // the blocked look holds a block for StuckFor
+			e.watchdog(context.Background(), goal, s)
 			e.watchdog(context.Background(), goal, s)
 			if len(term.writes) != 0 || len(term.keys) != 0 || len(term.detaches) != 0 || len(term.moves) != 0 {
 				t.Fatalf("acted: %s keys %q", acted(term), term.keys)
@@ -137,8 +139,10 @@ func TestWatchdogOnlyReportsADraftOrADialog(t *testing.T) {
 			if inbox := goalInbox(t, e); len(inbox) != 1 {
 				t.Fatalf("goal reports: %v (want exactly one)", inbox)
 			}
-			if r := reported(t, e); len(r) != 1 || r[tc.code].IsZero() {
-				t.Fatalf("reported %v, want %s", r, tc.code)
+			if tc.code == core.ReportDraft {
+				if r := reported(t, e); len(r) != 1 || r[tc.code].IsZero() {
+					t.Fatalf("reported %v, want %s", r, tc.code)
+				}
 			}
 		})
 	}
