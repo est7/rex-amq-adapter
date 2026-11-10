@@ -281,8 +281,10 @@ why; never retry a refused summon with other words:
   or resume: its chain cannot be checked.
 
 A launched agent carries a token in its environment that binds its first
-hook to this summon and `GITX_SCOPE=local`, so git-command refuses its push,
-propose and land (landing stays yours; even
+hook to this summon and `GITX_SCOPE`: `local`, so git-command refuses its
+push, propose and land, unless your brief cites the user's grant file
+(`--grant`) whose `SCOPE:` line names more, then the narrower of that and
+the brief's own `SCOPE:` line (landing stays yours; even
 the user typing `/git-flow push` in that pane is refused, so push from your
 own pane), and holds its place in the cap until it is adopted (or
 two minutes pass). A resumed agent gets a fixed first prompt that makes it

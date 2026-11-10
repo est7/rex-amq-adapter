@@ -599,7 +599,7 @@ func runSummon(args []string) int {
 	if err != nil {
 		return fail(err)
 	}
-	out := map[string]any{"action": res.Action, "handles": res.Handles, "block": res.Block, "reason": res.Reason, "parent": res.Parent, "depth": res.Depth, "mailed": res.Mailed}
+	out := map[string]any{"scope": res.Scope, "scope_why": res.ScopeWhy, "action": res.Action, "handles": res.Handles, "block": res.Block, "reason": res.Reason, "parent": res.Parent, "depth": res.Depth, "mailed": res.Mailed}
 	if res.Block != "" {
 		wctx, wcancel := context.WithTimeout(context.Background(), *timeout)
 		st, err := env.AwaitStartup(wctx, res.Block)

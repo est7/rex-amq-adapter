@@ -174,7 +174,9 @@ func TestSummonStartsARoleOnceAuthorized(t *testing.T) {
 	}
 	// A grant file authorizes a start too, and --harness picks the CLI.
 	e3, term3, loc3 := summonWorld(t)
-	if res := summon(t, e3, loc3, "writer", func(r *SummonRequest) { r.Grant = "/g.md"; r.Harness = "pi" }); res.Action != "start" || term3.launches[0].Command[3] != "pi" || term3.launches[0].Command[2] != GitxScopeEnv+"=local" {
+	g3 := filepath.Join(t.TempDir(), "g.md")
+	os.WriteFile(g3, []byte("SCOPE: local\n"), 0o600)
+	if res := summon(t, e3, loc3, "writer", func(r *SummonRequest) { r.Grant = g3; r.Harness = "pi" }); res.Action != "start" || term3.launches[0].Command[3] != "pi" || term3.launches[0].Command[2] != GitxScopeEnv+"=local" {
 		t.Fatalf("%+v %v", res, term3.launches)
 	}
 }
@@ -318,6 +320,43 @@ func TestSummonFailsClosedWithoutItsAncestry(t *testing.T) {
 	r.Parent, r.Depth = "pi-99", 1
 	add(t, e, r)
 	if res := summon(t, e, loc, "writer", func(r *SummonRequest) { r.Asked = "go" }); res.Action != "refused" || !strings.Contains(res.Reason, "chain cannot be checked") || len(term.launches) != 0 {
+		t.Fatalf("%+v", res)
+	}
+}
+
+// A summoned peer runs under GITX_SCOPE=local unless its brief cites the
+// user's grant file and that file's SCOPE line names a wider scope; then the
+// narrower of the file's and the brief's.
+func TestSummonScopesThePeerByItsGrant(t *testing.T) {
+	dir := t.TempDir()
+	merge := filepath.Join(dir, "grant-merge.md")
+	os.WriteFile(merge, []byte("est9's words\nSCOPE: merge + release\n"), 0o600)
+	noScope := filepath.Join(dir, "grant-words.md")
+	os.WriteFile(noScope, []byte("想发版就发版\n"), 0o600)
+	for name, tc := range map[string]struct {
+		grant, body, want string
+	}{
+		"no grant":              {"", "SCOPE: merge\nreview #42", "local"},
+		"grant merge, cited":    {merge, "Load skill autopilot; grant: " + merge + "\nSCOPE: merge\n", "merge"},
+		"grant merge, brief PR": {merge, "grant: " + merge + "\nSCOPE: push+PR\n", "push+PR"},
+		"grant merge, no SCOPE": {merge, "grant: " + merge + "\n", "local"},
+		"grant not cited":       {merge, "SCOPE: merge\n", "local"},
+		"grant without SCOPE":   {noScope, "grant: " + noScope + "\nSCOPE: merge\n", "local"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e, term, loc := summonWorld(t)
+			res := summon(t, e, loc, "implementer", func(r *SummonRequest) { r.Grant, r.Body, r.Asked = tc.grant, tc.body, "start one" })
+			if res.Action != "start" || len(term.launches) != 1 {
+				t.Fatalf("%+v", res)
+			}
+			if got := term.launches[0].Command[2]; got != GitxScopeEnv+"="+tc.want || res.Scope != tc.want {
+				t.Fatalf("scope %s (%s), want %s", got, res.ScopeWhy, tc.want)
+			}
+		})
+	}
+	// A --grant that cannot be read authorizes no start.
+	e, term, loc := summonWorld(t)
+	if res := summon(t, e, loc, "implementer", func(r *SummonRequest) { r.Grant = filepath.Join(dir, "missing.md") }); res.Action != "refused" || len(term.launches) != 0 {
 		t.Fatalf("%+v", res)
 	}
 }

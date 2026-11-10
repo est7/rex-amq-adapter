@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -33,6 +34,44 @@ const SummonEnv = "REX_AMQ_SUMMON"
 // GitxScopeEnv is git-command's scope limit (3.4.5, spec 9.31).
 const GitxScopeEnv = "GITX_SCOPE"
 
+// scopeRank orders the scopes git-command knows, narrowest first.
+var scopeRank = map[string]int{"local": 0, "push+PR": 1, "merge": 2}
+
+// scopeLine is a contract's SCOPE line: its first word is the scope.
+var scopeLine = regexp.MustCompile(`(?m)^\s*-?\s*SCOPE:\s*(local|push\+PR|merge)\b`)
+
+// peerScope is the GITX_SCOPE a summoned peer runs under. A brief from
+// another agent grants at most local (skill autopilot, Enter 2), unless it
+// cites the user's own grant file and that file's SCOPE line names a wider
+// scope: then the narrower of the file's and the brief's own SCOPE line.
+// Only structure is read: the file must exist, the brief must name its
+// path, and the scope must be a SCOPE line in each.
+func peerScope(r SummonRequest) (scope, why string) {
+	if r.Grant == "" {
+		return "local", "no grant file"
+	}
+	raw, err := os.ReadFile(r.Grant)
+	if err != nil {
+		return "local", "the grant file is not readable: " + err.Error()
+	}
+	if !strings.Contains(r.Body, r.Grant) {
+		return "local", "the brief does not cite " + r.Grant
+	}
+	m := scopeLine.FindSubmatch(raw)
+	if m == nil {
+		return "local", r.Grant + " has no SCOPE line"
+	}
+	granted := string(m[1])
+	brief := "local"
+	if b := scopeLine.FindStringSubmatch(r.Body); b != nil {
+		brief = b[1]
+	}
+	if scopeRank[brief] < scopeRank[granted] {
+		return brief, "the brief's SCOPE " + brief + " under the grant's " + granted
+	}
+	return granted, "the grant's SCOPE " + granted
+}
+
 // SummonRequest is what the summoner asks.
 type SummonRequest struct {
 	Target  string // a handle or a role
@@ -55,9 +94,12 @@ type SummonResult struct {
 	Label   string        `json:"label,omitempty"`
 	Token   string        `json:"-"`
 	Reason  string        `json:"reason,omitempty"`
-	Parent  core.Handle   `json:"parent,omitempty"`
-	Depth   int           `json:"depth"`
-	Mailed  bool          `json:"mailed"` // the message is in a mailbox already
+	// Scope is the GITX_SCOPE a launched agent runs under, and why.
+	Scope    string      `json:"scope,omitempty"`
+	ScopeWhy string      `json:"scope_why,omitempty"`
+	Parent   core.Handle `json:"parent,omitempty"`
+	Depth    int         `json:"depth"`
+	Mailed   bool        `json:"mailed"` // the message is in a mailbox already
 }
 
 // Summon resolves r.Target in the caller's session and acts.
@@ -250,7 +292,9 @@ func (e Env) resume(ctx context.Context, caller store.Record, s Session, r Summo
 		return res, e.summonLog(caller, r, res)
 	}
 	label := core.PaneLabel(departed.Handle, departed.Role, departed.Task)
-	block, err := e.launch(ctx, caller, s, label, cwd, res.Token, cmd)
+	scope, why := peerScope(r)
+	res.Scope, res.ScopeWhy = scope, why
+	block, err := e.launch(ctx, caller, s, label, cwd, res.Token, scope, cmd)
 	if err != nil {
 		_ = e.Store.DeleteSummon(res.Token)
 		return res, err
@@ -270,6 +314,11 @@ func (e Env) start(ctx context.Context, caller store.Record, s Session, r Summon
 	if core.LooksLikeHandle(r.Target) {
 		return refuse(fmt.Sprintf("no agent %s in this session, live or departed; a new agent is started by role, not by handle", r.Target))
 	}
+	if r.Grant != "" && r.Asked == "" {
+		if _, err := os.Stat(r.Grant); err != nil {
+			return refuse("the grant file " + r.Grant + " is not readable, so it authorizes nothing: " + err.Error())
+		}
+	}
 	if r.Grant == "" && r.Asked == "" {
 		return refuse("starting a new agent needs the user's own words in this session asking for it (--asked \"<their words>\", your attestation, logged) or a brief that cites their grant file (--grant <file>, which you verified and the brief names)")
 	}
@@ -282,7 +331,9 @@ func (e Env) start(ctx context.Context, caller store.Record, s Session, r Summon
 	}
 	brief := r.Body + "\n\nYou were started by " + string(caller.Handle) + " (summon on send). Report back with `amq send --to " + string(caller.Handle) + "`; the same request waits in your mailbox once you are adopted, so you can `amq reply` to it."
 	label := role + " | " + core.Task(r.Subject)
-	block, err := e.launch(ctx, caller, s, label, caller.Cwd, res.Token, startCommand(kind, brief))
+	scope, why := peerScope(r)
+	res.Scope, res.ScopeWhy = scope, why
+	block, err := e.launch(ctx, caller, s, label, caller.Cwd, res.Token, scope, startCommand(kind, brief))
 	if err != nil {
 		_ = e.Store.DeleteSummon(res.Token)
 		return res, err
@@ -293,14 +344,13 @@ func (e Env) start(ctx context.Context, caller store.Record, s Session, r Summon
 
 // launch opens the pane beside the caller, or in a new tab when the
 // caller's pane is too small to split, running cmd with the token in its
-// environment and GITX_SCOPE=local: a brief from another agent grants at
-// most local (skill autopilot, Enter 2), and git-command's gitx.py refuses
-// push, propose and land under it, whatever the brief says.
-func (e Env) launch(ctx context.Context, caller store.Record, s Session, label, cwd, token string, cmd []string) (string, error) {
+// environment and GITX_SCOPE=<scope> (peerScope), under which git-command's
+// gitx.py refuses what the scope does not allow, whatever the peer types.
+func (e Env) launch(ctx context.Context, caller store.Record, s Session, label, cwd, token, scope string, cmd []string) (string, error) {
 	if cwd == "" {
 		cwd, _ = os.Getwd()
 	}
-	cmd = append([]string{"env", SummonEnv + "=" + token, GitxScopeEnv + "=local"}, cmd...)
+	cmd = append([]string{"env", SummonEnv + "=" + token, GitxScopeEnv + "=" + scope}, cmd...)
 	if size, err := e.Rex.Size(ctx, caller.BlockID); err == nil && size.Rows > 0 && size.Rows < 2*core.TinyRows {
 		_, shell, err := e.Rex.NewTab(ctx, s.id, label)
 		if err != nil {
@@ -361,7 +411,7 @@ func (e Env) Deliver(ctx context.Context, loc Location, h core.Handle, kind, sub
 
 // summonLog appends one JSON line per summon to logs/summon.log.
 func (e Env) summonLog(caller store.Record, r SummonRequest, res SummonResult) error {
-	entry := map[string]any{"at": e.Now().UTC().Format(time.RFC3339), "summoner": caller.Handle, "parent": caller.Parent, "depth": caller.Depth, "target": r.Target, "kind": r.Kind, "subject": r.Subject, "action": res.Action, "handles": res.Handles, "block": res.Block, "reason": res.Reason, "grant": r.Grant, "asked": r.Asked}
+	entry := map[string]any{"scope": res.Scope, "scope_why": res.ScopeWhy, "at": e.Now().UTC().Format(time.RFC3339), "summoner": caller.Handle, "parent": caller.Parent, "depth": caller.Depth, "target": r.Target, "kind": r.Kind, "subject": r.Subject, "action": res.Action, "handles": res.Handles, "block": res.Block, "reason": res.Reason, "grant": r.Grant, "asked": r.Asked}
 	b, _ := json.Marshal(entry)
 	if err := os.MkdirAll(e.Paths.Logs(), 0o700); err != nil {
 		return err
