@@ -1,8 +1,22 @@
 #!/bin/sh
-# Runs the repository's own hook of this name, which core.hooksPath would hide.
+# Written by rex-amq-adapter (internal/app/scopehooks.go). core.hooksPath now
+# points here, which hides the repository's own hooks; this runs the one of
+# this name. It looks where git would have looked without the adapter: a
+# core.hooksPath in the repository's common config or the user's global
+# config, else the repository's hooks directory. It reads those files
+# directly, never the merged config, which holds the adapter's own setting
+# (worktree config or GIT_CONFIG_*) and would point back here.
 name="${HOOK_NAME:-$(basename "$0")}"
-own=$(GIT_CONFIG_COUNT=0 git config core.hooksPath 2>/dev/null) || own=
-if [ -z "$own" ]; then own="$(git rev-parse --git-common-dir)/hooks"
-else case "$own" in /*) ;; ~*) own="$HOME${own#\~}" ;; *) own="$(git rev-parse --show-toplevel)/$own" ;; esac; fi
+common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || exit 0
+top=$(git rev-parse --show-toplevel 2>/dev/null)
+own=$(git config --file "$common/config" --get core.hooksPath 2>/dev/null) ||
+  own=$(git config --file "${XDG_CONFIG_HOME:-$HOME/.config}/git/config" --get core.hooksPath 2>/dev/null) ||
+  own=$(git config --file "$HOME/.gitconfig" --get core.hooksPath 2>/dev/null) ||
+  own="$common/hooks"
+case "$own" in
+  /*) ;;
+  "~"*) own="$HOME${own#\~}" ;;
+  *) own="${top:-.}/$own" ;;
+esac
 [ -x "$own/$name" ] && exec "$own/$name" "$@"
 exit 0

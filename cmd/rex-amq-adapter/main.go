@@ -69,6 +69,10 @@ Agent and user commands:
                             scope: it may push its own branches and open MRs,
                             and git refuses its write to the base branch unless
                             the scope is merge (summon does this itself)
+  scope-worktree <dir> [--scope push+PR|merge]
+                            cap every push made in the linked worktree DIR,
+                            whoever makes it: git refuses a write to the base
+                            branch unless the scope is merge
   trust <dir>               derive, for a linked worktree of a repository the user
                             already trusts in Antigravity, that trust for DIR, so a
                             peer started there meets no folder dialog; writes
@@ -120,6 +124,8 @@ func run(args []string) int {
 		return runTrust(rest)
 	case "scoped":
 		return runScoped(rest)
+	case "scope-worktree":
+		return runScopeWorktree(rest)
 	case "summon":
 		return runSummon(rest)
 	case "join":
@@ -659,6 +665,30 @@ func runScoped(args []string) int {
 	if err := env.ExecScoped(*scope, argv); err != nil {
 		return fail(err)
 	}
+	return 0
+}
+
+// runScopeWorktree caps every push made in a linked task worktree. It needs
+// no AMQ identity: a headless run calls it as well as an agent in Rex.
+func runScopeWorktree(args []string) int {
+	fs := flag.NewFlagSet("scope-worktree", flag.ContinueOnError)
+	scope := fs.String("scope", app.ScopePR, "push+PR or merge")
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		fmt.Fprintln(os.Stderr, "usage: rex-amq-adapter scope-worktree <dir> [--scope push+PR|merge]")
+		return 2
+	}
+	dir := args[0]
+	if err := fs.Parse(args[1:]); err != nil {
+		return 2
+	}
+	paths, err := store.DefaultPaths()
+	if err != nil {
+		return fail(err)
+	}
+	if err := (app.Env{Paths: paths}).ScopeWorktree(dir, *scope); err != nil {
+		return fail(err)
+	}
+	fmt.Printf("scoped %s: %s\n", dir, *scope)
 	return 0
 }
 

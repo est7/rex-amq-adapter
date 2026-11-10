@@ -1,0 +1,27 @@
+#!/bin/sh
+# Written by rex-amq-adapter (internal/app/scopehooks.go) and put first on the
+# PATH of an agent it launches. Under the push+PR scope it refuses the one glab
+# call that writes the base without a git push: a server-side merge. Every
+# other call runs the real glab unchanged.
+scope="${REX_AMQ_SCOPE-}"
+[ -n "$scope" ] || scope=$(git config --get rex-amq-adapter.scope 2>/dev/null)
+if [ "$scope" = "push+PR" ]; then
+  merge=
+  case "$1 $2" in "mr merge") merge=1 ;; esac
+  if [ "$1" = api ]; then
+    for a in "$@"; do case "$a" in */merge|*/merge\?*) merge=1 ;; esac; done
+  fi
+  if [ -n "$merge" ]; then
+    printf 'glab (rex-amq-adapter scope push+PR): merging into the base needs the merge scope; open or update the MR and leave the merge to whoever briefed you. Nothing ran.\n' >&2
+    exit 1
+  fi
+fi
+self=$(cd "$(dirname "$0")" && pwd -P)
+IFS=:
+for d in $PATH; do
+  [ -n "$d" ] || continue
+  [ "$(cd "$d" 2>/dev/null && pwd -P)" = "$self" ] && continue
+  if [ -x "$d/glab" ]; then unset IFS; exec "$d/glab" "$@"; fi
+done
+printf 'glab: not found on PATH\n' >&2
+exit 127

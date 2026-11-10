@@ -224,7 +224,9 @@ this needs is below; no other skill is required.
    (`-- rex-amq-adapter scoped -- codex --no-daemon "<brief>"`). It may then
    commit, push its own branches and open MRs, and git refuses its write to the
    base branch; `--scope merge` lifts that only when your brief says merge
-   (skill `autopilot`). `rex-amq-adapter summon` does this for you. Never take
+   (skill `autopilot`). `rex-amq-adapter summon` does this for you, and
+   `rex-amq-adapter scope-worktree <dir>` caps every push made in a task
+   worktree, yours included, whoever makes it. Never take
    focus. When your own pane has fewer than 10 rows (`rex block call -b
    "$REX_BLOCK" size`), a split would leave the peer unable to draw its input
    box: open it in a new tab (`rex run`) instead. For an Antigravity peer in a linked worktree, run

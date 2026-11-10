@@ -31,13 +31,10 @@ import (
 // SummonEnv is the environment variable a launched agent carries.
 const SummonEnv = "REX_AMQ_SUMMON"
 
-// GitxScopeEnv is git-command's scope variable (spec 9.31): push+PR or merge.
-const GitxScopeEnv = "GITX_SCOPE"
-
 // scopeLine is a contract's SCOPE line: its first word is the scope.
 var scopeLine = regexp.MustCompile(`(?m)^\s*-?\s*SCOPE:\s*(push\+PR|merge)\b`)
 
-// peerScope is the GITX_SCOPE a summoned peer runs under. Every peer may
+// peerScope is the scope (REX_AMQ_SCOPE) a summoned peer runs under. Every peer may
 // commit, push its own branches and open MRs (push+PR); writing the base
 // (merge) needs both the brief and the user's own grant file it cites to say
 // merge (skill autopilot, Enter 2). Only structure is read: the file must
@@ -85,7 +82,7 @@ type SummonResult struct {
 	Label   string        `json:"label,omitempty"`
 	Token   string        `json:"-"`
 	Reason  string        `json:"reason,omitempty"`
-	// Scope is the GITX_SCOPE a launched agent runs under, and why.
+	// Scope is the scope a launched agent runs under, and why.
 	Scope    string      `json:"scope,omitempty"`
 	ScopeWhy string      `json:"scope_why,omitempty"`
 	Parent   core.Handle `json:"parent,omitempty"`

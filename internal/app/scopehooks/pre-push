@@ -1,16 +1,20 @@
 #!/bin/sh
-# Installed by rex-amq-adapter for the agents it launches (core.hooksPath via
-# GIT_CONFIG_*), next to the repository's own hooks, which still run.
-# GITX_SCOPE is the launcher's cap (git-command docs/spec.md §9.31, rex-amq-adapter internal/app/scopehooks.go):
+# Written by rex-amq-adapter (internal/app/scopehooks.go) and attached as
+# core.hooksPath, either through GIT_CONFIG_* for an agent it launches or as
+# worktree config by `rex-amq-adapter scope-worktree`. The repository's own
+# hooks still run (chain). The scope is REX_AMQ_SCOPE, else the worktree's
+# `rex-amq-adapter.scope` config:
 #   push+PR  push any branch except the base, open MRs
 #   merge    also write the base
-#   unset    no cap (the user's own session)
+#   unset    no cap
 # The one checkpoint is a write to refs/heads/<base>: a merge, a fast-forward
-# after a rebase, or a deletion. Every other push is a two-way door.
+# after a rebase, or a deletion. Every other push is a two-way door. It is
+# checked here because the server may not protect the base.
 remote="$1"
 input=$(cat)
-scope="${GITX_SCOPE-}"
-refuse() { printf 'pre-push (GITX_SCOPE=%s): %s\n' "$scope" "$1" >&2; exit 1; }
+scope="${REX_AMQ_SCOPE-}"
+[ -n "$scope" ] || scope=$(git config --get rex-amq-adapter.scope 2>/dev/null)
+refuse() { printf 'pre-push (rex-amq-adapter scope %s): %s\n' "$scope" "$1" >&2; exit 1; }
 case "$scope" in
   "" | merge) ;;
   push+PR)
