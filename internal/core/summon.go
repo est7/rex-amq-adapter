@@ -34,11 +34,14 @@ func DefaultHarness(role string) Kind {
 	return Claude
 }
 
-// SummonCheck is what the guards decide for a resume or start.
+// SummonCheck is what the guards decide for a resume or start. A refusal
+// is also an error, so a caller can carry it up.
 type SummonCheck struct {
 	Refused bool
 	Reason  string
 }
+
+func (c SummonCheck) Error() string { return c.Reason }
 
 // GuardSummon applies the guards to a summoner at depth, with chain its
 // handles from the user's agent down to itself (itself last), wanting

@@ -194,8 +194,8 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 			rec.Cwd = own.Cwd
 		}
 	}
-	if sm, ok, err := e.Store.TakeSummon(blk.SessionID, blk.Label); err != nil {
-		fmt.Fprintf(Diagnostics, "read the summon of %s: %v\n", loc.Block, err)
+	if sm, ok, err := e.Store.TakeSummon(in.SummonToken); err != nil {
+		fmt.Fprintf(Diagnostics, "read the summon of %s: %v\n", in.SummonToken, err)
 	} else if ok && !again {
 		rec.Parent, rec.Depth, rec.SummonedFor = sm.Parent, sm.Depth, sm.For
 	}

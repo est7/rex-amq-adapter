@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,7 +23,12 @@ import (
 // by handle or role; the adapter delivers to a live one, resumes a departed
 // one of this session in a pane beside the caller, or starts one, then
 // delivers. Mail goes out first in every case that has a mailbox, so a
-// failed resume or start leaves it waiting.
+// failed resume or start leaves it waiting. A launch carries a token in its
+// environment (SummonEnv); the adoption that sees it takes the lineage, and
+// until then the token reserves a place in the session's cap.
+
+// SummonEnv is the environment variable a launched agent carries.
+const SummonEnv = "REX_AMQ_SUMMON"
 
 // SummonRequest is what the summoner asks.
 type SummonRequest struct {
@@ -31,7 +38,7 @@ type SummonRequest struct {
 	Body    string
 	// Grant is the user's grant file the brief cites, Asked the user's own
 	// words asking for a new agent (self-attested, logged); starting a new
-	// agent needs one of them.
+	// agent needs one of them. Neither is verified here.
 	Grant, Asked string
 	Harness      string // overrides the role's default harness for a start
 }
@@ -43,6 +50,7 @@ type SummonResult struct {
 	Handles []core.Handle `json:"handles,omitempty"`
 	Block   string        `json:"block,omitempty"`
 	Label   string        `json:"label,omitempty"`
+	Token   string        `json:"-"`
 	Reason  string        `json:"reason,omitempty"`
 	Parent  core.Handle   `json:"parent,omitempty"`
 	Depth   int           `json:"depth"`
@@ -61,6 +69,13 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 	if r.Kind == "" {
 		r.Kind = "question"
 	}
+	// A target is a handle, or a role in the form adoption records it.
+	target, isHandle := r.Target, core.LooksLikeHandle(r.Target)
+	if !isHandle {
+		if target = core.Role(r.Target); target == "" {
+			return SummonResult{}, fmt.Errorf("%q is neither a handle (<kind>-<NN>) nor a role", r.Target)
+		}
+	}
 	s, err := e.FindSession(ctx, loc.Block)
 	if err != nil {
 		return SummonResult{}, err
@@ -71,13 +86,9 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 	}
 	var live []store.Record
 	var departed *store.Record
-	liveCount := 0
 	for i, rec := range recs {
-		if rec.Live() && s.holds(rec) {
-			liveCount++
-		}
-		if !matches(rec, r.Target) {
-			continue
+		if rec.Handle == caller.Handle || !matches(rec, target, isHandle) {
+			continue // nobody summons themselves
 		}
 		switch {
 		case rec.Live() && s.holds(rec):
@@ -89,7 +100,7 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 	res := SummonResult{Parent: caller.Handle, Depth: caller.Depth + 1}
 	if len(live) > 0 {
 		for _, rec := range live {
-			if err := amq.Send(ctx, e.AmqBin, e.Paths.Root(), string(caller.Handle), string(rec.Handle), r.Subject, r.Body); err != nil {
+			if err := amq.SendKind(ctx, e.AmqBin, e.Paths.Root(), string(caller.Handle), string(rec.Handle), r.Kind, r.Subject, r.Body); err != nil {
 				return res, err
 			}
 			res.Handles = append(res.Handles, rec.Handle)
@@ -97,69 +108,148 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 		res.Action, res.Mailed = "deliver", true
 		return res, e.summonLog(caller, r, res)
 	}
-	chain := e.chain(recs, caller)
 	if departed != nil {
 		// Its mailbox waits for a resume whatever the guards say.
-		if err := amq.Send(ctx, e.AmqBin, e.Paths.Root(), string(caller.Handle), string(departed.Handle), r.Subject, r.Body); err != nil {
+		if err := amq.SendKind(ctx, e.AmqBin, e.Paths.Root(), string(caller.Handle), string(departed.Handle), r.Kind, r.Subject, r.Body); err != nil {
 			return res, err
 		}
 		res.Mailed = true
 		res.Handles = []core.Handle{departed.Handle}
 	}
-	if g := core.GuardSummon(r.Kind, chain, caller.Depth, r.Target, liveCount); g.Refused {
-		res.Action, res.Reason = "refused", g.Reason
-		if departed != nil {
-			res.Reason += "; the message waits in " + string(departed.Handle) + "'s mailbox for a resume"
-		}
-		return res, e.summonLog(caller, r, res)
+	chain, complete := e.chain(recs, caller)
+	if !complete {
+		res.Action, res.Reason = "refused", "your summon chain cannot be checked: an agent that summoned you is no longer recorded, so no new agent is started or resumed"
+		return e.refused(caller, r, res, departed)
 	}
+	// The guards and the reservation, together under the lifecycle lock:
+	// two summoners racing the cap both see the other's reservation.
+	token, err := e.reserve(ctx, caller, s, r.Kind, chain, target, departed)
+	if err != nil {
+		var refusal core.SummonCheck
+		if errors.As(err, &refusal) {
+			res.Action, res.Reason = "refused", refusal.Reason
+			return e.refused(caller, r, res, departed)
+		}
+		return res, err
+	}
+	res.Token = token
 	if departed != nil {
 		return e.resume(ctx, caller, s, r, *departed, res)
 	}
-	return e.start(ctx, caller, s, r, res)
+	return e.start(ctx, caller, s, r, target, res)
 }
 
-// matches reports whether rec is addressed by target: its handle, or its role.
-func matches(rec store.Record, target string) bool {
-	return string(rec.Handle) == target || rec.Role != "" && rec.Role == target
+func (e Env) refused(caller store.Record, r SummonRequest, res SummonResult, departed *store.Record) (SummonResult, error) {
+	if departed != nil {
+		res.Reason += "; the message waits in " + string(departed.Handle) + "'s mailbox for a resume"
+	}
+	return res, e.summonLog(caller, r, res)
+}
+
+// matches reports whether rec is addressed by target: its handle, or its
+// role (in adoption's canonical form).
+func matches(rec store.Record, target string, isHandle bool) bool {
+	if isHandle {
+		return string(rec.Handle) == target
+	}
+	return rec.Role != "" && rec.Role == target
 }
 
 // chain is the summon chain from the user's agent down to rec, rec last.
-func (e Env) chain(recs []store.Record, rec store.Record) []core.Peer {
+// complete is false when an ancestor is no longer recorded (collected after
+// its seven days), so the chain cannot be proven.
+func (e Env) chain(recs []store.Record, rec store.Record) (chain []core.Peer, complete bool) {
 	byHandle := map[core.Handle]store.Record{}
 	for _, r := range recs {
 		byHandle[r.Handle] = r
 	}
-	var chain []core.Peer
-	for cur, ok := rec, true; ok && len(chain) < 64; cur, ok = byHandle[cur.Parent] {
+	cur := rec
+	for len(chain) < 64 {
 		chain = append([]core.Peer{peerOf(cur)}, chain...)
 		if cur.Parent == "" {
-			break
+			return chain, true
+		}
+		next, ok := byHandle[cur.Parent]
+		if !ok {
+			return chain, false
+		}
+		cur = next
+	}
+	return chain, false
+}
+
+// reserve runs the guards against the session's live agents plus its
+// pending launches, and on success writes the summon under a fresh token,
+// which reserves a place until adoption consumes it or it expires.
+func (e Env) reserve(ctx context.Context, caller store.Record, s Session, kind string, chain []core.Peer, target string, departed *store.Record) (string, error) {
+	unlock, err := e.Store.LockLifecycle(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
+	recs, err := e.Store.Records()
+	if err != nil {
+		return "", err
+	}
+	live := 0
+	for _, rec := range recs {
+		if rec.Live() && s.holds(rec) {
+			live++
 		}
 	}
-	return chain
+	pending, err := e.Store.PendingSummons(s.id, e.Now())
+	if err != nil {
+		return "", err
+	}
+	if g := core.GuardSummon(kind, chain, caller.Depth, target, live+pending); g.Refused {
+		return "", g
+	}
+	token, err := newToken()
+	if err != nil {
+		return "", err
+	}
+	sm := store.Summon{Parent: caller.Handle, Depth: caller.Depth + 1, For: target, Session: s.id, At: e.Now()}
+	if departed != nil {
+		// A resumed agent keeps its own lineage; the token only holds its place.
+		sm.Parent, sm.Depth = departed.Parent, departed.Depth
+	}
+	return token, e.Store.PutSummon(token, sm)
+}
+
+func newToken() (string, error) {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }
 
 // resume starts the departed agent's native session again in a pane beside
-// the caller, in the directory it ran in. Its record keeps its handle,
-// lineage and mail.
+// the caller, in the directory it ran in, with a fixed first prompt that
+// makes it read its mailbox: a resumed session runs no start hook, so the
+// prompt is what re-adopts it and delivers the waiting mail. Its record
+// keeps its handle, lineage and mail.
 func (e Env) resume(ctx context.Context, caller store.Record, s Session, r SummonRequest, departed store.Record, res SummonResult) (SummonResult, error) {
 	cwd := departed.Cwd
 	if cwd == "" {
-		cwd = e.transcriptCwd(ctx, departed)
+		cwd = transcript.Cwd(ctx, e.TranscriptHome, departed.Kind, departed.AgentSessionID)
 	}
 	if cwd == "" {
+		_ = e.Store.DeleteSummon(res.Token)
 		res.Action, res.Reason = "refused", fmt.Sprintf("%s cannot be resumed: its working directory is not recorded and its transcript does not name one; the message waits in its mailbox", departed.Handle)
 		return res, e.summonLog(caller, r, res)
 	}
-	cmd, ok := resumeCommand(departed.Kind, departed.AgentSessionID)
+	bootstrap := fmt.Sprintf("Resumed by %s (summon on send): mail waits for you. Run eval \"$(%s)\" && amq drain --include-body and act on it.", caller.Handle, e.EnvCommand())
+	cmd, ok := resumeCommand(departed.Kind, departed.AgentSessionID, bootstrap)
 	if !ok {
+		_ = e.Store.DeleteSummon(res.Token)
 		res.Action, res.Reason = "refused", fmt.Sprintf("%s (%s) cannot be resumed from outside; the message waits in its mailbox", departed.Handle, departed.Kind)
 		return res, e.summonLog(caller, r, res)
 	}
 	label := core.PaneLabel(departed.Handle, departed.Role, departed.Task)
-	block, err := e.launch(ctx, caller, s, label, cwd, cmd)
+	block, err := e.launch(ctx, caller, s, label, cwd, res.Token, cmd)
 	if err != nil {
+		_ = e.Store.DeleteSummon(res.Token)
 		return res, err
 	}
 	res.Action, res.Block, res.Label = "resume", block, label
@@ -168,29 +258,30 @@ func (e Env) resume(ctx context.Context, caller store.Record, s Session, r Summo
 
 // start launches a new agent for a role beside the caller, with the message
 // as its brief. A handle that names no agent cannot be started.
-func (e Env) start(ctx context.Context, caller store.Record, s Session, r SummonRequest, res SummonResult) (SummonResult, error) {
-	if core.LooksLikeHandle(r.Target) {
-		res.Action, res.Reason = "refused", fmt.Sprintf("no agent %s in this session, live or departed; a new agent is started by role, not by handle", r.Target)
+func (e Env) start(ctx context.Context, caller store.Record, s Session, r SummonRequest, role string, res SummonResult) (SummonResult, error) {
+	refuse := func(reason string) (SummonResult, error) {
+		_ = e.Store.DeleteSummon(res.Token)
+		res.Action, res.Reason = "refused", reason
 		return res, e.summonLog(caller, r, res)
+	}
+	if core.LooksLikeHandle(r.Target) {
+		return refuse(fmt.Sprintf("no agent %s in this session, live or departed; a new agent is started by role, not by handle", r.Target))
 	}
 	if r.Grant == "" && r.Asked == "" {
-		res.Action, res.Reason = "refused", "starting a new agent needs the user's own words in this session asking for it (--asked \"<their words>\") or a brief that cites their grant file (--grant <file>)"
-		return res, e.summonLog(caller, r, res)
+		return refuse("starting a new agent needs the user's own words in this session asking for it (--asked \"<their words>\", your attestation, logged) or a brief that cites their grant file (--grant <file>, which you verified and the brief names)")
 	}
-	kind := core.DefaultHarness(r.Target)
+	kind := core.DefaultHarness(role)
 	if r.Harness != "" {
 		var err error
 		if kind, err = core.ParseKind(r.Harness); err != nil {
-			return res, err
+			return refuse(err.Error())
 		}
 	}
-	brief := r.Body + "\n\nYou were started by " + string(caller.Handle) + " (summon on send). Report back with `amq send --to " + string(caller.Handle) + "`; the same message waits in your mailbox so you can `amq reply` to it."
-	label := r.Target + " | " + core.Task(r.Subject)
-	if err := e.Store.PutSummon(s.id, label, store.Summon{Parent: caller.Handle, Depth: caller.Depth + 1, For: r.Subject, At: e.Now()}); err != nil {
-		return res, err
-	}
-	block, err := e.launch(ctx, caller, s, label, caller.Cwd, startCommand(kind, brief))
+	brief := r.Body + "\n\nYou were started by " + string(caller.Handle) + " (summon on send). Report back with `amq send --to " + string(caller.Handle) + "`; the same request waits in your mailbox once you are adopted, so you can `amq reply` to it."
+	label := role + " | " + core.Task(r.Subject)
+	block, err := e.launch(ctx, caller, s, label, caller.Cwd, res.Token, startCommand(kind, brief))
 	if err != nil {
+		_ = e.Store.DeleteSummon(res.Token)
 		return res, err
 	}
 	res.Action, res.Block, res.Label = "start", block, label
@@ -198,13 +289,15 @@ func (e Env) start(ctx context.Context, caller store.Record, s Session, r Summon
 }
 
 // launch opens the pane beside the caller, or in a new tab when the
-// caller's pane is too small to split.
-func (e Env) launch(ctx context.Context, caller store.Record, s Session, label, cwd string, cmd []string) (string, error) {
+// caller's pane is too small to split, running cmd with the token in its
+// environment.
+func (e Env) launch(ctx context.Context, caller store.Record, s Session, label, cwd, token string, cmd []string) (string, error) {
 	if cwd == "" {
 		cwd, _ = os.Getwd()
 	}
+	cmd = append([]string{"env", SummonEnv + "=" + token}, cmd...)
 	if size, err := e.Rex.Size(ctx, caller.BlockID); err == nil && size.Rows > 0 && size.Rows < 2*core.TinyRows {
-		window, shell, err := e.Rex.NewTab(ctx, s.id, label)
+		_, shell, err := e.Rex.NewTab(ctx, s.id, label)
 		if err != nil {
 			return "", err
 		}
@@ -213,7 +306,6 @@ func (e Env) launch(ctx context.Context, caller store.Record, s Session, label, 
 			return "", err
 		}
 		_ = e.Rex.CloseBlock(ctx, shell)
-		_ = window
 		return block, nil
 	}
 	return e.Rex.NewSplit(ctx, s.id, caller.BlockID, label, cwd, cmd)
@@ -231,27 +323,35 @@ func startCommand(kind core.Kind, brief string) []string {
 	return []string{"claude", brief}
 }
 
-func resumeCommand(kind core.Kind, session string) ([]string, bool) {
+// resumeCommand resumes session in its harness with a first prompt: every
+// CLI here takes one beside its resume flag.
+func resumeCommand(kind core.Kind, session, prompt string) ([]string, bool) {
 	if session == "" {
 		return nil, false
 	}
 	switch kind {
 	case core.Claude:
-		return []string{"claude", "--resume", session}, true
+		return []string{"claude", "--resume", session, prompt}, true
 	case core.Codex:
-		return []string{"codex", "--no-daemon", "resume", session}, true
+		return []string{"codex", "--no-daemon", "resume", session, prompt}, true
 	case core.Agy:
-		return []string{"agy", "--dangerously-skip-permissions", "--conversation", session}, true
+		return []string{"agy", "--dangerously-skip-permissions", "--conversation", session, "-i", prompt}, true
 	case core.Pi:
-		return []string{"pi", "--session", session}, true
+		return []string{"pi", "--session", session, prompt}, true
 	}
 	return nil, false
 }
 
-// transcriptCwd reads the working directory a departed agent's transcript
-// names, for records written before cwd was recorded.
-func (e Env) transcriptCwd(ctx context.Context, rec store.Record) string {
-	return transcript.Cwd(ctx, e.TranscriptHome, rec.Kind, rec.AgentSessionID)
+// Deliver mails body to h in the caller's name.
+func (e Env) Deliver(ctx context.Context, loc Location, h core.Handle, kind, subject, body string) error {
+	caller, ok, err := e.Store.Record(loc.Block)
+	if err != nil {
+		return err
+	}
+	if !ok || !caller.Live() {
+		return errors.New("no AMQ identity for this pane")
+	}
+	return amq.SendKind(ctx, e.AmqBin, e.Paths.Root(), string(caller.Handle), string(h), kind, subject, body)
 }
 
 // summonLog appends one JSON line per summon to logs/summon.log.
@@ -295,16 +395,4 @@ func (e Env) Summons(h core.Handle) ([]string, error) {
 		out = append(out, fmt.Sprintf("%s %s %s -> %s: %s", m["at"], m["action"], m["target"], strings.Join(hs, ","), m["subject"]))
 	}
 	return out, nil
-}
-
-// Deliver mails body to h in the caller's name.
-func (e Env) Deliver(ctx context.Context, loc Location, h core.Handle, subject, body string) error {
-	caller, ok, err := e.Store.Record(loc.Block)
-	if err != nil {
-		return err
-	}
-	if !ok || !caller.Live() {
-		return errors.New("no AMQ identity for this pane")
-	}
-	return amq.Send(ctx, e.AmqBin, e.Paths.Root(), string(caller.Handle), string(h), subject, body)
 }

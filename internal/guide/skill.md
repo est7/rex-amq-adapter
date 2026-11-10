@@ -269,8 +269,18 @@ why; never retry a refused summon with other words:
 - 6 live agents per session at most;
 - a new agent starts only with the user's own words in this session asking
   for it (`--asked "<their words>"`, logged as your attestation) or a brief
-  that cites their grant file (`--grant <file>`); a summoned agent's scope is
-  at most `local` unless its brief cites that file (skill `autopilot`).
+  that cites their grant file (`--grant <file>`: the adapter does not read
+  it; you checked it and the brief names it); a summoned agent's scope is
+  at most `local` unless its brief cites that file (skill `autopilot`);
+- an agent whose own summoner is no longer recorded may deliver, not start
+  or resume: its chain cannot be checked.
+
+A launched agent carries a token in its environment that binds its first
+hook to this summon, and holds its place in the cap until it is adopted (or
+two minutes pass). A resumed agent gets a fixed first prompt that makes it
+drain its mailbox, where your message waits. The command exits 0 only when
+the mail is delivered or the launched agent was adopted; a trust screen,
+blocked dialog or timeout exits 1 with the startup state in its JSON.
 
 Every summon is logged (`logs/summon.log`: who, why, parent, depth); list
 yours in your hand-back under Changed, one line each from the command's

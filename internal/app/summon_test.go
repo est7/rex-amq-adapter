@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -54,6 +55,26 @@ func unread(t *testing.T, e Env, h string) []string {
 	return ids
 }
 
+// tokenOf is the summon token a launch carries in its environment.
+func tokenOf(l launch) string {
+	return strings.TrimPrefix(l.Command[1], SummonEnv+"=")
+}
+
+// adoptLaunch plays the harness's first hook for a launched pane.
+func adoptLaunch(t *testing.T, e Env, term *fakeTerm, l launch, kind core.Kind, session string) store.Record {
+	t.Helper()
+	term.mu.Lock()
+	term.label = l.Label
+	term.mu.Unlock()
+	a, err := e.Adopt(context.Background(), Location{Block: l.Block}, kind, HookInput{SessionID: session, SummonToken: tokenOf(l)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, blk := a.Record.Handle, l.Block
+	t.Cleanup(func() { _, _ = amq.RetireFor(context.Background(), e.AmqBin, e.Paths.Root(), string(h), blk) })
+	return a.Record
+}
+
 func summon(t *testing.T, e Env, loc Location, target string, extra ...func(*SummonRequest)) SummonResult {
 	t.Helper()
 	r := SummonRequest{Target: target, Kind: "question", Subject: "look at #42", Body: "please review #42"}
@@ -95,8 +116,13 @@ func TestSummonResumesADepartedPeer(t *testing.T) {
 		t.Fatalf("%+v", res)
 	}
 	l := term.launches[0]
-	if l.Dir != "/work/app" || strings.Join(l.Command, " ") != "codex --no-daemon resume thread-2" || l.Label != "reviewer(codex-02)" {
+	if l.Dir != "/work/app" || l.Command[0] != "env" || !strings.HasPrefix(l.Command[1], SummonEnv+"=") || strings.Join(l.Command[2:5], " ") != "codex --no-daemon resume" || l.Command[5] != "thread-2" || !strings.Contains(l.Command[6], "amq drain") || l.Label != "reviewer(codex-02)" {
 		t.Fatalf("launch: %+v", l)
+	}
+	// Adopted, it is the same agent, lineage included.
+	rec := adoptLaunch(t, e, term, l, core.Codex, "thread-2")
+	if rec.Handle != "codex-02" || rec.Role != "reviewer" {
+		t.Fatalf("resumed as %+v", rec)
 	}
 	// No cwd anywhere: refused, mail waits.
 	e2, term2, loc2 := summonWorld(t)
@@ -129,32 +155,26 @@ func TestSummonStartsARoleOnceAuthorized(t *testing.T) {
 		t.Fatalf("%+v", res)
 	}
 	l := term.launches[0]
-	if l.Dir != "/work/app" || l.Label != "reviewer | look at #42" || l.Command[0] != "codex" || !strings.Contains(l.Command[len(l.Command)-1], "please review #42") || !strings.Contains(l.Command[len(l.Command)-1], "amq send --to claude-01") {
+	if l.Dir != "/work/app" || l.Label != "reviewer | look at #42" || l.Command[0] != "env" || l.Command[2] != "codex" || !strings.Contains(l.Command[len(l.Command)-1], "please review #42") || !strings.Contains(l.Command[len(l.Command)-1], "amq send --to claude-01") {
 		t.Fatalf("launch: %+v", l)
 	}
+	if n, _ := e.Store.PendingSummons("session:s", e.Now()); n != 1 {
+		t.Fatalf("pending reservations: %d", n)
+	}
 	// The harness adopts the launched block: the record carries the lineage.
-	term.mu.Lock()
-	term.label = l.Label
-	term.mu.Unlock()
-	a, err := e.Adopt(context.Background(), Location{Block: l.Block}, core.Codex, HookInput{SessionID: "thread-9"})
-	if err != nil {
-		t.Fatal(err)
+	rec := adoptLaunch(t, e, term, l, core.Codex, "thread-9")
+	if rec.Parent != "claude-01" || rec.Depth != 1 || rec.SummonedFor != "reviewer" || rec.Role != "reviewer" {
+		t.Fatalf("adopted: %+v", rec)
 	}
-	t.Cleanup(func() {
-		_, _ = amq.RetireFor(context.Background(), e.AmqBin, e.Paths.Root(), string(a.Record.Handle), l.Block)
-	})
-	if a.Record.Parent != "claude-01" || a.Record.Depth != 1 || a.Record.SummonedFor != "look at #42" || a.Record.Role != "reviewer" {
-		t.Fatalf("adopted: %+v", a.Record)
-	}
-	if _, ok, _ := e.Store.TakeSummon("session:s", l.Label); ok {
-		t.Fatal("the summon marker was not consumed")
+	if n, _ := e.Store.PendingSummons("session:s", e.Now()); n != 0 {
+		t.Fatal("the summon reservation was not consumed")
 	}
 	if lines, _ := e.Summons("claude-01"); len(lines) != 3 || !strings.Contains(lines[2], "start reviewer") {
 		t.Fatalf("summon log: %v", lines)
 	}
 	// A grant file authorizes a start too, and --harness picks the CLI.
 	e3, term3, loc3 := summonWorld(t)
-	if res := summon(t, e3, loc3, "writer", func(r *SummonRequest) { r.Grant = "/g.md"; r.Harness = "pi" }); res.Action != "start" || term3.launches[0].Command[0] != "pi" {
+	if res := summon(t, e3, loc3, "writer", func(r *SummonRequest) { r.Grant = "/g.md"; r.Harness = "pi" }); res.Action != "start" || term3.launches[0].Command[2] != "pi" {
 		t.Fatalf("%+v %v", res, term3.launches)
 	}
 }
@@ -208,5 +228,96 @@ func TestSummonOpensATabWhenThePaneIsSmall(t *testing.T) {
 	res := summon(t, e, loc, "reviewer", func(r *SummonRequest) { r.Asked = "go" })
 	if res.Action != "start" || len(term.newTabs) != 1 || term.windows[res.Block] != term.newTabs[0] {
 		t.Fatalf("%+v tabs %v window %q", res, term.newTabs, term.windows[res.Block])
+	}
+}
+
+// A launch not yet adopted holds its place: a second start past the cap is
+// refused, and the session never exceeds the cap once both would adopt.
+func TestSummonPendingLaunchesCountTowardTheCap(t *testing.T) {
+	e, term, loc := summonWorld(t)
+	for i := 0; i < 4; i++ {
+		add(t, e, store.Record{Handle: core.Handle(fmt.Sprintf("pi-%02d", i+2)), Kind: core.Pi, Server: "unix:///fake.sock", BlockID: fmt.Sprintf("block:peer-%d", i), SessionID: "session:s", AgentPID: i + 10, AdoptedAt: e.Now()})
+	}
+	auth := func(r *SummonRequest) { r.Asked = "start one" }
+	a := summon(t, e, loc, "reviewer", auth)
+	b := summon(t, e, loc, "editor", auth)
+	if a.Action != "start" || b.Action != "refused" || !strings.Contains(b.Reason, "cap") || len(term.launches) != 1 {
+		t.Fatalf("a %+v b %+v launches %d", a, b, len(term.launches))
+	}
+	adoptLaunch(t, e, term, term.launches[0], core.Codex, "cap-1")
+	recs, _ := e.Store.Records()
+	live := 0
+	for _, r := range recs {
+		if r.Live() {
+			live++
+		}
+	}
+	if live > core.SummonCap {
+		t.Fatalf("live %d", live)
+	}
+	// A reservation whose launch never adopts expires.
+	if res := summon(t, e, loc, "editor", auth); res.Action != "refused" {
+		t.Fatalf("at the cap: %+v", res)
+	}
+}
+
+// Two launches with the same label keep their own lineage: the token in the
+// environment binds each adoption to its launch.
+func TestSummonSameLabelKeepsEachLaunchLineage(t *testing.T) {
+	e, term, loc := summonWorld(t)
+	caller, _, _ := e.Store.Record(block)
+	caller.Depth, caller.Parent = 1, "pi-00"
+	add(t, e, caller)
+	add(t, e, store.Record{Handle: "pi-00", Kind: core.Pi, Server: "unix:///fake.sock", BlockID: "block:root", SessionID: "session:s", AgentPID: 5, AdoptedAt: e.Now()})
+	add(t, e, store.Record{Handle: "claude-02", Kind: core.Claude, Server: "unix:///fake.sock", BlockID: "block:caller-2", SessionID: "session:s", AgentPID: term.fgPID, AdoptedAt: e.Now(), Cwd: "/work/app"})
+	auth := func(r *SummonRequest) { r.Asked = "start a reviewer" }
+	a := summon(t, e, loc, "reviewer", auth)
+	b := summon(t, e, Location{Block: "block:caller-2"}, "reviewer", auth)
+	if a.Label != b.Label || a.Action != "start" || b.Action != "start" {
+		t.Fatalf("a %+v b %+v", a, b)
+	}
+	ra := adoptLaunch(t, e, term, term.launches[0], core.Codex, "launch-a")
+	rb := adoptLaunch(t, e, term, term.launches[1], core.Codex, "launch-b")
+	if ra.Parent != "claude-01" || ra.Depth != 2 || rb.Parent != "claude-02" || rb.Depth != 1 {
+		t.Fatalf("a %s/%d b %s/%d", ra.Parent, ra.Depth, rb.Parent, rb.Depth)
+	}
+}
+
+// The message kind the summoner chose is the kind the mail carries.
+func TestSummonKeepsTheMessageKind(t *testing.T) {
+	e, _, loc := summonWorld(t)
+	add(t, e, store.Record{Handle: "codex-02", Kind: core.Codex, Server: "unix:///fake.sock", BlockID: "block:b", SessionID: "session:s", Role: "reviewer", AgentPID: 2, AdoptedAt: e.Now()})
+	summon(t, e, loc, "codex-02", func(r *SummonRequest) { r.Kind = "review_request" })
+	raw := mailBody(t, e, "codex-02", unread(t, e, "codex-02")[0])
+	if !strings.Contains(raw, `"kind": "review_request"`) && !strings.Contains(raw, `"kind":"review_request"`) {
+		t.Fatalf("envelope:\n%s", raw[:min(len(raw), 400)])
+	}
+}
+
+// A role in any spelling resolves to the form adoption records, so a
+// caller's own role cannot be summoned around the cycle guard; a string
+// that is neither a handle nor a role is an error.
+func TestSummonCanonicalizesRoles(t *testing.T) {
+	e, term, loc := summonWorld(t)
+	r, _, _ := e.Store.Record(block)
+	r.Role = "reviewer"
+	add(t, e, r)
+	if res := summon(t, e, loc, "Reviewer", func(r *SummonRequest) { r.Asked = "start one" }); res.Action != "refused" || !strings.Contains(res.Reason, "cycle") || len(term.launches) != 0 {
+		t.Fatalf("%+v launches %d", res, len(term.launches))
+	}
+	if _, err := e.Summon(context.Background(), loc, SummonRequest{Target: "codex", Subject: "s", Body: "b"}); err == nil {
+		t.Fatal("a bare kind is not a role")
+	}
+}
+
+// An agent whose own summoner is no longer recorded cannot prove its chain:
+// it may deliver, not start.
+func TestSummonFailsClosedWithoutItsAncestry(t *testing.T) {
+	e, term, loc := summonWorld(t)
+	r, _, _ := e.Store.Record(block)
+	r.Parent, r.Depth = "pi-99", 1
+	add(t, e, r)
+	if res := summon(t, e, loc, "writer", func(r *SummonRequest) { r.Asked = "go" }); res.Action != "refused" || !strings.Contains(res.Reason, "chain cannot be checked") || len(term.launches) != 0 {
+		t.Fatalf("%+v", res)
 	}
 }

@@ -171,6 +171,7 @@ func runHook(args []string) int {
 		reply(app.Reply{})
 		return hookFail(log, err)
 	}
+	in.SummonToken = os.Getenv(app.SummonEnv)
 	loc, err := app.Here()
 	if errors.Is(err, app.ErrNotInRex) {
 		reply(app.Reply{})
@@ -611,7 +612,7 @@ func runSummon(args []string) int {
 			out["handles"] = []core.Handle{st.Handle}
 			if !res.Mailed {
 				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-				err = env.Deliver(ctx, loc, st.Handle, *subject, *body)
+				err = env.Deliver(ctx, loc, st.Handle, *kind, *subject, *body)
 				cancel()
 				if err != nil {
 					return fail(err)
@@ -624,6 +625,9 @@ func runSummon(args []string) int {
 	fmt.Println(string(b))
 	if res.Action == "refused" {
 		return 3
+	}
+	if st, ok := out["startup"].(core.StartupStatus); ok && st != core.StartupAdopted {
+		return 1 // launched, not adopted: the mail waits, the user must look at the pane
 	}
 	return 0
 }

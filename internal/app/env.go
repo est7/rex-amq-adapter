@@ -165,6 +165,10 @@ type HookInput struct {
 	// Other harnesses' hooks cannot know it; the block's foreground process
 	// is used for them.
 	AgentPID int `json:"agent_pid"`
+	// SummonToken is REX_AMQ_SUMMON in the hook's environment: the token a
+	// summon launched this agent with (store.Summon), binding the launch to
+	// this adoption and no other.
+	SummonToken string `json:"-"`
 	// Idle: the agent is at rest (sent by Pi's extension when it rescans
 	// between runs), so only an announcement can start it.
 	Idle bool `json:"idle"`

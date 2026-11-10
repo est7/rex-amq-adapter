@@ -639,33 +639,43 @@ func (s Store) PutHealthMark(block string, m HealthMark) error {
 	return fsutil.WriteAtomic(s.healthPath(block), b)
 }
 
-// Summon is what a summoner wrote before starting an agent in a block, for
-// the adoption of that block to copy into its record.
+// Summon is what a summoner wrote before launching an agent, keyed by the
+// token the launch carries in its environment, for the adoption with that
+// token to copy into its record. Until then it reserves a place in the
+// session's cap.
 type Summon struct {
-	Parent core.Handle `json:"parent"`
-	Depth  int         `json:"depth"`
-	For    string      `json:"for"`
-	At     time.Time   `json:"at"`
+	Parent  core.Handle `json:"parent"`
+	Depth   int         `json:"depth"`
+	For     string      `json:"for"`
+	Session string      `json:"session"`
+	At      time.Time   `json:"at"`
 }
+
+// PendingSummonFor is how long an unconsumed summon reserves a place: a
+// launch that was never adopted (the pane closed, trust refused) frees it.
+const PendingSummonFor = 2 * time.Minute
 
 func (p Paths) summons() string { return filepath.Join(p.Home, "summons") }
 
-// PutSummon records, before the launch, that a pane labelled label in
-// session is about to run an agent parent summoned; the label is known
-// before the block is.
-func (s Store) PutSummon(session, label string, sm Summon) error {
+func (s Store) summonPath(token string) string {
+	return filepath.Join(s.P.summons(), fileKey(token)+".json")
+}
+
+// PutSummon records a launch about to happen under token.
+func (s Store) PutSummon(token string, sm Summon) error {
 	b, err := json.Marshal(sm)
 	if err != nil {
 		return err
 	}
-	return fsutil.WriteAtomic(filepath.Join(s.P.summons(), fileKey(session+"|"+label)+".json"), b)
+	return fsutil.WriteAtomic(s.summonPath(token), b)
 }
 
-// TakeSummon returns and removes the summon of a pane labelled label in
-// session, if any.
-func (s Store) TakeSummon(session, label string) (Summon, bool, error) {
-	path := filepath.Join(s.P.summons(), fileKey(session+"|"+label)+".json")
-	b, err := os.ReadFile(path)
+// TakeSummon returns and removes the summon launched under token, if any.
+func (s Store) TakeSummon(token string) (Summon, bool, error) {
+	if token == "" {
+		return Summon{}, false, nil
+	}
+	b, err := os.ReadFile(s.summonPath(token))
 	if errors.Is(err, fs.ErrNotExist) {
 		return Summon{}, false, nil
 	}
@@ -674,7 +684,40 @@ func (s Store) TakeSummon(session, label string) (Summon, bool, error) {
 	}
 	var sm Summon
 	if err := json.Unmarshal(b, &sm); err != nil {
-		return Summon{}, false, fmt.Errorf("%s: %w", path, err)
+		return Summon{}, false, fmt.Errorf("%s: %w", s.summonPath(token), err)
 	}
-	return sm, true, os.Remove(path)
+	return sm, true, os.Remove(s.summonPath(token))
+}
+
+// DeleteSummon frees a reservation whose launch failed.
+func (s Store) DeleteSummon(token string) error {
+	err := os.Remove(s.summonPath(token))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+// PendingSummons counts the launches of session not yet adopted and not
+// yet expired at now.
+func (s Store) PendingSummons(session string, now time.Time) (int, error) {
+	entries, err := os.ReadDir(s.P.summons())
+	if errors.Is(err, fs.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, en := range entries {
+		b, err := os.ReadFile(filepath.Join(s.P.summons(), en.Name()))
+		if err != nil {
+			continue
+		}
+		var sm Summon
+		if json.Unmarshal(b, &sm) == nil && sm.Session == session && now.Sub(sm.At) < PendingSummonFor {
+			n++
+		}
+	}
+	return n, nil
 }
