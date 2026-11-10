@@ -282,7 +282,9 @@ why; never retry a refused summon with other words:
 
 A launched agent carries a token in its environment that binds its first
 hook to this summon and `GITX_SCOPE=local`, so git-command refuses its push,
-propose and land (landing stays yours), and holds its place in the cap until it is adopted (or
+propose and land (landing stays yours; even
+the user typing `/git-flow push` in that pane is refused, so push from your
+own pane), and holds its place in the cap until it is adopted (or
 two minutes pass). A resumed agent gets a fixed first prompt that makes it
 drain its mailbox, where your message waits. The command exits 0 only when
 the mail is delivered or the launched agent was adopted; a trust screen,
