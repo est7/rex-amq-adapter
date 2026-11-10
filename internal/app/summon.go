@@ -31,45 +31,36 @@ import (
 // SummonEnv is the environment variable a launched agent carries.
 const SummonEnv = "REX_AMQ_SUMMON"
 
-// GitxScopeEnv is git-command's scope limit (3.4.5, spec 9.31).
+// GitxScopeEnv is git-command's scope variable (spec 9.31): push+PR or merge.
 const GitxScopeEnv = "GITX_SCOPE"
 
-// scopeRank orders the scopes git-command knows, narrowest first.
-var scopeRank = map[string]int{"local": 0, "push+PR": 1, "merge": 2}
-
 // scopeLine is a contract's SCOPE line: its first word is the scope.
-var scopeLine = regexp.MustCompile(`(?m)^\s*-?\s*SCOPE:\s*(local|push\+PR|merge)\b`)
+var scopeLine = regexp.MustCompile(`(?m)^\s*-?\s*SCOPE:\s*(push\+PR|merge)\b`)
 
-// peerScope is the GITX_SCOPE a summoned peer runs under. A brief from
-// another agent grants at most local (skill autopilot, Enter 2), unless it
-// cites the user's own grant file and that file's SCOPE line names a wider
-// scope: then the narrower of the file's and the brief's own SCOPE line.
-// Only structure is read: the file must exist, the brief must name its
-// path, and the scope must be a SCOPE line in each.
+// peerScope is the GITX_SCOPE a summoned peer runs under. Every peer may
+// commit, push its own branches and open MRs (push+PR); writing the base
+// (merge) needs both the brief and the user's own grant file it cites to say
+// merge (skill autopilot, Enter 2). Only structure is read: the file must
+// exist, the brief must name its path, and each must hold a SCOPE line.
 func peerScope(r SummonRequest) (scope, why string) {
 	if r.Grant == "" {
-		return "local", "no grant file"
+		return ScopePR, "no grant file"
 	}
 	raw, err := os.ReadFile(r.Grant)
 	if err != nil {
-		return "local", "the grant file is not readable: " + err.Error()
+		return ScopePR, "the grant file is not readable: " + err.Error()
 	}
 	if !strings.Contains(r.Body, r.Grant) {
-		return "local", "the brief does not cite " + r.Grant
+		return ScopePR, "the brief does not cite " + r.Grant
 	}
 	m := scopeLine.FindSubmatch(raw)
-	if m == nil {
-		return "local", r.Grant + " has no SCOPE line"
+	if m == nil || string(m[1]) != ScopeMerge {
+		return ScopePR, r.Grant + " has no SCOPE: merge line"
 	}
-	granted := string(m[1])
-	brief := "local"
-	if b := scopeLine.FindStringSubmatch(r.Body); b != nil {
-		brief = b[1]
+	if b := scopeLine.FindStringSubmatch(r.Body); b == nil || b[1] != ScopeMerge {
+		return ScopePR, "the brief's SCOPE is not merge"
 	}
-	if scopeRank[brief] < scopeRank[granted] {
-		return brief, "the brief's SCOPE " + brief + " under the grant's " + granted
-	}
-	return granted, "the grant's SCOPE " + granted
+	return ScopeMerge, "the brief and the grant's SCOPE are merge"
 }
 
 // SummonRequest is what the summoner asks.
@@ -344,13 +335,17 @@ func (e Env) start(ctx context.Context, caller store.Record, s Session, r Summon
 
 // launch opens the pane beside the caller, or in a new tab when the
 // caller's pane is too small to split, running cmd with the token in its
-// environment and GITX_SCOPE=<scope> (peerScope), under which git-command's
-// gitx.py refuses what the scope does not allow, whatever the peer types.
+// environment and under scope (peerScope, scopeEnv): whatever the peer types,
+// git refuses its write to the base branch unless the scope is merge.
 func (e Env) launch(ctx context.Context, caller store.Record, s Session, label, cwd, token, scope string, cmd []string) (string, error) {
 	if cwd == "" {
 		cwd, _ = os.Getwd()
 	}
-	cmd = append([]string{"env", SummonEnv + "=" + token, GitxScopeEnv + "=" + scope}, cmd...)
+	senv, err := e.scopeEnv(scope, nil)
+	if err != nil {
+		return "", err
+	}
+	cmd = append(append([]string{"env", SummonEnv + "=" + token}, senv...), cmd...)
 	if size, err := e.Rex.Size(ctx, caller.BlockID); err == nil && size.Rows > 0 && size.Rows < 2*core.TinyRows {
 		_, shell, err := e.Rex.NewTab(ctx, s.id, label)
 		if err != nil {

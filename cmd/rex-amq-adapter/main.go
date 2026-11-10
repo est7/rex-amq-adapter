@@ -64,6 +64,11 @@ Agent and user commands:
                             then delivers. Guards: a request kind only, no cycle,
                             depth 2 at most, 6 live agents per session at most, and
                             a new agent only with the user's words or grant file
+  scoped [--scope push+PR|merge] -- PROGRAM [ARGS...]
+                            run PROGRAM (an agent you start by hand) under a
+                            scope: it may push its own branches and open MRs,
+                            and git refuses its write to the base branch unless
+                            the scope is merge (summon does this itself)
   trust <dir>               derive, for a linked worktree of a repository the user
                             already trusts in Antigravity, that trust for DIR, so a
                             peer started there meets no folder dialog; writes
@@ -113,6 +118,8 @@ func run(args []string) int {
 		return runTab(rest)
 	case "trust":
 		return runTrust(rest)
+	case "scoped":
+		return runScoped(rest)
 	case "summon":
 		return runSummon(rest)
 	case "join":
@@ -628,6 +635,29 @@ func runSummon(args []string) int {
 	}
 	if st, ok := out["startup"].(core.StartupStatus); ok && st != core.StartupAdopted {
 		return 1 // launched, not adopted: the mail waits, the user must look at the pane
+	}
+	return 0
+}
+
+// runScoped replaces itself with the program under the scope's environment,
+// so the agent keeps this process's place in the pane's process tree.
+func runScoped(args []string) int {
+	fs := flag.NewFlagSet("scoped", flag.ContinueOnError)
+	scope := fs.String("scope", app.ScopePR, "push+PR or merge")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	argv := fs.Args()
+	if len(argv) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: rex-amq-adapter scoped [--scope push+PR|merge] -- PROGRAM [ARGS...]")
+		return 2
+	}
+	env, err := app.NewEnv(os.Getenv("REX_SERVER"))
+	if err != nil {
+		return fail(err)
+	}
+	if err := env.ExecScoped(*scope, argv); err != nil {
+		return fail(err)
 	}
 	return 0
 }

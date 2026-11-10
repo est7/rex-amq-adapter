@@ -1,0 +1,32 @@
+#!/bin/sh
+# Installed by rex-amq-adapter for the agents it launches (core.hooksPath via
+# GIT_CONFIG_*), next to the repository's own hooks, which still run.
+# GITX_SCOPE is the launcher's cap (git-command docs/spec.md §9.31, rex-amq-adapter internal/app/scopehooks.go):
+#   push+PR  push any branch except the base, open MRs
+#   merge    also write the base
+#   unset    no cap (the user's own session)
+# The one checkpoint is a write to refs/heads/<base>: a merge, a fast-forward
+# after a rebase, or a deletion. Every other push is a two-way door.
+remote="$1"
+input=$(cat)
+scope="${GITX_SCOPE-}"
+refuse() { printf 'pre-push (GITX_SCOPE=%s): %s\n' "$scope" "$1" >&2; exit 1; }
+case "$scope" in
+  "" | merge) ;;
+  push+PR)
+    base_from() { [ -f "$1/.config/git-command.toml" ] || return 1
+      sed -n '/^\[base\]/,/^\[/{s/^[[:space:]]*branch[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p;}' "$1/.config/git-command.toml" | head -n 1; }
+    top=$(git rev-parse --show-toplevel 2>/dev/null)
+    sup=$(git rev-parse --show-superproject-working-tree 2>/dev/null)
+    base=$( { [ -n "$top" ] && base_from "$top"; } || { [ -n "$sup" ] && base_from "$sup"; } )
+    [ -n "$base" ] || base=$(git ls-remote --symref "$remote" HEAD 2>/dev/null | sed -n 's|^ref: refs/heads/\(.*\)[[:space:]]HEAD$|\1|p')
+    [ -n "$base" ] || refuse "cannot tell the base branch (no .config/git-command.toml [base].branch, and $remote names no HEAD); nothing pushed"
+    printf '%s\n' "$input" | while read -r lref lsha rref rsha; do
+      [ "$rref" = "refs/heads/$base" ] && exit 3
+    done
+    [ $? -eq 3 ] && refuse "writing $base, the shared base, needs a grant whose SCOPE is merge; push your own branch and open an MR instead. Nothing was pushed."
+    ;;
+  *) refuse "unknown value; expected push+PR or merge. Nothing was pushed." ;;
+esac
+# The repository's own pre-push runs after the check, with the same input.
+{ [ -n "$input" ] && printf '%s\n' "$input"; } | HOOK_NAME=pre-push "$(dirname "$0")/chain" "$@"

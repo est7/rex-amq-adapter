@@ -219,11 +219,12 @@ this needs is below; no other skill is required.
    runs). Pass `--no-daemon` explicitly
    for Codex: Rex launches the binary without expanding fish abbreviations.
    This mode cannot be combined with `--remote` or `codex agents`. When you
-   run under an autopilot grant or a goal brief, a peer you start gets at
-   most `local` (skill `autopilot`): prefix its command with
-   `env GITX_SCOPE=local` (`-- env GITX_SCOPE=local codex --no-daemon "<brief>"`),
-   so git-command refuses its push, propose and land; `rex-amq-adapter summon`
-   does this for you. Never take
+   run under an autopilot grant or a goal brief, start the peer under a scope:
+   prefix its command with `rex-amq-adapter scoped --`
+   (`-- rex-amq-adapter scoped -- codex --no-daemon "<brief>"`). It may then
+   commit, push its own branches and open MRs, and git refuses its write to the
+   base branch; `--scope merge` lifts that only when your brief says merge
+   (skill `autopilot`). `rex-amq-adapter summon` does this for you. Never take
    focus. When your own pane has fewer than 10 rows (`rex block call -b
    "$REX_BLOCK" size`), a split would leave the peer unable to draw its input
    box: open it in a new tab (`rex run`) instead. For an Antigravity peer in a linked worktree, run
@@ -274,20 +275,19 @@ why; never retry a refused summon with other words:
 - 6 live agents per session at most;
 - a new agent starts only with the user's own words in this session asking
   for it (`--asked "<their words>"`, logged as your attestation) or a brief
-  that cites their grant file (`--grant <file>`: the adapter does not read
-  it; you checked it and the brief names it); a summoned agent's scope is
-  at most `local` unless its brief cites that file (skill `autopilot`);
+  that cites their grant file (`--grant <file>`: you checked it and the
+  brief names it); a summoned agent's scope is `push+PR` unless its brief
+  and that file both say `merge` (skill `autopilot`);
 - an agent whose own summoner is no longer recorded may deliver, not start
   or resume: its chain cannot be checked.
 
 A launched agent carries a token in its environment that binds its first
-hook to this summon and `GITX_SCOPE`: `local`, so git-command refuses its
-push, propose and land, unless your brief cites the user's grant file
-(`--grant`) whose `SCOPE:` line names more, then the narrower of that and
-the brief's own `SCOPE:` line (landing stays yours; even
-the user typing `/git-flow push` in that pane is refused, so push from your
-own pane), and holds its place in the cap until it is adopted (or
-two minutes pass). A resumed agent gets a fixed first prompt that makes it
+hook to this summon, and runs under a scope: `push+PR`, so it may commit,
+push its own branches and open MRs while git refuses its write to the base
+branch, or `merge` when your brief says merge and cites the user's grant file
+(`--grant`) whose `SCOPE:` line says merge (even the user typing a merge into
+base in that pane is refused, so land from your own pane). It holds its place
+in the cap until it is adopted (or two minutes pass). A resumed agent gets a fixed first prompt that makes it
 drain its mailbox, where your message waits. The command exits 0 only when
 the mail is delivered or the launched agent was adopted; a trust screen,
 blocked dialog or timeout exits 1 with the startup state in its JSON.

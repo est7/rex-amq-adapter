@@ -1,0 +1,8 @@
+#!/bin/sh
+# Runs the repository's own hook of this name, which core.hooksPath would hide.
+name="${HOOK_NAME:-$(basename "$0")}"
+own=$(GIT_CONFIG_COUNT=0 git config core.hooksPath 2>/dev/null) || own=
+if [ -z "$own" ]; then own="$(git rev-parse --git-common-dir)/hooks"
+else case "$own" in /*) ;; ~*) own="$HOME${own#\~}" ;; *) own="$(git rev-parse --show-toplevel)/$own" ;; esac; fi
+[ -x "$own/$name" ] && exec "$own/$name" "$@"
+exit 0
