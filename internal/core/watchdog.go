@@ -1,6 +1,9 @@
 package core
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // The goal watchdog's decisions. In an unattended session a peer whose pane
 // is too small cannot draw its input box, so every doorbell defers with
@@ -18,8 +21,12 @@ const (
 	// StuckFor is how long box_not_found must repeat before the pane counts
 	// as stuck, so one slow redraw does not move a pane.
 	StuckFor = 30 * time.Second
-	// OverflowTab is the window the watchdog moves tiny panes to.
+	// OverflowTab is the window the watchdog places recovered panes in.
 	OverflowTab = "overflow"
+	// RecoverColumns and RecoverRows are the size a detached pane is given:
+	// enough for every CLI's input box, small enough for any screen.
+	RecoverColumns = 120
+	RecoverRows    = 30
 	// ReportLines is how many plain screen lines a report carries.
 	ReportLines = 12
 )
@@ -65,21 +72,18 @@ type Episode struct {
 	PID       int       `json:"pid"`
 	Session   string    `json:"session"`
 	StartedAt time.Time `json:"started_at"`
-	// Window is where the block was; PrevActive the session's active window
-	// before the app was asked to render Overflow.
-	Window     string `json:"window,omitempty"`
-	PrevActive string `json:"prev_active,omitempty"`
-	Overflow   string `json:"overflow,omitempty"`
-	Columns    int    `json:"columns,omitempty"`
-	Rows       int    `json:"rows,omitempty"`
-	// Moved: the move was issued; Rendered: the app was asked to show the
-	// overflow tab and the user's window was restored; Verified: the pane
-	// measured large enough with an empty box afterwards.
-	Moved    bool `json:"moved,omitempty"`
-	Rendered bool `json:"rendered,omitempty"`
-	// Restored: the app shows PrevActive again after rendering.
-	Restored bool `json:"restored,omitempty"`
+	// Window is where the block was; Overflow the tab it is placed in.
+	Window   string `json:"window,omitempty"`
+	Overflow string `json:"overflow,omitempty"`
+	Columns  int    `json:"columns,omitempty"`
+	Rows     int    `json:"rows,omitempty"`
+	// Detached: the block was taken out of its window; Resized: it was given
+	// RecoverColumns x RecoverRows; Verified: it measured so with an empty
+	// box; Placed: it sits in the overflow tab.
+	Detached bool `json:"detached,omitempty"`
+	Resized  bool `json:"resized,omitempty"`
 	Verified bool `json:"verified,omitempty"`
+	Placed   bool `json:"placed,omitempty"`
 	// Attempts counts layout actions that failed; past MaxAttempts the
 	// watchdog stops acting and reports.
 	Attempts int `json:"attempts,omitempty"`
@@ -97,8 +101,6 @@ const (
 	ReportRecoveryFailed = "recovery_failed"
 	ReportMovedByUser    = "moved_by_user"
 	ReportUndelivered    = "undelivered"
-	ReportNoClient       = "no_app_client"
-	ReportRestoreFailed  = "restore_failed"
 )
 
 // MaxAttempts bounds the layout actions one episode may retry.
@@ -115,15 +117,10 @@ func WatchdogReport(peer Peer, ep Episode, code, detail string, screen []string)
 	}
 	body += " It pressed no key."
 	switch {
-	case ep.Moved && ep.Rendered:
-		body += " It had moved the pane to the " + OverflowTab + " tab and had the app render it"
-		if ep.Restored {
-			body += ", then put the app back on its previous window."
-		} else {
-			body += "; the app may still show that tab."
-		}
-	case ep.Moved:
-		body += " It had moved the pane to the " + OverflowTab + " tab; the app has not rendered it."
+	case ep.Placed:
+		body += " It had detached the pane, resized it to " + fmt.Sprintf("%dx%d", RecoverColumns, RecoverRows) + " and placed it in the " + OverflowTab + " tab."
+	case ep.Detached:
+		body += " It had detached the pane from its window" + map[bool]string{true: " and resized it", false: ""}[ep.Resized] + "; it is not placed in a tab yet."
 	default:
 		body += " It moved nothing."
 	}

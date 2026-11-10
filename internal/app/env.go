@@ -35,12 +35,11 @@ type Terminal interface {
 	ListSessions(ctx context.Context) ([]string, error)
 	// The goal watchdog's layout calls (internal/app/watchdog.go).
 	Size(ctx context.Context, block string) (rex.Size, error)
-	ActiveWindow(ctx context.Context, session string) (string, error)
+	DetachBlock(ctx context.Context, session, block string) error
+	ResizeBlock(ctx context.Context, block string, columns, rows int) error
 	NewTab(ctx context.Context, session, label string) (window, block string, err error)
 	MoveBlock(ctx context.Context, session, block, anchor string) error
 	CloseBlock(ctx context.Context, block string) error
-	AppClients(ctx context.Context, session string) ([]string, error)
-	SelectView(ctx context.Context, client, session, window string) error
 }
 
 // Env is everything an entry point needs.

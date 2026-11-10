@@ -207,9 +207,11 @@ func (c Client) SendKeys(ctx context.Context, block string, keys ...string) erro
 
 // Block is what the adapter needs from `rex block inspect`.
 type Block struct {
-	ID        string `json:"block_id"`
-	Label     string `json:"label"`
-	WindowID  string `json:"window_id"`
+	ID       string `json:"block_id"`
+	Label    string `json:"label"`
+	WindowID string `json:"window_id"`
+	// Placement is "placed" in a window or "detached" (no window).
+	Placement string `json:"placement"`
 	SessionID string `json:"-"` // reported beside the block, not in it
 }
 
@@ -401,20 +403,6 @@ func (c Client) Size(ctx context.Context, block string) (Size, error) {
 	return s, err
 }
 
-// ActiveWindow is the window the session shows; "" when it has none.
-func (c Client) ActiveWindow(ctx context.Context, session string) (string, error) {
-	var res struct {
-		Active *string `json:"active_window_id"`
-	}
-	if err := c.api(ctx, session, "session.view", map[string]string{"session_id": session}, &res); err != nil {
-		return "", err
-	}
-	if res.Active == nil {
-		return "", nil
-	}
-	return *res.Active, nil
-}
-
 // NewTab opens a window labelled label in session, holding one shell block,
 // without making it active.
 func (c Client) NewTab(ctx context.Context, session, label string) (window, block string, err error) {
@@ -448,35 +436,15 @@ func (c Client) CloseBlock(ctx context.Context, block string) error {
 	return err
 }
 
-// AppClients lists the ids of the app clients attached to session: the
-// windows the user looks at, as opposed to CLI connections.
-func (c Client) AppClients(ctx context.Context, session string) ([]string, error) {
-	var res struct {
-		Clients []struct {
-			ID   string `json:"client_id"`
-			Info struct {
-				Kind string `json:"kind"`
-			} `json:"info"`
-		} `json:"clients"`
-	}
-	if err := c.api(ctx, session, "session.list_clients", map[string]string{"session_id": session}, &res); err != nil {
-		return nil, err
-	}
-	var out []string
-	for _, cl := range res.Clients {
-		if cl.Info.Kind == "app" && cl.ID != "" {
-			out = append(out, cl.ID)
-		}
-	}
-	return out, nil
+// DetachBlock takes block out of its window without closing it. The program
+// keeps running, and no client owns the terminal, so a resize applies.
+func (c Client) DetachBlock(ctx context.Context, session, block string) error {
+	return c.api(ctx, session, "session.detach_block", map[string]string{"session_id": session, "block_id": block}, nil)
 }
 
-// SelectView asks the app client to show window of session. Only a shown
-// window is laid out, so this is what gives a moved block its size.
-func (c Client) SelectView(ctx context.Context, client, session, window string) error {
-	args := map[string]any{
-		"client_id": client, "action": "session.select", "timeout_ms": 5000,
-		"args": map[string]string{"session_id": session, "window_id": window},
-	}
-	return c.api(ctx, session, "client.perform", args, nil)
+// ResizeBlock asks the terminal for a size. It applies at once while no
+// client owns the block (a detached or never-shown one); an owned block
+// takes the owner's size instead.
+func (c Client) ResizeBlock(ctx context.Context, block string, columns, rows int) error {
+	return c.blockCall(ctx, block, "resize", map[string]int{"columns": columns, "rows": rows}, nil)
 }

@@ -20,19 +20,24 @@ import (
 // The goal watchdog runs inside the goal watcher's tick (goal.go). For every
 // live agent of the goal's session it looks for mail the injector could not
 // deliver for StuckFor, and acts only on the one shape it can fix without
-// the user: a pane too small to draw the input box. It moves that pane once,
-// to the session's overflow tab, has the user's app render it, puts the
-// window the app showed back, verifies the size and an empty box, and hands
-// the mail to the injector. Every other stuck shape it only reports to the
-// goal agent: a trust or permission dialog, a draft in the box, a box that
-// stays missing at a normal size, a pane the user moved meanwhile, no app to
-// render with, a restore that did not take, a recovery that did not take.
+// the user: a pane too small to draw the input box. Without touching what
+// the user looks at, it detaches that block from its window (the program
+// keeps running and no client owns the terminal any more), resizes it to
+// RecoverColumns x RecoverRows, which a terminal nobody owns takes at once,
+// verifies the size and an empty box, hands the mail to the injector, and
+// places the block in the session's overflow tab, where it keeps that size
+// until the user opens the tab. Every other stuck shape it only reports to
+// the goal agent: a trust or permission dialog, a draft in the box, a box
+// that stays missing at a normal size, a pane the user moved meanwhile, a
+// recovery that did not take.
 
 // actBudget bounds one layout action sequence. It is cut from the parent's
-// cancellation, not its deadline: the watcher's tick budget (watchBudget) is
-// shorter than a round trip to the app client, and a move must not be left
-// half done by it.
+// cancellation, not its deadline: the watcher's tick budget (watchBudget)
+// must not leave a block detached halfway.
 const actBudget = 20 * time.Second
+
+// settleFor bounds waiting for the agent to redraw after a resize.
+const settleFor = 3 * time.Second
 
 // watchdog runs one look over every live agent in s. Errors are reported and
 // swallowed: a failing watchdog must not stop the goal watcher.
@@ -63,8 +68,9 @@ type look struct {
 	trust   string
 	columns int
 	rows    int
+	owner   string
 	lines   []string
-	window  string
+	window  string // "" when detached
 }
 
 func (e Env) observe(ctx context.Context, rec store.Record, unread int, history []core.Attempt) (look, bool, error) {
@@ -89,7 +95,7 @@ func (e Env) observe(ctx context.Context, rec store.Record, unread int, history 
 	if err != nil {
 		return l, false, err
 	}
-	l.columns, l.rows = size.Columns, size.Rows
+	l.columns, l.rows, l.owner = size.Columns, size.Rows, size.Owner
 	blk, err := e.Rex.InspectBlock(ctx, rec.BlockID)
 	if err != nil {
 		return l, false, err
@@ -112,6 +118,13 @@ func (e Env) watchPeer(ctx context.Context, goal store.Record, s Session, rec st
 	if err != nil {
 		return err
 	}
+	if open && ep.Detached && !ep.Placed {
+		// A detached block is placed before anything else, delivered or not:
+		// the user must be able to find it.
+		if err := e.place(ctx, goal, rec, &ep, s); err != nil {
+			return err
+		}
+	}
 	if open && (len(unread) == 0 || core.Delivered(history)) {
 		// The mail arrived: the episode is over, whatever it did.
 		e.wdLog(goal, rec, "episode-end", ep.ID, "mail delivered")
@@ -125,27 +138,12 @@ func (e Env) watchPeer(ctx context.Context, goal store.Record, s Session, rec st
 		now := e.Now()
 		ep = core.Episode{ID: fmt.Sprintf("%s-%d", rec.Handle, now.Unix()), Handle: rec.Handle, Block: rec.BlockID, PID: rec.AgentPID, Session: s.id, StartedAt: now, Reported: map[string]time.Time{}}
 	}
-	e.wdLog(goal, rec, "observe", ep.ID, fmt.Sprintf("unread %d, deferred %s since %s, %dx%d in %s, status %s/%s, box %s", l.unread, l.code, core.Ago(e.Now().Sub(l.since)), l.columns, l.rows, l.window, l.status, l.kind, l.box))
+	e.wdLog(goal, rec, "observe", ep.ID, fmt.Sprintf("unread %d, deferred %s since %s, %dx%d owner %q in %q, status %s/%s, box %s", l.unread, l.code, core.Ago(e.Now().Sub(l.since)), l.columns, l.rows, l.owner, l.window, l.status, l.kind, l.box))
 
-	// An episode that moved the pane: first, is the pane still where the
-	// watchdog put it? A pane the user moved out is theirs, whatever its size.
-	if ep.Moved || ep.Overflow != "" {
-		if l.window != ep.Overflow {
-			if !ep.Moved {
-				// Journal written, move not confirmed, pane not there: the move never took.
-				ep.Overflow, ep.PrevActive = "", ""
-			} else {
-				return e.report(ctx, goal, rec, &ep, core.ReportMovedByUser, fmt.Sprintf("Its pane left the %s tab after the watchdog moved it there, so the watchdog leaves it alone.", core.OverflowTab), l.lines)
-			}
-		} else if !ep.Moved {
-			// The move took before the journal could say so (a restart or a
-			// timed-out call); continue from there, never move again.
-			ep.Moved = true
-			if err := e.Store.PutEpisode(ep); err != nil {
-				return err
-			}
-			e.wdLog(goal, rec, "reconcile", ep.ID, "the pane is already in the overflow tab")
-		}
+	// An episode that placed the pane: is it still where the watchdog put it?
+	// A pane the user moved out is theirs, whatever its size.
+	if ep.Placed && l.window != ep.Overflow {
+		return e.report(ctx, goal, rec, &ep, core.ReportMovedByUser, fmt.Sprintf("Its pane left the %s tab after the watchdog placed it there, so the watchdog leaves it alone.", core.OverflowTab), l.lines)
 	}
 
 	// Zero keystrokes on any dialog or draft: these are reported, never answered.
@@ -158,8 +156,17 @@ func (e Env) watchPeer(ctx context.Context, goal store.Record, s Session, rec st
 		return e.report(ctx, goal, rec, &ep, core.ReportDraft, "Its input box holds a draft, so no doorbell can be typed.", l.lines)
 	}
 
-	if ep.Moved {
-		return e.continueEpisode(ctx, goal, rec, &ep, l)
+	if ep.Detached {
+		// Resized earlier, still undelivered: verify again (the agent may
+		// have redrawn since), else report.
+		inject, err := e.verify(ctx, goal, rec, &ep)
+		if err != nil {
+			return err
+		}
+		if inject {
+			return e.handOff(ctx, goal, rec, &ep, s, true, nil)
+		}
+		return e.report(ctx, goal, rec, &ep, core.ReportRecoveryFailed, fmt.Sprintf("Its pane was resized to %dx%d, yet doorbells still find no input box (it measures %dx%d now).", core.RecoverColumns, core.RecoverRows, l.columns, l.rows), l.lines)
 	}
 	if !core.MayMove(l.code, l.columns, l.rows) {
 		if l.code == "box_not_found" {
@@ -168,46 +175,17 @@ func (e Env) watchPeer(ctx context.Context, goal store.Record, s Session, rec st
 		return e.report(ctx, goal, rec, &ep, core.ReportUndelivered, fmt.Sprintf("Every doorbell since %s deferred with %s.", core.Ago(e.Now().Sub(l.since)), l.code), l.lines)
 	}
 	if ep.Attempts >= core.MaxAttempts {
-		return e.report(ctx, goal, rec, &ep, core.ReportRecoveryFailed, fmt.Sprintf("Its pane could not be moved after %d attempts.", ep.Attempts), l.lines)
+		return e.report(ctx, goal, rec, &ep, core.ReportRecoveryFailed, fmt.Sprintf("Its pane could not be recovered after %d attempts.", ep.Attempts), l.lines)
 	}
 	ep.Columns, ep.Rows = l.columns, l.rows
 	inject, err := e.recover(ctx, goal, rec, &ep, s, l)
-	return e.handOff(ctx, goal, rec, &ep, inject, err)
+	return e.handOff(ctx, goal, rec, &ep, s, inject, err)
 }
 
-// continueEpisode carries a moved pane through render, restore and verify,
-// each step once per look, and reports what does not take.
-func (e Env) continueEpisode(ctx context.Context, goal store.Record, rec store.Record, ep *core.Episode, l look) error {
-	if !ep.Rendered {
-		if ep.Attempts >= core.MaxAttempts {
-			return e.report(ctx, goal, rec, ep, core.ReportRecoveryFailed, fmt.Sprintf("Its pane sits in the %s tab but the app could not render it after %d attempts.", core.OverflowTab, ep.Attempts), l.lines)
-		}
-		inject, err := e.render(ctx, goal, rec, ep)
-		return e.handOff(ctx, goal, rec, ep, inject, err)
-	}
-	if !ep.Restored {
-		e.restore(ctx, goal, rec, ep)
-	}
-	if !ep.Verified {
-		inject, err := e.verify(ctx, goal, rec, ep)
-		if err != nil {
-			return err
-		}
-		if inject {
-			return e.handOff(ctx, goal, rec, ep, true, nil)
-		}
-		if core.TinyPane(l.columns, l.rows) {
-			return e.report(ctx, goal, rec, ep, core.ReportRecoveryFailed, fmt.Sprintf("Its pane was moved to the %s tab and rendered, yet still measures %dx%d.", core.OverflowTab, l.columns, l.rows), l.lines)
-		}
-		return nil // drawn large, box not seen yet: looked at again next tick
-	}
-	return e.report(ctx, goal, rec, ep, core.ReportRecoveryFailed, fmt.Sprintf("Its pane was moved to the %s tab and measures %dx%d, yet doorbells still find no input box.", core.OverflowTab, l.columns, l.rows), l.lines)
-}
-
-// handOff gives the mail to the injector once a step verified the pane. It
-// runs after that step returned, so the injector takes the block's lock
-// itself.
-func (e Env) handOff(ctx context.Context, goal store.Record, rec store.Record, ep *core.Episode, inject bool, err error) error {
+// handOff gives the mail to the injector once a step verified the pane,
+// then places the pane. It runs after that step returned, so the injector
+// takes the block's lock itself.
+func (e Env) handOff(ctx context.Context, goal store.Record, rec store.Record, ep *core.Episode, s Session, inject bool, err error) error {
 	if err != nil {
 		ep.Attempts++
 		_ = e.Store.PutEpisode(*ep)
@@ -220,32 +198,27 @@ func (e Env) handOff(ctx context.Context, goal store.Record, rec store.Record, e
 	e.wdLog(goal, rec, "inject", ep.ID, string(o.Progress)+" "+o.Code)
 	if o.Progress == core.Accepted {
 		ep.Outcome = "recovered"
-		e.wdLog(goal, rec, "episode-end", ep.ID, "recovered: mail delivered")
-		if err := e.Store.PutEpisode(*ep); err != nil {
+	}
+	if err := e.Store.PutEpisode(*ep); err != nil {
+		return err
+	}
+	if !ep.Placed {
+		if err := e.place(ctx, goal, rec, ep, s); err != nil {
 			return err
 		}
-		if !ep.Restored {
-			// Delivered, but the app may still show the overflow tab: say so once.
-			return e.report(ctx, goal, rec, ep, core.ReportRestoreFailed, "Its mail was delivered, but the app could not be put back on "+ep.PrevActive+".", nil)
-		}
+	}
+	if o.Progress == core.Accepted {
+		e.wdLog(goal, rec, "episode-end", ep.ID, "recovered: mail delivered")
 		return e.Store.ClearEpisode(rec.BlockID)
 	}
 	return nil
 }
 
-// recover moves rec's pane to the overflow tab, once, under the injector's
+// recover detaches rec's block and resizes it, once, under the injector's
 // lock and after re-reading everything the decision rested on.
 func (e Env) recover(ctx context.Context, goal store.Record, rec store.Record, ep *core.Episode, s Session, l look) (inject bool, err error) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), actBudget)
 	defer cancel()
-	// Nothing can render the pane without an app: report before moving.
-	clients, err := e.Rex.AppClients(ctx, s.id)
-	if err != nil {
-		return false, err
-	}
-	if len(clients) == 0 {
-		return false, e.report(ctx, goal, rec, ep, core.ReportNoClient, "No app client shows this session, so nothing can render its pane; it was not moved.", l.lines)
-	}
 	unlock, err := e.Store.LockInject(ctx, rec.BlockID)
 	if err != nil {
 		return false, err
@@ -285,7 +258,7 @@ func (e Env) recover(ctx context.Context, goal store.Record, rec store.Record, e
 		return false, err
 	}
 	// At this size the box cannot be seen, so a draft cannot be ruled out
-	// here; the capture after rendering is the gate that matters (verify).
+	// here; the capture after the resize is the gate that matters (verify).
 	if _, trust := screen.TrustScreen(string(rec.Kind), vt); trust || screen.Check(string(rec.Kind), vt) == screen.Typed {
 		e.wdLog(goal, rec, "abort", ep.ID, "a dialog or draft appeared")
 		return false, nil
@@ -303,34 +276,113 @@ func (e Env) recover(ctx context.Context, goal store.Record, rec store.Record, e
 		return false, nil
 	}
 	ep.Window = blk.WindowID
-	if ep.PrevActive, err = e.Rex.ActiveWindow(ctx, s.id); err != nil {
+	// The journal goes down before the detach, so a restart finds the block
+	// either still placed (nothing happened) or detached (continue).
+	if err := e.Store.PutEpisode(*ep); err != nil {
 		return false, err
 	}
-	overflow, anchor, shell, err := e.overflowTab(ctx, s.id)
+	e.wdLog(goal, rec, "detach", ep.ID, fmt.Sprintf("from %s (was %dx%d, owner %q)", ep.Window, size.Columns, size.Rows, size.Owner))
+	if err := e.Rex.DetachBlock(ctx, s.id, rec.BlockID); err != nil {
+		return false, fmt.Errorf("detach: %w", err)
+	}
+	ep.Detached = true
+	if err := e.Store.PutEpisode(*ep); err != nil {
+		return false, err
+	}
+	return e.resize(ctx, goal, rec, ep)
+}
+
+// resize gives the detached block its recovery size; a terminal still owned
+// by a client would ignore it, so that is checked first.
+func (e Env) resize(ctx context.Context, goal store.Record, rec store.Record, ep *core.Episode) (inject bool, err error) {
+	size, err := e.Rex.Size(ctx, rec.BlockID)
 	if err != nil {
 		return false, err
 	}
-	ep.Overflow = overflow
-	// The journal goes down before the move, so a restart finds the pane
-	// either where it was (no journal effect) or in the overflow tab.
+	if size.Owner != "" {
+		return false, fmt.Errorf("resize: the terminal is still owned by %s after detaching", size.Owner)
+	}
+	if err := e.Rex.ResizeBlock(ctx, rec.BlockID, core.RecoverColumns, core.RecoverRows); err != nil {
+		return false, fmt.Errorf("resize: %w", err)
+	}
+	ep.Resized = true
 	if err := e.Store.PutEpisode(*ep); err != nil {
 		return false, err
 	}
-	e.wdLog(goal, rec, "move", ep.ID, fmt.Sprintf("from %s to %s beside %s (was %dx%d)", ep.Window, overflow, anchor, size.Columns, size.Rows))
-	if err := e.Rex.MoveBlock(ctx, s.id, rec.BlockID, anchor); err != nil {
-		// A timed-out call may have taken: the next look reconciles.
-		return false, fmt.Errorf("move: %w", err)
+	e.wdLog(goal, rec, "resize", ep.ID, fmt.Sprintf("%dx%d requested", core.RecoverColumns, core.RecoverRows))
+	return e.verify(ctx, goal, rec, ep)
+}
+
+// verify waits, briefly, for the agent to redraw at the new size; large
+// enough with an empty box means the mail can be handed to the injector.
+func (e Env) verify(ctx context.Context, goal store.Record, rec store.Record, ep *core.Episode) (inject bool, err error) {
+	var size rexSize
+	var box screen.Draft
+	// Bounded by polls, not the clock: tests freeze Env.Now.
+	for left := int(settleFor / pollEvery); ; left-- {
+		sz, err := e.Rex.Size(ctx, rec.BlockID)
+		if err != nil {
+			return false, err
+		}
+		vt, err := e.Rex.CaptureVT(ctx, rec.BlockID)
+		if err != nil {
+			return false, err
+		}
+		size, box = rexSize{sz.Columns, sz.Rows}, screen.Check(string(rec.Kind), vt)
+		if box == screen.Typed {
+			return false, e.report(ctx, goal, rec, ep, core.ReportDraft, "After the resize, its input box holds a draft, so no doorbell can be typed.", lastLines(vt, core.ReportLines))
+		}
+		if !core.TinyPane(size.columns, size.rows) && box == screen.Empty {
+			break
+		}
+		if left <= 0 || !sleep(ctx, pollEvery) {
+			e.wdLog(goal, rec, "verify", ep.ID, fmt.Sprintf("%dx%d, box %s: not ready", size.columns, size.rows, box))
+			return false, nil
+		}
 	}
-	ep.Moved = true
-	if err := e.Store.PutEpisode(*ep); err != nil {
-		return false, err
+	e.wdLog(goal, rec, "verify", ep.ID, fmt.Sprintf("%dx%d, box empty", size.columns, size.rows))
+	ep.Verified = true
+	return true, e.Store.PutEpisode(*ep)
+}
+
+type rexSize struct{ columns, rows int }
+
+// place puts the detached block in the session's overflow tab, which is not
+// rendered until the user opens it, so the block keeps its size. A failure
+// is reported once and retried on the next look.
+func (e Env) place(ctx context.Context, goal store.Record, rec store.Record, ep *core.Episode, s Session) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), actBudget)
+	defer cancel()
+	blk, err := e.Rex.InspectBlock(ctx, rec.BlockID)
+	if err != nil {
+		return err
+	}
+	if blk.WindowID != "" {
+		// Placed already (by an earlier look that died before the journal,
+		// or by the user).
+		ep.Overflow, ep.Placed = blk.WindowID, true
+		return e.Store.PutEpisode(*ep)
+	}
+	overflow, anchor, shell, err := e.overflowTab(ctx, s.id)
+	if err == nil {
+		err = e.Rex.MoveBlock(ctx, s.id, rec.BlockID, anchor)
+	}
+	if err != nil {
+		ep.Attempts++
+		_ = e.Store.PutEpisode(*ep)
+		if rerr := e.report(ctx, goal, rec, ep, core.ReportRecoveryFailed, "Its pane is detached from every window and could not be placed in the "+core.OverflowTab+" tab: "+err.Error()+". The watchdog retries; `rex move` places it by hand.", nil); rerr != nil {
+			return rerr
+		}
+		return err
 	}
 	if shell != "" {
 		if err := e.Rex.CloseBlock(ctx, shell); err != nil {
 			e.wdLog(goal, rec, "warn", ep.ID, "the overflow tab's shell stays open: "+err.Error())
 		}
 	}
-	return e.render(ctx, goal, rec, ep)
+	ep.Overflow, ep.Placed = overflow, true
+	e.wdLog(goal, rec, "place", ep.ID, "in "+overflow)
+	return e.Store.PutEpisode(*ep)
 }
 
 // overflowTab finds the session's overflow window and a block in it to
@@ -357,95 +409,6 @@ func (e Env) overflowTab(ctx context.Context, session string) (window, anchor, s
 	}
 	window, shell, err = e.Rex.NewTab(ctx, session, core.OverflowTab)
 	return window, shell, shell, err
-}
-
-// render has the user's app show the overflow tab, which is what lays the
-// moved pane out, then puts the window the app showed back.
-func (e Env) render(ctx context.Context, goal store.Record, rec store.Record, ep *core.Episode) (inject bool, err error) {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), actBudget)
-	defer cancel()
-	clients, err := e.Rex.AppClients(ctx, ep.Session)
-	if err != nil {
-		return false, err
-	}
-	if len(clients) == 0 {
-		return false, e.report(ctx, goal, rec, ep, core.ReportNoClient, "No app client shows this session, so nothing can render its pane.", nil)
-	}
-	for _, c := range clients {
-		if err := e.Rex.SelectView(ctx, c, ep.Session, ep.Overflow); err != nil {
-			return false, fmt.Errorf("show the overflow tab on %s: %w", c, err)
-		}
-	}
-	ep.Rendered = true
-	if err := e.Store.PutEpisode(*ep); err != nil {
-		return false, err
-	}
-	e.wdLog(goal, rec, "render", ep.ID, fmt.Sprintf("shown %s on %d client(s)", ep.Overflow, len(clients)))
-	e.restore(ctx, goal, rec, ep)
-	return e.verify(ctx, goal, rec, ep)
-}
-
-// restore puts the app back on the window the session showed before the
-// render, with a budget of its own. What the app showed is known only for
-// this session (Rex keeps no per-client view), so an app that was on
-// another session comes back to this one's previous window. A restore that
-// fails is retried on later looks and reported once.
-func (e Env) restore(ctx context.Context, goal store.Record, rec store.Record, ep *core.Episode) {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-	defer cancel()
-	if ep.PrevActive == "" || ep.PrevActive == ep.Overflow {
-		ep.Restored = true
-		_ = e.Store.PutEpisode(*ep)
-		return
-	}
-	clients, err := e.Rex.AppClients(ctx, ep.Session)
-	if err == nil {
-		for _, c := range clients {
-			if err = e.Rex.SelectView(ctx, c, ep.Session, ep.PrevActive); err != nil {
-				break
-			}
-		}
-	}
-	if err == nil {
-		var active string
-		if active, err = e.Rex.ActiveWindow(ctx, ep.Session); err == nil && active != ep.PrevActive {
-			err = fmt.Errorf("the session still shows %s", active)
-		}
-	}
-	if err != nil {
-		e.wdLog(goal, rec, "restore-failed", ep.ID, err.Error())
-		_ = e.report(ctx, goal, rec, ep, core.ReportRestoreFailed, "After rendering its pane, the app could not be put back on "+ep.PrevActive+" ("+err.Error()+"); the watchdog keeps trying.", nil)
-		return
-	}
-	ep.Restored = true
-	_ = e.Store.PutEpisode(*ep)
-	e.wdLog(goal, rec, "restore", ep.ID, "the app shows "+ep.PrevActive+" again")
-}
-
-// verify measures the pane after rendering; large enough with an empty box
-// means the mail can be handed to the injector.
-func (e Env) verify(ctx context.Context, goal store.Record, rec store.Record, ep *core.Episode) (inject bool, err error) {
-	size, err := e.Rex.Size(ctx, rec.BlockID)
-	if err != nil {
-		return false, err
-	}
-	vt, err := e.Rex.CaptureVT(ctx, rec.BlockID)
-	if err != nil {
-		return false, err
-	}
-	box := screen.Check(string(rec.Kind), vt)
-	e.wdLog(goal, rec, "verify", ep.ID, fmt.Sprintf("%dx%d, box %s", size.Columns, size.Rows, box))
-	if core.TinyPane(size.Columns, size.Rows) {
-		return false, nil // still tiny: the next look reports recovery_failed
-	}
-	if box == screen.Typed {
-		return false, e.report(ctx, goal, rec, ep, core.ReportDraft, "After rendering, its input box holds a draft, so no doorbell can be typed.", lastLines(vt, core.ReportLines))
-	}
-	if box != screen.Empty {
-		return false, nil // not drawn yet: looked at again next tick
-	}
-	ep.Verified = true
-	return true, e.Store.PutEpisode(*ep)
 }
 
 // report tells the goal agent once per code per episode, in the stuck peer's

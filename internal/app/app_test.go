@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -21,34 +22,36 @@ import (
 // fakeTerm is one Codex terminal. Its input box holds box; a write lands in
 // the box unless the agent submits it (submit), and ctrl+u empties it.
 type fakeTerm struct {
-	mu           sync.Mutex
-	gone         bool
-	fgPID        int
-	state        string // "" means no program status record
-	box          string
-	submit       bool // a written doorbell is submitted: box stays empty, state becomes working
-	statusErr    bool // ProgramStatus fails after the first write
-	writes       []string
-	keys         []string
-	label        string                 // the block label; "" reads as Rex's default
-	windows      map[string]string      // block -> window; nil: none known
-	sessions     map[string]string      // window -> session; unlisted: session:s
-	listErr      error                  // ListBlocks fails
-	tabs         map[string]string      // window -> tab label
-	cwd          string                 // the foreground process's directory
-	titles       map[string]string      // block -> terminal title
-	fgs          map[string]rex.Process // block -> foreground, overriding fgPID
-	renamed      map[string]string      // block -> the last label set on it
-	renamedTabs  []string               // "window=label", in order
-	rows         map[string]int         // block -> rows (the watchdog's size reads); unlisted: 80x24
-	renderedRows int                    // rows a tiny block gets once its window is shown
-	active       string                 // the session's active window
-	moves        []string               // "block->window", in order
-	selects      []string               // windows the app was asked to show, in order
-	closed       []string
-	newTabs      []string
-	selectErr    map[string]error // window -> SelectView fails
-	noClients    bool             // AppClients finds no app
+	mu            sync.Mutex
+	gone          bool
+	fgPID         int
+	state         string // "" means no program status record
+	box           string
+	submit        bool // a written doorbell is submitted: box stays empty, state becomes working
+	statusErr     bool // ProgramStatus fails after the first write
+	writes        []string
+	keys          []string
+	label         string                 // the block label; "" reads as Rex's default
+	windows       map[string]string      // block -> window; nil: none known
+	sessions      map[string]string      // window -> session; unlisted: session:s
+	listErr       error                  // ListBlocks fails
+	tabs          map[string]string      // window -> tab label
+	cwd           string                 // the foreground process's directory
+	titles        map[string]string      // block -> terminal title
+	fgs           map[string]rex.Process // block -> foreground, overriding fgPID
+	renamed       map[string]string      // block -> the last label set on it
+	renamedTabs   []string               // "window=label", in order
+	rows          map[string]int         // block -> rows (the watchdog's size reads); unlisted: 80x24
+	cols          map[string]int         // block -> columns; unlisted: 84 when rows is set, else 80
+	owner         map[string]string      // block -> owning client; a detach clears it
+	detached      map[string]bool
+	resizeIgnored bool     // the terminal keeps its size after a resize (an owned one would)
+	moves         []string // "block->window", in order
+	detaches      []string
+	resizes       []string // "block:colsxrows"
+	moveErr       error    // MoveBlock fails
+	closed        []string
+	newTabs       []string
 }
 
 func (f *fakeTerm) Whoami(context.Context) (rex.Server, error) {
@@ -120,9 +123,12 @@ func (f *fakeTerm) InspectBlock(_ context.Context, id string) (rex.Block, error)
 	if label == "" {
 		label = "shell"
 	}
-	b := rex.Block{ID: id, Label: label}
+	b := rex.Block{ID: id, Label: label, Placement: "placed"}
 	if w, ok := f.windows[id]; ok {
 		b.WindowID, b.SessionID = w, f.sessionOf(w)
+		if w == "" {
+			b.Placement, b.SessionID = "detached", "session:s"
+		}
 	}
 	return b, nil
 }
@@ -568,15 +574,46 @@ func (f *fakeTerm) Size(_ context.Context, block string) (rex.Size, error) {
 		return rex.Size{}, rex.ErrNotFound
 	}
 	if r, ok := f.rows[block]; ok {
-		return rex.Size{Columns: 84, Rows: r, Owner: "client:app"}, nil
+		c := f.cols[block]
+		if c == 0 {
+			c = 84
+		}
+		return rex.Size{Columns: c, Rows: r, Owner: f.owner[block]}, nil
 	}
-	return rex.Size{Columns: 80, Rows: 24}, nil
+	return rex.Size{Columns: 80, Rows: 24, Owner: f.owner[block]}, nil
 }
 
-func (f *fakeTerm) ActiveWindow(_ context.Context, session string) (string, error) {
+func (f *fakeTerm) DetachBlock(_ context.Context, session, block string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.active, nil
+	if _, ok := f.windows[block]; !ok {
+		return rex.ErrNotFound
+	}
+	f.windows[block] = ""
+	if f.detached == nil {
+		f.detached = map[string]bool{}
+	}
+	f.detached[block] = true
+	delete(f.owner, block)
+	f.detaches = append(f.detaches, block)
+	return nil
+}
+
+func (f *fakeTerm) ResizeBlock(_ context.Context, block string, columns, rows int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.resizes = append(f.resizes, fmt.Sprintf("%s:%dx%d", block, columns, rows))
+	if f.resizeIgnored || f.owner[block] != "" {
+		return nil
+	}
+	if f.rows == nil {
+		f.rows = map[string]int{}
+	}
+	if f.cols == nil {
+		f.cols = map[string]int{}
+	}
+	f.rows[block], f.cols[block] = rows, columns
+	return nil
 }
 
 func (f *fakeTerm) NewTab(_ context.Context, session, label string) (string, string, error) {
@@ -595,11 +632,15 @@ func (f *fakeTerm) NewTab(_ context.Context, session, label string) (string, str
 func (f *fakeTerm) MoveBlock(_ context.Context, session, block, anchor string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.moveErr != nil {
+		return f.moveErr
+	}
 	w, ok := f.windows[anchor]
 	if !ok {
 		return rex.ErrNotFound
 	}
 	f.windows[block] = w
+	delete(f.detached, block)
 	f.moves = append(f.moves, block+"->"+w)
 	return nil
 }
@@ -609,33 +650,5 @@ func (f *fakeTerm) CloseBlock(_ context.Context, block string) error {
 	defer f.mu.Unlock()
 	delete(f.windows, block)
 	f.closed = append(f.closed, block)
-	return nil
-}
-
-func (f *fakeTerm) AppClients(context.Context, string) ([]string, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.noClients {
-		return nil, nil
-	}
-	return []string{"client:app"}, nil
-}
-
-func (f *fakeTerm) SelectView(_ context.Context, client, session, window string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.selects = append(f.selects, window)
-	if err := f.selectErr[window]; err != nil {
-		return err
-	}
-	f.active = window
-	// Showing a window lays its blocks out: every block in it gets a full size.
-	for b, w := range f.windows {
-		if w == window && f.rows != nil {
-			if _, tiny := f.rows[b]; tiny {
-				f.rows[b] = f.renderedRows
-			}
-		}
-	}
 	return nil
 }
