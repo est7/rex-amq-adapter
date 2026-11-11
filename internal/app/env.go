@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
+	"github.com/est7/rex-amq-adapter/internal/core"
 	"github.com/est7/rex-amq-adapter/internal/crew"
 	"github.com/est7/rex-amq-adapter/internal/rex"
 	"github.com/est7/rex-amq-adapter/internal/store"
@@ -70,7 +71,13 @@ type Env struct {
 	// AgyBrainDir is Antigravity's conversation store, where a conversation
 	// lists the subagents it started; "" knows of none.
 	AgyBrainDir string
+	// Getenv reads the harnesses' directory overrides (core.HarnessDirs);
+	// nil reads none, so a test's directories stay under TranscriptHome.
+	Getenv func(string) string
 }
+
+// harnessDirs is where each harness keeps its files, under TranscriptHome.
+func (e Env) harnessDirs() core.Dirs { return core.HarnessDirs(e.TranscriptHome, e.Getenv) }
 
 // NewEnv resolves binaries and state paths. server is the Rex address to
 // talk to; "" means rex's default (REX_SERVER in a Rex terminal).
@@ -96,6 +103,12 @@ func NewEnvAt(server string, paths store.Paths) (Env, error) {
 	if err != nil {
 		return Env{}, err
 	}
+	home := userHome()
+	dirs := core.HarnessDirs(home, os.Getenv)
+	agyBrain := ""
+	if dirs.AgyCLI != "" {
+		agyBrain = filepath.Join(dirs.AgyCLI, "brain")
+	}
 	return Env{
 		Paths:          paths,
 		Store:          store.Store{P: paths},
@@ -105,37 +118,16 @@ func NewEnvAt(server string, paths store.Paths) (Env, error) {
 		AmqBin:         amqBin,
 		SelfBin:        self,
 		Now:            time.Now,
-		TranscriptHome: userHome(),
-		ClaudeDir:      claudeDir(),
-		AgyBrainDir:    agyBrainDir(),
+		TranscriptHome: home,
+		Getenv:         os.Getenv,
+		ClaudeDir:      dirs.Claude,
+		AgyBrainDir:    agyBrain,
 	}, nil
 }
 
 func userHome() string {
 	h, _ := os.UserHomeDir()
 	return h
-}
-
-// agyBrainDir is Antigravity's conversation store.
-func agyBrainDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".gemini", "antigravity-cli", "brain")
-}
-
-// claudeDir is Claude Code's configuration directory: CLAUDE_CONFIG_DIR, else
-// ~/.claude.
-func claudeDir() string {
-	if d := os.Getenv("CLAUDE_CONFIG_DIR"); d != "" {
-		return d
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".claude")
 }
 
 // EnvCommand is what agents run to load their identity.

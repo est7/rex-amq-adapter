@@ -21,7 +21,7 @@ import (
 // it decides what they mean. Each finding is told once (store.HealthMark).
 
 func (e Env) health(ctx context.Context, orch store.Record, s Session, rec store.Record) error {
-	tail, ok, err := transcript.Read(ctx, e.TranscriptHome, rec.Kind, rec.AgentSessionID, core.TailRows)
+	tail, ok, err := transcript.Read(ctx, e.harnessDirs(), rec.Kind, rec.AgentSessionID, core.TailRows)
 	if err != nil || !ok {
 		return err
 	}
@@ -111,7 +111,7 @@ func (e Env) readHookTail(ctx context.Context, kind core.Kind, in HookInput, rec
 	if sid == "" {
 		sid = rec.AgentSessionID
 	}
-	t, ok, err := transcript.Read(ctx, e.TranscriptHome, kind, sid, core.TailRows)
+	t, ok, err := transcript.Read(ctx, e.harnessDirs(), kind, sid, core.TailRows)
 	if err != nil {
 		return core.Tail{}, false
 	}

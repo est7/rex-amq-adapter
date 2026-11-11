@@ -37,24 +37,24 @@ type Agent struct {
 
 const skillName = "rex-amq-adapter"
 
-// Agents resolves each harness's paths, honouring CLAUDE_CONFIG_DIR and
-// CODEX_HOME. only limits the result when non-empty.
+// Agents resolves each harness's paths, honouring CLAUDE_CONFIG_DIR,
+// CODEX_HOME and PI_CODING_AGENT_DIR (core.HarnessDirs). only limits the
+// result when non-empty.
 func Agents(only []core.Kind) ([]Agent, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, err
 	}
-	claudeDir := envOr("CLAUDE_CONFIG_DIR", filepath.Join(home, ".claude"))
-	codexDir := envOr("CODEX_HOME", filepath.Join(home, ".codex"))
+	dirs := core.HarnessDirs(home, os.Getenv)
+	claudeDir, codexDir, piDir := dirs.Claude, dirs.Codex, dirs.Pi
 	agyDir := filepath.Join(home, ".gemini", "config") // Antigravity's global configuration
-	piDir := envOr("PI_CODING_AGENT_DIR", filepath.Join(home, ".pi", "agent"))
 	all := []Agent{
 		{Kind: core.Claude, Name: "Claude Code", SkillDir: filepath.Join(claudeDir, "skills", skillName), HookFile: filepath.Join(claudeDir, "settings.json"),
 			SupervisorFile: filepath.Join(claudeDir, "settings.json"), Found: exists(claudeDir) || onPath("claude")},
 		{Kind: core.Codex, Name: "Codex", SkillDir: filepath.Join(home, ".agents", "skills", skillName), HookFile: filepath.Join(codexDir, "hooks.json"),
 			SupervisorFile: filepath.Join(codexDir, "config.toml"), Found: exists(codexDir) || onPath("codex")},
 		{Kind: core.Agy, Name: "Antigravity", SkillDir: filepath.Join(agyDir, "skills", skillName), HookFile: filepath.Join(agyDir, "hooks.json"),
-			TitleFile: filepath.Join(home, ".gemini", "antigravity-cli", "settings.json"), Found: exists(agyDir) || onPath("agy")},
+			TitleFile: filepath.Join(dirs.AgyCLI, "settings.json"), Found: exists(agyDir) || onPath("agy")},
 		// Pi reads the Agent Skills directory it shares with Codex; its "hook"
 		// is an extension file.
 		{Kind: core.Pi, Name: "Pi", SkillDir: filepath.Join(home, ".agents", "skills", skillName), HookFile: filepath.Join(piDir, "extensions", skillName+".js"), Found: exists(piDir) || onPath("pi")},
@@ -71,13 +71,6 @@ func Agents(only []core.Kind) ([]Agent, error) {
 		}
 	}
 	return out, nil
-}
-
-func envOr(k, def string) string {
-	if v := os.Getenv(k); v != "" {
-		return v
-	}
-	return def
 }
 
 func exists(p string) bool { _, err := os.Stat(p); return err == nil }

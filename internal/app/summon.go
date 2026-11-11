@@ -262,7 +262,7 @@ func newToken() (string, error) {
 func (e Env) resume(ctx context.Context, caller store.Record, s Session, r SummonRequest, departed store.Record, res SummonResult) (SummonResult, error) {
 	cwd := departed.Cwd
 	if cwd == "" {
-		cwd = transcript.Cwd(ctx, e.TranscriptHome, departed.Kind, departed.AgentSessionID)
+		cwd = transcript.Cwd(ctx, e.harnessDirs(), departed.Kind, departed.AgentSessionID)
 	}
 	if cwd == "" {
 		_ = e.Store.DeleteSummon(res.Token)

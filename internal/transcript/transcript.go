@@ -3,9 +3,11 @@
 // only the harness's own fields (an error flag, a tool call id, a
 // timestamp) are read, so the main agent can judge the rows itself.
 //
-// Claude Code: ~/.claude/projects/<slug>/<session>.jsonl. Codex:
-// ~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<thread>.jsonl. pi:
-// ~/.pi/agent/sessions/<slug>/<ts>_<session>.jsonl. Antigravity:
+// Each path is under its harness's directory (core.Dirs), which honors the
+// override variables: Claude Code <CLAUDE_CONFIG_DIR or ~/.claude>/projects/
+// <slug>/<session>.jsonl. Codex <CODEX_HOME or ~/.codex>/sessions/YYYY/MM/DD/
+// rollout-<ts>-<thread>.jsonl. pi <PI_CODING_AGENT_DIR or ~/.pi/agent>/
+// sessions/<slug>/<ts>_<session>.jsonl. Antigravity
 // ~/.gemini/antigravity-cli/conversations/<conversation>.db, read with the
 // sqlite3 command.
 package transcript
@@ -31,22 +33,45 @@ import (
 const tailBytes = 512 * 1024
 
 // Read returns the last k rows of the transcript of session for an agent of
-// kind, under home. ok is false when no transcript is found.
-func Read(ctx context.Context, home string, kind core.Kind, session string, k int) (core.Tail, bool, error) {
-	if session == "" {
+// kind, under dirs. ok is false when no transcript is found.
+func Read(ctx context.Context, dirs core.Dirs, kind core.Kind, session string, k int) (core.Tail, bool, error) {
+	glob := pattern(dirs, kind, session)
+	if session == "" || glob == "" {
 		return core.Tail{}, false, nil
 	}
 	switch kind {
 	case core.Claude:
-		return readJSONL(filepath.Join(home, ".claude", "projects", "*", session+".jsonl"), k, claudeRow)
+		return readJSONL(glob, k, claudeRow)
 	case core.Codex:
-		return readJSONL(filepath.Join(home, ".codex", "sessions", "*", "*", "*", "rollout-*-"+session+".jsonl"), k, codexRow)
+		return readJSONL(glob, k, codexRow)
 	case core.Pi:
-		return readJSONL(filepath.Join(home, ".pi", "agent", "sessions", "*", "*_"+session+".jsonl"), k, piRow)
+		return readJSONL(glob, k, piRow)
 	case core.Agy:
-		return readAgy(ctx, filepath.Join(home, ".gemini", "antigravity-cli", "conversations", session+".db"), k)
+		return readAgy(ctx, glob, k)
 	}
 	return core.Tail{}, false, nil
+}
+
+// pattern is the glob of session's transcript for kind under dirs; "" when
+// the kind keeps none there or its directory is unknown. Antigravity's is an
+// exact file path.
+func pattern(dirs core.Dirs, kind core.Kind, session string) string {
+	var base string
+	var elem []string
+	switch kind {
+	case core.Claude:
+		base, elem = dirs.Claude, []string{"projects", "*", session + ".jsonl"}
+	case core.Codex:
+		base, elem = dirs.Codex, []string{"sessions", "*", "*", "*", "rollout-*-" + session + ".jsonl"}
+	case core.Pi:
+		base, elem = dirs.Pi, []string{"sessions", "*", "*_" + session + ".jsonl"}
+	case core.Agy:
+		base, elem = dirs.AgyCLI, []string{"conversations", session + ".db"}
+	}
+	if base == "" {
+		return ""
+	}
+	return filepath.Join(append([]string{base}, elem...)...)
 }
 
 // ReadPath returns the last k rows of a specific transcript file path for an
@@ -414,21 +439,21 @@ func hexDecode(s string) ([]byte, error) {
 
 // Cwd is the working directory the transcript of session names: Claude rows
 // carry cwd, Codex's session_meta does; pi and Antigravity name none here.
-// home "" is the user's.
-func Cwd(ctx context.Context, home string, kind core.Kind, session string) string {
-	if home == "" {
-		home, _ = os.UserHomeDir()
-	}
-	var pattern, key string
+func Cwd(ctx context.Context, dirs core.Dirs, kind core.Kind, session string) string {
+	var key string
 	switch kind {
 	case core.Claude:
-		pattern, key = filepath.Join(home, ".claude", "projects", "*", session+".jsonl"), "cwd"
+		key = "cwd"
 	case core.Codex:
-		pattern, key = filepath.Join(home, ".codex", "sessions", "*", "*", "*", "rollout-*-"+session+".jsonl"), "session_meta"
+		key = "session_meta"
 	default:
 		return ""
 	}
-	matches, err := filepath.Glob(pattern)
+	glob := pattern(dirs, kind, session)
+	if glob == "" {
+		return ""
+	}
+	matches, err := filepath.Glob(glob)
 	if err != nil || len(matches) == 0 {
 		return ""
 	}

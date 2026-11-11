@@ -33,7 +33,7 @@ func TestClaudeTail(t *testing.T) {
 {"type":"user","uuid":"u4","timestamp":"2026-11-10T02:03:00.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","is_error":true,"content":"boom"}]}}
 {"type":"api-request","uuid":"a1"}
 `)
-	tail, ok, err := Read(context.Background(), home, core.Claude, "sid-1", 3)
+	tail, ok, err := Read(context.Background(), core.HarnessDirs(home, nil), core.Claude, "sid-1", 3)
 	if err != nil || !ok {
 		t.Fatal(ok, err)
 	}
@@ -46,7 +46,7 @@ func TestClaudeTail(t *testing.T) {
 	if want := time.Date(2026, 11, 10, 2, 3, 0, 0, time.UTC); !tail.LastAt.Equal(want) && tail.LastAt.Before(want) {
 		t.Fatalf("last at %v", tail.LastAt)
 	}
-	if _, ok, _ := Read(context.Background(), home, core.Claude, "nope", 3); ok {
+	if _, ok, _ := Read(context.Background(), core.HarnessDirs(home, nil), core.Claude, "nope", 3); ok {
 		t.Fatal("found a transcript that does not exist")
 	}
 }
@@ -62,7 +62,7 @@ func TestCodexTail(t *testing.T) {
 {"timestamp":"2026-11-10T02:00:04.000Z","ordinal":4,"type":"response_item","payload":{"type":"function_call","call_id":"call_2","name":"spawn","arguments":"{}"}}
 {"timestamp":"2026-11-10T02:00:05.000Z","ordinal":5,"type":"event_msg","payload":{"type":"error","message":"stream disconnected"}}
 `)
-	tail, ok, err := Read(context.Background(), home, core.Codex, "thread-1", 10)
+	tail, ok, err := Read(context.Background(), core.HarnessDirs(home, nil), core.Codex, "thread-1", 10)
 	if err != nil || !ok {
 		t.Fatal(ok, err)
 	}
@@ -86,7 +86,7 @@ func TestPiTail(t *testing.T) {
 {"type":"message","id":"m2","timestamp":"2026-11-10T02:00:01.000Z","message":{"role":"assistant","stopReason":"toolUse","content":[{"type":"toolCall","id":"tc_1","name":"bash"}]}}
 {"type":"message","id":"m3","timestamp":"2026-11-10T02:00:02.000Z","message":{"role":"toolResult","toolCallId":"tc_1","isError":true,"content":[{"type":"text","text":"exit 1"}]}}
 `)
-	tail, ok, err := Read(context.Background(), home, core.Pi, "sid-9", 10)
+	tail, ok, err := Read(context.Background(), core.HarnessDirs(home, nil), core.Pi, "sid-9", 10)
 	if err != nil || !ok || len(tail.Rows) != 4 {
 		t.Fatalf("%v %v %+v", ok, err, tail.Rows)
 	}
@@ -114,7 +114,7 @@ func TestAgyTail(t *testing.T) {
 	if out, err := exec.Command("sqlite3", db, sql).CombinedOutput(); err != nil {
 		t.Fatalf("%v %s", err, out)
 	}
-	tail, ok, err := Read(context.Background(), home, core.Agy, "conv-1", 2)
+	tail, ok, err := Read(context.Background(), core.HarnessDirs(home, nil), core.Agy, "conv-1", 2)
 	if err != nil || !ok || len(tail.Rows) != 2 {
 		t.Fatalf("%v %v %+v", ok, err, tail.Rows)
 	}
@@ -148,7 +148,7 @@ func TestPendingCallsKeepTheirPairing(t *testing.T) {
 		rows = append(rows, `{"type":"assistant","uuid":"m`+string(rune('a'+i))+`","timestamp":"2026-11-10T01:01:00.000Z","message":{"role":"assistant","content":[{"type":"text","text":"chatter"}]}}`)
 	}
 	write(t, filepath.Join(home, ".claude/projects/-Users-x--app/sid-2.jsonl"), strings.Join(rows, "\n")+"\n")
-	tail, ok, err := Read(context.Background(), home, core.Claude, "sid-2", 8)
+	tail, ok, err := Read(context.Background(), core.HarnessDirs(home, nil), core.Claude, "sid-2", 8)
 	if err != nil || !ok || len(tail.Rows) != 8 {
 		t.Fatalf("%v %v %d rows", ok, err, len(tail.Rows))
 	}
@@ -182,7 +182,7 @@ func TestAgyActivityFollowsTheWAL(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	tail, ok, err := Read(context.Background(), home, core.Agy, "conv-2", 2)
+	tail, ok, err := Read(context.Background(), core.HarnessDirs(home, nil), core.Agy, "conv-2", 2)
 	if err != nil || !ok {
 		t.Fatal(ok, err)
 	}
@@ -203,7 +203,7 @@ func TestCodexTaskCompleteErrorRow(t *testing.T) {
 	write(t, path, `{"timestamp":"2026-11-10T02:00:00.000Z","ordinal":1,"type":"event_msg","payload":{"type":"task_complete","turn_id":"t0","error":null}}
 {"timestamp":"2026-11-10T02:00:05.000Z","ordinal":2,"type":"event_msg","payload":{"type":"task_complete","turn_id":"t1","error":{"message":"stream disconnected before completion: Codex: Bad Request"}}}
 `)
-	tail, ok, err := Read(context.Background(), home, core.Codex, "thread-tc", 10)
+	tail, ok, err := Read(context.Background(), core.HarnessDirs(home, nil), core.Codex, "thread-tc", 10)
 	if err != nil || !ok {
 		t.Fatalf("ok=%v err=%v", ok, err)
 	}
@@ -267,7 +267,7 @@ func TestAgyStepErrorIsToolResultNotTurnError(t *testing.T) {
 	if out, err := exec.Command("sqlite3", db, sql).CombinedOutput(); err != nil {
 		t.Fatalf("%v %s", err, out)
 	}
-	tail, ok, err := Read(context.Background(), home, core.Agy, "conv-s2b", 3)
+	tail, ok, err := Read(context.Background(), core.HarnessDirs(home, nil), core.Agy, "conv-s2b", 3)
 	if err != nil || !ok || len(tail.Rows) != 3 {
 		t.Fatalf("ok=%v err=%v rows=%+v", ok, err, tail.Rows)
 	}
@@ -284,5 +284,57 @@ func TestAgyStepErrorIsToolResultNotTurnError(t *testing.T) {
 	_, body := core.HealthNotice(core.Peer{Handle: "agy-01", Kind: core.Agy}, core.NoticeStalled, withTurn, h, nil, now)
 	if !strings.Contains(body, "tool_result [error]: step status 7 file does not exist") {
 		t.Fatalf("HealthNotice missing [error] mark for agy step:\n%s", body)
+	}
+}
+
+// Claude Code's transcripts live under CLAUDE_CONFIG_DIR when it is set.
+func TestReadFollowsTheClaudeConfigDir(t *testing.T) {
+	tmp := t.TempDir()
+	home, cfg := filepath.Join(tmp, "home"), filepath.Join(tmp, "cfg")
+	write(t, filepath.Join(cfg, "projects/-x/sid-o.jsonl"), `{"type":"assistant","uuid":"u1","timestamp":"2026-11-10T02:00:00.000Z","message":{"role":"assistant","content":[{"type":"text","text":"hello"}]}}
+`)
+	getenv := func(k string) string {
+		if k == "CLAUDE_CONFIG_DIR" {
+			return cfg
+		}
+		return ""
+	}
+	if _, ok, err := Read(context.Background(), core.HarnessDirs(home, getenv), core.Claude, "sid-o", 3); err != nil || !ok {
+		t.Fatalf("not found under CLAUDE_CONFIG_DIR: ok %v err %v", ok, err)
+	}
+	if _, ok, err := Read(context.Background(), core.HarnessDirs(home, nil), core.Claude, "sid-o", 3); err != nil || ok {
+		t.Fatalf("found under the home default, where nothing is: ok %v err %v", ok, err)
+	}
+}
+
+// A Codex resume directory is read from CODEX_HOME when it is set.
+func TestCwdFollowsCodexHome(t *testing.T) {
+	tmp := t.TempDir()
+	home, codexHome := filepath.Join(tmp, "home"), filepath.Join(tmp, "codexhome")
+	write(t, filepath.Join(codexHome, "sessions/2026/11/10/rollout-2026-11-10T02-00-00-t-o.jsonl"), `{"type":"session_meta","payload":{"id":"t-o","cwd":"/work/o"}}
+`)
+	getenv := func(k string) string {
+		if k == "CODEX_HOME" {
+			return codexHome
+		}
+		return ""
+	}
+	if got := Cwd(context.Background(), core.HarnessDirs(home, getenv), core.Codex, "t-o"); got != "/work/o" {
+		t.Fatalf("Cwd under CODEX_HOME = %q, want /work/o", got)
+	}
+	if got := Cwd(context.Background(), core.HarnessDirs(home, nil), core.Codex, "t-o"); got != "" {
+		t.Fatalf("Cwd under the home default = %q, want none", got)
+	}
+}
+
+// Unknown directories find nothing: an empty base is never the current
+// directory.
+func TestReadWithUnknownDirsFindsNothing(t *testing.T) {
+	cwd := t.TempDir()
+	write(t, filepath.Join(cwd, "projects/x/sid.jsonl"), `{"type":"assistant","uuid":"u1","timestamp":"2026-11-10T02:00:00.000Z","message":{"role":"assistant","content":[{"type":"text","text":"hello"}]}}
+`)
+	t.Chdir(cwd)
+	if _, ok, err := Read(context.Background(), core.Dirs{}, core.Claude, "sid", 3); ok || err != nil {
+		t.Fatalf("ok %v err %v, want nothing found", ok, err)
 	}
 }
