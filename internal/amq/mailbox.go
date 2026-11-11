@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -39,7 +40,15 @@ type Header struct {
 	Thread  string    `json:"thread"`
 	Subject string    `json:"subject"`
 	Created time.Time `json:"created"`
+	Labels  []string  `json:"labels"`
 }
+
+// SystemLabel marks mail the adapter sends in an agent's name (a report, a
+// notice): the agent did not write it, so it is never bounced to it.
+const SystemLabel = "rex-amq-adapter"
+
+// System reports whether the adapter sent the message.
+func (h Header) System() bool { return slices.Contains(h.Labels, SystemLabel) }
 
 // maxHeader bounds how much of a message is read for its header.
 const maxHeader = 64 << 10

@@ -124,3 +124,39 @@ func TestSendIgnoresAnInheritedRoot(t *testing.T) {
 		t.Fatalf("delivered to %v (%v), want one message in the named root", ids, err)
 	}
 }
+
+// System mail carries the adapter's label in its sent header; an agent's own
+// mail does not.
+func TestSendSystemLabelsTheMessage(t *testing.T) {
+	bin, err := ResolveBin()
+	if err != nil {
+		t.Skip("amq is not installed")
+	}
+	ctx := context.Background()
+	root := t.TempDir()
+	for _, h := range []string{"a", "b"} {
+		if err := EnsureMailbox(ctx, bin, root, h); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := SendSystem(ctx, bin, root, "a", "b", "watchdog: x", "body"); err != nil {
+		t.Fatal(err)
+	}
+	ids, err := SentAfter(root, "a", "")
+	if err != nil || len(ids) != 1 {
+		t.Fatalf("sent %v (%v), want one", ids, err)
+	}
+	if h, err := SentHeader(root, "a", ids[0]); err != nil || !h.System() {
+		t.Fatalf("system mail header %+v (%v): not labelled", h, err)
+	}
+	if err := Send(ctx, bin, root, "a", "b", "s", "x"); err != nil {
+		t.Fatal(err)
+	}
+	ids, err = SentAfter(root, "a", ids[0])
+	if err != nil || len(ids) != 1 {
+		t.Fatalf("sent after %v (%v), want one", ids, err)
+	}
+	if h, err := SentHeader(root, "a", ids[0]); err != nil || h.System() {
+		t.Fatalf("agent mail header %+v (%v): labelled as system", h, err)
+	}
+}

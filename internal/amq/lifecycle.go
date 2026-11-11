@@ -270,19 +270,9 @@ func SentAt(root, handle, id string) (time.Time, error) {
 	return st.ModTime(), nil
 }
 
-// Recipients reads who a message handle sent was addressed to.
-func Recipients(root, handle, id string) ([]string, error) {
-	b, err := os.ReadFile(filepath.Join(outbox(root, handle), id+".md"))
-	if err != nil {
-		return nil, err
-	}
-	return parseRecipients(b)
-}
-
-// parseRecipients reads who a message is addressed to.
-func parseRecipients(b []byte) ([]string, error) {
-	h, err := parseHeader(b)
-	return h.To, err
+// SentHeader reads the header of message id in handle's outbox.
+func SentHeader(root, handle, id string) (Header, error) {
+	return ReadHeader(root, handle, BoxSent, id)
 }
 
 func messageIDs(dir string) ([]string, error) {
@@ -322,6 +312,13 @@ func ResolveBin() (string, error) {
 // Send mails body to to, as from, as a status notice.
 func Send(ctx context.Context, amqBin, root, from, to, subject, body string) error {
 	return SendKind(ctx, amqBin, root, from, to, "status", subject, body)
+}
+
+// SendSystem mails body to to, in from's name, as system mail: labelled
+// SystemLabel, so the bounce check never reads it as from's own.
+func SendSystem(ctx context.Context, amqBin, root, from, to, subject, body string) error {
+	_, err := runAmq(ctx, amqBin, "send", "--root", root, "--me", from, "--to", to, "--kind", "status", "--priority", "normal", "--labels", SystemLabel, "--subject", subject, "--body", body)
+	return err
 }
 
 // SendKind mails body to to, as from, with an amq message kind.

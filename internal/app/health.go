@@ -77,10 +77,9 @@ func (e Env) healthNotice(ctx context.Context, orch store.Record, s Session, rec
 	if to != orch.Handle {
 		body += "\n\nSent to you because the finding is about the orchestrator " + string(orch.Handle) + " itself."
 	}
-	if err := amq.Send(ctx, e.AmqBin, e.Paths.Root(), string(rec.Handle), string(to), subject, body); err != nil {
+	if err := e.sendSystem(ctx, rec.Handle, to, subject, body); err != nil {
 		return err
 	}
-	e.seedSentCursor(rec.Handle)
 	e.wdLog(orch, rec, "notice", "", fmt.Sprintf("%s -> %s (%d rows)", code, to, len(tail.Rows)))
 	return nil
 }
@@ -216,11 +215,10 @@ func (e Env) reportTurnError(ctx context.Context, kind core.Kind, loc Location, 
 		return nil
 	}
 	subject, body := core.ErrorNotice(peerOf(rec), code, detail, why, tail)
-	if err := amq.Send(ctx, e.AmqBin, e.Paths.Root(), string(rec.Handle), string(to.Handle), subject, body); err != nil {
+	if err := e.sendSystem(ctx, rec.Handle, to.Handle, subject, body); err != nil {
 		e.desktop("rex-amq-adapter", summary+" (mail to "+string(to.Handle)+" failed)")
 		return err
 	}
-	e.seedSentCursor(rec.Handle)
 	return nil
 }
 
@@ -290,6 +288,12 @@ func (e Env) otherFamily(s Session, rec, orch store.Record) (store.Record, bool)
 		}
 	}
 	return store.Record{}, false
+}
+
+// sendSystem mails a report or notice in from's name as system mail
+// (amq.SystemLabel), which the bounce check never reads as from's own.
+func (e Env) sendSystem(ctx context.Context, from, to core.Handle, subject, body string) error {
+	return amq.SendSystem(ctx, e.AmqBin, e.Paths.Root(), string(from), string(to), subject, body)
 }
 
 // desktop reaches the user's desktop through Env.Notify.

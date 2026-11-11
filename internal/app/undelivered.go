@@ -75,7 +75,8 @@ func (e Env) settleRecipients(ctx context.Context, rec store.Record, sent []stri
 		return false
 	}
 	settled := true
-	for _, r := range e.recipients(rec, sent, recs) {
+	mailed, _ := e.recipients(rec, sent, recs)
+	for _, r := range mailed {
 		if !r.Live() {
 			continue
 		}
@@ -88,28 +89,32 @@ func (e Env) settleRecipients(ctx context.Context, rec store.Record, sent []stri
 	return settled
 }
 
-// recipients are the records of the agents mailed in sent, other than rec. A
-// message that cannot be read is reported and skipped, so that it does not hide
-// the rest.
-func (e Env) recipients(rec store.Record, sent []string, recs []store.Record) []store.Record {
-	mailed := map[core.Handle]bool{}
+// recipients are the records of the agents mailed in sent, other than rec,
+// and own, the ids in sent that rec wrote. Mail the adapter sent in rec's
+// name (amq.SystemLabel) is in neither: rec did not write it. A message that
+// cannot be read is reported and skipped, so that it does not hide the rest.
+func (e Env) recipients(rec store.Record, sent []string, recs []store.Record) (mailed []store.Record, own []string) {
+	to := map[core.Handle]bool{}
 	for _, id := range sent {
-		to, err := amq.Recipients(e.Paths.Root(), string(rec.Handle), id)
+		h, err := amq.SentHeader(e.Paths.Root(), string(rec.Handle), id)
 		if err != nil {
 			fmt.Fprintf(Diagnostics, "read %s, sent by %s: %v\n", id, rec.Handle, err)
 			continue
 		}
-		for _, h := range to {
-			mailed[core.Handle(h)] = true
+		if h.System() {
+			continue
+		}
+		own = append(own, id)
+		for _, r := range h.To {
+			to[core.Handle(r)] = true
 		}
 	}
-	var out []store.Record
 	for _, r := range recs {
-		if mailed[r.Handle] && r.Handle != rec.Handle {
-			out = append(out, r)
+		if to[r.Handle] && r.Handle != rec.Handle {
+			mailed = append(mailed, r)
 		}
 	}
-	return out
+	return mailed, own
 }
 
 func (e Env) checkOverdue(rec store.Record, oldest string) bool {
@@ -187,7 +192,8 @@ func (e Env) undeliveredNotice(rec store.Record, sent []string) (string, error) 
 // which for a crash is much later.
 func (e Env) departedRecipients(rec store.Record, sent []string, recs []store.Record) []store.Record {
 	var missed []store.Record
-	for _, r := range e.recipients(rec, sent, recs) {
+	mailed, own := e.recipients(rec, sent, recs)
+	for _, r := range mailed {
 		if r.Live() {
 			continue
 		}
@@ -196,7 +202,7 @@ func (e Env) departedRecipients(rec store.Record, sent []string, recs []store.Re
 			fmt.Fprintf(Diagnostics, "read the inbox of %s: %v\n", r.Handle, err)
 			continue
 		}
-		if slices.ContainsFunc(sent, func(id string) bool { return slices.Contains(unread, id) }) {
+		if slices.ContainsFunc(own, func(id string) bool { return slices.Contains(unread, id) }) {
 			missed = append(missed, r)
 		}
 	}

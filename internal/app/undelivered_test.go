@@ -552,3 +552,38 @@ func TestPiMailWatcherLeavesTheBounceForTheNextRun(t *testing.T) {
 		t.Fatalf("not told on the next run: %q", r.Notice)
 	}
 }
+
+// Mail the adapter sent in an agent's name is never bounced to that agent,
+// even to a recipient the agent mailed itself before it left.
+func TestSystemMailInAnAgentsNameIsNeverBounced(t *testing.T) {
+	e := realAmqEnv(t, sameWindow("block:a", "block:b"))
+	sender := adoptIn(t, e, "block:a", "s-sender", 0)
+	left := adoptIn(t, e, "block:b", "s-left", 0)
+	sendMail(t, e, sender.Handle, left.Handle)
+	drainMail(t, e, left.Handle)
+	if err := e.sendSystem(context.Background(), sender.Handle, left.Handle, "watchdog: x", "body"); err != nil {
+		t.Fatal(err)
+	}
+	depart(t, e, "block:b", "s-left")
+	if r := afterTool(t, e, sender); strings.Contains(r.Notice, "mail to") {
+		t.Fatalf("bounced mail the adapter sent: %q", r.Notice)
+	}
+}
+
+// System mail in an agent's name does not hide the agent's own mail to an
+// agent that left without reading it.
+func TestSystemMailDoesNotHideAPendingBounce(t *testing.T) {
+	e := realAmqEnv(t, sameWindow("block:a", "block:b", "block:c"))
+	sender := adoptIn(t, e, "block:a", "s-sender", 0)
+	left := adoptIn(t, e, "block:b", "s-left", 0)
+	other := adoptIn(t, e, "block:c", "s-other", 0)
+	sendMail(t, e, sender.Handle, left.Handle)
+	depart(t, e, "block:b", "s-left")
+	if err := e.sendSystem(context.Background(), sender.Handle, other.Handle, "watchdog: x", "body"); err != nil {
+		t.Fatal(err)
+	}
+	r := afterTool(t, e, sender)
+	if !strings.Contains(r.Notice, "mail to "+string(left.Handle)) || strings.Contains(r.Notice, "mail to "+string(other.Handle)) {
+		t.Fatalf("notice %q: want the bounce of the agent's own mail only", r.Notice)
+	}
+}

@@ -555,10 +555,9 @@ func (e Env) report(ctx context.Context, orch store.Record, s Session, rec store
 	if to != orch.Handle {
 		body += "\n\nSent to you because the finding is about the orchestrator " + string(orch.Handle) + " itself."
 	}
-	if err := amq.Send(ctx, e.AmqBin, e.Paths.Root(), string(rec.Handle), string(to), subject, body); err != nil {
+	if err := e.sendSystem(ctx, rec.Handle, to, subject, body); err != nil {
 		return err
 	}
-	e.seedSentCursor(rec.Handle)
 	ep.Reported[code] = e.Now()
 	if err := e.Store.PutEpisode(*ep); err != nil {
 		return err

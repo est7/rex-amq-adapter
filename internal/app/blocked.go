@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/core"
 	"github.com/est7/rex-amq-adapter/internal/screen"
 	"github.com/est7/rex-amq-adapter/internal/store"
@@ -82,17 +81,15 @@ func (e Env) blocked(ctx context.Context, orch store.Record, s Session, rec stor
 	if rec.Handle == orch.Handle {
 		if other, ok := e.otherFamily(s, rec, orch); ok {
 			body += "\n\nSent to you because the orchestrator " + string(orch.Handle) + " is the one waiting and cannot read mail."
-			if err := amq.Send(ctx, e.AmqBin, e.Paths.Root(), string(rec.Handle), string(other.Handle), subject, body); err != nil {
+			if err := e.sendSystem(ctx, rec.Handle, other.Handle, subject, body); err != nil {
 				return err
 			}
-			e.seedSentCursor(rec.Handle)
 		}
 		e.desktop("rex-amq-adapter", "orchestrator "+string(rec.Handle)+" waits on you: "+what)
 	} else {
-		if err := amq.Send(ctx, e.AmqBin, e.Paths.Root(), string(rec.Handle), string(orch.Handle), subject, body); err != nil {
+		if err := e.sendSystem(ctx, rec.Handle, orch.Handle, subject, body); err != nil {
 			return err
 		}
-		e.seedSentCursor(rec.Handle)
 		if strings.Contains(strings.ToLower(what), "permission") {
 			e.desktop("rex-amq-adapter", string(rec.Handle)+" waits on a permission prompt")
 		}
