@@ -14,15 +14,15 @@ import (
 	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
-// The watchdog's third look, at every live agent of an orchestrator session, the goal
-// agent included: one sitting on a prompt only the user can answer, mail
+// The watchdog's third look, at every live agent of an orchestrator session, the
+// orchestrator included: one sitting on a prompt only the user can answer, mail
 // pending or not. It is the one owner of these two shapes (blocked status,
 // trust screen); the undelivered-mail path leaves them to it, so each is
 // reported once and the orchestrator's own is never mailed to itself. The signal is structural (program status blocked, or a trust
 // screen while the agent reports nothing else), held for StuckFor; the
 // notice says so once per episode, and a line lands in logs/blocked.log
-// with the time, so the user finds when the run stopped. A blocked goal
-// agent cannot read mail: another family in the session is told, else the
+// with the time, so the user finds when the run stopped. A blocked
+// orchestrator cannot read mail: another family in the session is told, else the
 // desktop. Zero keys.
 
 func (e Env) blocked(ctx context.Context, orch store.Record, s Session, rec store.Record) error {

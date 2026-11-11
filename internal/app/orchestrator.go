@@ -63,8 +63,8 @@ func (e Env) wakeForDeparture(ctx context.Context, rec store.Record) error {
 }
 
 // ensureOrchestratorWatcher starts the watcher of an orchestrator unless one runs. An
-// agent that departs without a hook leaves nothing to react to, and a goal
-// agent is often idle, so its session needs a process of its own. Hooks call
+// agent that departs without a hook leaves nothing to react to, and an
+// orchestrator is often idle, so its session needs a process of its own. Hooks call
 // this; the watcher ends with its orchestrator.
 func (e Env) ensureOrchestratorWatcher(rec store.Record) error {
 	if rec.Role != core.OrchestratorRole {

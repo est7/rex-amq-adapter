@@ -40,13 +40,15 @@ func TinyPane(columns, rows int) bool {
 // for at least StuckFor deferred with the same code. code is that reason as
 // the injector recorded it (box_not_found, draft_in_box, agent_blocked,
 // trust_screen, …) and since when the run of outcomes began. Reports follow
-// from any code; a move follows only from box_not_found on a tiny pane.
+// from any code; a move follows only from box_not_found on a tiny pane. A run
+// of agent_working is never stuck: a working agent hears of mail through its
+// own hooks and drains it when its step ends.
 func Stuck(history []Attempt, unread int, now time.Time) (code string, since time.Time, ok bool) {
 	if unread == 0 {
 		return "", time.Time{}, false
 	}
 	last, since, ok := lastRun(history)
-	if !ok || last.Progress != Deferred {
+	if !ok || last.Progress != Deferred || last.Code == CodeAgentWorking {
 		return "", time.Time{}, false
 	}
 	return last.Code, since, now.Sub(since) >= StuckFor
@@ -63,8 +65,25 @@ func Delivered(history []Attempt) bool {
 	return len(history) > 0 && history[len(history)-1].Progress == Accepted
 }
 
+// Placement is where an episode last knows its block to be. Only the
+// watchdog's own steps and what it reads back from Rex move it.
+type Placement string
+
+const (
+	// InWindow: the block is where it was; nothing was moved.
+	InWindow Placement = ""
+	// Detached: the block is out of every window. An episode never ends here.
+	Detached Placement = "detached"
+	// InOverflow: the block sits in the session's overflow tab.
+	InOverflow Placement = "overflow"
+	// Theirs: the user placed or moved the block; the watchdog leaves it.
+	Theirs Placement = "user"
+)
+
 // Episode is one block's recovery, persisted before and after each step so a
 // restarted watchdog continues it (or ends it) instead of repeating a move.
+// It belongs to one agent run (Handle and PID): another agent in the block
+// starts its own.
 type Episode struct {
 	ID        string    `json:"id"`
 	Handle    Handle    `json:"handle"`
@@ -72,26 +91,26 @@ type Episode struct {
 	PID       int       `json:"pid"`
 	Session   string    `json:"session"`
 	StartedAt time.Time `json:"started_at"`
-	// Window is where the block was; Overflow the tab it is placed in.
-	Window   string `json:"window,omitempty"`
-	Overflow string `json:"overflow,omitempty"`
-	Columns  int    `json:"columns,omitempty"`
-	Rows     int    `json:"rows,omitempty"`
-	// Detached: the block was taken out of its window; Resized: it was given
-	// RecoverColumns x RecoverRows; Verified: it measured so with an empty
-	// box; Placed: it sits in the overflow tab.
-	Detached bool `json:"detached,omitempty"`
-	Resized  bool `json:"resized,omitempty"`
-	Verified bool `json:"verified,omitempty"`
-	Placed   bool `json:"placed,omitempty"`
-	// Taken: the user put the detached block somewhere else; it is theirs.
-	Taken bool `json:"taken,omitempty"`
-	// Attempts counts layout actions that failed; past MaxAttempts the
+	// Window is where the block was; Overflow the tab chosen for it.
+	Window    string    `json:"window,omitempty"`
+	Overflow  string    `json:"overflow,omitempty"`
+	Placement Placement `json:"placement,omitempty"`
+	// Resized: the block was given RecoverColumns x RecoverRows, which only
+	// a detached block (one nobody renders) takes.
+	Resized bool `json:"resized,omitempty"`
+	// Attempts counts layout actions that failed; at MaxAttempts the
 	// watchdog stops acting and reports.
 	Attempts int `json:"attempts,omitempty"`
 	// Reported holds each report code sent to the orchestrator and when.
 	Reported map[string]time.Time `json:"reported,omitempty"`
-	Outcome  string               `json:"outcome,omitempty"`
+}
+
+// Moved reports whether the watchdog took the block out of its window.
+func (ep Episode) Moved() bool { return ep.Placement != InWindow }
+
+// Of reports whether the episode is the run of handle with process pid.
+func (ep Episode) Of(handle Handle, pid int) bool {
+	return ep.Handle == handle && ep.PID == pid
 }
 
 // Report codes the orchestrator receives.
@@ -101,8 +120,11 @@ const (
 	ReportDraft          = "draft_in_box"
 	ReportBoxNotFound    = "box_not_found"
 	ReportRecoveryFailed = "recovery_failed"
-	ReportMovedByUser    = "moved_by_user"
-	ReportUndelivered    = "undelivered"
+	// ReportPlaceFailed: a detached block could not be placed in a tab; the
+	// watchdog retries every look, apart from the recovery's attempts.
+	ReportPlaceFailed = "place_failed"
+	ReportMovedByUser = "moved_by_user"
+	ReportUndelivered = "undelivered"
 )
 
 // MaxAttempts bounds the layout actions one episode may retry.
@@ -117,18 +139,28 @@ func WatchdogReport(peer Peer, ep Episode, code, detail string, screen []string)
 	if detail != "" {
 		body += " " + detail
 	}
-	body += " It pressed no key."
-	switch {
-	case ep.Placed:
-		body += " It had detached the pane, resized it to " + fmt.Sprintf("%dx%d", RecoverColumns, RecoverRows) + " and placed it in the " + OverflowTab + " tab."
-	case ep.Detached:
-		body += " It had detached the pane from its window" + map[bool]string{true: " and resized it", false: ""}[ep.Resized] + "; it is not placed in a tab yet."
-	default:
-		body += " It moved nothing."
-	}
+	body += " It pressed no key. " + ep.done()
 	body += " The call is yours (the user still decides a dialog that asks for trust or a permission).\n\nLast lines on its screen:\n"
 	for _, l := range screen {
 		body += "  " + l + "\n"
 	}
 	return subject, body
+}
+
+// done says what the watchdog did to the pane so far, from the episode alone.
+func (ep Episode) done() string {
+	size := ""
+	if ep.Resized {
+		size = fmt.Sprintf(", resized it to %dx%d", RecoverColumns, RecoverRows)
+	}
+	switch ep.Placement {
+	case Detached:
+		return "It had detached the pane from its window" + size + "; it is not placed in a tab yet."
+	case InOverflow:
+		return "It had detached the pane" + size + " and placed it in the " + OverflowTab + " tab."
+	case Theirs:
+		return "It had detached the pane" + size + "; the user has placed it since."
+	default:
+		return "It moved nothing."
+	}
 }

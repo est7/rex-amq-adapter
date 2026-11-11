@@ -194,17 +194,6 @@ func (in HookInput) transcript() (string, error) {
 	return *path, nil
 }
 
-// NormalStop reports whether a Stop or settle ends a turn normally.
-// Antigravity also runs Stop when the user cancels, on errors, and at its loop
-// limits; Pi's extension reports outcome "error" or "aborted" on settle (and
-// "completed" on normal completion). Mail must not override an abnormal stop,
-// and an unknown outcome value is treated as normal so future Pi outcomes do
-// not produce false error mail.
-func (in HookInput) NormalStop() bool {
-	return (in.TerminationReason == "" || in.TerminationReason == "NO_TOOL_CALL") &&
-		in.Outcome != "error" && in.Outcome != "aborted"
-}
-
 // ReadHookInput decodes the payload on stdin. An empty stdin is a valid
 // empty payload (a hook run by hand).
 func ReadHookInput(r io.Reader) (HookInput, error) {

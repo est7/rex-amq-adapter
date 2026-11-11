@@ -273,3 +273,42 @@ func BlockedNotice(peer Peer, what string, since time.Time, screen []string, now
 	b.WriteString("End of captured output.")
 	return subject, b.String()
 }
+
+// StopClass is how a turn ended, read from the harness's own reason fields.
+type StopClass int
+
+const (
+	StopNormal StopClass = iota
+	// StopCancelled: the user cancelled the turn; nothing is reported and
+	// mail never overrides it.
+	StopCancelled
+	// StopLimit: a harness limit on the turn (NoticeTurnLimit).
+	StopLimit
+	// StopError: any other abnormal end (NoticeTurnError).
+	StopError
+)
+
+// Antigravity's terminationReason values for a turn that hit a limit.
+var agyTurnLimits = map[string]bool{
+	"MAX_INVOCATIONS":           true,
+	"MAX_TOKEN_BUDGET_EXCEEDED": true,
+	"MAX_FORCED_INVOCATIONS":    true,
+}
+
+// ClassifyStop reads a Stop or settle: Antigravity's terminationReason
+// (NO_TOOL_CALL is its normal end) and Pi's settle outcome (completed,
+// error, aborted). An outcome this does not know ends normally, so a future
+// Pi value never produces error mail; any other terminationReason is an
+// error. Claude Code and Codex send neither field.
+func ClassifyStop(terminationReason, outcome string) StopClass {
+	switch {
+	case terminationReason == "USER_CANCELED" || outcome == "aborted":
+		return StopCancelled
+	case agyTurnLimits[terminationReason]:
+		return StopLimit
+	case terminationReason != "" && terminationReason != "NO_TOOL_CALL", outcome == "error":
+		return StopError
+	default:
+		return StopNormal
+	}
+}

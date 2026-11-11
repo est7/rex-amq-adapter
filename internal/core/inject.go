@@ -42,6 +42,10 @@ type Outcome struct {
 	Note     string   `json:"note,omitempty"`
 }
 
+// CodeAgentWorking is the deferral of a doorbell to a working agent, which
+// its hooks tell about mail in-band instead.
+const CodeAgentWorking = "agent_working"
+
 // ExitCode follows amq's contract: only accepted exits 0. A deferred marker
 // with exit 0 is classified "uncertain", which amq never retries.
 func (o Outcome) ExitCode() int {
@@ -101,7 +105,7 @@ type Readiness struct {
 func DecideWrite(r Readiness) (Outcome, bool) {
 	switch {
 	case r.State == StateWorking:
-		return Outcome{Progress: Deferred, Code: "agent_working", Note: "the agent is working; its hooks announce mail in-band"}, false
+		return Outcome{Progress: Deferred, Code: CodeAgentWorking, Note: "the agent is working; its hooks announce mail in-band"}, false
 	case r.State == StateBlocked:
 		note := "the agent waits on the user"
 		if r.BlockedKind != "" {

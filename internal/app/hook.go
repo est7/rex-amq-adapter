@@ -142,21 +142,17 @@ func normalize(kind core.Kind, in HookInput) HookInput {
 }
 
 func (e Env) abnormalStop(ctx context.Context, kind core.Kind, loc Location, in HookInput) (code, detail string, abnormal bool) {
-	if !in.NormalStop() {
-		switch {
-		case in.TerminationReason == "USER_CANCELED" || in.Outcome == "aborted":
-			return "", "", true
-		case in.TerminationReason == "MAX_INVOCATIONS" || in.TerminationReason == "MAX_TOKEN_BUDGET_EXCEEDED" || in.TerminationReason == "MAX_FORCED_INVOCATIONS":
-			return core.NoticeTurnLimit, joinNotices(in.TerminationReason, in.Error), true
-		case in.TerminationReason != "":
-			return core.NoticeTurnError, joinNotices(in.TerminationReason, in.Error), true
-		default:
-			d := joinNotices(in.ErrorMessage, in.Error)
-			if d == "" {
-				d = in.Outcome
-			}
-			return core.NoticeTurnError, d, true
+	detail = joinNotices(in.TerminationReason, in.ErrorMessage, in.Error)
+	switch core.ClassifyStop(in.TerminationReason, in.Outcome) {
+	case core.StopCancelled:
+		return "", "", true
+	case core.StopLimit:
+		return core.NoticeTurnLimit, detail, true
+	case core.StopError:
+		if detail == "" {
+			detail = in.Outcome
 		}
+		return core.NoticeTurnError, detail, true
 	}
 	if kind == core.Codex {
 		if detail, ok := e.codexTurnError(ctx, loc, in); ok {

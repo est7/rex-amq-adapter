@@ -22,38 +22,41 @@ import (
 // fakeTerm is one Codex terminal. Its input box holds box; a write lands in
 // the box unless the agent submits it (submit), and ctrl+u empties it.
 type fakeTerm struct {
-	mu            sync.Mutex
-	gone          bool
-	fgPID         int
-	state         string // "" means no program status record
-	box           string
-	submit        bool // a written doorbell is submitted: box stays empty, state becomes working
-	statusErr     bool // ProgramStatus fails after the first write
-	writes        []string
-	keys          []string
-	label         string                 // the block label; "" reads as Rex's default
-	windows       map[string]string      // block -> window; nil: none known
-	sessions      map[string]string      // window -> session; unlisted: session:s
-	listErr       error                  // ListBlocks fails
-	tabs          map[string]string      // window -> tab label
-	cwd           string                 // the foreground process's directory
-	titles        map[string]string      // block -> terminal title
-	fgs           map[string]rex.Process // block -> foreground, overriding fgPID
-	renamed       map[string]string      // block -> the last label set on it
-	renamedTabs   []string               // "window=label", in order
-	rows          map[string]int         // block -> rows (the watchdog's size reads); unlisted: 80x24
-	cols          map[string]int         // block -> columns; unlisted: 84 when rows is set, else 80
-	owner         map[string]string      // block -> owning client; a detach clears it
-	detached      map[string]bool
-	resizeIgnored bool     // the terminal keeps its size after a resize (an owned one would)
-	moves         []string // "block->window", in order
-	detaches      []string
-	resizes       []string // "block:colsxrows"
-	moveErr       error    // MoveBlock fails
-	closed        []string
-	newTabs       []string
-	launches      []launch
-	states        map[string]rex.Status // block -> program status, overriding state
+	mu             sync.Mutex
+	gone           bool
+	fgPID          int
+	state          string // "" means no program status record
+	box            string
+	submit         bool // a written doorbell is submitted: box stays empty, state becomes working
+	statusErr      bool // ProgramStatus fails after the first write
+	writes         []string
+	keys           []string
+	label          string                 // the block label; "" reads as Rex's default
+	windows        map[string]string      // block -> window; nil: none known
+	sessions       map[string]string      // window -> session; unlisted: session:s
+	listErr        error                  // ListBlocks fails
+	tabs           map[string]string      // window -> tab label
+	cwd            string                 // the foreground process's directory
+	titles         map[string]string      // block -> terminal title
+	fgs            map[string]rex.Process // block -> foreground, overriding fgPID
+	renamed        map[string]string      // block -> the last label set on it
+	renamedTabs    []string               // "window=label", in order
+	rows           map[string]int         // block -> rows (the watchdog's size reads); unlisted: 80x24
+	cols           map[string]int         // block -> columns; unlisted: 84 when rows is set, else 80
+	owner          map[string]string      // block -> owning client; a detach clears it
+	detached       map[string]bool
+	resizeIgnored  bool     // the terminal keeps its size after a resize (an owned one would)
+	moves          []string // "block->window", in order
+	detaches       []string
+	resizes        []string // "block:colsxrows"
+	moveErr        error    // MoveBlock fails
+	moveTries      int      // MoveBlock calls, failed ones included
+	resizeErr      error    // ResizeBlock fails (after recording the request)
+	boxAfterResize string   // the box a successful resize reveals (a draft a tiny pane hid)
+	closed         []string
+	newTabs        []string
+	launches       []launch
+	states         map[string]rex.Status // block -> program status, overriding state
 }
 
 func (f *fakeTerm) Whoami(context.Context) (rex.Server, error) {
@@ -608,8 +611,14 @@ func (f *fakeTerm) ResizeBlock(_ context.Context, block string, columns, rows in
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.resizes = append(f.resizes, fmt.Sprintf("%s:%dx%d", block, columns, rows))
+	if f.resizeErr != nil {
+		return f.resizeErr
+	}
 	if f.resizeIgnored || f.owner[block] != "" {
 		return nil
+	}
+	if f.boxAfterResize != "" {
+		f.box = f.boxAfterResize
 	}
 	if f.rows == nil {
 		f.rows = map[string]int{}
@@ -637,6 +646,7 @@ func (f *fakeTerm) NewTab(_ context.Context, session, label string) (string, str
 func (f *fakeTerm) MoveBlock(_ context.Context, session, block, anchor string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.moveTries++
 	if f.moveErr != nil {
 		return f.moveErr
 	}

@@ -158,7 +158,7 @@ func TestWatchdogRestartContinuesTheEpisodeWithoutASecondDetach(t *testing.T) {
 	term.detached = map[string]bool{block: true}
 	delete(term.owner, block)
 	term.rows[block], term.cols[block] = 30, 120
-	ep := core.Episode{ID: "codex-old", Handle: "codex", Block: block, PID: term.fgPID, Session: "session:s", StartedAt: e.Now().Add(-time.Minute), Window: "window:1", Detached: true, Resized: true}
+	ep := core.Episode{ID: "codex-old", Handle: "codex", Block: block, PID: term.fgPID, Session: "session:s", StartedAt: e.Now().Add(-time.Minute), Window: "window:1", Placement: core.Detached, Resized: true}
 	if err := e.Store.PutEpisode(ep); err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +207,7 @@ func TestWatchdogReportsAPlacementThatFailedAndRetries(t *testing.T) {
 	if len(term.detaches) != 1 || len(term.writes) != 1 || term.windows[block] != "" {
 		t.Fatalf("%s window %q", acted(term), term.windows[block])
 	}
-	if inbox := goalInbox(t, e); len(inbox) != 1 || reported(t, e)[core.ReportRecoveryFailed].IsZero() {
+	if inbox := goalInbox(t, e); len(inbox) != 1 || reported(t, e)[core.ReportPlaceFailed].IsZero() {
 		t.Fatalf("orchestrator reports: %v, reported %v", inbox, reported(t, e))
 	}
 	e.watchdog(context.Background(), orch, s) // still failing: no second report, no second detach
@@ -251,7 +251,7 @@ func TestWatchdogLeavesAPaneTheUserMoved(t *testing.T) {
 	term.tabs["window:overflow"] = core.OverflowTab
 	term.windows["block:overflow-anchor"] = "window:overflow"
 	term.rows[block] = 24
-	ep := core.Episode{ID: "codex-old", Handle: "codex", Block: block, PID: term.fgPID, Session: "session:s", StartedAt: e.Now().Add(-time.Minute), Window: "window:1", Overflow: "window:overflow", Detached: true, Resized: true, Placed: true}
+	ep := core.Episode{ID: "codex-old", Handle: "codex", Block: block, PID: term.fgPID, Session: "session:s", StartedAt: e.Now().Add(-time.Minute), Window: "window:1", Overflow: "window:overflow", Placement: core.InOverflow, Resized: true}
 	if err := e.Store.PutEpisode(ep); err != nil {
 		t.Fatal(err)
 	}
@@ -295,7 +295,7 @@ func TestWatchdogRestartContinuesBeforeTheResize(t *testing.T) {
 			term.windows[block] = ""
 			term.detached = map[string]bool{block: true}
 			delete(term.owner, block)
-			ep := core.Episode{ID: "before-resize", Handle: "codex", Block: block, PID: term.fgPID, Session: "session:s", StartedAt: e.Now(), Window: "window:1", Detached: journaled}
+			ep := core.Episode{ID: "before-resize", Handle: "codex", Block: block, PID: term.fgPID, Session: "session:s", StartedAt: e.Now(), Window: "window:1", Placement: map[bool]core.Placement{true: core.Detached}[journaled]}
 			if err := e.Store.PutEpisode(ep); err != nil {
 				t.Fatal(err)
 			}
@@ -314,7 +314,7 @@ func TestWatchdogLeavesAManualPlacementAlone(t *testing.T) {
 	term.windows[block] = "window:user-chosen"
 	term.tabs["window:user-chosen"] = "User"
 	term.rows[block] = 24
-	ep := core.Episode{ID: "manual", Handle: "codex", Block: block, PID: term.fgPID, Session: "session:s", StartedAt: e.Now(), Window: "window:1", Overflow: "window:overflow", Detached: true, Resized: true}
+	ep := core.Episode{ID: "manual", Handle: "codex", Block: block, PID: term.fgPID, Session: "session:s", StartedAt: e.Now(), Window: "window:1", Overflow: "window:overflow", Placement: core.Detached, Resized: true}
 	if err := e.Store.PutEpisode(ep); err != nil {
 		t.Fatal(err)
 	}
@@ -326,7 +326,7 @@ func TestWatchdogLeavesAManualPlacementAlone(t *testing.T) {
 	if inbox := goalInbox(t, e); len(inbox) != 1 || reported(t, e)[core.ReportMovedByUser].IsZero() {
 		t.Fatalf("orchestrator reports: %v, reported %v", inbox, reported(t, e))
 	}
-	if cur, _, _ := e.Store.Episode(block); !cur.Taken {
+	if cur, _, _ := e.Store.Episode(block); cur.Placement != core.Theirs {
 		t.Fatalf("episode: %+v", cur)
 	}
 }
