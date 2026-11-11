@@ -124,7 +124,10 @@ func (e Env) readHookTail(ctx context.Context, kind core.Kind, in HookInput, rec
 // the turn is followed by more rows, so only a last row that is the turn's
 // own error counts.
 func (e Env) codexTurnError(ctx context.Context, loc Location, in HookInput) (detail string, ok bool) {
-	rec, _, _ := e.Store.Record(loc.Block)
+	rec, has, _ := e.Store.Record(loc.Block)
+	if has && e.recordFit(core.Codex, rec, in) == foreign {
+		rec = store.Record{} // another agent's rollout is not this hook's
+	}
 	tail, found := e.readHookTail(ctx, core.Codex, in, rec)
 	if !found || len(tail.Rows) == 0 {
 		return "", false
@@ -139,10 +142,15 @@ func (e Env) codexTurnError(ctx context.Context, loc Location, in HookInput) (de
 	return last.Text, true
 }
 
-// clearTurnError ends the agent's error mark when a new turn starts or a turn
-// ends normally, touching disk only when one is set.
-func (e Env) clearTurnError(ctx context.Context, block string) {
+// clearTurnError ends the pane agent's error mark when a new turn of it
+// starts or ends normally, touching disk only when one is set. A hook from
+// another agent (a `claude -p` the pane's agent runs, a Codex thread of a
+// shared daemon) leaves it alone.
+func (e Env) clearTurnError(ctx context.Context, kind core.Kind, block string, in HookInput) {
 	if m, err := e.Store.HealthMark(block); err != nil || m.TurnErroredAt.IsZero() {
+		return
+	}
+	if rec, ok, err := e.Store.Record(block); err != nil || !ok || e.recordFit(kind, rec, in) == foreign {
 		return
 	}
 	unlock, err := e.Store.LockHealth(ctx, block)
@@ -167,9 +175,19 @@ func (e Env) reportTurnError(ctx context.Context, kind core.Kind, loc Location, 
 	if err != nil {
 		return err
 	}
-	if !ok || !rec.Adopted() || rec.Kind != kind || (in.SessionID != "" && rec.AgentSessionID != "" && in.SessionID != rec.AgentSessionID) {
-		if a, adopted, _ := e.adoptUnlessBackingOff(ctx, kind, loc, in, onTurnEnd); adopted {
+	// The pane's agent only, as announce decides it: a hook from another
+	// agent that cannot be adopted here reports nothing in its name.
+	f := own
+	if ok {
+		f = e.recordFit(kind, rec, in)
+	}
+	if !ok || !rec.Adopted() || f != own {
+		a, adopted, _ := e.adoptUnlessBackingOff(ctx, kind, loc, in, onTurnEnd)
+		switch {
+		case adopted:
 			rec, ok = a.Record, true
+		case f == foreign:
+			return nil
 		}
 	}
 	if !ok || !rec.Live() {

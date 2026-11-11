@@ -700,3 +700,101 @@ func TestFirstAdoptedAtPreservedAcrossResumeWhileAdoptedAtUpdates(t *testing.T) 
 		t.Fatalf("after owner resume, ErrorRecipient=(%s, %q, %v), want (%s, \"its tab owner\", true)", got.Handle, why, ok, a1Resumed.Record.Handle)
 	}
 }
+
+// A hook from another agent in the pane (a `claude -p` the pane's agent runs)
+// reports nothing in the pane agent's name and leaves its error mark; the
+// pane agent's own next turn clears it.
+func TestTurnErrorHooksFromAnotherAgentInThePaneAreIgnored(t *testing.T) {
+	e, _, _, _, _, desktop := healthWorld(t)
+	rec := claude04(t, e)
+	term := e.Rex.(*fakeTerm)
+	if term.fgs == nil {
+		term.fgs = map[string]rex.Process{}
+	}
+	term.fgs["block:c"] = rex.Process{PID: 42, Name: "claude"}
+	if err := e.markTurnError(context.Background(), rec); err != nil {
+		t.Fatal(err)
+	}
+	loc := Location{Server: "unix:///fake.sock", Block: "block:c"}
+	nested := HookInput{SessionID: "sid-nested", AgentPID: 99}
+	failure := nested
+	failure.Error = "rate_limit"
+	if _, err := e.Hook(context.Background(), EventStopFailure, core.Claude, loc, failure); err != nil {
+		t.Fatal(err)
+	}
+	if len(inboxOf(t, e, "orch-01")) != 0 || len(inboxOf(t, e, "codex")) != 0 || len(*desktop) != 0 {
+		t.Fatalf("a nested session reported in claude-04's name: orchestrator %v codex %v desktop %v", inboxOf(t, e, "orch-01"), inboxOf(t, e, "codex"), *desktop)
+	}
+	// announce refuses the nested session (not the pane's agent); its error is expected.
+	_, _ = e.Hook(context.Background(), EventPrompt, core.Claude, loc, nested)
+	if !e.flagged(rec) {
+		t.Fatal("a nested session's prompt cleared claude-04's error mark")
+	}
+	if _, err := e.Hook(context.Background(), EventPrompt, core.Claude, loc, HookInput{SessionID: "sid-c4", AgentPID: 42}); err != nil {
+		t.Fatal(err)
+	}
+	if e.flagged(rec) {
+		t.Fatal("claude-04's own prompt left its error mark")
+	}
+}
+
+// Routing through the hook: an orchestrator whose own turn just failed is
+// passed over for another model family; a crew member's lead in its tab comes
+// before the orchestrator; with nobody to tell, the desktop hears.
+func TestTurnErrorRoutingThroughTheHook(t *testing.T) {
+	failure := HookInput{SessionID: "sid-c4", AgentPID: 42, Error: "rate_limit"}
+	loc := Location{Server: "unix:///fake.sock", Block: "block:c"}
+
+	e, _, orch, _, _, desktop := healthWorld(t)
+	claude04(t, e)
+	if err := e.markTurnError(context.Background(), orch); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Hook(context.Background(), EventStopFailure, core.Claude, loc, failure); err != nil {
+		t.Fatal(err)
+	}
+	if len(inboxOf(t, e, "orch-01")) != 0 || len(inboxOf(t, e, "codex")) != 1 || len(*desktop) != 0 {
+		t.Fatalf("flagged orchestrator: orchestrator %v codex %v desktop %v", inboxOf(t, e, "orch-01"), inboxOf(t, e, "codex"), *desktop)
+	}
+	if b := mailBody(t, e, "codex", inboxOf(t, e, "codex")[0]); !strings.Contains(b, "another model family because orch-01 is flagged") {
+		t.Fatalf("codex was not told why:\n%s", b)
+	}
+
+	e2, _, _, _, _, _ := healthWorld(t)
+	e2.Crews = func(string) crew.Library { return crew.Load("") }
+	member := claude04(t, e2)
+	member.Role, member.Crew = "reviewer", "pair"
+	if err := e2.Store.PutRecord(member); err != nil {
+		t.Fatal(err)
+	}
+	lead := store.Record{Handle: "agy-07", Kind: core.Agy, Server: "unix:///fake.sock", BlockID: "block:l", SessionID: "session:s", WindowID: "window:1", AgentPID: 7, Role: "implementer", Crew: "pair", AdoptedAt: e2.Now(), FirstAdoptedAt: e2.Now()}
+	if err := e2.Store.PutRecord(lead); err != nil {
+		t.Fatal(err)
+	}
+	if err := amq.EnsureMailbox(context.Background(), e2.AmqBin, e2.Paths.Root(), "agy-07"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e2.Hook(context.Background(), EventStopFailure, core.Claude, loc, failure); err != nil {
+		t.Fatal(err)
+	}
+	if len(inboxOf(t, e2, "agy-07")) != 1 || len(inboxOf(t, e2, "orch-01")) != 0 {
+		t.Fatalf("crew lead: agy-07 %v orchestrator %v", inboxOf(t, e2, "agy-07"), inboxOf(t, e2, "orch-01"))
+	}
+	if b := mailBody(t, e2, "agy-07", inboxOf(t, e2, "agy-07")[0]); !strings.Contains(b, "its crew lead") {
+		t.Fatalf("agy-07 was not told why:\n%s", b)
+	}
+
+	e3, _, _, _, _, desktop3 := healthWorld(t)
+	claude04(t, e3)
+	for _, h := range []core.Handle{"orch-01", "codex"} {
+		if err := e3.Store.DeleteRecord(h); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := e3.Hook(context.Background(), EventStopFailure, core.Claude, loc, failure); err != nil {
+		t.Fatal(err)
+	}
+	if len(*desktop3) != 1 || !strings.Contains((*desktop3)[0], "claude-04: turn_error") {
+		t.Fatalf("nobody to tell: desktop %v", *desktop3)
+	}
+}
