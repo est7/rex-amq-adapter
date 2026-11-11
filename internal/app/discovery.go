@@ -104,7 +104,15 @@ func (s Session) tab(w string) string {
 // brings the records of s's agents up to date with its layout, and then
 // each follower tab of s to the agent left in it.
 func (e Env) CollectSession(ctx context.Context, s Session) error {
-	return errors.Join(e.followMoves(ctx, s), e.collect(ctx, s.reconciles), e.followTabs(ctx, s))
+	err := errors.Join(e.followMoves(ctx, s), e.collect(ctx, s.reconciles))
+	on := e
+	if e.RexOn != nil && s.server != "" {
+		on.Rex = e.RexOn(s.server)
+	}
+	if fresh, lerr := on.loadSession(ctx, s.server, s.id); lerr == nil {
+		s = fresh
+	}
+	return errors.Join(err, on.followTabs(ctx, s))
 }
 
 // followMoves records the session and window each agent's block is in now. A

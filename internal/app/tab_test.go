@@ -11,6 +11,7 @@ import (
 
 	"github.com/est7/rex-amq-adapter/internal/core"
 	"github.com/est7/rex-amq-adapter/internal/crew"
+	"github.com/est7/rex-amq-adapter/internal/rex"
 	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
@@ -394,5 +395,63 @@ func TestFollowerTabParkUsesTheRecordsServer(t *testing.T) {
 	}
 	if got := tabOf(term, "window:1"); got != string(a) || !slices.Contains(asked, "unix:///fake.sock") {
 		t.Errorf("tab %q, servers asked %v", got, asked)
+	}
+}
+
+type closedBlockTerm struct {
+	Terminal
+	closed string
+}
+
+func (c closedBlockTerm) InspectBlock(ctx context.Context, id string) (rex.Block, error) {
+	if id == c.closed {
+		return rex.Block{}, rex.ErrNotFound
+	}
+	return c.Terminal.InspectBlock(ctx, id)
+}
+
+func (c closedBlockTerm) Foreground(ctx context.Context, id string) (rex.Process, bool, error) {
+	if id == c.closed {
+		return rex.Process{}, false, rex.ErrNotFound
+	}
+	return c.Terminal.Foreground(ctx, id)
+}
+
+// When one of two agents in a follower tab closes its pane without SessionEnd,
+// CollectSession's park renames the tab to the remaining agent; followTabs in
+// the same pass must not read the pre-park snapshot and misclassify the tab as
+// manual.
+func TestFollowerTabStaysAutoWhenCollectParksASharedMate(t *testing.T) {
+	e, term := tabWorld(t, placeholder, "block:b")
+	ctx := context.Background()
+	b, _ := startPi(t, e, "block:b", "s1")
+	if got := tabOf(term, "window:1"); got != string(b) {
+		t.Fatalf("initial tab %q, want %q", got, b)
+	}
+	term.mu.Lock()
+	term.windows["block:a"] = "window:1"
+	term.mu.Unlock()
+	a, _ := startPi(t, e, "block:a", "s2")
+	if err := term.CloseBlock(ctx, "block:b"); err != nil {
+		t.Fatal(err)
+	}
+	wrapped := closedBlockTerm{Terminal: term, closed: "block:b"}
+	e.Rex = wrapped
+	e.RexOn = func(string) Terminal { return wrapped }
+	s, err := e.FindSession(ctx, "block:a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.CollectSession(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	if l := ledgerOf(t, e, "window:1"); l.Mode != core.WindowAuto || l.LastLabel != string(a) {
+		t.Fatalf("after CollectSession the ledger holds %+v, want auto/%s", l, a)
+	}
+	if _, err := e.SetTask(ctx, Location{Block: "block:a"}, "after collect"); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := tabOf(term, "window:1"), string(a)+" | after collect"; got != want {
+		t.Errorf("after SetTask the tab shows %q, want %q", got, want)
 	}
 }

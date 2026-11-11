@@ -134,7 +134,7 @@ func (e Env) crewOfTab(window, label string, dir func() string) string {
 		return ""
 	}
 	name := crew.TabName(label)
-	if name == "" {
+	if name == "" || name == core.NarratorTab {
 		return ""
 	}
 	if _, found, err := e.Crews(dir()).Crew(name); err != nil {
