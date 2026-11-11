@@ -42,9 +42,19 @@ type Outcome struct {
 	Note     string   `json:"note,omitempty"`
 }
 
-// CodeAgentWorking is the deferral of a doorbell to a working agent, which
-// its hooks tell about mail in-band instead.
-const CodeAgentWorking = "agent_working"
+// Outcome codes that more than one site emits or matches. The values are
+// wire format (who, the events stream, e2e JSON).
+const (
+	// CodeAgentWorking is the deferral of a doorbell to a working agent,
+	// which its hooks tell about mail in-band instead.
+	CodeAgentWorking = "agent_working"
+	// CodeBoxNotFound: no input box is on screen, so nothing can be typed.
+	CodeBoxNotFound = "box_not_found"
+	// CodeDraftInBox: the input box holds text someone else typed.
+	CodeDraftInBox = "draft_in_box"
+	// CodeBlockGone: the agent's Rex block no longer exists.
+	CodeBlockGone = "block_gone"
+)
 
 // ExitCode follows amq's contract: only accepted exits 0. A deferred marker
 // with exit 0 is classified "uncertain", which amq never retries.
@@ -80,7 +90,7 @@ type Binding struct {
 func CheckBinding(b Binding) (Outcome, bool) {
 	switch {
 	case b.BlockGone:
-		return Outcome{Progress: Failed, Code: "block_gone", Note: "the agent's Rex block no longer exists"}, false
+		return Outcome{Progress: Failed, Code: CodeBlockGone, Note: "the agent's Rex block no longer exists"}, false
 	case b.LeftPane:
 		return Outcome{Progress: Failed, Code: "agent_left_pane", Note: "the agent's conversation was moved to the background; its pane shows something else"}, false
 	case b.ForegroundPID == b.RecordPID, b.JobShown:
@@ -117,9 +127,9 @@ func DecideWrite(r Readiness) (Outcome, bool) {
 	case r.Trust:
 		return Outcome{Progress: Deferred, Code: "trust_screen", Note: "a trust dialog is on screen"}, false
 	case r.Box == screen.Typed:
-		return Outcome{Progress: Deferred, Code: "draft_in_box", Note: "the input box holds unsent text"}, false
+		return Outcome{Progress: Deferred, Code: CodeDraftInBox, Note: "the input box holds unsent text"}, false
 	case r.Box != screen.Empty:
-		return Outcome{Progress: Deferred, Code: "box_not_found", Note: "the input box is not on screen"}, false
+		return Outcome{Progress: Deferred, Code: CodeBoxNotFound, Note: "the input box is not on screen"}, false
 	}
 	return Outcome{}, true
 }
@@ -166,7 +176,7 @@ func DecideConfirm(c Confirmation) (Outcome, Cleanup) {
 	case c.Box == screen.Typed && c.OursInBox:
 		return Outcome{Progress: Deferred, Code: "not_submitted", Note: "the doorbell stayed in the input box; cleared for a retry"}, ClearOurText
 	case c.Box == screen.Typed:
-		return Outcome{Progress: Deferred, Code: "draft_in_box", Note: "someone typed into the box during delivery; left untouched"}, NoCleanup
+		return Outcome{Progress: Deferred, Code: CodeDraftInBox, Note: "someone typed into the box during delivery; left untouched"}, NoCleanup
 	}
 	return Outcome{Progress: Deferred, Code: "unconfirmed", Note: "the doorbell was written but the agent did not report starting"}, NoCleanup
 }

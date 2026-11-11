@@ -57,7 +57,7 @@ func Stuck(history []Attempt, unread int, now time.Time) (code string, since tim
 // MayMove reports whether a stuck pane is the one shape the watchdog fixes
 // itself: doorbells find no input box and the pane is too small to draw one.
 func MayMove(code string, columns, rows int) bool {
-	return code == "box_not_found" && TinyPane(columns, rows)
+	return code == CodeBoxNotFound && TinyPane(columns, rows)
 }
 
 // Delivered reports whether the last doorbell was accepted.
@@ -113,12 +113,11 @@ func (ep Episode) Of(handle Handle, pid int) bool {
 	return ep.Handle == handle && ep.PID == pid
 }
 
-// Report codes the orchestrator receives.
+// Report codes the orchestrator receives. A report about a doorbell's
+// deferral carries the injector's own code.
 const (
-	ReportTrustScreen    = "trust_screen"
-	ReportBlocked        = "blocked"
-	ReportDraft          = "draft_in_box"
-	ReportBoxNotFound    = "box_not_found"
+	ReportDraft          = CodeDraftInBox
+	ReportBoxNotFound    = CodeBoxNotFound
 	ReportRecoveryFailed = "recovery_failed"
 	// ReportPlaceFailed: a detached block could not be placed in a tab; the
 	// watchdog retries every look, apart from the recovery's attempts.

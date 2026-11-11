@@ -120,7 +120,7 @@ func TestWatchdogRecoversATinyPaneOnce(t *testing.T) {
 func TestWatchdogOnlyReportsADraftOrADialog(t *testing.T) {
 	for name, tc := range map[string]struct{ box, state, code string }{
 		"draft":      {"half-typed question", "idle", core.ReportDraft},
-		"permission": {"", "blocked", core.ReportBlocked},
+		"permission": {"", "blocked", ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			e, term, orch, s, now := stuckWorld(t, tc.box, tc.state, false)

@@ -253,7 +253,7 @@ func (e Env) markAnnounced(ctx context.Context, root string, h core.Handle, ids 
 // cohort, anything else (server unreachable, timeout) is retried.
 func rexOutcome(err error) core.Outcome {
 	if errors.Is(err, rex.ErrNotFound) {
-		return core.Outcome{Progress: core.Failed, Code: "block_gone", Note: err.Error()}
+		return core.Outcome{Progress: core.Failed, Code: core.CodeBlockGone, Note: err.Error()}
 	}
 	return deferredErr("rex_error", err)
 }

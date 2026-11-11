@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/est7/rex-amq-adapter/internal/screen"
 )
 
 func TestStuckNeedsAHeldDeferralThatIsNotWork(t *testing.T) {
@@ -76,5 +78,21 @@ func TestWatchdogReportSaysOnlyWhatTook(t *testing.T) {
 		if !strings.Contains(body, tc.want) || tc.absent != "" && strings.Contains(body, tc.absent) {
 			t.Errorf("%+v: want %q and no %q in:\n%s", tc.ep, tc.want, tc.absent, body)
 		}
+	}
+}
+
+// The code the injector records for a missing input box is the one the
+// watchdog moves a tiny pane for, and only on a tiny pane.
+func TestTheMissingBoxCodeIsTheOneMayMoveActsOn(t *testing.T) {
+	o, write := DecideWrite(Readiness{State: StateIdle, Box: screen.Unknown})
+	if write || !MayMove(o.Code, TinyColumns, TinyRows-1) {
+		t.Fatalf("a missing box (%q) on a tiny pane is not movable", o.Code)
+	}
+	if MayMove(o.Code, RecoverColumns, RecoverRows) {
+		t.Fatal("a missing box on a normal pane is movable")
+	}
+	d, _ := DecideWrite(Readiness{State: StateIdle, Box: screen.Typed})
+	if MayMove(d.Code, TinyColumns, TinyRows-1) {
+		t.Fatalf("a draft (%q) is movable", d.Code)
 	}
 }

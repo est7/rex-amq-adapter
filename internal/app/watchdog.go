@@ -177,11 +177,11 @@ func (e Env) stepPeer(ctx context.Context, orch store.Record, s Session, rec sto
 		return nil
 	case l.box == screen.Typed:
 		return e.report(ctx, orch, s, rec, &ep, core.ReportDraft, "Its input box holds a draft, so no doorbell can be typed.", l.lines)
-	case ep.Moved() && l.code == "box_not_found":
+	case ep.Moved() && l.code == core.CodeBoxNotFound:
 		return e.continueRecovery(ctx, orch, s, rec, &ep, l)
 	}
 	if !core.MayMove(l.code, l.columns, l.rows) {
-		if l.code == "box_not_found" {
+		if l.code == core.CodeBoxNotFound {
 			return e.report(ctx, orch, s, rec, &ep, core.ReportBoxNotFound, fmt.Sprintf("Its pane measures %dx%d, large enough, yet doorbells find no input box.", l.columns, l.rows), l.lines)
 		}
 		return e.report(ctx, orch, s, rec, &ep, core.ReportUndelivered, fmt.Sprintf("Every doorbell since %s deferred with %s.", core.Ago(e.Now().Sub(l.since)), l.code), l.lines)
