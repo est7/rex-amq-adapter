@@ -1,6 +1,7 @@
 package install
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -353,7 +354,7 @@ func TestPiExtension(t *testing.T) {
 // Every hook the adapter answers has one installed timeout, and the adapter's
 // budget stays inside it.
 func TestEveryHookHasOneTimeoutAndABudgetInsideIt(t *testing.T) {
-	for _, list := range [][]hookEvent{hookEvents, agyHookEvents} {
+	for _, list := range [][]hookEvent{hookEvents, claudeHookEvents, agyHookEvents} {
 		for _, ev := range list {
 			if ev.Timeout == 0 {
 				t.Errorf("%s has no timeout", ev.Event)
@@ -368,6 +369,56 @@ func TestEveryHookHasOneTimeoutAndABudgetInsideIt(t *testing.T) {
 	}
 	if _, ok := Budget("unknown"); ok {
 		t.Error("unknown event has a budget")
+	}
+}
+
+// A8: Setup installs StopFailure (stop-failure, timeout 3) for Claude Code,
+// leaves StopFailure out of Codex's hooks.json, and installs Pi's outcome/error
+// forwarding in agent_before_settle.
+func TestClaudeGetsStopFailureWhileCodexDoesNotAndPiForwardsOutcome(t *testing.T) {
+	dir, agents := setup(t)
+	self := "/opt/x/rex-amq-adapter"
+	if _, err := Setup(agents, Options{SelfBin: self}); err != nil {
+		t.Fatal(err)
+	}
+	claudeRaw := read(t, filepath.Join(dir, ".claude", "settings.json"))
+	claudeRoot, err := parseObject([]byte(claudeRaw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	claudeHooks := claudeRoot.vals["hooks"].(*object)
+	sfGroups, ok := claudeHooks.vals["StopFailure"].([]any)
+	if !ok || len(sfGroups) != 1 {
+		t.Fatalf("Claude StopFailure groups: %+v", claudeHooks.vals["StopFailure"])
+	}
+	sfEntry := sfGroups[0].(*object).vals["hooks"].([]any)[0].(*object)
+	if sfEntry.vals["command"] != hookCommand(self, "stop-failure", core.Claude) || fmt.Sprint(sfEntry.vals["timeout"]) != "3" {
+		t.Fatalf("Claude StopFailure entry: %+v", sfEntry.vals)
+	}
+
+	codexRaw := read(t, filepath.Join(dir, ".codex", "hooks.json"))
+	codexRoot, err := parseObject([]byte(codexRaw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	codexHooks := codexRoot.vals["hooks"].(*object)
+	if _, has := codexHooks.vals["StopFailure"]; has {
+		t.Fatalf("Codex must not receive StopFailure:\n%s", codexRaw)
+	}
+
+	t.Setenv("PI_CODING_AGENT_DIR", filepath.Join(dir, "piagent"))
+	piAgents, err := Agents([]core.Kind{core.Pi})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Setup(piAgents, Options{SelfBin: self}); err != nil {
+		t.Fatal(err)
+	}
+	piExt := read(t, piAgents[0].HookFile)
+	for _, want := range []string{"event?.outcome", "error_message", `outcome === "error"`} {
+		if !strings.Contains(piExt, want) {
+			t.Fatalf("Pi extension missing %q:\n%s", want, piExt)
+		}
 	}
 }
 

@@ -193,3 +193,96 @@ func TestAgyActivityFollowsTheWAL(t *testing.T) {
 		t.Fatal("a step row claimed a time it does not have")
 	}
 }
+
+// A1: Codex writes turn-abort errors (e.g. stream disconnected: Bad Request) as
+// event_msg rows of type task_complete with a non-null error object; a normal
+// task_complete has error: null and yields no row.
+func TestCodexTaskCompleteErrorRow(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, ".codex/sessions/2026/11/10/rollout-2026-11-10T02-00-00-thread-tc.jsonl")
+	write(t, path, `{"timestamp":"2026-11-10T02:00:00.000Z","ordinal":1,"type":"event_msg","payload":{"type":"task_complete","turn_id":"t0","error":null}}
+{"timestamp":"2026-11-10T02:00:05.000Z","ordinal":2,"type":"event_msg","payload":{"type":"task_complete","turn_id":"t1","error":{"message":"stream disconnected before completion: Codex: Bad Request"}}}
+`)
+	tail, ok, err := Read(context.Background(), home, core.Codex, "thread-tc", 10)
+	if err != nil || !ok {
+		t.Fatalf("ok=%v err=%v", ok, err)
+	}
+	if len(tail.Rows) != 1 {
+		t.Fatalf("want 1 row (normal task_complete skipped), got %+v", tail.Rows)
+	}
+	r := tail.Rows[0]
+	if r.Kind != "error" || !r.Error || r.ToolID != "t1" || r.Text != "stream disconnected before completion: Codex: Bad Request" {
+		t.Fatalf("unexpected row: %+v", r)
+	}
+}
+
+// A2: Assess counts only turn-level harness error rows (Kind == "error") in
+// h.Errors; tool_result rows with Error == true stay out of h.Errors so routine
+// non-zero exit codes do not page, while still rendering with [error] in notices.
+func TestAssessIgnoresToolResultErrorsButNoticesStillMarkThem(t *testing.T) {
+	now := time.Date(2026, 11, 10, 2, 0, 0, 0, time.UTC)
+	toolOnly := core.Tail{
+		Source: "/tmp/t.jsonl",
+		Rows: []core.Row{
+			{ID: "1", At: now.Add(-2 * time.Second), Kind: "tool_call", ToolID: "c1", Text: "Bash(…)"},
+			{ID: "2", At: now.Add(-time.Second), Kind: "tool_result", ToolID: "c1", Error: true, Text: "exit status 1"},
+		},
+		LastAt: now.Add(-time.Second),
+	}
+	if h := core.Assess(toolOnly, false, now); len(h.Errors) != 0 {
+		t.Fatalf("tool_result error must not count in Assess.Errors: %+v", h.Errors)
+	}
+	withTurnErr := toolOnly
+	withTurnErr.Rows = append(withTurnErr.Rows, core.Row{
+		ID: "3", At: now, Kind: "error", Error: true, Text: "5-hour limit",
+	})
+	h := core.Assess(withTurnErr, false, now)
+	if len(h.Errors) != 1 || h.Errors[0].ID != "3" {
+		t.Fatalf("want 1 turn-level error row, got %+v", h.Errors)
+	}
+	peer := core.Peer{Handle: "claude-01", Kind: core.Claude}
+	_, hBody := core.HealthNotice(peer, core.NoticeTranscriptError, withTurnErr, h, nil, now)
+	_, eBody := core.ErrorNotice(peer, core.NoticeTurnError, "5-hour limit", "its summoner", withTurnErr)
+	for name, body := range map[string]string{"HealthNotice": hBody, "ErrorNotice": eBody} {
+		if !strings.Contains(body, "tool_result [error]: exit status 1") || !strings.Contains(body, "error [error]: 5-hour limit") {
+			t.Fatalf("%s missing [error] marks:\n%s", name, body)
+		}
+	}
+}
+
+// A2b (S2b): readAgy marks a step with error_details (e.g. step_type 132,
+// status 7 "file does not exist") as Kind "tool_result" with Error=true.
+// Assess returns no Errors on it, and HealthNotice still prints it with [error].
+func TestAgyStepErrorIsToolResultNotTurnError(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not installed")
+	}
+	home := t.TempDir()
+	db := filepath.Join(home, ".gemini/antigravity-cli/conversations/conv-s2b.db")
+	if err := os.MkdirAll(filepath.Dir(db), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sql := "create table steps (idx integer primary key, step_type integer, status integer, error_details blob);" +
+		"insert into steps values (1, 17, 3, null), (2, 132, 7, X'1213" + hexOf("file does not exist") + "'), (3, 15, 3, null);"
+	if out, err := exec.Command("sqlite3", db, sql).CombinedOutput(); err != nil {
+		t.Fatalf("%v %s", err, out)
+	}
+	tail, ok, err := Read(context.Background(), home, core.Agy, "conv-s2b", 3)
+	if err != nil || !ok || len(tail.Rows) != 3 {
+		t.Fatalf("ok=%v err=%v rows=%+v", ok, err, tail.Rows)
+	}
+	if tail.Rows[1].Kind != "tool_result" || !tail.Rows[1].Error || tail.Rows[1].Text != "step status 7 file does not exist" {
+		t.Fatalf("want tool_result with Error=true, got %+v", tail.Rows[1])
+	}
+	now := time.Date(2026, 11, 10, 2, 0, 0, 0, time.UTC)
+	if h := core.Assess(tail, false, now); len(h.Errors) != 0 {
+		t.Fatalf("Assess must not count agy step tool_result as turn error: %+v", h.Errors)
+	}
+	withTurn := tail
+	withTurn.Rows = append(withTurn.Rows, core.Row{ID: "99", At: now, Kind: "error", Error: true, Text: "turn failed"})
+	h := core.Assess(withTurn, false, now)
+	_, body := core.HealthNotice(core.Peer{Handle: "agy-01", Kind: core.Agy}, core.NoticeTranscriptError, withTurn, h, nil, now)
+	if !strings.Contains(body, "tool_result [error]: step status 7 file does not exist") {
+		t.Fatalf("HealthNotice missing [error] mark for agy step:\n%s", body)
+	}
+}

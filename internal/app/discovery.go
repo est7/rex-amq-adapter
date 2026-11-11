@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
+	"github.com/est7/rex-amq-adapter/internal/crew"
 	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
@@ -127,6 +128,9 @@ func (e Env) followMoves(ctx context.Context, s Session) error {
 			continue
 		}
 		r.WindowID, r.SessionID = placed, s.id
+		if l := s.tabs[placed]; l != "" {
+			r.Crew = crew.Name(l)
+		}
 		if err := e.Store.PutRecord(r); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", r.Handle, err))
 		}

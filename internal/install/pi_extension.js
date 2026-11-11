@@ -108,10 +108,27 @@ export default function (pi) {
 		if (prompting === 0) schedule();
 	});
 
-	// The run is about to end with mail unread: continue it once.
-	pi.on("agent_before_settle", async () => {
-		const r = await ask("settle", { stop_hook_active: continued });
-		if (!r.notice) return;
+	// The run is about to end: report an errored run, or continue once when
+	// mail is unread.
+	pi.on("agent_before_settle", async (event) => {
+		const outcome = event?.outcome || "";
+		let errorMessage = "";
+		const msgs = event?.context?.contextMessages || event?.context?.llmMessages;
+		if (Array.isArray(msgs)) {
+			for (let i = msgs.length - 1; i >= 0; i--) {
+				const m = msgs[i];
+				if (m?.role === "assistant" && typeof m.errorMessage === "string" && m.errorMessage) {
+					errorMessage = m.errorMessage;
+					break;
+				}
+			}
+		}
+		const r = await ask("settle", {
+			stop_hook_active: continued,
+			outcome,
+			error_message: errorMessage,
+		});
+		if (outcome === "error" || outcome === "aborted" || !r.notice) return;
 		continued = true;
 		return { entries: [{ type: "custom_message", customType: "amq", content: r.notice, display: true }], continue: true };
 	});

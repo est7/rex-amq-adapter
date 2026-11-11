@@ -111,6 +111,7 @@ var hookTimeouts = map[string]int{
 	"post-tool-use":      3,
 	"pre-invocation":     3,
 	"stop":               3,
+	"stop-failure":       3,
 	"session-end":        3,
 	"mail":               3,
 	"settle":             3,
@@ -136,7 +137,8 @@ func events(pairs ...[2]string) []hookEvent {
 	return out
 }
 
-// hookEvents are installed for Claude Code and Codex.
+// hookEvents are the base events installed for Codex. Claude Code installs
+// these plus StopFailure (claudeHookEvents).
 var hookEvents = events(
 	[2]string{"SessionStart", "session-start"},
 	[2]string{"UserPromptSubmit", "user-prompt-submit"},
@@ -144,6 +146,22 @@ var hookEvents = events(
 	[2]string{"Stop", "stop"},
 	[2]string{"SessionEnd", "session-end"},
 )
+
+var claudeHookEvents = events(
+	[2]string{"SessionStart", "session-start"},
+	[2]string{"UserPromptSubmit", "user-prompt-submit"},
+	[2]string{"PostToolUse", "post-tool-use"},
+	[2]string{"Stop", "stop"},
+	[2]string{"StopFailure", "stop-failure"},
+	[2]string{"SessionEnd", "session-end"},
+)
+
+func hookEventsFor(kind core.Kind) []hookEvent {
+	if kind == core.Claude {
+		return claudeHookEvents
+	}
+	return hookEvents
+}
 
 func hookCommand(self string, event string, kind core.Kind) string {
 	return "'" + self + "' hook " + event + " --agent " + string(kind) + " 2>/dev/null || true"
@@ -461,8 +479,9 @@ func hookState(a Agent, self string) (string, error) {
 		return "", err
 	}
 	events := hf.events()
+	wantEvents := hookEventsFor(a.Kind)
 	present, exact := 0, 0
-	for _, ev := range hookEvents {
+	for _, ev := range wantEvents {
 		var groups []any
 		if events != nil {
 			v, _ := events.get(ev.Name)
@@ -480,7 +499,7 @@ func hookState(a Agent, self string) (string, error) {
 	switch {
 	case present == 0:
 		return "missing", nil
-	case exact == len(hookEvents):
+	case exact == len(wantEvents):
 		return "current", nil
 	}
 	return "outdated", nil
@@ -534,7 +553,7 @@ func setupHooks(a Agent, o Options) (Item, error) {
 		events = newObject()
 		hf.root.set("hooks", events)
 	}
-	for _, ev := range hookEvents {
+	for _, ev := range hookEventsFor(a.Kind) {
 		v, _ := events.get(ev.Name)
 		groups, ok := v.([]any)
 		if v != nil && !ok {
@@ -585,7 +604,7 @@ func removeHooks(a Agent, o Options) (Item, error) {
 		return it, err
 	}
 	events := hf.events()
-	for _, ev := range hookEvents {
+	for _, ev := range hookEventsFor(a.Kind) {
 		v, _ := events.get(ev.Name)
 		groups, _ := v.([]any)
 		left := dropHooks(groups, findOurs(groups, ev.Event, a.Kind))

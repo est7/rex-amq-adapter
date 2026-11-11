@@ -3,15 +3,19 @@ package core
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 // Peer is a live agent as the session policy sees it. Role is its record's,
 // "" for none.
 type Peer struct {
-	Handle Handle
-	Kind   Kind
-	Role   string
-	Block  string
+	Handle    Handle
+	Kind      Kind
+	Role      string
+	Block     string
+	Window    string
+	Parent    Handle
+	AdoptedAt time.Time
 }
 
 // named is how a notice names p: its handle, which is what peers mail, then

@@ -49,6 +49,25 @@ func Read(ctx context.Context, home string, kind core.Kind, session string, k in
 	return core.Tail{}, false, nil
 }
 
+// ReadPath returns the last k rows of a specific transcript file path for an
+// agent of kind. ok is false when path is empty or does not exist.
+func ReadPath(ctx context.Context, path string, kind core.Kind, k int) (core.Tail, bool, error) {
+	if path == "" {
+		return core.Tail{}, false, nil
+	}
+	switch kind {
+	case core.Claude:
+		return readJSONLFile(path, k, claudeRow)
+	case core.Codex:
+		return readJSONLFile(path, k, codexRow)
+	case core.Pi:
+		return readJSONLFile(path, k, piRow)
+	case core.Agy:
+		return readAgy(ctx, path, k)
+	}
+	return core.Tail{}, false, nil
+}
+
 // readJSONL reads the last k rows that parse maps of the newest file
 // matching pattern.
 func readJSONL(pattern string, k int, parse func(map[string]any) []core.Row) (core.Tail, bool, error) {
@@ -56,8 +75,14 @@ func readJSONL(pattern string, k int, parse func(map[string]any) []core.Row) (co
 	if err != nil || len(matches) == 0 {
 		return core.Tail{}, false, err
 	}
-	path := newest(matches)
+	return readJSONLFile(newest(matches), k, parse)
+}
+
+func readJSONLFile(path string, k int, parse func(map[string]any) []core.Row) (core.Tail, bool, error) {
 	f, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return core.Tail{}, false, nil
+	}
 	if err != nil {
 		return core.Tail{}, false, err
 	}
@@ -220,7 +245,8 @@ func claudeRow(m map[string]any) []core.Row {
 }
 
 // codexRow: response_item rows carry messages, tool calls and their outputs;
-// an event_msg of type error is the harness's own error flag.
+// an event_msg of type error or carrying a non-null error object (such as an
+// aborted task_complete) is the harness's own error flag.
 func codexRow(m map[string]any) []core.Row {
 	p, _ := m["payload"].(map[string]any)
 	if p == nil {
@@ -234,10 +260,17 @@ func codexRow(m map[string]any) []core.Row {
 	}
 	switch str(m, "type") {
 	case "event_msg":
-		if str(p, "type") != "error" {
-			return nil
+		switch {
+		case str(p, "type") == "error":
+			r.Kind, r.Error, r.Text, r.ToolID = "error", true, str(p, "message"), str(p, "turn_id")
+		default:
+			errObj, _ := p["error"].(map[string]any)
+			msg := str(errObj, "message")
+			if msg == "" {
+				return nil
+			}
+			r.Kind, r.Error, r.Text, r.ToolID = "error", true, msg, str(p, "turn_id")
 		}
-		r.Kind, r.Error, r.Text = "error", true, str(p, "message")
 	case "response_item":
 		switch str(p, "type") {
 		case "message", "agent_message":
@@ -299,8 +332,9 @@ func piRow(m map[string]any) []core.Row {
 }
 
 // readAgy reads the last k steps of a conversation database: a step with
-// error_details is the harness's error flag. Steps carry no timestamp, so
-// the database's modification time stands for the last row.
+// error_details is a tool or step failure (Kind "tool_result", Error true);
+// turn-level errors in Antigravity are reported by its Stop hook. Steps carry
+// no timestamp, so the database's modification time stands for the last row.
 func readAgy(ctx context.Context, path string, k int) (core.Tail, bool, error) {
 	info, err := os.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -330,7 +364,7 @@ func readAgy(ctx context.Context, path string, k int) (core.Tail, bool, error) {
 		}
 		r := core.Row{ID: cells[0], Kind: "message", Text: "step status " + cells[1]}
 		if len(cells) == 3 && cells[2] != "" && cells[2] != "NULL" && cells[2] != "''" {
-			r.Kind, r.Error = "error", true
+			r.Kind, r.Error = "tool_result", true
 			r.Text += " " + printable(cells[2])
 		}
 		t.Rows = append(t.Rows, r)

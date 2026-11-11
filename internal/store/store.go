@@ -84,8 +84,10 @@ type Record struct {
 	// Task is what the agent said it is doing (core.Task), shown after the
 	// handle in its pane label. It follows the handle, so a resume in another
 	// pane shows it again and a newly named agent starts without one.
-	Task      string    `json:"task,omitempty"`
-	AdoptedAt time.Time `json:"adopted_at"`
+	Task           string    `json:"task,omitempty"`
+	AdoptedAt      time.Time `json:"adopted_at"`
+	FirstAdoptedAt time.Time `json:"first_adopted_at,omitempty"`
+	Crew           string    `json:"crew,omitempty"`
 	// Cwd is the directory the agent runs in, from its foreground process at
 	// adoption; a resume starts there.
 	Cwd string `json:"cwd,omitempty"`
@@ -129,6 +131,15 @@ func (r Record) Live() bool { return r.DepartedAt == nil }
 // Adopted reports whether r's agent finished adoption: it has its waker and
 // was told who it is. A live record that has not has a mailbox, and no more.
 func (r Record) Adopted() bool { return r.Live() && r.Unfinished != Adopting }
+
+// InitialAdoptedAt is when the handle's agent session was first adopted,
+// preserved across resumes so tab-ownership order stays monotonic.
+func (r Record) InitialAdoptedAt() time.Time {
+	if !r.FirstAdoptedAt.IsZero() {
+		return r.FirstAdoptedAt
+	}
+	return r.AdoptedAt
+}
 
 // Store reads and writes state under Paths.
 type Store struct{ P Paths }
@@ -603,16 +614,24 @@ func (s Store) ClearEpisode(block string) error {
 	return err
 }
 
-// HealthMark is what the watchdog last told the orchestrator about an
-// agent's transcript, so each finding is reported once.
+// HealthMark is what the watchdog and stop hooks last told the session about
+// an agent's transcript or turn outcome, so each finding is reported once.
 type HealthMark struct {
-	LastErrorID string    `json:"last_error_id,omitempty"`
-	LastHungID  string    `json:"last_hung_id,omitempty"`
-	LastStallAt time.Time `json:"last_stall_at,omitempty"`
+	LastErrorID   string    `json:"last_error_id,omitempty"`
+	LastHungID    string    `json:"last_hung_id,omitempty"`
+	LastStallAt   time.Time `json:"last_stall_at,omitempty"`
+	HookToldAt    time.Time `json:"hook_told_at,omitempty"`
+	TurnErroredAt time.Time `json:"turn_errored_at,omitempty"`
 	// BlockedSince is when the agent was first seen on a blocked prompt or
 	// a trust screen in the current episode; BlockedTold that it was told.
 	BlockedSince time.Time `json:"blocked_since,omitempty"`
 	BlockedTold  bool      `json:"blocked_told,omitempty"`
+}
+
+// LockHealth serialises the read-modify-write of block's HealthMark between
+// the goal watchdog and stop/error hooks.
+func (s Store) LockHealth(ctx context.Context, block string) (func(), error) {
+	return fsutil.Flock(ctx, filepath.Join(s.P.watchdog(), "."+fileKey(block)+".health.lock"))
 }
 
 func (s Store) healthPath(block string) string {

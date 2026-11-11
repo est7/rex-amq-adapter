@@ -96,7 +96,8 @@ func (e Env) ensureOrchestratorWatcher(rec store.Record) error {
 
 // WatchOrchestrator reconciles h's session until h is no longer a live orchestrator, so
 // its departure and its peers' are noticed without a hook. A second watcher
-// finds the lock held and returns.
+// finds the lock held and returns. When SelfBin is replaced on disk (a build
+// or Homebrew upgrade), the watcher releases its lock and execs the new binary.
 func (e Env) WatchOrchestrator(ctx context.Context, h core.Handle) error {
 	lockCtx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
@@ -104,8 +105,27 @@ func (e Env) WatchOrchestrator(ctx context.Context, h core.Handle) error {
 	if err != nil {
 		return nil
 	}
-	defer unlock()
+	unlocked := false
+	release := func() {
+		if !unlocked {
+			unlocked = true
+			unlock()
+		}
+	}
+	defer release()
+	selfFi, selfErr := os.Stat(e.SelfBin)
+	changed := func() bool {
+		if selfErr != nil {
+			return false
+		}
+		curFi, err := os.Stat(e.SelfBin)
+		return err == nil && !sameBinary(selfFi, curFi)
+	}
 	for failures := 0; ; {
+		if changed() {
+			release()
+			return e.execSelf()
+		}
 		rec, ok, err := e.liveRecord(h)
 		if err != nil {
 			return err
@@ -121,10 +141,30 @@ func (e Env) WatchOrchestrator(ctx context.Context, h core.Handle) error {
 		} else {
 			failures = 0
 		}
+		if changed() {
+			release()
+			return e.execSelf()
+		}
 		if !sleep(ctx, watchEvery) {
 			return ctx.Err()
 		}
 	}
+}
+
+func sameBinary(a, b os.FileInfo) bool {
+	return os.SameFile(a, b) && a.Size() == b.Size() && a.ModTime().Equal(b.ModTime())
+}
+
+func (e Env) execSelf() error {
+	execFn := e.Exec
+	if execFn == nil {
+		execFn = syscall.Exec
+	}
+	if err := execFn(e.SelfBin, os.Args, os.Environ()); err != nil {
+		fmt.Fprintf(Diagnostics, "re-exec orchestrator watcher %s: %v\n", e.SelfBin, err)
+		return err
+	}
+	return nil
 }
 
 func (e Env) liveRecord(h core.Handle) (store.Record, bool, error) {

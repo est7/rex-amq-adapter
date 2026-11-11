@@ -74,7 +74,7 @@ Installation:
                             harness settings (agy title, shared supervisors off)
 
 Internal (run by installed hooks and by amq wake):
-  hook <event> --agent K    session-start | user-prompt-submit | post-tool-use | pre-invocation | stop | session-end | mail | settle
+  hook <event> --agent K    session-start | user-prompt-submit | post-tool-use | pre-invocation | stop | stop-failure | session-end | mail | settle
   inject <server> <block> <handle> <root> <payload>
   __internal skill          print the agent guide
   version

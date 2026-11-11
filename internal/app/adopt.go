@@ -157,6 +157,7 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 		arrived = !together(own, shownAt) || unfinished // a move within the session is no news
 	}
 	known := hasOwn && in.SessionID != "" && own.AgentSessionID == in.SessionID && !unfinished
+	now := e.Now().UTC()
 	rec := store.Record{
 		Handle:         handle,
 		Kind:           kind,
@@ -166,7 +167,8 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 		WindowID:       blk.WindowID,
 		AgentPID:       agentPID,
 		AgentSessionID: in.SessionID,
-		AdoptedAt:      e.Now().UTC(),
+		AdoptedAt:      now,
+		FirstAdoptedAt: now,
 	}
 	// A resumed agent keeps its task and role, in any pane. One without a
 	// role takes the one its launcher wrote in the label; a label the adapter
@@ -174,6 +176,10 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	// role the pane is labelled with, whoever wrote it, so a pane keeps its
 	// purpose across agents.
 	if hasOwn {
+		rec.FirstAdoptedAt = own.InitialAdoptedAt()
+		if own.WindowID == "" || own.WindowID == blk.WindowID {
+			rec.Crew = own.Crew
+		}
 		rec.Task, rec.Role = own.Task, own.Role
 		if rec.Role == "" && core.LauncherLabel(blk.Label) {
 			rec.Role = core.Role(blk.Label)
@@ -255,7 +261,15 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 
 // peerOf is r's agent as the session policy sees it.
 func peerOf(r store.Record) core.Peer {
-	return core.Peer{Handle: r.Handle, Kind: r.Kind, Role: r.Role, Block: r.BlockID}
+	return core.Peer{
+		Handle:    r.Handle,
+		Kind:      r.Kind,
+		Role:      r.Role,
+		Block:     r.BlockID,
+		Window:    r.WindowID,
+		Parent:    r.Parent,
+		AdoptedAt: r.InitialAdoptedAt(),
+	}
 }
 
 // serverOf is the address a record names: the server's own endpoint, else

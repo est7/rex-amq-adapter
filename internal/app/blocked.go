@@ -26,6 +26,11 @@ import (
 // desktop. Zero keys.
 
 func (e Env) blocked(ctx context.Context, orch store.Record, s Session, rec store.Record) error {
+	unlock, err := e.Store.LockHealth(ctx, rec.BlockID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	mark, err := e.Store.HealthMark(rec.BlockID)
 	if err != nil {
 		return err

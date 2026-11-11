@@ -22,6 +22,7 @@ const (
 	// EventPreInvocation is Antigravity's hook before each model call.
 	EventPreInvocation = "pre-invocation"
 	EventStop          = "stop"
+	EventStopFailure   = "stop-failure"
 	EventSessionEnd    = "session-end"
 	// EventMail and EventSettle come from Pi's extension: its inbox watcher
 	// saw mail, and a run is about to settle (agent_before_settle).
@@ -80,10 +81,28 @@ func (e Env) Hook(ctx context.Context, event string, kind core.Kind, loc Locatio
 		return e.announce(ctx, kind, loc, in, event, core.ToolFinished, onModelCall)
 	case EventPostTool:
 		return e.announce(ctx, kind, loc, in, event, core.ToolFinished, onToolCall)
+	case EventStopFailure:
+		detail := joinNotices(in.Error, in.ErrorDetails, in.LastAssistantMessage)
+		if err := e.reportTurnError(ctx, kind, loc, in, core.NoticeTurnError, detail); err != nil {
+			fmt.Fprintf(Diagnostics, "report turn error: %v\n", err)
+		}
+		if err := e.SuperviseWaker(ctx, loc); err != nil {
+			fmt.Fprintf(Diagnostics, "supervise waker: %v\n", err)
+		}
+		return Reply{}, nil
 	case EventStop, EventSettle:
-		if !in.NormalStop() {
+		if code, detail, abnormal := e.abnormalStop(ctx, kind, loc, in); abnormal {
+			if code != "" {
+				if err := e.reportTurnError(ctx, kind, loc, in, code, detail); err != nil {
+					fmt.Fprintf(Diagnostics, "report turn error: %v\n", err)
+				}
+			}
+			if err := e.SuperviseWaker(ctx, loc); err != nil {
+				fmt.Fprintf(Diagnostics, "supervise waker: %v\n", err)
+			}
 			return Reply{}, nil
 		}
+		e.clearTurnError(ctx, loc.Block)
 		r, err := e.announce(ctx, kind, loc, in, event, core.TurnEnding, onTurnEnd)
 		if err != nil {
 			return r, err
@@ -115,6 +134,31 @@ func normalize(kind core.Kind, in HookInput) HookInput {
 		in.StopHookActive = true
 	}
 	return in
+}
+
+func (e Env) abnormalStop(ctx context.Context, kind core.Kind, loc Location, in HookInput) (code, detail string, abnormal bool) {
+	if !in.NormalStop() {
+		switch {
+		case in.TerminationReason == "USER_CANCELED" || in.Outcome == "aborted":
+			return "", "", true
+		case in.TerminationReason == "MAX_INVOCATIONS" || in.TerminationReason == "MAX_TOKEN_BUDGET_EXCEEDED" || in.TerminationReason == "MAX_FORCED_INVOCATIONS":
+			return core.NoticeTurnLimit, joinNotices(in.TerminationReason, in.Error), true
+		case in.TerminationReason != "":
+			return core.NoticeTurnError, joinNotices(in.TerminationReason, in.Error), true
+		default:
+			d := joinNotices(in.ErrorMessage, in.Error)
+			if d == "" {
+				d = in.Outcome
+			}
+			return core.NoticeTurnError, d, true
+		}
+	}
+	if kind == core.Codex {
+		if detail, ok := e.codexTurnError(ctx, loc, in); ok {
+			return core.NoticeTurnError, detail, true
+		}
+	}
+	return "", "", false
 }
 
 func (e Env) sessionStart(ctx context.Context, kind core.Kind, loc Location, in HookInput) (Reply, error) {
@@ -286,7 +330,24 @@ func (e Env) briefing(ctx context.Context, a Adoption) core.Briefing {
 			}
 		}
 	}
+	if name != "" && name != a.Record.Crew {
+		e.recordCrew(ctx, a.Record.BlockID, a.Record.Handle, name)
+	}
 	return e.briefingIn(ctx, a.Record, a.Role, name)
+}
+
+func (e Env) recordCrew(ctx context.Context, block string, h core.Handle, crewName string) {
+	unlock, err := e.Store.LockLifecycle(ctx)
+	if err != nil {
+		return
+	}
+	defer unlock()
+	rec, ok, err := e.Store.Record(block)
+	if err != nil || !ok || !rec.Live() || rec.Handle != h || rec.Crew == crewName {
+		return
+	}
+	rec.Crew = crewName
+	_ = e.Store.PutRecord(rec)
 }
 
 // briefingIn is rec's briefing as role in the crew named name ("" for none).

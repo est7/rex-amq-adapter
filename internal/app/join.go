@@ -72,7 +72,7 @@ func (e Env) Join(ctx context.Context, loc Location, crewName, role string) (Joi
 		return Joined{}, errors.New("name a crew, a role (--role), or both")
 	}
 	was := rec.Role
-	if rec, err = e.takeRole(ctx, loc, rec.Handle, role); err != nil {
+	if rec, err = e.takeRole(ctx, loc, rec.Handle, role, c.Name); err != nil {
 		return Joined{}, err
 	}
 	var mates []core.Peer
@@ -150,8 +150,9 @@ func (e Env) tabCrew(ctx context.Context, session, window string) string {
 	return ""
 }
 
-// takeRole records role for the agent h in loc and shows it in the pane.
-func (e Env) takeRole(ctx context.Context, loc Location, h core.Handle, role string) (store.Record, error) {
+// takeRole records role (and crewName, when non-empty) for the agent h in loc
+// and shows it in the pane.
+func (e Env) takeRole(ctx context.Context, loc Location, h core.Handle, role, crewName string) (store.Record, error) {
 	unlock, err := e.Store.LockLifecycle(ctx)
 	if err != nil {
 		return store.Record{}, err
@@ -165,6 +166,9 @@ func (e Env) takeRole(ctx context.Context, loc Location, h core.Handle, role str
 		return store.Record{}, fmt.Errorf("the agent in %s changed while joining", loc.Block)
 	}
 	rec.Role = role
+	if crewName != "" {
+		rec.Crew = crewName
+	}
 	if err := e.Store.PutRecord(rec); err != nil {
 		return store.Record{}, err
 	}
