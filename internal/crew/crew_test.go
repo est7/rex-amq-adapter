@@ -210,3 +210,27 @@ func TestCrewHeaders(t *testing.T) {
 		t.Errorf("a broken header is not reported with its file: %v", err)
 	}
 }
+
+// A crew tab's label may carry a topic after "|"; the crew is the part
+// before it, and a hyphenated crew name is read whole, as Name reads it.
+func TestCrewTabName(t *testing.T) {
+	if Name("ship-topic") != "ship-topic" || TabName("ship-topic") != "ship-topic" {
+		t.Errorf("hyphenated crew: Name %q, TabName %q", Name("ship-topic"), TabName("ship-topic"))
+	}
+	for label, want := range map[string]string{
+		"ship | login":        "ship",
+		"Ship|login":          "ship",
+		"ship-topic | fix it": "ship-topic",
+		"Pair":                "pair",
+		"narrator":            "narrator",
+		" | topic":            "",
+		"":                    "",
+	} {
+		if got := TabName(label); got != want {
+			t.Errorf("TabName(%q) = %q, want %q", label, got, want)
+		}
+	}
+	if Name("ship | login") != "ship-login" {
+		t.Errorf("Name changed: %q", Name("ship | login"))
+	}
+}

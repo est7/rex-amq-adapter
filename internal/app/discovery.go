@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
-	"github.com/est7/rex-amq-adapter/internal/crew"
 	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
@@ -102,9 +101,18 @@ func (s Session) tab(w string) string {
 }
 
 // CollectSession reconciles records with Rex as Collect does, for s only,
-// and brings the records of s's agents up to date with its layout.
+// brings the records of s's agents up to date with its layout, and then
+// each follower tab of s to the agent left in it.
 func (e Env) CollectSession(ctx context.Context, s Session) error {
-	return errors.Join(e.followMoves(ctx, s), e.collect(ctx, s.reconciles))
+	err := errors.Join(e.followMoves(ctx, s), e.collect(ctx, s.reconciles))
+	on := e
+	if e.RexOn != nil && s.server != "" {
+		on.Rex = e.RexOn(s.server)
+	}
+	if fresh, lerr := on.loadSession(ctx, s.server, s.id); lerr == nil {
+		s = fresh
+	}
+	return errors.Join(err, on.followTabs(ctx, s))
 }
 
 // followMoves records the session and window each agent's block is in now. A
@@ -129,7 +137,8 @@ func (e Env) followMoves(ctx context.Context, s Session) error {
 		}
 		r.WindowID, r.SessionID = placed, s.id
 		if l := s.tabs[placed]; l != "" {
-			r.Crew = crew.Name(l)
+			cwd := r.Cwd
+			r.Crew = e.crewOfTab(placed, l, func() string { return cwd })
 		}
 		if err := e.Store.PutRecord(r); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", r.Handle, err))

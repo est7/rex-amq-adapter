@@ -171,6 +171,13 @@ to start; it then splits the reviewer in beside it. Another agent already in
 the tab keeps its crew: `join` refuses, and the crew goes in a new tab with
 `tab`. `join --role R` takes a role without changing the tab.
 
+A tab that `join` or `tab` gave a crew stays that crew's, and you may add a
+topic after a bar (`ship | release` is still crew `ship`). A tab nobody named
+(Rex's `Window 4c6fe88d`) or one `summon` opened follows its agent instead:
+while one agent is in it, it shows that agent's pane label, and it follows
+the agent's task and role. A tab with several agents keeps its label, and a
+tab you renamed keeps your name.
+
 A session without an orchestrator assumes you are watching: an agent that stops
 is yours to notice. Label a pane `orchestrator` and that agent coordinates the
 session instead. It owns the goal, records progress, reports, and decides how to recover (when a skill for running goal contracts such as `run-goal` is installed it follows that skill, whose contract says whether you stay or have left; without one it takes every open call to you): it is woken at once when a peer
@@ -264,7 +271,8 @@ hooks that omit the field keep their existing behavior.
 `~/.local/state/rex-amq-adapter/` (override with `REX_AMQ_ADAPTER_HOME`):
 `amq-root/` (the shared AMQ root), `bin/inject` (the wrapper wakers run), `records/` (one per handle),
 `ledger/` (announced message ids), `window/` (join and departure notes waiting
-for an agent's next prompt), `inject/<handle>.jsonl` (every doorbell
+for an agent's next prompt), `tabs/` (who names each tab: a follower, a crew,
+or you), `inject/<handle>.jsonl` (every doorbell
 attempt and why it waited, trimmed past 1 MB; `who` shows the latest as LAST
 DOORBELL, e.g. `deferred box_not_found 23m` when the adapter cannot find an
 agent's input box, or `-` when no mail is waiting and the last attempt was not

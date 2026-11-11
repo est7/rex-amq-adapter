@@ -270,6 +270,33 @@ work on this section, the session holding this adapter's tab was renamed by an
 agent in another of its tabs. A second writer with its own format would only
 fight over it.
 
+**Tab labels.** A tab (Rex window) has one owner, which the tab ledger
+(`tabs/<window>.json`: `window_id`, `session_id`, `mode`, `crew`,
+`last_label`) records:
+
+| Mode | Label | Who writes it |
+|---|---|---|
+| `auto` (follower) | the pane label of the one agent in it | the adapter, at adoption, `title`, `join --role`, a departure (`park`), and every reconciliation of the session (`who`, the orchestrator's watcher) |
+| `crew` | `<crew>` or `<crew> \| <topic>` | `join CREW` and `tab <crew>` claim it; the user may add a topic |
+| `narrator` | `narrator` | reserved: `tab narrator` claims it, nothing names it yet |
+| `manual` | whatever the user typed | the user; the adapter never writes it again |
+
+A tab `summon` opens (when the caller's pane is too small to split) is
+recorded `auto` under its launch label, `<role> | <task>`, and adoption brings
+it to the agent's pane label. A tab the ledger does not know is a follower only
+while it shows Rex's placeholder, `Window ` and eight lowercase hex digits
+(`Window 4c6fe88d`); it is recorded `auto` when first seen so. A follower is
+renamed only while it holds exactly one block whose agent is live: a tab of
+several agents keeps its label until it holds one again, and the adapter's
+tabs of other kinds (the watchdog's `overflow`) stay unrecorded and are never
+renamed. A follower whose label is neither the placeholder, the label the
+adapter last gave it, nor its agent's current pane label was renamed by
+someone else: it turns `manual` and keeps that name. The ledger is best
+effort. Rex keeps no record of who named a window, so a user renaming a tab to
+exactly the label the adapter would give it, or a rename racing a split, is
+not told apart, and two writers of one entry race without a lock (the last
+write wins). Exact ownership needs Rex to record a window's naming intent.
+
 **Record** (one JSON file per handle, the single source of truth):
 
 ```json
@@ -514,7 +541,14 @@ labels say what kind of
 team it is and what each member does. The tab label names a crew, the pane
 label a role, which the record keeps. From then on the record is the role:
 the label is overwritten, a resumed agent may land in any pane, and briefing and
-orchestrator behaviour both read it. An agent learns both with its identity, at
+orchestrator behaviour both read it. A tab names a crew only when the tab
+ledger (see **Tab labels**) records it as claimed for one, by `join` or `tab`:
+its crew is the part of the label before any `|` (`ship | release` is crew
+`ship`, `ship-topic` stays `ship-topic`). A follower, narrator, or manual tab
+names none, whatever its label reads as. A tab named before the ledger existed
+names a crew only when its label leads with one an agent there can find, and
+never when it is Rex's placeholder or an agent's pane label
+(`reviewer(claude-01)`). An agent learns both with its identity, at
 adoption:
 
 - The crew's `team-conventions.md` (who leads, the order of handoffs, when to
@@ -523,8 +557,8 @@ adoption:
   `~/.config/rex-amq-adapter/crews`, then the built-in set. The first file
   found wins whole; a crew's own `<role>.md` beats the shared
   `roles/<role>.md`. Conventions win over a role prompt where they differ.
-- A tab that names no crew (Rex's default `Window 82b616eb`, any unknown
-  name) gives role prompts only, so a reviewer split into an ordinary tab is
+- A tab that names no crew (Rex's default `Window 82b616eb`, a follower
+  showing an agent's pane label, any unknown name) gives role prompts only, so a reviewer split into an ordinary tab is
   still briefed. An agent without a role in such a tab hears nothing more.
 - Briefings are advice, like mates: a lookup that fails is logged and left
   out. A prompt over 4 000 bytes is named by path instead of inlined.
@@ -548,14 +582,16 @@ adoption:
   declares none).
 - `rex window new` cannot label the block and `rex run` cannot label the
   tab, so `rex-amq-adapter tab <crew> --role R -- CMD` opens both in one
-  `session.new_window` call; `crews` lists what an agent in a directory
-  would find.
+  `session.new_window` call and claims the tab for the crew in the tab
+  ledger (`tab narrator` claims a narrator tab); `crews` lists what an agent
+  in a directory would find.
 - `rex-amq-adapter join [CREW] [--role R]` makes the calling agent take a
   role where it stands: the agent the user is talking to becomes the crew's
   lead instead of briefing a new one in another tab. With CREW it names the
   tab after the crew, unless another live agent is in the tab (that agent's
   crew would change under it: the error says to open a new tab with `tab`),
-  and takes R or the crew's lead. The role goes into the record under the
+  and takes R or the crew's lead; the tab is claimed for the crew in the tab
+  ledger whether it was renamed or already named so. The role goes into the record under the
   lifecycle lock, the pane is relabelled, an orchestrator's watcher starts, and
   the briefing is printed with the members still to start. Later adoptions
   keep the role.
@@ -1072,6 +1108,7 @@ Overridable with `REX_AMQ_ADAPTER_HOME` (tests use a temporary directory).
 ├── logs/hooks.log            hook failures
 ├── logs/summon.log           summon launches and self-attested grants
 ├── window/<handle>           window notes (joins, departures) queued for the next prompt
+├── tabs/<window>.json        the tab ledger: who names each tab (auto, crew, narrator, manual) and its last label
 ├── title/<handle>            the title last given each session's harness (Claude Code, Pi)
 ├── task-asked/<handle>       the last Claude Code or Pi session asked for a task at its first prompt
 ├── summons/<token>.json      pending summon launches reserving a place in the session's cap

@@ -355,9 +355,13 @@ func (e Env) launch(ctx context.Context, caller store.Record, s Session, label, 
 	}
 	cmd = append([]string{"env", SummonEnv + "=" + token}, cmd...)
 	if size, err := e.Rex.Size(ctx, caller.BlockID); err == nil && size.Rows > 0 && size.Rows < 2*core.TinyRows {
-		_, shell, err := e.Rex.NewTab(ctx, s.id, label)
+		window, shell, err := e.Rex.NewTab(ctx, s.id, label)
 		if err != nil {
 			return "", err
+		}
+		// A follower tab: adoption brings it to the agent's pane label.
+		if err := e.Store.PutTab(store.Tab{WindowID: window, SessionID: s.id, Mode: core.WindowAuto, LastLabel: label}); err != nil {
+			fmt.Fprintf(Diagnostics, "record the tab %s: %v\n", window, err)
 		}
 		block, err := e.Rex.NewSplit(ctx, s.id, shell, label, cwd, cmd)
 		if err != nil {
