@@ -665,7 +665,10 @@ look is logged and swallowed, so it never stops the watcher.
    `box_not_found` at a normal size, `undelivered` (any other deferral but `agent_working`),
    `moved_by_user`, `recovery_failed`, and `place_failed` (a detached block
    that could not be placed, retried every look). A trust screen or a blocked status
-   is left to the third look.
+   is left to the third look. A report about the orchestrator's own pane goes
+   to a live agent of another model family in the session, or to the desktop
+   when there is none, as the transcript look's findings do: its own inbox is
+   the one that is stuck.
 2. *Transcript* (`health.go`, `internal/transcript`). This look covers what no
    hook can report because the turn has not ended. It reads the last 512 KB of
    the agent's own transcript and pairs tool calls by id, matching no wording.

@@ -361,3 +361,93 @@ func TestWatchdogRecoversTheOrchestratorsOwnPane(t *testing.T) {
 		t.Fatalf("the watcher cannot look again: %v", err)
 	}
 }
+
+// A report about the orchestrator's own pane never goes to its own stuck
+// inbox: a live agent of another model family hears it, or the desktop when
+// none can (none is there, or the only one's last turn ended in an error).
+func TestWatchdogReportsTheOrchestratorsOwnPaneElsewhere(t *testing.T) {
+	setup := func(t *testing.T) (Env, store.Record, Session, *[]string) {
+		e, term, orch, s, _ := stuckWorld(t, "", "idle", false)
+		orch.AgentPID = term.fgPID
+		if err := e.Store.PutRecord(orch); err != nil {
+			t.Fatal(err)
+		}
+		term.rows[orch.BlockID] = 40
+		if err := amq.Send(context.Background(), e.AmqBin, e.Paths.Root(), "codex", "orch-01", "brief", "do this"); err != nil {
+			t.Fatal(err)
+		}
+		for _, at := range []time.Time{e.Now().Add(-40 * time.Second), e.Now().Add(-10 * time.Second)} {
+			if err := e.Store.RecordInject(orch.Handle, core.Outcome{Progress: core.Deferred, Code: "box_not_found"}, at); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var desk []string
+		e.Notify = func(_, text string) { desk = append(desk, text) }
+		return e, orch, s, &desk
+	}
+	codexUnread := func(t *testing.T, e Env) int {
+		ids, err := amq.Unread(e.Paths.Root(), "codex")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(ids)
+	}
+	t.Run("another family hears it", func(t *testing.T) {
+		e, orch, s, desk := setup(t)
+		before := codexUnread(t, e)
+		if err := e.watchPeer(context.Background(), orch, s, orch); err != nil {
+			t.Fatal(err)
+		}
+		if n := len(goalInbox(t, e)); n != 1 {
+			t.Fatalf("the orchestrator's own inbox holds %d messages, want only the one stuck there", n)
+		}
+		if got := codexUnread(t, e); got != before+1 {
+			t.Fatalf("codex unread %d, want %d", got, before+1)
+		}
+		if len(*desk) != 0 {
+			t.Fatalf("desktop told: %v", *desk)
+		}
+	})
+	t.Run("the desktop hears it when no other family is there", func(t *testing.T) {
+		e, orch, s, desk := setup(t)
+		peer, _, err := e.Store.Record(block)
+		if err != nil {
+			t.Fatal(err)
+		}
+		peer.Kind = core.Claude
+		if err := e.Store.PutRecord(peer); err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < 2; i++ {
+			if err := e.watchPeer(context.Background(), orch, s, orch); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if n := len(goalInbox(t, e)); n != 1 {
+			t.Fatalf("the orchestrator's own inbox holds %d messages, want 1", n)
+		}
+		if len(*desk) != 1 || !strings.Contains((*desk)[0], "box_not_found") {
+			t.Fatalf("desktop: %v, want one box_not_found notice", *desk)
+		}
+	})
+	t.Run("a flagged other family is skipped", func(t *testing.T) {
+		e, orch, s, desk := setup(t)
+		peer, _, err := e.Store.Record(block)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := e.markTurnError(context.Background(), peer); err != nil {
+			t.Fatal(err)
+		}
+		before := codexUnread(t, e)
+		if err := e.watchPeer(context.Background(), orch, s, orch); err != nil {
+			t.Fatal(err)
+		}
+		if got := codexUnread(t, e); got != before {
+			t.Fatalf("a flagged agent was told: unread %d, want %d", got, before)
+		}
+		if len(*desk) != 1 {
+			t.Fatalf("desktop: %v, want one notice", *desk)
+		}
+	})
+}

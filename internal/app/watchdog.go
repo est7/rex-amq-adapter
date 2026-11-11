@@ -170,24 +170,24 @@ func (e Env) stepPeer(ctx context.Context, orch store.Record, s Session, rec sto
 
 	switch {
 	case ep.Placement == core.Theirs:
-		return e.report(ctx, orch, rec, &ep, core.ReportMovedByUser, fmt.Sprintf("Its pane is no longer where the watchdog put it (the %s tab), so the watchdog leaves it alone.", core.OverflowTab), l.lines)
+		return e.report(ctx, orch, s, rec, &ep, core.ReportMovedByUser, fmt.Sprintf("Its pane is no longer where the watchdog put it (the %s tab), so the watchdog leaves it alone.", core.OverflowTab), l.lines)
 	// Zero keystrokes on any dialog or draft. A trust screen or a blocked
 	// prompt is the blocked look's to report (blocked.go), mail or not.
 	case l.trust != "", l.status == core.StateBlocked:
 		return nil
 	case l.box == screen.Typed:
-		return e.report(ctx, orch, rec, &ep, core.ReportDraft, "Its input box holds a draft, so no doorbell can be typed.", l.lines)
+		return e.report(ctx, orch, s, rec, &ep, core.ReportDraft, "Its input box holds a draft, so no doorbell can be typed.", l.lines)
 	case ep.Moved() && l.code == "box_not_found":
-		return e.continueRecovery(ctx, orch, rec, &ep, l)
+		return e.continueRecovery(ctx, orch, s, rec, &ep, l)
 	}
 	if !core.MayMove(l.code, l.columns, l.rows) {
 		if l.code == "box_not_found" {
-			return e.report(ctx, orch, rec, &ep, core.ReportBoxNotFound, fmt.Sprintf("Its pane measures %dx%d, large enough, yet doorbells find no input box.", l.columns, l.rows), l.lines)
+			return e.report(ctx, orch, s, rec, &ep, core.ReportBoxNotFound, fmt.Sprintf("Its pane measures %dx%d, large enough, yet doorbells find no input box.", l.columns, l.rows), l.lines)
 		}
-		return e.report(ctx, orch, rec, &ep, core.ReportUndelivered, fmt.Sprintf("Every doorbell since %s deferred with %s.", core.Ago(e.Now().Sub(l.since)), l.code), l.lines)
+		return e.report(ctx, orch, s, rec, &ep, core.ReportUndelivered, fmt.Sprintf("Every doorbell since %s deferred with %s.", core.Ago(e.Now().Sub(l.since)), l.code), l.lines)
 	}
 	if ep.Attempts >= core.MaxAttempts {
-		return e.report(ctx, orch, rec, &ep, core.ReportRecoveryFailed, fmt.Sprintf("Its pane could not be recovered after %d attempts.", ep.Attempts), l.lines)
+		return e.report(ctx, orch, s, rec, &ep, core.ReportRecoveryFailed, fmt.Sprintf("Its pane could not be recovered after %d attempts.", ep.Attempts), l.lines)
 	}
 	v, err := e.recover(ctx, orch, rec, &ep, s, l)
 	return e.handOff(ctx, orch, rec, &ep, v, err)
@@ -197,12 +197,12 @@ func (e Env) stepPeer(ctx context.Context, orch store.Record, s Session, rec sto
 // is still undelivered: resize it if that never took and nobody renders it,
 // verify it, and hand the mail over. A recovery already reported failed, or
 // out of attempts, is left to the injector, which keeps ringing on its own.
-func (e Env) continueRecovery(ctx context.Context, orch store.Record, rec store.Record, ep *core.Episode, l look) error {
+func (e Env) continueRecovery(ctx context.Context, orch store.Record, s Session, rec store.Record, ep *core.Episode, l look) error {
 	if _, failed := ep.Reported[core.ReportRecoveryFailed]; failed {
 		return nil
 	}
 	if ep.Attempts >= core.MaxAttempts {
-		return e.report(ctx, orch, rec, ep, core.ReportRecoveryFailed, fmt.Sprintf("Its pane could not be recovered after %d attempts.", ep.Attempts), l.lines)
+		return e.report(ctx, orch, s, rec, ep, core.ReportRecoveryFailed, fmt.Sprintf("Its pane could not be recovered after %d attempts.", ep.Attempts), l.lines)
 	}
 	var v verdict
 	var err error
@@ -216,7 +216,7 @@ func (e Env) continueRecovery(ctx context.Context, orch store.Record, rec store.
 		if ep.Resized {
 			detail = fmt.Sprintf("Its pane was resized to %dx%d, yet doorbells still find no input box (it measures %dx%d now).", core.RecoverColumns, core.RecoverRows, l.columns, l.rows)
 		}
-		return e.report(ctx, orch, rec, ep, core.ReportRecoveryFailed, detail, l.lines)
+		return e.report(ctx, orch, s, rec, ep, core.ReportRecoveryFailed, detail, l.lines)
 	}
 	return e.handOff(ctx, orch, rec, ep, v, err)
 }
@@ -498,7 +498,7 @@ func (e Env) place(ctx context.Context, orch store.Record, rec store.Record, ep 
 		}
 	}
 	if err != nil {
-		if rerr := e.report(ctx, orch, rec, ep, core.ReportPlaceFailed, "Its pane is detached from every window and could not be placed in the "+core.OverflowTab+" tab: "+err.Error()+". The watchdog retries; `rex move` places it by hand.", nil); rerr != nil {
+		if rerr := e.report(ctx, orch, s, rec, ep, core.ReportPlaceFailed, "Its pane is detached from every window and could not be placed in the "+core.OverflowTab+" tab: "+err.Error()+". The watchdog retries; `rex move` places it by hand.", nil); rerr != nil {
 			return rerr
 		}
 		return err
@@ -535,8 +535,9 @@ func (e Env) overflowTab(ctx context.Context, session string) (window, anchor, s
 }
 
 // report tells the orchestrator once per code per episode, in the stuck
-// peer's name.
-func (e Env) report(ctx context.Context, orch store.Record, rec store.Record, ep *core.Episode, code, detail string, lines []string) error {
+// peer's name; a report about the orchestrator's own pane goes where
+// findingRecipient says, since its own inbox is the one that is stuck.
+func (e Env) report(ctx context.Context, orch store.Record, s Session, rec store.Record, ep *core.Episode, code, detail string, lines []string) error {
 	if ep.Reported == nil {
 		ep.Reported = map[string]time.Time{}
 	}
@@ -544,7 +545,17 @@ func (e Env) report(ctx context.Context, orch store.Record, rec store.Record, ep
 		return nil
 	}
 	subject, body := core.WatchdogReport(peerOf(rec), *ep, code, detail, lines)
-	if err := amq.Send(ctx, e.AmqBin, e.Paths.Root(), string(rec.Handle), string(orch.Handle), subject, body); err != nil {
+	to, ok := e.findingRecipient(s, rec, orch)
+	if !ok {
+		e.desktop("rex-amq-adapter", string(rec.Handle)+": "+code+", and no agent of another model family is in the session")
+		e.wdLog(orch, rec, "report-desktop", ep.ID, code+": no other family in the session")
+		ep.Reported[code] = e.Now()
+		return e.Store.PutEpisode(*ep)
+	}
+	if to != orch.Handle {
+		body += "\n\nSent to you because the finding is about the orchestrator " + string(orch.Handle) + " itself."
+	}
+	if err := amq.Send(ctx, e.AmqBin, e.Paths.Root(), string(rec.Handle), string(to), subject, body); err != nil {
 		return err
 	}
 	e.seedSentCursor(rec.Handle)

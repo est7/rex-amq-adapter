@@ -68,15 +68,13 @@ func (e Env) screenLines(ctx context.Context, rec store.Record) []string {
 // or to the user's desktop when there is none.
 func (e Env) healthNotice(ctx context.Context, orch store.Record, s Session, rec store.Record, code string, tail core.Tail, h core.Health, screen []string) error {
 	subject, body := core.HealthNotice(peerOf(rec), code, tail, h, screen, e.Now())
-	to := orch.Handle
-	if rec.Handle == orch.Handle {
-		other, ok := e.otherFamily(s, rec, orch)
-		if !ok {
-			e.desktop("rex-amq-adapter", string(rec.Handle)+": "+code+", and no agent of another model family is in the session")
-			e.wdLog(orch, rec, "notice-desktop", "", code+": no other family in the session")
-			return nil
-		}
-		to = other.Handle
+	to, ok := e.findingRecipient(s, rec, orch)
+	if !ok {
+		e.desktop("rex-amq-adapter", string(rec.Handle)+": "+code+", and no agent of another model family is in the session")
+		e.wdLog(orch, rec, "notice-desktop", "", code+": no other family in the session")
+		return nil
+	}
+	if to != orch.Handle {
 		body += "\n\nSent to you because the finding is about the orchestrator " + string(orch.Handle) + " itself."
 	}
 	if err := amq.Send(ctx, e.AmqBin, e.Paths.Root(), string(rec.Handle), string(to), subject, body); err != nil {
@@ -267,15 +265,27 @@ func (e Env) sessionPeersForError(rec store.Record) ([]core.Peer, map[core.Handl
 	return peers, byHandle, crewLead
 }
 
-// otherFamily finds a live agent in s of a model family other than rec's
-// and the orchestrator's.
+// findingRecipient is who hears a watchdog finding about rec: the
+// orchestrator, or, for a finding about the orchestrator itself, a live agent
+// of another model family in s. ok is false when the finding is about the
+// orchestrator and no such agent exists: the caller tells the desktop.
+func (e Env) findingRecipient(s Session, rec, orch store.Record) (to core.Handle, ok bool) {
+	if rec.Handle != orch.Handle {
+		return orch.Handle, true
+	}
+	other, ok := e.otherFamily(s, rec, orch)
+	return other.Handle, ok
+}
+
+// otherFamily finds a live agent in s of a model family other than rec's and
+// the orchestrator's, whose own last turn did not end in an error.
 func (e Env) otherFamily(s Session, rec, orch store.Record) (store.Record, bool) {
 	recs, err := e.Store.Records()
 	if err != nil {
 		return store.Record{}, false
 	}
 	for _, r := range recs {
-		if r.Live() && s.holds(r) && r.Kind != rec.Kind && r.Kind != orch.Kind && r.Handle != rec.Handle {
+		if r.Live() && s.holds(r) && r.Kind != rec.Kind && r.Kind != orch.Kind && r.Handle != rec.Handle && !e.flagged(r) {
 			return r, true
 		}
 	}
