@@ -144,7 +144,12 @@ func (e Env) park(ctx context.Context, rec store.Record, reason string) error {
 	}
 	e.leaveSession(ctx, rec)
 	// A tab it shared may now hold one agent, whose label it then follows.
-	e.followTab(ctx, rec.SessionID, rec.WindowID)
+	// The tab is on the record's server, which collection may not be on.
+	on := e
+	if e.RexOn != nil && rec.Server != "" {
+		on.Rex = e.RexOn(rec.Server)
+	}
+	on.followTab(ctx, rec.SessionID, rec.WindowID)
 	if err := e.finishDeparture(ctx, rec); err != nil {
 		fmt.Fprintf(Diagnostics, "finish the departure of %s: %v\n", rec.Handle, err)
 	}

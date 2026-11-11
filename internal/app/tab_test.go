@@ -375,3 +375,24 @@ func TestWindowLedgerClaimTab(t *testing.T) {
 		}
 	}
 }
+
+// Park follows the tab on the departed record's own server: collection may
+// run from another.
+func TestFollowerTabParkUsesTheRecordsServer(t *testing.T) {
+	e, term := tabWorld(t, placeholder, "block:a", "block:b")
+	ctx := context.Background()
+	a, _ := startPi(t, e, "block:a", "s1")
+	b, _ := startPi(t, e, "block:b", "s2")
+	var asked []string
+	e.Rex = &fakeTerm{}
+	e.RexOn = func(server string) Terminal { asked = append(asked, server); return term }
+	if err := term.CloseBlock(ctx, "block:b"); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.park(ctx, recordOf(t, e, b), "block_gone"); err != nil {
+		t.Fatal(err)
+	}
+	if got := tabOf(term, "window:1"); got != string(a) || !slices.Contains(asked, "unix:///fake.sock") {
+		t.Errorf("tab %q, servers asked %v", got, asked)
+	}
+}
