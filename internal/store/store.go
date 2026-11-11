@@ -624,10 +624,12 @@ type HealthMark struct {
 	// turn in an error; a new turn of that agent clears it.
 	TurnErroredAt time.Time `json:"turn_errored_at,omitempty"`
 	TurnErroredBy string    `json:"turn_errored_by,omitempty"`
-	// BlockedSince is when the agent was first seen on a blocked prompt or
-	// a trust screen in the current episode; BlockedTold that it was told.
+	// BlockedSince is when the agent run BlockedBy (turnKey) was first seen
+	// on a blocked prompt or a trust screen in the current episode;
+	// BlockedTold that it was told. Another run in the block starts its own.
 	BlockedSince time.Time `json:"blocked_since,omitempty"`
 	BlockedTold  bool      `json:"blocked_told,omitempty"`
+	BlockedBy    string    `json:"blocked_by,omitempty"`
 }
 
 // LockHealth serialises the read-modify-write of block's HealthMark between

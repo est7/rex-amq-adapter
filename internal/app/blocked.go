@@ -35,6 +35,10 @@ func (e Env) blocked(ctx context.Context, orch store.Record, s Session, rec stor
 	if err != nil {
 		return err
 	}
+	if mark.BlockedBy != turnKey(rec) {
+		// Another run's episode: this run starts its own.
+		mark.BlockedSince, mark.BlockedTold = time.Time{}, false
+	}
 	what := ""
 	st, reports, err := e.Rex.ProgramStatus(ctx, rec.BlockID)
 	if err != nil {
@@ -60,13 +64,13 @@ func (e Env) blocked(ctx context.Context, orch store.Record, s Session, rec stor
 		// The prompt is gone: the episode ends. Mail coming or going does
 		// not end it, and does not change who reports it.
 		if !mark.BlockedSince.IsZero() {
-			mark.BlockedSince, mark.BlockedTold = time.Time{}, false
+			mark.BlockedSince, mark.BlockedTold, mark.BlockedBy = time.Time{}, false, ""
 			return e.Store.PutHealthMark(rec.BlockID, mark)
 		}
 		return nil
 	}
 	if mark.BlockedSince.IsZero() {
-		mark.BlockedSince = now
+		mark.BlockedSince, mark.BlockedBy = now, turnKey(rec)
 		return e.Store.PutHealthMark(rec.BlockID, mark)
 	}
 	if mark.BlockedTold || now.Sub(mark.BlockedSince) < core.StuckFor {

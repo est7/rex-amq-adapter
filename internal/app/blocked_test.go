@@ -157,3 +157,24 @@ func TestMailDoesNotResetABlock(t *testing.T) {
 		t.Fatalf("desktop %v blocked.log %v", *desktop, blockedLines(t, e))
 	}
 }
+
+// A blocked episode belongs to one agent run: a new agent blocked in a pane
+// whose previous agent was already reported is reported too, once.
+func TestANewAgentInABlockedPaneIsReported(t *testing.T) {
+	e, term, orch, s, now, _ := healthWorld(t)
+	if err := e.Store.PutHealthMark(block, store.HealthMark{BlockedSince: now.Add(-10 * time.Minute), BlockedTold: true}); err != nil {
+		t.Fatal(err)
+	}
+	term.states = map[string]rex.Status{block: {State: "blocked", Kind: "permission"}}
+	e.watchdog(context.Background(), orch, s)
+	*now = now.Add(core.StuckFor + time.Second)
+	e.watchdog(context.Background(), orch, s)
+	if len(inboxOf(t, e, "orch-01")) != 1 || len(blockedLines(t, e)) != 1 {
+		t.Fatalf("orchestrator inbox %v blocked.log %v, want one each", inboxOf(t, e, "orch-01"), blockedLines(t, e))
+	}
+	*now = now.Add(time.Minute)
+	e.watchdog(context.Background(), orch, s)
+	if len(inboxOf(t, e, "orch-01")) != 1 || len(blockedLines(t, e)) != 1 {
+		t.Fatalf("told again: orchestrator inbox %v blocked.log %v", inboxOf(t, e, "orch-01"), blockedLines(t, e))
+	}
+}
