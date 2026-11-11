@@ -614,14 +614,16 @@ func (s Store) ClearEpisode(block string) error {
 	return err
 }
 
-// HealthMark is what the watchdog and stop hooks last told the session about
-// an agent's transcript or turn outcome, so each finding is reported once.
+// HealthMark is what the watchdog last told the session about an agent's
+// transcript, so each finding is reported once, and whether the agent's last
+// turn ended in an error (a stop hook reported it).
 type HealthMark struct {
-	LastErrorID   string    `json:"last_error_id,omitempty"`
-	LastHungID    string    `json:"last_hung_id,omitempty"`
-	LastStallAt   time.Time `json:"last_stall_at,omitempty"`
-	HookToldAt    time.Time `json:"hook_told_at,omitempty"`
+	LastHungID  string    `json:"last_hung_id,omitempty"`
+	LastStallAt time.Time `json:"last_stall_at,omitempty"`
+	// TurnErroredAt is when TurnErroredBy (handle/agent session) last ended a
+	// turn in an error; a new turn of that agent clears it.
 	TurnErroredAt time.Time `json:"turn_errored_at,omitempty"`
+	TurnErroredBy string    `json:"turn_errored_by,omitempty"`
 	// BlockedSince is when the agent was first seen on a blocked prompt or
 	// a trust screen in the current episode; BlockedTold that it was told.
 	BlockedSince time.Time `json:"blocked_since,omitempty"`
@@ -629,7 +631,7 @@ type HealthMark struct {
 }
 
 // LockHealth serialises the read-modify-write of block's HealthMark between
-// the goal watchdog and stop/error hooks.
+// the orchestrator watchdog and stop/error hooks.
 func (s Store) LockHealth(ctx context.Context, block string) (func(), error) {
 	return fsutil.Flock(ctx, filepath.Join(s.P.watchdog(), "."+fileKey(block)+".health.lock"))
 }

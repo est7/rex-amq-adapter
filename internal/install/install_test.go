@@ -1,6 +1,7 @@
 package install
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -488,5 +489,58 @@ func TestAgyTitleCommand(t *testing.T) {
 	}
 	if items, _ := Remove(agents, Options{SelfBin: "/new/rex-amq-adapter"}); items[2].Change != "kept" || !strings.Contains(read(t, settings), "my-title.sh") {
 		t.Fatalf("remove dropped someone else's title: %+v", items)
+	}
+}
+
+// An install from before StopFailure reads as outdated for Claude and gains
+// it on the next setup; remove takes a StopFailure entry of ours away from any
+// harness, so one left in Codex's file by another version goes too.
+func TestStopFailureUpgradeAndRemoval(t *testing.T) {
+	dir, agents := setup(t)
+	self := "/opt/x/rex-amq-adapter"
+	if _, err := Setup(agents, Options{SelfBin: self}); err != nil {
+		t.Fatal(err)
+	}
+	edit := func(path string, f func(hooks map[string]any)) {
+		t.Helper()
+		var root map[string]any
+		if err := json.Unmarshal([]byte(read(t, path)), &root); err != nil {
+			t.Fatal(err)
+		}
+		f(root["hooks"].(map[string]any))
+		b, _ := json.MarshalIndent(root, "", "  ")
+		if err := os.WriteFile(path, b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	claudeFile := filepath.Join(dir, ".claude", "settings.json")
+	codexFile := filepath.Join(dir, ".codex", "hooks.json")
+	var claude, codex Agent
+	for _, a := range agents {
+		switch a.Kind {
+		case core.Claude:
+			claude = a
+		case core.Codex:
+			codex = a
+		}
+	}
+	edit(claudeFile, func(h map[string]any) { delete(h, "StopFailure") })
+	if st, err := hookState(claude, self); err != nil || st != "outdated" {
+		t.Fatalf("Claude without StopFailure: %q %v", st, err)
+	}
+	if _, err := Setup(agents, Options{SelfBin: self}); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := hookState(claude, self); err != nil || st != "current" || !strings.Contains(read(t, claudeFile), `"StopFailure"`) {
+		t.Fatalf("setup did not add StopFailure back: %q %v", st, err)
+	}
+	edit(codexFile, func(h map[string]any) {
+		h["StopFailure"] = []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": hookCommand(self, "stop-failure", core.Codex), "timeout": 3}}}}
+	})
+	if _, err := Remove([]Agent{codex}, Options{SelfBin: self}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(read(t, codexFile), "StopFailure") {
+		t.Fatalf("remove left Codex's stray StopFailure:\n%s", read(t, codexFile))
 	}
 }

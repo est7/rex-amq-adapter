@@ -241,7 +241,7 @@ func TestAssessIgnoresToolResultErrorsButNoticesStillMarkThem(t *testing.T) {
 		t.Fatalf("want 1 turn-level error row, got %+v", h.Errors)
 	}
 	peer := core.Peer{Handle: "claude-01", Kind: core.Claude}
-	_, hBody := core.HealthNotice(peer, core.NoticeTranscriptError, withTurnErr, h, nil, now)
+	_, hBody := core.HealthNotice(peer, core.NoticeStalled, withTurnErr, h, nil, now)
 	_, eBody := core.ErrorNotice(peer, core.NoticeTurnError, "5-hour limit", "its summoner", withTurnErr)
 	for name, body := range map[string]string{"HealthNotice": hBody, "ErrorNotice": eBody} {
 		if !strings.Contains(body, "tool_result [error]: exit status 1") || !strings.Contains(body, "error [error]: 5-hour limit") {
@@ -281,7 +281,7 @@ func TestAgyStepErrorIsToolResultNotTurnError(t *testing.T) {
 	withTurn := tail
 	withTurn.Rows = append(withTurn.Rows, core.Row{ID: "99", At: now, Kind: "error", Error: true, Text: "turn failed"})
 	h := core.Assess(withTurn, false, now)
-	_, body := core.HealthNotice(core.Peer{Handle: "agy-01", Kind: core.Agy}, core.NoticeTranscriptError, withTurn, h, nil, now)
+	_, body := core.HealthNotice(core.Peer{Handle: "agy-01", Kind: core.Agy}, core.NoticeStalled, withTurn, h, nil, now)
 	if !strings.Contains(body, "tool_result [error]: step status 7 file does not exist") {
 		t.Fatalf("HealthNotice missing [error] mark for agy step:\n%s", body)
 	}

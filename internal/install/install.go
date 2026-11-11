@@ -604,7 +604,8 @@ func removeHooks(a Agent, o Options) (Item, error) {
 		return it, err
 	}
 	events := hf.events()
-	for _, ev := range hookEventsFor(a.Kind) {
+	// Every event any harness gets, so an entry left by another version goes too.
+	for _, ev := range claudeHookEvents {
 		v, _ := events.get(ev.Name)
 		groups, _ := v.([]any)
 		left := dropHooks(groups, findOurs(groups, ev.Event, a.Kind))

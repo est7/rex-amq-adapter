@@ -80,17 +80,16 @@ func Assess(t Tail, working bool, now time.Time) Health {
 
 // Health and error notice codes.
 const (
-	NoticeTurnError       = "turn_error"
-	NoticeTurnLimit       = "turn_limit"
-	NoticeTranscriptError = "transcript_error"
-	NoticeStalled         = "stalled"
-	NoticeToolHung        = "tool_hung"
+	NoticeTurnError = "turn_error"
+	NoticeTurnLimit = "turn_limit"
+	NoticeStalled   = "stalled"
+	NoticeToolHung  = "tool_hung"
 )
 
 // ErrorRecipient chooses which live agent in a Rex session hears that rec's
 // turn ended in an error or hit a turn limit. peers are the live agents in
 // rec's session; crewLead is the lead role of rec's crew tab ("" when none);
-// code is NoticeTurnError, NoticeTurnLimit, or NoticeTranscriptError;
+// code is NoticeTurnError or NoticeTurnLimit;
 // isFlagged reports whether a candidate is itself flagged and unable to act.
 func ErrorRecipient(rec Peer, peers []Peer, crewLead, code string, isFlagged func(Handle) bool) (to Peer, why string, ok bool) {
 	flagged := func(h Handle) bool { return isFlagged != nil && isFlagged(h) }
@@ -146,7 +145,7 @@ func ErrorRecipient(rec Peer, peers []Peer, crewLead, code string, isFlagged fun
 		}
 	}
 
-	// 4. Session's live goal agent.
+	// 4. Session's live orchestrator.
 	if rec.Role == OrchestratorRole {
 		noteSkipped(rec)
 	}
@@ -160,7 +159,7 @@ func ErrorRecipient(rec Peer, peers []Peer, crewLead, code string, isFlagged fun
 	}
 
 	// 5. Cross-family live unflagged agent in the session, when an owner or
-	// goal in steps 1–4 was flagged and the error is not a per-turn limit.
+	// orchestrator in steps 1–4 was flagged and the error is not a per-turn limit.
 	if code != NoticeTurnLimit && skippedFlagged != "" {
 		for _, p := range peers {
 			if p.Handle != rec.Handle && p.Kind != rec.Kind && p.Kind != skippedKind && !flagged(p.Handle) {
@@ -220,13 +219,6 @@ func HealthNotice(peer Peer, code string, tail Tail, h Health, screen []string, 
 	var b strings.Builder
 	fmt.Fprintf(&b, "The orchestrator watchdog read %s's transcript (%s).", peer.named(), tail.Source)
 	switch code {
-	case NoticeTranscriptError:
-		newest := h.Errors[len(h.Errors)-1]
-		age := "of unknown age"
-		if !newest.At.IsZero() {
-			age = Ago(now.Sub(newest.At)) + " old"
-		}
-		fmt.Fprintf(&b, " Its last %d rows hold %d row(s) the harness itself flagged as an error; the newest is %s.", len(tail.Rows), len(h.Errors), age)
 	case NoticeStalled:
 		fmt.Fprintf(&b, " It reports working, yet its transcript has not grown for %s.", Ago(now.Sub(tail.LastAt)))
 	case NoticeToolHung:

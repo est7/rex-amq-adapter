@@ -115,7 +115,8 @@ export default function (pi) {
 		let errorMessage = "";
 		const msgs = event?.context?.contextMessages || event?.context?.llmMessages;
 		if (Array.isArray(msgs)) {
-			for (let i = msgs.length - 1; i >= 0; i--) {
+			// This run's messages only: stop at the user message that started it.
+			for (let i = msgs.length - 1; i >= 0 && msgs[i]?.role !== "user"; i--) {
 				const m = msgs[i];
 				if (m?.role === "assistant" && typeof m.errorMessage === "string" && m.errorMessage) {
 					errorMessage = m.errorMessage;

@@ -70,9 +70,6 @@ type Env struct {
 	// AgyBrainDir is Antigravity's conversation store, where a conversation
 	// lists the subagents it started; "" knows of none.
 	AgyBrainDir string
-	// Exec replaces the current process image when the goal watcher sees
-	// SelfBin change on disk; nil uses syscall.Exec.
-	Exec func(argv0 string, argv []string, envv []string) error
 }
 
 // NewEnv resolves binaries and state paths. server is the Rex address to

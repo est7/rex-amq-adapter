@@ -71,6 +71,11 @@ func (e Env) Hook(ctx context.Context, event string, kind core.Kind, loc Locatio
 		return Reply{}, nil
 	}
 	switch event {
+	case EventSessionStart, EventPrompt, EventPreInvocation:
+		// A new turn or session: the agent can act again.
+		e.clearTurnError(ctx, loc.Block)
+	}
+	switch event {
 	case EventSessionStart:
 		return e.sessionStart(ctx, kind, loc, in)
 	case EventPrompt:
