@@ -22,6 +22,7 @@ over.
 | **Hold the turn end** | Keep an agent that is about to stop with unread mail going, exactly once (loop guard) | Claude/Codex `Stop` + `stop_hook_active`; agy `Stop` (`decision: continue`, guard emulated in `normalize`); Pi `agent_before_settle` |
 | **Wake at rest** | Reach an *idle* agent | typed doorbell via `amq wake --inject-via` (needs OSC 7501 status + an input-box classifier); Pi: `sendMessage(…, {triggerTurn: true})` |
 | **Tell a sender** | After the agent sends mail, say once which of it no agent will read, without starting a turn of its own | every `announce` hook but Pi's mail watcher (`announcing.undelivered`); the agent's outbox is read, never the send intercepted |
+| **Report a failed turn** | Tell the agent that should act, once, that this agent's turn ended in an error or a limit, from the harness's own reason; never for a cancel | Claude `StopFailure`; agy `Stop` `terminationReason`; Pi settle `outcome`; Codex `Stop` + the rollout's last row (`abnormalStop` / `reportTurnError` in `internal/app`) |
 | **Depart and supervise** | Retire the waker when the agent ends and tell its session-mates; revive a dead waker | `SessionEnd`; `collect` when there is none (agy); `Stop` runs `SuperviseWaker` |
 
 ## 2. Probe the agent
@@ -164,7 +165,9 @@ Make the changes in this order; each step has tests before the next.
    2.3 to `sessionVars` in `internal/app/caller.go` and a case to
    `TestCallerIsTheSessionsRecord`. Without a loop flag, set
    `StopHookActive = true` (Stop then blocks only for never-announced mail, as
-   for agy). Extend `HookInput.NormalStop` if its stop reasons differ.
+   for agy). Extend `core.ClassifyStop` (and the fields `abnormalStop` passes
+   it) if its stop reasons differ: a cancel reports nothing, a limit is
+   `turn_limit`, any other error `turn_error`.
 4. **Events** — if the agent's in-band event is new, add an `Event…` constant
    in `internal/app/hook.go`, route it in `Hook` with the `announcing` that
    matches how often it runs (`onPrompt`, `onModelCall`, `onToolCall`,
