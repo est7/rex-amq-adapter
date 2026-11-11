@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -420,5 +421,33 @@ func TestSummonCarriesDerivedTrustToAnAgyPeer(t *testing.T) {
 	}
 	if got, _ := os.ReadFile(store); string(got) != before {
 		t.Fatalf("the trust store was written: %s", got)
+	}
+}
+
+// A summon whose mail went out or whose pane was launched succeeds even when
+// its audit line cannot be written: the log is a trail, never the outcome.
+func TestSummonSucceedsWhenItsLogCannotBeWritten(t *testing.T) {
+	e, term, loc := summonWorld(t)
+	if err := os.RemoveAll(e.Paths.Logs()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(e.Paths.Logs(), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var diag bytes.Buffer
+	old := Diagnostics
+	Diagnostics = &diag
+	t.Cleanup(func() { Diagnostics = old })
+
+	add(t, e, store.Record{Handle: "codex-02", Kind: core.Codex, Server: "unix:///fake.sock", BlockID: "block:b", SessionID: "session:s", Role: "reviewer", AgentPID: 2, AdoptedAt: e.Now()})
+	if res := summon(t, e, loc, "codex-02"); res.Action != "deliver" || !res.Mailed || len(unread(t, e, "codex-02")) != 1 {
+		t.Fatalf("deliver: %+v, unread %v", res, unread(t, e, "codex-02"))
+	}
+	res := summon(t, e, loc, "writer", func(r *SummonRequest) { r.Asked = "开个 codex 审一下" })
+	if res.Action != "start" || res.Block == "" || len(term.launches) != 1 {
+		t.Fatalf("start: %+v, launches %d", res, len(term.launches))
+	}
+	if !strings.Contains(diag.String(), "summon log:") {
+		t.Fatalf("diagnostics: %q", diag.String())
 	}
 }

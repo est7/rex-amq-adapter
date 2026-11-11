@@ -110,12 +110,14 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 		switch {
 		case isHandle:
 			res.Action, res.Reason = "refused", "--cwd starts a new agent for a role; "+r.Target+" names an existing agent, which keeps its own directory"
-			return res, e.summonLog(caller, r, res)
+			e.summonLog(caller, r, res)
+			return res, nil
 		}
 		for _, rec := range live {
 			if sameDir(rec.Cwd, r.Cwd) {
 				res.Action, res.Reason = "refused", fmt.Sprintf("a live %s (%s) already works in %s; two agents of one role in one directory would edit the same files", target, rec.Handle, r.Cwd)
-				return res, e.summonLog(caller, r, res)
+				e.summonLog(caller, r, res)
+				return res, nil
 			}
 		}
 		live, departed = nil, nil // a second agent of the role, in its own directory
@@ -126,7 +128,8 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 			names[i] = string(rec.Handle)
 		}
 		res.Action, res.Reason = "refused", fmt.Sprintf("%d live %s agents (%s) would all get this; name one by handle, or pass --cwd to start a new one", len(live), target, strings.Join(names, ", "))
-		return res, e.summonLog(caller, r, res)
+		e.summonLog(caller, r, res)
+		return res, nil
 	}
 	if len(live) > 0 {
 		for _, rec := range live {
@@ -136,7 +139,8 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 			res.Handles = append(res.Handles, rec.Handle)
 		}
 		res.Action, res.Mailed = "deliver", true
-		return res, e.summonLog(caller, r, res)
+		e.summonLog(caller, r, res)
+		return res, nil
 	}
 	if departed != nil {
 		// Its mailbox waits for a resume whatever the guards say.
@@ -173,7 +177,8 @@ func (e Env) refused(caller store.Record, r SummonRequest, res SummonResult, dep
 	if departed != nil {
 		res.Reason += "; the message waits in " + string(departed.Handle) + "'s mailbox for a resume"
 	}
-	return res, e.summonLog(caller, r, res)
+	e.summonLog(caller, r, res)
+	return res, nil
 }
 
 // matches reports whether rec is addressed by target: its handle, or its
@@ -267,14 +272,16 @@ func (e Env) resume(ctx context.Context, caller store.Record, s Session, r Summo
 	if cwd == "" {
 		_ = e.Store.DeleteSummon(res.Token)
 		res.Action, res.Reason = "refused", fmt.Sprintf("%s cannot be resumed: its working directory is not recorded and its transcript does not name one; the message waits in its mailbox", departed.Handle)
-		return res, e.summonLog(caller, r, res)
+		e.summonLog(caller, r, res)
+		return res, nil
 	}
 	bootstrap := fmt.Sprintf("Resumed by %s (summon on send): mail waits for you. Run eval \"$(%s)\" && amq drain --include-body and act on it.", caller.Handle, e.EnvCommand())
 	cmd, ok := resumeCommand(departed.Kind, departed.AgentSessionID, bootstrap)
 	if !ok {
 		_ = e.Store.DeleteSummon(res.Token)
 		res.Action, res.Reason = "refused", fmt.Sprintf("%s (%s) cannot be resumed from outside; the message waits in its mailbox", departed.Handle, departed.Kind)
-		return res, e.summonLog(caller, r, res)
+		e.summonLog(caller, r, res)
+		return res, nil
 	}
 	label := core.PaneLabel(departed.Handle, departed.Role, departed.Task)
 	block, err := e.launch(ctx, caller, s, label, cwd, res.Token, cmd)
@@ -283,7 +290,8 @@ func (e Env) resume(ctx context.Context, caller store.Record, s Session, r Summo
 		return res, err
 	}
 	res.Action, res.Block, res.Label = "resume", block, label
-	return res, e.summonLog(caller, r, res)
+	e.summonLog(caller, r, res)
+	return res, nil
 }
 
 // start launches a new agent for a role beside the caller, with the message
@@ -292,7 +300,8 @@ func (e Env) start(ctx context.Context, caller store.Record, s Session, r Summon
 	refuse := func(reason string) (SummonResult, error) {
 		_ = e.Store.DeleteSummon(res.Token)
 		res.Action, res.Reason = "refused", reason
-		return res, e.summonLog(caller, r, res)
+		e.summonLog(caller, r, res)
+		return res, nil
 	}
 	if core.LooksLikeHandle(r.Target) {
 		return refuse(fmt.Sprintf("no agent %s in this session, live or departed; a new agent is started by role, not by handle", r.Target))
@@ -328,7 +337,8 @@ func (e Env) start(ctx context.Context, caller store.Record, s Session, r Summon
 		return res, err
 	}
 	res.Action, res.Block, res.Label = "start", block, label
-	return res, e.summonLog(caller, r, res)
+	e.summonLog(caller, r, res)
+	return res, nil
 }
 
 // launch opens the pane beside the caller, or in a new tab when the
@@ -402,20 +412,27 @@ func (e Env) Deliver(ctx context.Context, loc Location, h core.Handle, kind, sub
 	return amq.SendKind(ctx, e.AmqBin, e.Paths.Root(), string(caller.Handle), string(h), kind, subject, body)
 }
 
-// summonLog appends one JSON line per summon to logs/summon.log.
-func (e Env) summonLog(caller store.Record, r SummonRequest, res SummonResult) error {
+// summonLog appends one JSON line per summon to logs/summon.log. It is an
+// audit trail: a failure is reported to Diagnostics and never fails the
+// summon, whose mail or pane already exists.
+func (e Env) summonLog(caller store.Record, r SummonRequest, res SummonResult) {
 	entry := map[string]any{"at": e.Now().UTC().Format(time.RFC3339), "summoner": caller.Handle, "parent": caller.Parent, "depth": caller.Depth, "target": r.Target, "kind": r.Kind, "subject": r.Subject, "action": res.Action, "handles": res.Handles, "block": res.Block, "reason": res.Reason, "grant": r.Grant, "asked": r.Asked}
 	b, _ := json.Marshal(entry)
-	if err := os.MkdirAll(e.Paths.Logs(), 0o700); err != nil {
+	write := func() error {
+		if err := os.MkdirAll(e.Paths.Logs(), 0o700); err != nil {
+			return err
+		}
+		f, err := os.OpenFile(filepath.Join(e.Paths.Logs(), "summon.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		_, err = f.Write(append(b, '\n'))
 		return err
 	}
-	f, err := os.OpenFile(filepath.Join(e.Paths.Logs(), "summon.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err != nil {
-		return err
+	if err := write(); err != nil {
+		fmt.Fprintf(Diagnostics, "summon log: %v\n", err)
 	}
-	defer f.Close()
-	_, err = f.Write(append(b, '\n'))
-	return err
 }
 
 // Summons lists the summons a handle made, newest last, for its hand-back.
