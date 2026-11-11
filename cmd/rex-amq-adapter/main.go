@@ -569,7 +569,7 @@ func runSummon(args []string) int {
 	grant := fs.String("grant", "", "the user's grant file the brief cites (allows a start)")
 	asked := fs.String("asked", "", "the user's own words asking for a new agent, quoted (allows a start)")
 	harness := fs.String("harness", "", "claude, codex, agy, or pi for a start (default: by role)")
-	cwd := fs.String("cwd", "", "the working directory of a started agent, such as its task worktree (default: yours)")
+	cwd := fs.String("cwd", "", "the working directory of a started agent, such as its Slice worktree (default: yours)")
 	timeout := fs.Duration("timeout", 45*time.Second, "how long to wait for a launched agent's adoption")
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
 		fmt.Fprintln(os.Stderr, "usage: rex-amq-adapter summon <handle|role> --subject S --body B [--kind K] [--grant FILE | --asked WORDS] [--harness H] [--cwd DIR]")

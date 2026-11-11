@@ -271,7 +271,7 @@ several agents of a role are live, summon refuses: name one by handle. A departe
 in the directory it ran in, and its mail waits for it. With none, a new agent
 is started for the role (`--harness` picks the CLI; reviewer, editor, qa and
 explorer default to Codex, the rest to Claude Code), with the message as its
-brief, in your directory or the one `--cwd` names (a task worktree), and told
+brief, in your directory or the one `--cwd` names (a Slice worktree), and told
 once it is adopted. With `--cwd` it only ever starts a new agent there, a
 second one of a live role included: it refuses a handle and a directory a live
 agent of the role already works in, and a departed one is not resumed. The guards decide, and a refusal says

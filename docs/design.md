@@ -584,7 +584,7 @@ attendance. The crew file stays out of the role lookup, and the prompt is
   the session, to a note for each non-orchestrator mate; that note waits for the mate's
   next prompt, so an idle peer learns it only then. `join` adds it to the
   briefing it prints for any other role. `roles/orchestrator.md` says the same from the orchestrator's side, with the
-  brief's named checkpoints added to the closed set.
+  brief's reserved sign-offs added to the closed set.
 - Departure (`park`) also mails every live orchestrator in the record's session,
   naming the agent and the session to resume. A window note waits for a prompt,
   and an idle orchestrator has none coming, so this is mail: the doorbell wakes it,

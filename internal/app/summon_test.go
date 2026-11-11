@@ -337,7 +337,7 @@ func TestSummonFailsClosedWithoutItsAncestry(t *testing.T) {
 	}
 }
 
-// --cwd starts the agent in that directory (a task worktree), and a path that
+// --cwd starts the agent in that directory (a Slice worktree), and a path that
 // is not a directory starts nothing.
 func TestSummonStartsTheAgentInItsWorktree(t *testing.T) {
 	wt := t.TempDir()

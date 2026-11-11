@@ -42,7 +42,7 @@ type SummonRequest struct {
 	// agent needs one of them. Neither is verified here.
 	Grant, Asked string
 	Harness      string // overrides the role's default harness for a start
-	// Cwd is the working directory of a started agent (a task worktree);
+	// Cwd is the working directory of a started agent (a Slice worktree);
 	// empty means the caller's. A resume keeps the departed agent's own.
 	Cwd string
 }

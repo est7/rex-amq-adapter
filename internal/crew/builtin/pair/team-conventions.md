@@ -4,7 +4,7 @@ members: implementer, reviewer
 ---
 This tab is a two-agent loop: the implementer builds, the reviewer critiques. The human gives the brief to the implementer, who leads and reports back.
 
-1. The implementer checks the repository status, works on a task branch, implements, and runs the relevant checks.
+1. The implementer checks the repository status, works on a Slice or feature branch, implements, and runs the relevant checks.
 2. The implementer hands off to the reviewer over AMQ: branch, summary, changed files, checks run. Nothing is committed yet; review reads the working-tree diff.
 3. The reviewer replies with must-fix findings first, or "clean review". The two repeat steps 2 and 3 until the review is clean. During a review the implementer leaves the tree alone. When the implementer's brief says to skip this loop and hand the branch back (an orchestrator running a goal does), the implementer does that instead, and whoever briefed it owns the review and every must-fix.
 4. The implementer reports to the human: what changed, how it was verified, what review raised and how it was resolved.
