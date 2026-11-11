@@ -257,3 +257,38 @@ func TestARecordIsItsHandlesFile(t *testing.T) {
 		t.Errorf("deleting a handle twice: %v", err)
 	}
 }
+
+// The tab ledger keeps each window's entry apart from the per-handle notes
+// under window/, and a window it never recorded reads as unknown.
+func TestWindowLedgerStore(t *testing.T) {
+	s := Store{P: Paths{Home: t.TempDir()}}
+	if _, ok, err := s.Tab("window:1"); ok || err != nil {
+		t.Fatalf("unknown window: ok=%v err=%v", ok, err)
+	}
+	want := Tab{WindowID: "window:1", SessionID: "session:s", Mode: core.WindowCrew, Crew: "ship-topic", LastLabel: "ship-topic | fix"}
+	if err := s.PutTab(want); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddWindowNote("window:1", "a note for a handle that happens to look like a window"); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.Tab("window:1")
+	if err != nil || !ok || got != want {
+		t.Fatalf("got %+v ok=%v err=%v, want %+v", got, ok, err, want)
+	}
+	if st := got.State(); st.Mode != core.WindowCrew || st.Last != "ship-topic | fix" {
+		t.Fatalf("state %+v", st)
+	}
+	for _, m := range []core.WindowMode{core.WindowAuto, core.WindowNarrator, core.WindowManual} {
+		want.Mode = m
+		if err := s.PutTab(want); err != nil {
+			t.Fatal(err)
+		}
+		if got, _, _ := s.Tab("window:1"); got.Mode != m {
+			t.Errorf("mode %q read back as %q", m, got.Mode)
+		}
+	}
+	if err := s.PutTab(Tab{Mode: core.WindowAuto}); err == nil {
+		t.Error("an entry without a window was recorded")
+	}
+}

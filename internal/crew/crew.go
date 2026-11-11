@@ -242,6 +242,14 @@ func Name(label string) string {
 	}), "-")
 }
 
+// TabName reads the crew a crew tab's label names: the part before any
+// "|" ("ship | login" names ship), read as Name reads it, so a hyphenated
+// crew ("ship-topic") keeps its name.
+func TabName(label string) string {
+	head, _, _ := strings.Cut(label, "|")
+	return Name(head)
+}
+
 // projectDir is the nearest .agents/crews at or above dir.
 func projectDir(dir string) string {
 	if dir == "" {

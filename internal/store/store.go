@@ -45,6 +45,7 @@ func (p Paths) failures() string  { return filepath.Join(p.Home, "adopt-failed")
 func (p Paths) window() string    { return filepath.Join(p.Home, "window") }
 func (p Paths) titles() string    { return filepath.Join(p.Home, "title") }
 func (p Paths) taskAsked() string { return filepath.Join(p.Home, "task-asked") }
+func (p Paths) tabs() string      { return filepath.Join(p.Home, "tabs") }
 
 // PathsForRoot locates the state directory from its AMQ root. The injector
 // uses it: amq wake passes the root explicitly, while the environment a
@@ -567,6 +568,54 @@ func (s Store) SetTaskAsked(h core.Handle, session string) error {
 
 func (s Store) taskAskedPath(h core.Handle) string {
 	return filepath.Join(s.P.taskAsked(), fileKey(string(h)))
+}
+
+// Tab is a Rex tab (window) in the adapter's tab ledger: who names it
+// (core.WindowMode), the crew a crew tab was claimed for, and the label the
+// adapter last gave it. It is not window/<handle>, which queues an agent's
+// notes.
+type Tab struct {
+	WindowID  string          `json:"window_id"`
+	SessionID string          `json:"session_id,omitempty"`
+	Mode      core.WindowMode `json:"mode"`
+	Crew      string          `json:"crew,omitempty"`
+	LastLabel string          `json:"last_label,omitempty"`
+}
+
+// State is the part of t the follow policy reads (core.FollowTab).
+func (t Tab) State() core.TabState { return core.TabState{Mode: t.Mode, Last: t.LastLabel} }
+
+func (s Store) tabPath(window string) string {
+	return filepath.Join(s.P.tabs(), fileKey(window)+".json")
+}
+
+// Tab is window's ledger entry; ok is false when the ledger does not know it.
+func (s Store) Tab(window string) (Tab, bool, error) {
+	b, err := os.ReadFile(s.tabPath(window))
+	if errors.Is(err, fs.ErrNotExist) {
+		return Tab{}, false, nil
+	}
+	if err != nil {
+		return Tab{}, false, err
+	}
+	var t Tab
+	if err := json.Unmarshal(b, &t); err != nil {
+		return Tab{}, false, fmt.Errorf("%s: %w", s.tabPath(window), err)
+	}
+	return t, true, nil
+}
+
+// PutTab records t. Writers do not lock: following a tab is best effort,
+// and the last write wins.
+func (s Store) PutTab(t Tab) error {
+	if t.WindowID == "" {
+		return errors.New("a tab ledger entry needs its window")
+	}
+	b, err := json.Marshal(t)
+	if err != nil {
+		return err
+	}
+	return fsutil.WriteAtomic(s.tabPath(t.WindowID), append(b, '\n'))
 }
 
 // LockInject serialises the writers of one block's prompt: the injector that
