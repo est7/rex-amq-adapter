@@ -122,8 +122,9 @@ Start agents in Rex terminals as usual. Then ask one to talk to another:
 
 > ask codex to review the current diff over AMQ
 
-Agents in one Rex session know each other: a session holds one task, a tab
-in it one team, a pane one member. An agent learns who is in its session when
+Agents in one Rex session know each other: a session holds one Epic (its
+label is yours to name, and agents never rename it), a tab in it one team, a
+pane one member. An agent learns who is in its session when
 it starts, and the agents already there hear that it joined, or later left,
 with their next prompt. "Ask the one beside you" needs no handle. Other
 sessions are outside that awareness boundary: their agents do not appear in
@@ -221,7 +222,10 @@ A peer launched in a pane labelled `"<role> | <task>"` starts with that task.
 The task follows the handle into any pane it is resumed in. Claude Code, Pi, and Antigravity show the same
 label as their own title (Claude Code from the next prompt after a change, Pi
 within about 30 s, agy at its next state change); Codex cannot without its
-shared daemon.
+shared daemon. When the Rex session is named for an Epic, the conversation
+title of Claude Code and Pi (the one `/resume` lists) carries it in brackets,
+`reviewer(claude-01) | [auth-refresh] fix login redirect`; the pane label and
+agy's window title do not.
 
 `who` resolves the caller's current session from its identity (see
 `env`); it requires a Rex terminal and fails if the session cannot be

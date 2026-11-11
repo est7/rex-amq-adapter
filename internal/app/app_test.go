@@ -34,6 +34,7 @@ type fakeTerm struct {
 	label          string                 // the block label; "" reads as Rex's default
 	windows        map[string]string      // block -> window; nil: none known
 	sessions       map[string]string      // window -> session; unlisted: session:s
+	sessionLabel   string                 // every session's label (its Epic); "": unnamed
 	listErr        error                  // ListBlocks fails
 	tabs           map[string]string      // window -> tab label
 	cwd            string                 // the foreground process's directory
@@ -185,7 +186,7 @@ func (f *fakeTerm) ListSessions(context.Context) ([]string, error) {
 func (f *fakeTerm) InspectSession(_ context.Context, id string) (rex.Session, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	s := rex.Session{ID: id}
+	s := rex.Session{ID: id, Label: f.sessionLabel}
 	for w, label := range f.tabs {
 		if f.sessionOf(w) == id {
 			s.Windows = append(s.Windows, rex.Window{ID: w, Label: label})

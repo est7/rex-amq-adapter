@@ -34,18 +34,19 @@ func DefaultPaths() (Paths, error) {
 	return Paths{Home: filepath.Join(home, ".local", "state", "rex-amq-adapter")}, nil
 }
 
-func (p Paths) Root() string      { return filepath.Join(p.Home, "amq-root") }
-func (p Paths) Logs() string      { return filepath.Join(p.Home, "logs") }
-func (p Paths) records() string   { return filepath.Join(p.Home, "records") }
-func (p Paths) ledgers() string   { return filepath.Join(p.Home, "ledger") }
-func (p Paths) injects() string   { return filepath.Join(p.Home, "inject") }
-func (p Paths) lifecycle() string { return filepath.Join(p.Home, "lifecycle.lock") }
-func (p Paths) pending() string   { return filepath.Join(p.Home, "pending") }
-func (p Paths) failures() string  { return filepath.Join(p.Home, "adopt-failed") }
-func (p Paths) window() string    { return filepath.Join(p.Home, "window") }
-func (p Paths) titles() string    { return filepath.Join(p.Home, "title") }
-func (p Paths) taskAsked() string { return filepath.Join(p.Home, "task-asked") }
-func (p Paths) tabs() string      { return filepath.Join(p.Home, "tabs") }
+func (p Paths) Root() string        { return filepath.Join(p.Home, "amq-root") }
+func (p Paths) Logs() string        { return filepath.Join(p.Home, "logs") }
+func (p Paths) records() string     { return filepath.Join(p.Home, "records") }
+func (p Paths) ledgers() string     { return filepath.Join(p.Home, "ledger") }
+func (p Paths) injects() string     { return filepath.Join(p.Home, "inject") }
+func (p Paths) lifecycle() string   { return filepath.Join(p.Home, "lifecycle.lock") }
+func (p Paths) pending() string     { return filepath.Join(p.Home, "pending") }
+func (p Paths) failures() string    { return filepath.Join(p.Home, "adopt-failed") }
+func (p Paths) window() string      { return filepath.Join(p.Home, "window") }
+func (p Paths) titles() string      { return filepath.Join(p.Home, "title") }
+func (p Paths) taskAsked() string   { return filepath.Join(p.Home, "task-asked") }
+func (p Paths) titleStates() string { return filepath.Join(p.Home, "title-state") }
+func (p Paths) tabs() string        { return filepath.Join(p.Home, "tabs") }
 
 // PathsForRoot locates the state directory from its AMQ root. The injector
 // uses it: amq wake passes the root explicitly, while the environment a
@@ -190,7 +191,7 @@ func (s Store) PutRecord(r Record) error {
 // announcement ledger and the inject log), so a later agent given h starts
 // clean. Its mailbox is amq's and stays.
 func (s Store) DeleteRecord(h core.Handle) error {
-	for _, p := range []string{s.recordPath(h), s.ledgerPath(h), s.sentCursorPath(h), s.injectLog(h), s.titlePath(h), s.taskAskedPath(h)} {
+	for _, p := range []string{s.recordPath(h), s.ledgerPath(h), s.sentCursorPath(h), s.injectLog(h), s.titlePath(h), s.titleStatePath(h), s.taskAskedPath(h)} {
 		if err := os.Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}
@@ -546,6 +547,40 @@ func (s Store) SetTitlesShown(h core.Handle, shown map[string]string) error {
 
 func (s Store) titlePath(h core.Handle) string {
 	return filepath.Join(s.P.titles(), fileKey(string(h)))
+}
+
+// TitleState is how far h's conversation title got toward its harness,
+// derived from TitlesShown and the title h should have; ok is false when it
+// was never tracked. The caller holds h's ledger lock.
+func (s Store) TitleState(h core.Handle) (core.TitleState, bool, error) {
+	var st core.TitleState
+	b, err := os.ReadFile(s.titleStatePath(h))
+	if errors.Is(err, fs.ErrNotExist) {
+		return st, false, nil
+	}
+	if err != nil {
+		return st, false, err
+	}
+	if err := json.Unmarshal(b, &st); err != nil {
+		return st, false, fmt.Errorf("decode the title state of %s: %w", h, err)
+	}
+	return st, true, nil
+}
+
+// SetTitleState records it.
+func (s Store) SetTitleState(h core.Handle, st core.TitleState) error {
+	if err := os.MkdirAll(s.P.titleStates(), 0o700); err != nil {
+		return err
+	}
+	b, err := json.Marshal(st)
+	if err != nil {
+		return err
+	}
+	return fsutil.WriteAtomic(s.titleStatePath(h), append(b, '\n'))
+}
+
+func (s Store) titleStatePath(h core.Handle) string {
+	return filepath.Join(s.P.titleStates(), fileKey(string(h)))
 }
 
 // TaskAsked is the last session of h that was asked at its first prompt to

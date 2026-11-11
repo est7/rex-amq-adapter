@@ -62,8 +62,13 @@ task to 32 columns. A peer you start gets its task from its launch label
 shows it again. Do not rename your pane with `rex block rename`: the next
 adoption would write the adapter's label back. To take a role yourself, run
 `rex-amq-adapter join --role <role>` (or `join <crew>`, see Start a peer); it
-relabels the pane and prints your briefing. The Rex session's name is not
-the adapter's: name it as Rex's own guidance says.
+relabels the pane and prints your briefing.
+
+The Rex session's label is not yours: one Rex session is one Epic, and its
+label names the human's Epic. Never run `rex session rename` for your own
+task, even when Rex's own guidance suggests it; your task goes in your pane
+label. When the session names an Epic, Claude Code and Pi also show it in your
+conversation title, `<role>(<handle>) | [<epic>] <task>`.
 
 ## When you are told about mail
 

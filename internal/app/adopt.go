@@ -447,6 +447,7 @@ func (e Env) SetTask(ctx context.Context, loc Location, task string) (string, er
 	if err := e.Store.PutRecord(rec); err != nil {
 		return "", err
 	}
+	e.refreshTitle(ctx, rec)
 	label := core.PaneLabel(rec.Handle, rec.Role, rec.Task)
 	if err := e.Rex.RenameBlock(ctx, loc.Block, label); err != nil {
 		return "", fmt.Errorf("the task is recorded, but the pane label could not be set: %w", err)

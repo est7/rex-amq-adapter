@@ -177,6 +177,7 @@ func (e Env) takeRole(ctx context.Context, loc Location, h core.Handle, role, cr
 	if err := e.Store.PutRecord(rec); err != nil {
 		return store.Record{}, err
 	}
+	e.refreshTitle(ctx, rec)
 	if err := e.Rex.RenameBlock(ctx, loc.Block, core.PaneLabel(rec.Handle, rec.Role, rec.Task)); err != nil {
 		return rec, fmt.Errorf("the role is recorded, but the pane label could not be set: %w", err)
 	}
