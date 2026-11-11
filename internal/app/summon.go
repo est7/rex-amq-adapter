@@ -104,16 +104,28 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 	if r.Cwd != "" {
 		// --cwd always means a new agent in that directory: a live one would get
 		// the mail in its own directory and a departed one would resume in its
-		// own, so neither may silently stand in.
+		// own, so neither may silently stand in. A second agent of a live role
+		// starts, unless the live one already works in that directory.
 		switch {
 		case isHandle:
 			res.Action, res.Reason = "refused", "--cwd starts a new agent for a role; "+r.Target+" names an existing agent, which keeps its own directory"
 			return res, e.summonLog(caller, r, res)
-		case len(live) > 0:
-			res.Action, res.Reason = "refused", fmt.Sprintf("a live %s (%s) would get this instead of a new agent in %s; start the second one there by hand (rex split -c %s … then rex-amq-adapter await)", target, live[0].Handle, r.Cwd, r.Cwd)
-			return res, e.summonLog(caller, r, res)
 		}
-		departed = nil
+		for _, rec := range live {
+			if sameDir(rec.Cwd, r.Cwd) {
+				res.Action, res.Reason = "refused", fmt.Sprintf("a live %s (%s) already works in %s; two agents of one role in one directory would edit the same files", target, rec.Handle, r.Cwd)
+				return res, e.summonLog(caller, r, res)
+			}
+		}
+		live, departed = nil, nil // a second agent of the role, in its own directory
+	}
+	if len(live) > 1 {
+		names := make([]string, len(live))
+		for i, rec := range live {
+			names[i] = string(rec.Handle)
+		}
+		res.Action, res.Reason = "refused", fmt.Sprintf("%d live %s agents (%s) would all get this; name one by handle, or pass --cwd to start a new one", len(live), target, strings.Join(names, ", "))
+		return res, e.summonLog(caller, r, res)
 	}
 	if len(live) > 0 {
 		for _, rec := range live {
@@ -425,4 +437,21 @@ func (e Env) Summons(h core.Handle) ([]string, error) {
 		out = append(out, fmt.Sprintf("%s %s %s -> %s: %s", m["at"], m["action"], m["target"], strings.Join(hs, ","), m["subject"]))
 	}
 	return out, nil
+}
+
+// sameDir reports whether two paths name one directory; an unknown path matches nothing.
+func sameDir(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	resolve := func(p string) string {
+		if abs, err := filepath.Abs(p); err == nil {
+			p = abs
+		}
+		if real, err := filepath.EvalSymlinks(p); err == nil {
+			p = real
+		}
+		return filepath.Clean(p)
+	}
+	return resolve(a) == resolve(b)
 }

@@ -594,6 +594,9 @@ func runSummon(args []string) int {
 	if err != nil {
 		return fail(err)
 	}
+	if *cwd != "" {
+		deriveTrust(*cwd) // as split does: a peer started in a task worktree meets no folder-trust dialog the user already answered for its repository
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	res, err := env.Summon(ctx, loc, app.SummonRequest{Target: target, Kind: *kind, Subject: *subject, Body: *body, Grant: *grant, Asked: *asked, Harness: *harness, Cwd: *cwd})
 	cancel()

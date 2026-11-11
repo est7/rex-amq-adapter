@@ -98,7 +98,8 @@ func summon(t *testing.T, e Env, loc Location, target string, extra ...func(*Sum
 	return res
 }
 
-// A live peer gets the mail, by handle or by role; several of a role all do.
+// A live peer gets the mail, by handle or by role; a role with several live
+// agents is refused, so one brief never reaches two writers.
 func TestSummonDeliversToLivePeers(t *testing.T) {
 	e, term, loc := summonWorld(t)
 	add(t, e, store.Record{Handle: "codex-02", Kind: core.Codex, Server: "unix:///fake.sock", BlockID: "block:b", SessionID: "session:s", Role: "reviewer", AgentPID: 2, AdoptedAt: e.Now()})
@@ -106,7 +107,7 @@ func TestSummonDeliversToLivePeers(t *testing.T) {
 	if res := summon(t, e, loc, "codex-02"); res.Action != "deliver" || len(res.Handles) != 1 || len(unread(t, e, "codex-02")) != 1 {
 		t.Fatalf("%+v", res)
 	}
-	if res := summon(t, e, loc, "reviewer"); res.Action != "deliver" || len(res.Handles) != 2 || len(unread(t, e, "agy-03")) != 1 || len(unread(t, e, "codex-02")) != 2 {
+	if res := summon(t, e, loc, "reviewer"); res.Action != "refused" || !strings.Contains(res.Reason, "name one by handle") || len(unread(t, e, "agy-03")) != 0 || len(unread(t, e, "codex-02")) != 1 {
 		t.Fatalf("%+v", res)
 	}
 	if len(term.launches) != 0 {
@@ -225,8 +226,8 @@ func TestSummonGuards(t *testing.T) {
 	if res := summon(t, e, loc, "writer", authorized); res.Action != "refused" || !strings.Contains(res.Reason, "cap") {
 		t.Fatalf("cap: %+v", res)
 	}
-	if res := summon(t, e, loc, "qa"); res.Action != "deliver" || len(res.Handles) != 5 {
-		t.Fatalf("live peers under the cap still get mail: %+v", res)
+	if res := summon(t, e, loc, "pi-02"); res.Action != "deliver" || len(res.Handles) != 1 {
+		t.Fatalf("a live peer at the cap still gets mail: %+v", res)
 	}
 	if len(term.launches) != 0 {
 		t.Fatalf("launched despite a refusal: %+v", term.launches)
@@ -353,14 +354,21 @@ func TestSummonStartsTheAgentInItsWorktree(t *testing.T) {
 	if res := summon(t, e3, loc3, "implementer", func(r *SummonRequest) { r.Asked = "start one"; r.Cwd = wt }); res.Action != "start" || len(term3.launches) != 1 || term3.launches[0].Dir != wt {
 		t.Fatalf("a departed implementer stood in: %+v launches %+v", res, term3.launches)
 	}
-	// A live agent of the role is not handed the brief instead; a handle is refused.
+	// A live agent of the role is not handed the brief instead: a second one
+	// starts in another directory, never in the live one's; a handle is refused.
 	e4, term4, loc4 := summonWorld(t)
 	if res := summon(t, e4, loc4, "implementer", func(r *SummonRequest) { r.Asked = "start one"; r.Cwd = wt }); res.Action != "start" {
 		t.Fatalf("setup: %+v", res)
 	}
-	adoptLaunch(t, e4, term4, term4.launches[0], core.Claude, "sess-live")
-	if res := summon(t, e4, loc4, "implementer", func(r *SummonRequest) { r.Asked = "start one"; r.Cwd = wt }); res.Action != "refused" || !strings.Contains(res.Reason, "start the second one there by hand") || len(term4.launches) != 1 {
-		t.Fatalf("a live implementer stood in: %+v", res)
+	first := adoptLaunch(t, e4, term4, term4.launches[0], core.Claude, "sess-live")
+	first.Cwd = wt
+	add(t, e4, first)
+	if res := summon(t, e4, loc4, "implementer", func(r *SummonRequest) { r.Asked = "start one"; r.Cwd = wt }); res.Action != "refused" || !strings.Contains(res.Reason, "already works in") || len(term4.launches) != 1 {
+		t.Fatalf("a second implementer in the same worktree: %+v", res)
+	}
+	wt2 := t.TempDir()
+	if res := summon(t, e4, loc4, "implementer", func(r *SummonRequest) { r.Asked = "start one"; r.Cwd = wt2 }); res.Action != "start" || len(term4.launches) != 2 || term4.launches[1].Dir != wt2 || len(unread(t, e4, string(first.Handle))) != 0 {
+		t.Fatalf("a second implementer in its own worktree: %+v launches %+v", res, term4.launches)
 	}
 	if res := summon(t, e4, loc4, "codex-09", func(r *SummonRequest) { r.Asked = "x"; r.Cwd = wt }); res.Action != "refused" || !strings.Contains(res.Reason, "names an existing agent") {
 		t.Fatalf("a handle with --cwd: %+v", res)
