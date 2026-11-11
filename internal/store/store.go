@@ -277,8 +277,10 @@ func (s Store) injectLog(h core.Handle) string {
 	return filepath.Join(s.P.injects(), string(h)+".jsonl")
 }
 
-// RecordInject appends an injector outcome to the handle's log. Only the
-// handle's one waker runs the injector, so the log has a single writer.
+// RecordInject appends an injector outcome to the handle's log. Its writers
+// (the handle's waker and the orchestrator watchdog) both run the injector
+// under the block's inject lock (Env.Inject), which also covers this write
+// and its trim.
 func (s Store) RecordInject(h core.Handle, o core.Outcome, at time.Time) error {
 	if err := os.MkdirAll(s.P.injects(), 0o700); err != nil {
 		return err

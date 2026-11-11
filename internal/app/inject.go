@@ -42,8 +42,8 @@ func (e Env) Inject(ctx context.Context, r InjectRequest) core.Outcome {
 		return deferredErr("inject_locked", err)
 	}
 	o := e.inject(ctx, r)
-	unlock()
 	_ = e.Store.RecordInject(r.Handle, o, e.Now()) // the log is diagnostic; the marker is the contract
+	unlock()
 	return o
 }
 
