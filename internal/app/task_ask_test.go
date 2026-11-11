@@ -106,3 +106,20 @@ func TestAClaudeThatClearsItsTaskIsNotAskedLater(t *testing.T) {
 		t.Errorf("asked after its first prompt: %q", n)
 	}
 }
+
+// Pi starts its session before the user asks anything, as Claude Code does,
+// so it is asked for its task once more, at its first prompt.
+func TestPisFirstPromptAsksForATaskOnce(t *testing.T) {
+	e := realAmqEnv(t, &fakeTerm{state: "working"})
+	s1 := HookInput{SessionID: "s1"}
+	if n := promptNotice(t, e, core.Pi, EventSessionStart, s1); !strings.Contains(n, "Pane label:") {
+		t.Fatalf("SessionStart does not ask for a task: %q", n)
+	}
+	t.Cleanup(func() { _ = e.Depart(context.Background(), Location{Block: block}, HookInput{}) })
+	if n := promptNotice(t, e, core.Pi, EventPrompt, s1); !strings.Contains(n, "Pane label:") {
+		t.Errorf("the first prompt was not asked for a task: %q", n)
+	}
+	if n := promptNotice(t, e, core.Pi, EventPrompt, s1); strings.Contains(n, "Pane label:") {
+		t.Errorf("the second prompt was asked again: %q", n)
+	}
+}

@@ -68,8 +68,11 @@ func TestAgentsInOneSessionLearnOfEachOther(t *testing.T) {
 	if s := notice(t, e, EventPrompt, core.Pi, "block:a", "s1"); s != "" {
 		t.Fatalf("the news is told once: %q", s)
 	}
-	if s := notice(t, e, EventPrompt, core.Pi, "block:c", "s3"); s != "" {
+	if s := notice(t, e, EventPrompt, core.Pi, "block:c", "s3"); strings.Contains(s, "joined your Rex session") {
 		t.Fatalf("%s in another session was told: %q", other, s)
+	}
+	if s := notice(t, e, EventPrompt, core.Pi, "block:c", "s3"); s != "" {
+		t.Fatalf("%s in another session was told at its next prompt: %q", other, s)
 	}
 }
 
@@ -170,8 +173,11 @@ func TestSessionMatesLearnOfADeparture(t *testing.T) {
 	if s := notice(t, e, EventPrompt, core.Pi, "block:a", "s1"); s != "" {
 		t.Fatalf("the departure is told once: %q", s)
 	}
-	if s := notice(t, e, EventPrompt, core.Pi, "block:c", "s3"); s != "" {
+	if s := notice(t, e, EventPrompt, core.Pi, "block:c", "s3"); strings.Contains(s, "left your Rex session") {
 		t.Fatalf("an agent in another session was told: %q", s)
+	}
+	if s := notice(t, e, EventPrompt, core.Pi, "block:c", "s3"); s != "" {
+		t.Fatalf("an agent in another session was told at its next prompt: %q", s)
 	}
 }
 

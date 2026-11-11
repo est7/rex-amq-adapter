@@ -58,14 +58,15 @@ func (e Env) syncTitle(ctx context.Context, kind core.Kind, event string, rec st
 }
 
 // askTask is the request for a task given with the first prompt of a Claude
-// Code session whose pane shows no task. Claude Code runs SessionStart, which
-// carries the same request, before the user has asked anything, so the agent
-// cannot know its task then; Codex and agy run it with the first prompt. Each
+// Code or Pi session whose pane shows no task. Claude Code and Pi run their
+// start hook, which carries the same request, before the user has asked
+// anything, so the agent cannot know its task then; Codex and agy run it with
+// the first prompt. Each
 // session is asked once, at its first prompt: a session that stays without a
 // task (a quick question), or clears the task it started with, is not asked
 // again. An unfinished adoption is not asked: its pane is not relabelled yet.
 func (e Env) askTask(ctx context.Context, kind core.Kind, event string, rec store.Record, session string) string {
-	if kind != core.Claude || event != EventPrompt || session == "" || !rec.Adopted() {
+	if kind != core.Claude && kind != core.Pi || event != EventPrompt || session == "" || !rec.Adopted() {
 		return ""
 	}
 	unlock, err := e.Store.LockLedger(ctx, rec.Handle)
