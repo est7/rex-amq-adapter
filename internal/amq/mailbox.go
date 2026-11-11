@@ -18,7 +18,7 @@ import (
 //   - agents/<h>/inbox/{new,cur}/<id>.md: undrained and drained mail;
 //     dlq/{new,cur}/<id>.md: dead-lettered; outbox/sent/<id>.md: sent.
 //   - A message is a JSON header between "---json" and "---" lines (schema 1:
-//     id, from, to, thread, subject, created), then the body.
+//     id, from, to, thread, subject, created, labels), then the body.
 //   - agents/<h>/receipts/<id>__<consumer>__<stage>.json: schema 1 receipts
 //     (msg_id, thread, sender, consumer, stage, emitted_at); amq 0.x writes
 //     stage "drained".
@@ -87,8 +87,7 @@ func IDs(root, handle string, box Box) ([]string, error) {
 }
 
 // ReadHeader reads the header of message id in handle's box, which must be
-// of MailboxSchema. (Recipients reads only "to", whatever the schema: the
-// check of undelivered mail should not stop on a field it never reads.)
+// of MailboxSchema.
 func ReadHeader(root, handle string, box Box, id string) (Header, error) {
 	f, err := os.Open(filepath.Join(root, "agents", handle, filepath.FromSlash(string(box)), id+".md"))
 	if err != nil {

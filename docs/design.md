@@ -74,13 +74,12 @@ not own (`internal/amq/mailbox.go`; amq 0.x as installed, observed
 | `inbox/new/<id>.md`, `inbox/cur/<id>.md` | undrained and drained mail | file name only (the id) |
 | `dlq/new/<id>.md`, `dlq/cur/<id>.md` | dead-lettered mail | file name only |
 | `outbox/sent/<id>.md` | mail the agent sent | the header |
-| `<id>.md` header | JSON between a `---json` line and a `---` line, then the body (never read; at most 64 KiB is read for the header) | schema 1: `id`, `from`, `to`, `thread`, `subject`, `created` |
+| `<id>.md` header | JSON between a `---json` line and a `---` line, then the body (never read; at most 64 KiB is read for the header) | schema 1: `id`, `from`, `to`, `thread`, `subject`, `created`, `labels` |
 | `receipts/<id>__<consumer>__<stage>.json` | one receipt per stage of a message in that mailbox | schema 1: `msg_id`, `thread`, `sender`, `consumer`, `stage`, `emitted_at`; only `drained` is written today |
 
 amq writes each file by renaming it into place, so a reader sees all of it or
 none. A header or receipt of another `schema` is an error (`ReadHeader`,
-`ReadReceipt`), reported on stderr with its file, never guessed at; the
-undelivered-mail check reads only a header's `to` and does not check it. `receipts/notification-attempts.jsonl` (schema 2, amq's record of each
+`SentHeader`, `ReadReceipt`), reported on stderr with its file, never guessed at. `receipts/notification-attempts.jsonl` (schema 2, amq's record of each
 wake) is not read: the injector's own log (`inject/<handle>.jsonl`) carries the
 same outcomes with the adapter's reason codes. A change in amq's layout or
 header schema shows up as messages missing from the stream and as decode
@@ -211,9 +210,10 @@ agent in the pane, so its task is not taken (`core.InitialTask`). The identity
 notice asks for a task in a paragraph of its own (`Pane label: …`), apart
 from the AMQ instructions, so an agent that never messages anyone reads it
 too; an agent that has a task is told what its pane shows instead. Claude
-Code runs SessionStart before the user has asked anything, so its first
-`UserPromptSubmit` in each session repeats the request while the pane shows
-no task, once (`task-asked/<handle>` holds the last session asked). Codex
+Code and Pi run their start hook before the user has asked anything, so their
+first prompt (`UserPromptSubmit` / `before_agent_start`) in each session repeats
+the request while the pane shows no task, once (`task-asked/<handle>` holds the
+last session asked). Codex
 and agy run SessionStart with the first prompt, so they need no repeat. agy
 has no `UserPromptSubmit`, but its `PreInvocation` input carries
 `invocationNum`, which restarts at 0 at every turn of a running agy and
@@ -482,8 +482,10 @@ lifecycle lock, which also serialises agents that start together:
   gives up on that recipient, reports it, and tells the rest. It never costs the
   agent its own mail. The cursor starts at the outbox's newest message when an
   agent takes a new handle and for an agent adopted before this check existed,
-  and moves past the goal mail sent in a departed agent's name, so neither a
-  previous owner's mail nor that mail is told. Pi's mail watcher turns any
+  and moves past the departure mail sent in a departed agent's name, so neither a
+  previous owner's mail nor that mail is told; mail the adapter sends in a live
+  agent's name carries the label `rex-amq-adapter` (`amq.SystemLabel`) and is
+  skipped without moving the cursor past the agent's own unchecked mail. Pi's mail watcher turns any
   notice into a turn, so there the bounce waits for its next run. Mail read before the agent left is not told, and
   mail that goes unread after the sender's check is covered by the note below;
   an idle sender hears that only in an orchestrator session. Mail to itself and to a handle
@@ -622,10 +624,10 @@ orchestrator stays silent; the watcher ends with its agent. Real agents: section
 
 **Watchdog.** Each tick the watcher also looks at every live agent of its
 session, the orchestrator included, three ways. It never presses a key. A
-finding goes as mail in the stuck agent's name, and that agent's
-undelivered-mail check starts after it, so the agent is not told about mail it
-did not write. Each step is a JSON line in `logs/watchdog.log`. A failing
-look is logged and swallowed, so it never stops the watcher.
+finding goes as mail in the stuck agent's name, labelled `rex-amq-adapter`
+(`amq.SystemLabel`), which that agent's undelivered-mail check skips without
+moving its sent cursor. Each step is a JSON line in `logs/watchdog.log`. A
+failing look is logged and swallowed, so it never stops the watcher.
 
 1. *Undelivered mail* (`watchdog.go`; not Pi, whose extension delivers its own
    mail). Mail counts as undelivered when it is unread and every doorbell has
@@ -661,12 +663,12 @@ look is logged and swallowed, so it never stops the watcher.
    placement spends none of them. The injector
    keeps ringing, and the block stays placed. Every other shape is reported to the
    orchestrator once per code per episode (`core.WatchdogReport`), with the
-   last 12 screen lines and what was done to the pane: `draft_in_box`,
+   last 12 screen lines (fenced as captured output) and what was done to the pane: `draft_in_box`,
    `box_not_found` at a normal size, `undelivered` (any other deferral but `agent_working`),
    `moved_by_user`, `recovery_failed`, and `place_failed` (a detached block
    that could not be placed, retried every look). A trust screen or a blocked status
    is left to the third look. A report about the orchestrator's own pane goes
-   to a live agent of another model family in the session, or to the desktop
+   to a live, unflagged agent of another model family in the session, or to the desktop
    when there is none, as the transcript look's findings do: its own inbox is
    the one that is stuck.
 2. *Transcript* (`health.go`, `internal/transcript`). This look covers what no
@@ -683,14 +685,16 @@ look is logged and swallowed, so it never stops the watcher.
 3. *Waiting on the user* (`blocked.go`). This look covers a program status of
    blocked, or a trust screen while the agent does not report working, held
    for 30 s with or without mail. It is the only owner of these two shapes.
-   Once per episode it writes a line in `logs/blocked.log` with the time and
-   the last screen lines, and tells the orchestrator; a permission prompt also
-   reaches the desktop. The episode ends when the prompt is gone.
+   Each episode belongs to one agent run (`BlockedBy`, handle and session), so
+   another run in the pane starts its own. Once per episode it writes a line in
+   `logs/blocked.log` with the time and the last screen lines, and tells the
+   orchestrator; a permission prompt also reaches the desktop. The episode ends
+   when the prompt is gone.
 
-A transcript or blocked finding about the orchestrator itself goes to a live
-agent of another model family, since a blocked orchestrator cannot read mail.
-With none, the transcript finding goes to the desktop instead; a blocked
-orchestrator always reaches the desktop as well.
+A transcript or blocked finding about the orchestrator itself goes to a live,
+unflagged agent of another model family, since a blocked orchestrator cannot
+read mail. With none, the transcript finding goes to the desktop instead; a
+blocked orchestrator always reaches the desktop as well.
 
 Evidence (**executed**, `internal/app/watchdog_test.go`, `health_test.go`,
 `blocked_test.go`, against a scripted terminal): a tiny pane recovered once, a
@@ -799,7 +803,7 @@ A doorbell deferred again and again is the one delivery failure that is
 otherwise silent: mail waits durably, the sender waits for a reply, and
 nothing reports that, say, an agent update changed its input box so every
 attempt ends `box_not_found`. `who` therefore shows each agent's latest
-outcome and how long the same outcome has repeated (`core.DeliveryStatus`), and
+outcome and how long the same outcome has repeated (`core.DoorbellSummary`), and
 the agent guide tells a sender to read it before writing again. With no unread
 mail it shows `-` unless the last doorbell was accepted: a deferral that mail
 has since overtaken is history, not a stuck delivery. The log is cut
@@ -1058,10 +1062,13 @@ Overridable with `REX_AMQ_ADAPTER_HOME` (tests use a temporary directory).
 ├── ledger/<handle>.sent      the last sent message checked for a departed recipient
 ├── inject/<handle>.jsonl     injector outcomes
 ├── logs/<handle>.log         amq wake stdout/stderr
+├── logs/watch-<handle>.log   an orchestrator watcher's stdout/stderr
 ├── logs/hooks.log            hook failures
+├── logs/summon.log           summon launches and self-attested grants
 ├── window/<handle>           window notes (joins, departures) queued for the next prompt
 ├── title/<handle>            the title last given each session's harness (Claude Code, Pi)
-├── task-asked/<handle>       the last Claude Code session asked for a task at its first prompt
+├── task-asked/<handle>       the last Claude Code or Pi session asked for a task at its first prompt
+├── summons/<token>.json      pending summon launches reserving a place in the session's cap
 ├── pending/<block>           a doorbell written and not yet known to be submitted
 ├── adopt-failed/<block>      when adopting the block's agent last failed (back-off)
 ├── watch/<handle>.lock       held by an orchestrator's watcher

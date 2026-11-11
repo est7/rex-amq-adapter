@@ -10,7 +10,7 @@ Read `docs/design.md` first: this document assumes its delivery channels
 
 ## 1. What the adapter needs from an agent
 
-The adapter performs six duties for every agent. Map each onto something the
+The adapter performs eight duties for every agent. Map each onto something the
 new agent provides; a duty with no mapping is a gap to document, not to paper
 over.
 
@@ -152,6 +152,11 @@ Make the changes in this order; each step has tests before the next.
 1. **Kind** — `internal/core/identity.go`: add the constant, accept it in
    `ParseKind`, include it in `InProcess` if section 3 chose in-process, and in
    `Notifies` if the user's notification hooks reach it. Extend `TestParseKind`.
+   Add its configuration directory to `core.Dirs` / `core.HarnessDirs` in
+   `internal/core/harness.go`, its transcript reader (`Read`, `Cwd`) in
+   `internal/transcript/transcript.go` if transcripts are stored on disk, and
+   include it in `askTask` in `internal/app/title.go` if its start hook fires
+   before the user's first prompt.
 2. **Input box** (typed-doorbell kinds) — `internal/screen/promptbox.go`,
    `inputBox`: add a case. Reuse `ruledBox` when the layout is a glyph under a
    rule (Claude, agy); follow the Codex case when wrapped rows share a
@@ -180,7 +185,7 @@ Make the changes in this order; each step has tests before the next.
    `internal/app/app_test.go` the way `TestAgyHookOutputShapes` does, including
    the "nothing to say" output.
 6. **Installer** — `internal/install/install.go`: add the agent to `Agents`
-   (paths honouring the agent's config-dir variable, `Found`), and its hook
+   (taking its directory from `core.HarnessDirs`, `Found`), and its hook
    writer: append-only entries in an event array (Claude, Codex), an owned
    named group (agy), or a marked file (Pi's extension). `status`, `setup`,
    `remove` must stay idempotent, keep other entries and key order, never
