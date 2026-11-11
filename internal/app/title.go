@@ -24,17 +24,30 @@ func titleCarried(kind core.Kind, event string) bool {
 	return false
 }
 
-// syncTitle returns rec's pane label when this hook can show it as the
-// conversation title of session, the one the hook came from, and that
-// session was not already given it, and records that it now is. Giving it
-// only on a change keeps a title the user set by hand (Claude's /rename)
-// until the task changes; a new session under the same handle starts unnamed
-// and is given it. The title is advice: a failure is reported and the hook
-// goes on without it. Whether the harness then showed it is not known: a
-// hook that dies after this, or an extension that cannot apply it, leaves
-// the label unshown until it changes.
+// syncTitle returns rec's conversation title (core.ConversationTitle) when
+// this hook can show it as the title of session, the conversation the hook
+// came from, and that session was not already given it, and records that it
+// now is. Giving it only on a change keeps a title the user set by hand
+// (Claude's /rename) until the task, role, or Epic changes; a new session
+// under the same handle starts unnamed and is given it. The title is advice: a
+// failure, reading the Epic included, is reported and the hook goes on without
+// it. Whether the harness then showed it is not known: a hook that dies after
+// this, or an extension that cannot apply it, leaves it unshown until it
+// changes.
+//
+// It also tracks the title (store.TitleState) on the hooks that carry one and
+// on the turn-start hooks of a harness that takes none, so Codex and agy are
+// recorded unsupported. Other hooks run on every tool call and are left
+// alone: reading the Epic asks Rex, and SetTask and join track their changes
+// themselves.
 func (e Env) syncTitle(ctx context.Context, kind core.Kind, event string, rec store.Record, session string) string {
-	if !titleCarried(kind, event) {
+	carried := titleCarried(kind, event)
+	if !carried && event != EventSessionStart && event != EventPrompt {
+		return ""
+	}
+	want, err := e.conversationTitle(ctx, rec)
+	if err != nil {
+		fmt.Fprintf(Diagnostics, "title of %s: %v\n", rec.Handle, err)
 		return ""
 	}
 	unlock, err := e.Store.LockLedger(ctx, rec.Handle)
@@ -43,18 +56,57 @@ func (e Env) syncTitle(ctx context.Context, kind core.Kind, event string, rec st
 		return ""
 	}
 	defer unlock()
-	want := core.PaneLabel(rec.Handle, rec.Role, rec.Task)
+	given := ""
 	shown, err := e.Store.TitlesShown(rec.Handle)
-	if err == nil && shown[session] != want {
+	if err == nil && carried && shown[session] != want {
 		shown[session] = want
 		if err = e.Store.SetTitlesShown(rec.Handle, shown); err == nil {
-			return want
+			given = want
+		}
+	}
+	if err == nil {
+		err = e.Store.SetTitleState(rec.Handle, core.TrackTitle(kind, want, shown[session]))
+	}
+	if err != nil {
+		fmt.Fprintf(Diagnostics, "title of %s: %v\n", rec.Handle, err)
+	}
+	return given
+}
+
+// refreshTitle tracks rec's title after its task or role changed outside a
+// hook: a harness that takes titles now wants one its conversation was not
+// offered yet, until its next hook that carries a title. Advice: a failure is
+// reported.
+func (e Env) refreshTitle(ctx context.Context, rec store.Record) {
+	want, err := e.conversationTitle(ctx, rec)
+	if err == nil {
+		var unlock func()
+		if unlock, err = e.Store.LockLedger(ctx, rec.Handle); err == nil {
+			defer unlock()
+			var shown map[string]string
+			if shown, err = e.Store.TitlesShown(rec.Handle); err == nil {
+				err = e.Store.SetTitleState(rec.Handle, core.TrackTitle(rec.Kind, want, shown[rec.AgentSessionID]))
+			}
 		}
 	}
 	if err != nil {
 		fmt.Fprintf(Diagnostics, "title of %s: %v\n", rec.Handle, err)
 	}
-	return ""
+}
+
+// conversationTitle is the title rec's conversation should have: its pane
+// label with the Epic its Rex session is named for. A record in no known
+// session has no Epic.
+func (e Env) conversationTitle(ctx context.Context, rec store.Record) (string, error) {
+	epic := ""
+	if rec.SessionID != "" {
+		s, err := e.Rex.InspectSession(ctx, rec.SessionID)
+		if err != nil {
+			return "", fmt.Errorf("read the Epic of %s: %w", rec.SessionID, err)
+		}
+		epic = s.Label
+	}
+	return core.ConversationTitle(rec.Handle, rec.Role, epic, rec.Task), nil
 }
 
 // askTask is the request for a task given with the first prompt of a Claude
@@ -89,7 +141,9 @@ func (e Env) askTask(ctx context.Context, kind core.Kind, event string, rec stor
 
 // PaneTitle is the window title for a harness that asks for one
 // (Antigravity's settings.json "title" command, run on every change of the
-// agent's state): the pane label of its agent in loc. A block without a live
+// agent's state): the pane label of its agent in loc. It names the terminal
+// window, not the conversation, so it carries no Epic and is never tracked as
+// a conversation title offered. A block without a live
 // agent of that kind whose process this one descends from (agy has no
 // SessionEnd, so a new agy finds the last one's record until its first turn),
 // or a record that cannot be read, gives the name of the directory it works

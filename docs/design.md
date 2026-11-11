@@ -236,7 +236,15 @@ state written by earlier versions: after an upgrade, clear the state
 directory and restart the agents.
 
 **The harness shows the pane label too.** The agent's own title in its TUI is
-made to match the pane label, each harness the way it allows:
+made to match the pane label, each harness the way it allows. A conversation
+title (Claude Code's and Pi's, which `/resume` lists) also names the Epic:
+when the Rex session's label names one, the title is
+`core.ConversationTitle`, `<role>(<handle>) | [<epic>] <task>` (or
+`<role>(<handle>) | [<epic>]` without a task). A blank label or Rex's own
+`Session <8 hex>` names none, and the title is the pane label. The head stays
+before ` | `, so `TitleNamesHandle` still finds the handle in it. The pane
+label and agy's window title never carry the Epic: a narrow pane has no room
+for it, and the tab and session already show it.
 
 | Harness | How | When it changes |
 |---|---|---|
@@ -256,6 +264,20 @@ has not proven the record is its agent's is given none. agy pulls its title,
 so nothing is kept for it; its command also checks that it descends from the
 record's process, because a new agy finds the last one's record still live
 until its first turn.
+
+How far each handle's title got is tracked apart from that dedupe, in
+`title-state/<handle>` (`status`, `desired`, `offered`, under the ledger
+lock): `offered` once a hook reply carried the desired title to the agent's
+current conversation, `desired` while a change made outside such a hook
+(`title`, `join --role`) waits for the next one, and `unsupported` for Codex
+and agy, whose hooks carry no conversation title; agy's window title is not
+counted as one. The Epic is read from Rex (`session inspect`) only on hooks
+that carry a title (Pi's include its 30 s mail rescan), on `SessionStart` and
+`UserPromptSubmit` of Codex and agy, and on `title` and `join --role`. The
+hooks that run on every tool or model call (`PostToolUse`, agy's
+`PreInvocation`) ask Rex nothing, so a renamed Epic is seen at the next
+prompt. When Rex cannot be read, the hook is
+given no title and nothing is tracked, rather than a title without the Epic.
 Evidence (2026-11-05, **reproduced**): a headless Claude 2.1 run recorded
 `custom-title` `claude-probe-01` and still received the identity notice as
 context; a Pi 0.84 pane's title became `π - pi-probe-01 - work`, then the
@@ -264,11 +286,15 @@ task's label after `title`; an agy 1.5.1 pane showed `rex-amq-adapter`, then
 mechanisms are from agent-post's `docs/research/session-title-sync.md` and
 agy's documentation (antigravity.google/docs/cli/title).
 
-Session labels are left alone. Rex's own startup hook asks each agent to name
-the session after its task, and a session is shared: during the 2026-11-05
-work on this section, the session holding this adapter's tab was renamed by an
-agent in another of its tabs. A second writer with its own format would only
-fight over it.
+Session labels belong to the human: one Rex session is one Epic, and its
+label names it. The adapter never writes it, and the identity notice
+(`core.TaskNotice`) and the guide tell every agent never to run `rex session
+rename` for its own task. Rex's own startup hook asked each agent to name the
+session after its task, and a session is shared: during the 2026-11-05 work
+on this section, the session holding this adapter's tab was renamed by an
+agent in another of its tabs, and on 2026-11-11 a peer's startup renamed an
+Epic session `cross-session-amq` to its own task. `rex skill setup
+--session-naming=false` turns Rex's request off.
 
 **Tab labels.** A tab (Rex window) has one owner, which the tab ledger
 (`tabs/<window>.json`: `window_id`, `session_id`, `mode`, `crew`,

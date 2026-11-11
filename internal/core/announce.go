@@ -125,9 +125,14 @@ func SessionNotice(h Handle, envCmd string, unread int) string {
 
 // TaskNotice is what an agent is told about its pane label: the task it
 // shows, or a request for one once the agent knows what it is working on.
+// Either way it is told that the Rex session label is the human's Epic, which
+// its task never renames.
 func TaskNotice(h Handle, role, titleCmd, task string) string {
 	if task != "" {
-		return fmt.Sprintf("Pane label: your pane shows `%s`. When your task changes, run `%s \"<new task in a few words>\"`.", PaneLabel(h, role, task), titleCmd)
+		return fmt.Sprintf("Pane label: your pane shows `%s`. When your task changes, run `%s \"<new task in a few words>\"`. %s", PaneLabel(h, role, task), titleCmd, EpicRule)
 	}
-	return fmt.Sprintf("Pane label: your pane shows only `%s`. As soon as you know what you are working on (usually from the user's first request), show it after your handle with `%s \"<task in a few words>\"`, and again when it changes. Do this even if you never use AMQ.", PaneHead(h, role), titleCmd)
+	return fmt.Sprintf("Pane label: your pane shows only `%s`. As soon as you know what you are working on (usually from the user's first request), show it after your handle with `%s \"<task in a few words>\"`, and again when it changes. Do this even if you never use AMQ. %s", PaneHead(h, role), titleCmd, EpicRule)
 }
+
+// EpicRule tells an agent that the Rex session label is not its to set.
+const EpicRule = "The Rex session label names the human's Epic (1 Rex session = 1 Epic): never run `rex session rename` for your own task."
