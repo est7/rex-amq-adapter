@@ -90,7 +90,7 @@ func (e Env) Join(ctx context.Context, loc Location, crewName, role string) (Joi
 	out := Joined{Record: rec, Label: core.PaneLabel(rec.Handle, rec.Role, rec.Task), Crew: c}
 	name := c.Name
 	if name == "" {
-		name = e.tabCrew(ctx, blk.SessionID, blk.WindowID)
+		name = e.tabCrew(ctx, rec, blk.SessionID, blk.WindowID)
 	}
 	out.Briefing = joinNotices(core.BriefNotice(e.briefingIn(ctx, rec, rec.Role, name)))
 	if rec.Role != core.OrchestratorRole {
@@ -105,14 +105,15 @@ func (e Env) Join(ctx context.Context, loc Location, crewName, role string) (Joi
 	return out, nil
 }
 
-// nameTab names the window after the crew, unless it already is. Another live
-// agent in the window refuses it.
+// nameTab names the window after the crew, unless it already is, and
+// records it in the tab ledger as the crew's. Another live agent in the
+// window refuses it.
 func (e Env) nameTab(ctx context.Context, rec store.Record, session, window, name string) error {
 	if session == "" || window == "" {
 		return errors.New("cannot determine this Rex tab")
 	}
-	if e.tabCrew(ctx, session, window) == name {
-		return nil
+	if e.tabCrew(ctx, rec, session, window) == name {
+		return ClaimTab(e.Store, session, window, name)
 	}
 	blocks, err := e.Rex.ListBlocks(ctx, session)
 	if err != nil {
@@ -132,11 +133,15 @@ func (e Env) nameTab(ctx context.Context, rec store.Record, session, window, nam
 			}
 		}
 	}
-	return e.Rex.RenameWindow(ctx, window, name)
+	if err := e.Rex.RenameWindow(ctx, window, name); err != nil {
+		return err
+	}
+	return ClaimTab(e.Store, session, window, name)
 }
 
-// tabCrew is the crew window's label names, "" when Rex cannot say.
-func (e Env) tabCrew(ctx context.Context, session, window string) string {
+// tabCrew is the crew window names (crewOfTab) for rec's agent, "" when Rex
+// cannot say.
+func (e Env) tabCrew(ctx context.Context, rec store.Record, session, window string) string {
 	s, err := e.Rex.InspectSession(ctx, session)
 	if err != nil {
 		fmt.Fprintf(Diagnostics, "read the tab %s: %v\n", window, err)
@@ -144,7 +149,7 @@ func (e Env) tabCrew(ctx context.Context, session, window string) string {
 	}
 	for _, w := range s.Windows {
 		if w.ID == window {
-			return crew.Name(w.Label)
+			return e.crewOfTab(window, w.Label, func() string { return e.agentDir(ctx, rec) })
 		}
 	}
 	return ""
@@ -175,6 +180,7 @@ func (e Env) takeRole(ctx context.Context, loc Location, h core.Handle, role, cr
 	if err := e.Rex.RenameBlock(ctx, loc.Block, core.PaneLabel(rec.Handle, rec.Role, rec.Task)); err != nil {
 		return rec, fmt.Errorf("the role is recorded, but the pane label could not be set: %w", err)
 	}
+	e.followBlockTab(ctx, loc.Block)
 	return rec, nil
 }
 

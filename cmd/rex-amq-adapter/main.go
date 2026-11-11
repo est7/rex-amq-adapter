@@ -539,6 +539,13 @@ func runTab(args []string) int {
 	if err != nil {
 		return fail(err)
 	}
+	// The tab is open either way; unrecorded, it names its crew only while
+	// its label leads with one that exists.
+	if paths, err := store.DefaultPaths(); err != nil {
+		fmt.Fprintf(os.Stderr, "rex-amq-adapter: record the tab %s: %v\n", w, err)
+	} else if err := app.ClaimTab(store.Store{P: paths}, *session, w, tabName); err != nil {
+		fmt.Fprintf(os.Stderr, "rex-amq-adapter: record the tab %s: %v\n", w, err)
+	}
 	fmt.Printf("{\"window_id\":%q,\"block_ids\":[%q]}\n", w, b)
 	return 0
 }

@@ -10,7 +10,6 @@ import (
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/core"
-	"github.com/est7/rex-amq-adapter/internal/crew"
 	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
@@ -327,7 +326,7 @@ func (e Env) briefing(ctx context.Context, a Adoption) core.Briefing {
 		}
 		for _, w := range s.Windows {
 			if w.ID == a.Window {
-				name = crew.Name(w.Label)
+				name = e.crewOfTab(a.Window, w.Label, func() string { return e.agentDir(ctx, a.Record) })
 			}
 		}
 	}

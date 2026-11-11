@@ -244,6 +244,9 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	if label := core.PaneLabel(handle, rec.Role, rec.Task); blk.Label != label {
 		out.LabelErr = e.Rex.RenameBlock(ctx, loc.Block, label)
 	}
+	// The tab follows even when the pane label was right already: Rex names
+	// a new tab "Window <8-hex>", and a summoned agent's tab its launch label.
+	e.followTab(ctx, blk.SessionID, blk.WindowID)
 	unread, err := amq.Unread(e.Paths.Root(), string(handle))
 	if err != nil {
 		return Adoption{}, err
@@ -448,6 +451,7 @@ func (e Env) SetTask(ctx context.Context, loc Location, task string) (string, er
 	if err := e.Rex.RenameBlock(ctx, loc.Block, label); err != nil {
 		return "", fmt.Errorf("the task is recorded, but the pane label could not be set: %w", err)
 	}
+	e.followBlockTab(ctx, loc.Block)
 	return label, nil
 }
 

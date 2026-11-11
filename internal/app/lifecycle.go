@@ -143,6 +143,8 @@ func (e Env) park(ctx context.Context, rec store.Record, reason string) error {
 		return err
 	}
 	e.leaveSession(ctx, rec)
+	// A tab it shared may now hold one agent, whose label it then follows.
+	e.followTab(ctx, rec.SessionID, rec.WindowID)
 	if err := e.finishDeparture(ctx, rec); err != nil {
 		fmt.Fprintf(Diagnostics, "finish the departure of %s: %v\n", rec.Handle, err)
 	}
