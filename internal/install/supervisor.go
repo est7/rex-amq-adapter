@@ -220,6 +220,10 @@ func codexDaemonState(config string) (string, error) {
 const codexDaemonComment = "# rex-amq-adapter: a shared daemon gives every thread the first terminal's Rex environment"
 
 func disableCodexDaemon(config string) error {
+	return writeCodexEdit(config, daemonEdits, checkDaemonEdit, "add daemon_auto_start = false to features by hand")
+}
+
+func writeCodexEdit(config string, edits func([]string) [][]string, check func(map[string]any, string) error, manual string) error {
 	c, err := readCodexConfig(config)
 	if err != nil {
 		return err
@@ -233,14 +237,14 @@ func disableCodexDaemon(config string) error {
 		lines = strings.Split(strings.TrimSuffix(strings.ReplaceAll(c.text, "\r\n", "\n"), "\n"), "\n")
 	}
 	text, err := "", errors.New("no edit to try")
-	for _, edit := range daemonEdits(lines) {
+	for _, edit := range edits(lines) {
 		text = strings.Join(edit, eol) + eol
-		if err = checkDaemonEdit(c.doc, text); err == nil {
+		if err = check(c.doc, text); err == nil {
 			break
 		}
 	}
 	if err != nil {
-		return fmt.Errorf("%w (%v): add daemon_auto_start = false to features by hand", errNoSafeEdit, err)
+		return fmt.Errorf("%w (%v): %s", errNoSafeEdit, err, manual)
 	}
 	if err := os.MkdirAll(filepath.Dir(c.path), 0o700); err != nil {
 		return err

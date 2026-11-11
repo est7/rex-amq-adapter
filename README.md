@@ -116,6 +116,20 @@ already running is not stopped:
 
 Antigravity and Pi need nothing: each runs in its own pane's process.
 
+Crew roles (such as `orchestrator`) track Slices in each harness's native task
+list rather than repository files. Two harnesses gate those tools behind a
+setting on current models; `setup` turns both on (the `tasks` item) unless you
+set them off yourself, which it keeps unless `--force`, and `remove` leaves
+them on:
+
+| Harness | Setting | Why |
+|---|---|---|
+| Claude Code | `"CLAUDE_CODE_ENABLE_TODO_TOOLS": "1"` under `"env"` in `~/.claude/settings.json` | Claude Code gates `TaskCreate`/`TaskUpdate` behind a 4.x model allowlist unless `CLAUDE_CODE_ENABLE_TODO_TOOLS` is enabled |
+| Codex | `enabled = true` under `[tools.update_plan]` in `~/.codex/config.toml` | Code-mode-only models (such as `gpt-6.1-sol`) leave `update_plan` off unless enabled explicitly |
+
+Antigravity (`brain/<id>/task.md` artifact) and Pi (`TaskCreate`/`TaskUpdate`
+in `1st-pi`) already expose task tracking with no extra setting.
+
 ## Use
 
 Start agents in Rex terminals as usual. Then ask one to talk to another:

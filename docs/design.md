@@ -1045,6 +1045,12 @@ modeled on `rex skill`:
   `--force`. `remove` keeps it: setup cannot tell whether the user
   wanted it off anyway, and turning a supervisor back on would bring the
   misplaced sessions back. A running Codex daemon is not stopped.
+- **Native task-list tools**: the `tasks` item enables each harness's native
+  task-list tools where current models gate them off (`"CLAUDE_CODE_ENABLE_TODO_TOOLS":
+  "1"` under `"env"` in Claude Code's `settings.json`, and `enabled = true`
+  under `[tools.update_plan]` in Codex's `config.toml`), using the same
+  order-preserving JSON merge and go-toml-checked line edits, `--force`
+  handling, and `remove` retention (`kept`) as `supervisor`.
 - The agent guide carries every Rex command it uses (opening a peer in a pane,
   tab, or session; reading a peer's screen and status). It does not depend on
   Rex's own skill, so an agent needs one skill lookup, not two.
@@ -1092,7 +1098,7 @@ internal/amq/          wake check/start/repair/retire, mailbox registration, inb
 internal/screen/       input-box classifier (ported from herdr-amq-adapter)
 internal/store/        records, ledger, inject log, window notes, reservations, locks
 internal/e2e/          scripted agents on a private Rex server and real amq wake
-internal/install/      settings.json / hooks.json merge, stub skills, supervisor settings (config.toml through go-toml)
+internal/install/      settings.json / hooks.json merge, stub skills, supervisor and task-tool settings (config.toml through go-toml)
 internal/guide/        embedded agent guide
 ```
 

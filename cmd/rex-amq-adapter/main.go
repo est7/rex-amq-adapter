@@ -71,7 +71,8 @@ Agent and user commands:
 
 Installation:
   setup|status|remove       install, inspect, or remove the skill, hooks, and
-                            harness settings (agy title, shared supervisors off)
+                            harness settings (agy title, shared supervisors off,
+                            native task tools on)
 
 Internal (run by installed hooks and by amq wake):
   hook <event> --agent K    session-start | user-prompt-submit | post-tool-use | pre-invocation | stop | stop-failure | session-end | mail | settle

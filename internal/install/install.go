@@ -32,7 +32,10 @@ type Agent struct {
 	// SupervisorFile, when set, is the settings file where the harness's
 	// shared supervisor is turned off (supervisor.go).
 	SupervisorFile string
-	Found          bool
+	// TasksFile, when set, is the settings file where the harness's native
+	// task-list tools are enabled (tasks.go).
+	TasksFile string
+	Found     bool
 }
 
 const skillName = "rex-amq-adapter"
@@ -50,9 +53,9 @@ func Agents(only []core.Kind) ([]Agent, error) {
 	agyDir := filepath.Join(home, ".gemini", "config") // Antigravity's global configuration
 	all := []Agent{
 		{Kind: core.Claude, Name: "Claude Code", SkillDir: filepath.Join(claudeDir, "skills", skillName), HookFile: filepath.Join(claudeDir, "settings.json"),
-			SupervisorFile: filepath.Join(claudeDir, "settings.json"), Found: exists(claudeDir) || onPath("claude")},
+			SupervisorFile: filepath.Join(claudeDir, "settings.json"), TasksFile: filepath.Join(claudeDir, "settings.json"), Found: exists(claudeDir) || onPath("claude")},
 		{Kind: core.Codex, Name: "Codex", SkillDir: filepath.Join(home, ".agents", "skills", skillName), HookFile: filepath.Join(codexDir, "hooks.json"),
-			SupervisorFile: filepath.Join(codexDir, "config.toml"), Found: exists(codexDir) || onPath("codex")},
+			SupervisorFile: filepath.Join(codexDir, "config.toml"), TasksFile: filepath.Join(codexDir, "config.toml"), Found: exists(codexDir) || onPath("codex")},
 		{Kind: core.Agy, Name: "Antigravity", SkillDir: filepath.Join(agyDir, "skills", skillName), HookFile: filepath.Join(agyDir, "hooks.json"),
 			TitleFile: filepath.Join(dirs.AgyCLI, "settings.json"), Found: exists(agyDir) || onPath("agy")},
 		// Pi reads the Agent Skills directory it shares with Codex; its "hook"
@@ -80,7 +83,7 @@ func onPath(bin string) bool { _, err := exec.LookPath(bin); return err == nil }
 // Item is one installed thing and what happened to it.
 type Item struct {
 	Agent  string `json:"agent"`
-	Kind   string `json:"kind"` // skill | hook | title | supervisor
+	Kind   string `json:"kind"` // skill | hook | title | supervisor | tasks
 	Path   string `json:"path"`
 	State  string `json:"state"`            // current | outdated | missing | foreign
 	Change string `json:"change,omitempty"` // created | updated | unchanged | removed | kept | conflict
@@ -208,6 +211,13 @@ func Status(agents []Agent, self string) ([]Item, error) {
 			}
 			items = append(items, Item{Agent: a.Name, Kind: "supervisor", Path: a.SupervisorFile, State: ss})
 		}
+		if a.TasksFile != "" {
+			ts, err := tasksState(a)
+			if err != nil {
+				return nil, err
+			}
+			items = append(items, Item{Agent: a.Name, Kind: "tasks", Path: a.TasksFile, State: ts})
+		}
 	}
 	return items, nil
 }
@@ -247,6 +257,13 @@ func Setup(agents []Agent, o Options) ([]Item, error) {
 			}
 			items = append(items, it)
 		}
+		if a.TasksFile != "" {
+			it, err := setupTasks(a, o)
+			if err != nil {
+				return nil, err
+			}
+			items = append(items, it)
+		}
 	}
 	return items, nil
 }
@@ -278,6 +295,13 @@ func Remove(agents []Agent, o Options) ([]Item, error) {
 		}
 		if a.SupervisorFile != "" {
 			it, err := removeSupervisor(a)
+			if err != nil {
+				return nil, err
+			}
+			items = append(items, it)
+		}
+		if a.TasksFile != "" {
+			it, err := removeTasks(a)
 			if err != nil {
 				return nil, err
 			}
