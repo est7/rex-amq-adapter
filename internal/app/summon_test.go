@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -381,5 +382,43 @@ func TestSummonRefusesAStartOnAnUnreadableGrant(t *testing.T) {
 	e, term, loc := summonWorld(t)
 	if res := summon(t, e, loc, "implementer", func(r *SummonRequest) { r.Grant = filepath.Join(dir, "missing.md") }); res.Action != "refused" || len(term.launches) != 0 {
 		t.Fatalf("%+v", res)
+	}
+}
+
+// An Antigravity peer started in a linked worktree of a repository the user
+// trusts gets that trust for its session through --settings, and the trust
+// store is left as it was.
+func TestSummonCarriesDerivedTrustToAnAgyPeer(t *testing.T) {
+	root, _ := filepath.EvalSymlinks(t.TempDir())
+	main, wt := filepath.Join(root, "app"), filepath.Join(root, "app-task")
+	for _, args := range [][]string{
+		{"init", "-q", main},
+		{"-C", main, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init"},
+		{"-C", main, "worktree", "add", "-q", "--detach", wt},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	e, term, loc := summonWorld(t)
+	store := filepath.Join(e.TranscriptHome, ".gemini", "antigravity-cli", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(store), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	before := `{"trustedWorkspaces": ["` + main + `"]}`
+	if err := os.WriteFile(store, []byte(before), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res := summon(t, e, loc, "reviewer", func(r *SummonRequest) { r.Asked = "start one"; r.Cwd = wt; r.Harness = "agy" })
+	if res.Action != "start" || len(term.launches) != 1 {
+		t.Fatalf("%+v", res)
+	}
+	argv := launchProgram(term.launches[0])
+	want := `{"trustedWorkspaces":["` + main + `","` + wt + `"]}`
+	if len(argv) < 3 || argv[0] != "agy" || argv[1] != "--settings" || argv[2] != want {
+		t.Fatalf("argv %q", argv)
+	}
+	if got, _ := os.ReadFile(store); string(got) != before {
+		t.Fatalf("the trust store was written: %s", got)
 	}
 }

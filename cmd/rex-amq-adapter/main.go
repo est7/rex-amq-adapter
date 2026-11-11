@@ -535,8 +535,7 @@ func runTab(args []string) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	c := rex.Client{Bin: bin, Server: os.Getenv("REX_SERVER")}
-	deriveTrust(*dir)
-	w, b, err := c.NewWindow(ctx, *session, tabName, *role, *dir, fs.Args())
+	w, b, err := c.NewWindow(ctx, *session, tabName, *role, *dir, trust.Args(fs.Args(), deriveTrust(*dir).Settings))
 	if err != nil {
 		return fail(err)
 	}
@@ -544,9 +543,9 @@ func runTab(args []string) int {
 	return 0
 }
 
-// deriveTrust extends the user's Antigravity trust of a repository to the
-// linked worktree a peer is about to start in. A failure is reported and does
-// not stop the launch: the peer then meets the dialog, as before.
+// deriveTrust extends, for one session, the user's Antigravity trust of a
+// repository to the linked worktree a peer is about to start in. A failure is
+// reported and does not stop the launch: the peer then meets the dialog.
 func deriveTrust(dir string) trust.Result {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -556,7 +555,7 @@ func deriveTrust(dir string) trust.Result {
 	r, err := trust.Derive(home, dir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "rex-amq-adapter: trust: %v\n", err)
-	} else if r.Written {
+	} else if r.Settings != "" {
 		fmt.Fprintf(os.Stderr, "rex-amq-adapter: %s: %s\n", r.Harness, r.Note)
 	}
 	return r
@@ -593,9 +592,6 @@ func runSummon(args []string) int {
 	env, loc, err := caller()
 	if err != nil {
 		return fail(err)
-	}
-	if *cwd != "" {
-		deriveTrust(*cwd) // as split does: a peer started in a task worktree meets no folder-trust dialog the user already answered for its repository
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	res, err := env.Summon(ctx, loc, app.SummonRequest{Target: target, Kind: *kind, Subject: *subject, Body: *body, Grant: *grant, Asked: *asked, Harness: *harness, Cwd: *cwd})
@@ -638,7 +634,7 @@ func runSummon(args []string) int {
 
 func runTrust(args []string) int {
 	if len(args) != 1 || strings.HasPrefix(args[0], "-") {
-		fmt.Fprintln(os.Stderr, "usage: rex-amq-adapter trust <dir>")
+		fmt.Fprintln(os.Stderr, "usage: rex-amq-adapter trust <dir>  (prints agy's --settings value for dir; exit 1 when there is none)")
 		return 2
 	}
 	home, err := os.UserHomeDir()
@@ -649,7 +645,13 @@ func runTrust(args []string) int {
 	if err != nil {
 		return fail(err)
 	}
-	fmt.Printf("%s: %s\n", r.Harness, r.Note)
+	// stdout is the --settings value alone, so a hand-started peer can take
+	// it: agy --settings "$(rex-amq-adapter trust <dir>)" …
+	fmt.Fprintf(os.Stderr, "%s: %s\n", r.Harness, r.Note)
+	if r.Settings == "" {
+		return 1
+	}
+	fmt.Println(r.Settings)
 	return 0
 }
 

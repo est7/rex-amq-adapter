@@ -221,10 +221,12 @@ this needs is below; no other skill is required.
    This mode cannot be combined with `--remote` or `codex agents`. Never take
    focus. When your own pane has fewer than 10 rows (`rex block call -b
    "$REX_BLOCK" size`), a split would leave the peer unable to draw its input
-   box: open it in a new tab (`rex run`) instead. For an Antigravity peer in a linked worktree, run
-   `rex-amq-adapter trust <dir>` first: it extends the trust you already gave
-   that repository to the worktree (and nothing else), so the peer meets no
-   folder dialog; `tab` does this for its `-c` directory itself. Save the returned block id. When unsure whether work is the same task,
+   box: open it in a new tab (`rex run`) instead. For an Antigravity peer you start by hand in a linked
+   worktree, pass `--settings "$(rex-amq-adapter trust <dir>)"` to agy: it
+   extends the trust you already gave that repository to the worktree for that
+   session only (and nothing else; it prints nothing and exits 1 when there is
+   no such trust), so the peer meets no folder dialog. `summon` and `tab` do
+   this themselves; none of them writes Antigravity's settings file. Save the returned block id. When unsure whether work is the same task,
    prefer a pane: the user can move it (`rex move`), and an unseen peer is easy
    to forget. Tell the user where the peer is ("opened reviewer in a pane on the
    right", "started codex in a new session `billing-api`").

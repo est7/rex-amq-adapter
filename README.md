@@ -90,7 +90,7 @@ ships inside the binary. Run it again after moving the binary.
   not apply there. This mode cannot be combined with `--remote` or `codex agents`.
   Codex runs new hooks only after you approve them: run `/hooks` in Codex, or
   accept the review prompt at startup. The first hook that runs adopts the agent.
-- **Claude Code** and **Antigravity** run hooks only in folders you trust. Trust is derived, never created: `rex-amq-adapter trust <dir>` (and `tab` for its `-c` directory) extends the trust you gave a repository in Antigravity to its linked worktrees, and a repository you never trusted keeps its dialog. Claude Code and Codex resolve worktrees to the main checkout themselves.
+- **Claude Code** and **Antigravity** run hooks only in folders you trust. Trust is derived, never created: `summon` and `tab` start an Antigravity peer in a linked worktree with `--settings`, which extends the trust you gave its repository to that worktree for the peer's session only, and `rex-amq-adapter trust <dir>` prints that value for a peer you start by hand. Antigravity's settings file is never written, and a repository you never trusted keeps its dialog. Claude Code and Codex resolve worktrees to the main checkout themselves.
 - **Antigravity** peers start with `agy --dangerously-skip-permissions -i "<brief>"`;
   without the skip flag agy stops to ask before every `amq` command it runs.
 - An agent gets its mailbox when its first turn starts; Codex and Antigravity

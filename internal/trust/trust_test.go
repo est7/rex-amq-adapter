@@ -2,12 +2,10 @@ package trust
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 )
 
@@ -52,28 +50,33 @@ func settings(t *testing.T, home string, trusted ...string) (path, text string) 
 	return path, text
 }
 
+// trustedList parses a --settings value back into its list.
+func trustedList(t *testing.T, settings string) []string {
+	t.Helper()
+	var s struct {
+		Trusted []string `json:"trustedWorkspaces"`
+	}
+	if err := json.Unmarshal([]byte(settings), &s); err != nil {
+		t.Fatalf("settings %q: %v", settings, err)
+	}
+	return s.Trusted
+}
+
+// The worktree is trusted for the session through --settings, which carries
+// the whole stored list plus the worktree; the store itself is never written.
 func TestTrustedMainExtendsToItsLinkedWorktree(t *testing.T) {
 	main, wt := repo(t)
 	home := t.TempDir()
 	p, before := settings(t, home, "/Users/x/other", main)
 	r, err := Derive(home, wt)
-	if err != nil || !r.Written || r.Main != main {
+	if err != nil || r.Main != main || !strings.Contains(r.Note, "for this session") {
 		t.Fatalf("Derive: %+v %v", r, err)
 	}
-	got, _ := os.ReadFile(p)
-	want := strings.Replace(before, "\""+main+"\"\n  ]", "\""+main+"\",\n    \""+wt+"\"\n  ]", 1)
-	if string(got) != want {
-		t.Fatalf("settings:\n%s\nwant:\n%s", got, want)
+	if got := strings.Join(trustedList(t, r.Settings), "|"); got != "/Users/x/other|"+main+"|"+wt {
+		t.Fatalf("settings list %s", got)
 	}
-	if info, _ := os.Stat(p); info.Mode().Perm() != 0o600 {
-		t.Fatalf("mode %v", info.Mode())
-	}
-	// A second run finds the entry and leaves the bytes alone.
-	if r, err := Derive(home, wt); err != nil || r.Written || !strings.Contains(r.Note, "already trusted") {
-		t.Fatalf("second Derive: %+v %v", r, err)
-	}
-	if again, _ := os.ReadFile(p); string(again) != want {
-		t.Fatal("the settings changed on a no-op run")
+	if got, _ := os.ReadFile(p); string(got) != before {
+		t.Fatalf("the store was written:\n%s", got)
 	}
 }
 
@@ -83,20 +86,18 @@ func TestEntriesMatchByIdentityNotSpelling(t *testing.T) {
 	main, wt := repo(t)
 	home := t.TempDir()
 	other := filepath.Join(filepath.Dir(main), "APP")
-	p, text := settings(t, home, other)
+	settings(t, home, other)
 	a, errA := os.Stat(main)
 	b, errB := os.Stat(other)
 	same := errA == nil && errB == nil && os.SameFile(a, b)
 	r, err := Derive(home, wt)
-	if err != nil || r.Written != same {
+	if err != nil || (r.Settings != "") != same {
 		t.Fatalf("same directory %v: %+v %v", same, r, err)
 	}
-	got, _ := os.ReadFile(p)
-	if same && !strings.Contains(string(got), "    \""+wt+"\"\n  ]") {
-		t.Fatalf("the worktree was not appended with its own spelling:\n%s", got)
-	}
-	if !same && string(got) != text {
-		t.Fatalf("a different directory's trust leaked:\n%s", got)
+	if same {
+		if l := trustedList(t, r.Settings); l[len(l)-1] != wt {
+			t.Fatalf("the worktree is not added with its own spelling: %v", l)
+		}
 	}
 }
 
@@ -109,92 +110,46 @@ func TestCopiedGitPointerDerivesNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	home := t.TempDir()
-	p, text := settings(t, home, main)
-	if r, err := Derive(home, fake); err != nil || r.Written || !strings.Contains(r.Note, "not a linked worktree") {
+	settings(t, home, main)
+	if r, err := Derive(home, fake); err != nil || r.Settings != "" || !strings.Contains(r.Note, "not a linked worktree") {
 		t.Fatalf("%+v %v", r, err)
-	}
-	if got, _ := os.ReadFile(p); string(got) != text {
-		t.Fatalf("settings changed:\n%s", got)
 	}
 	if _, ok, _ := MainCheckout(fake); ok {
 		t.Fatal("a copied pointer resolved to a main checkout")
 	}
 }
 
-// Peers start together; every derivation lands.
-func TestConcurrentDerivationsAllLand(t *testing.T) {
-	main, first := repo(t)
-	const n = 12
-	wts := []string{first}
-	for i := 1; i < n; i++ {
-		wt := filepath.Join(filepath.Dir(main), fmt.Sprintf("peer-%d", i))
-		if out, err := exec.Command("git", "-C", main, "worktree", "add", "-q", "--detach", wt).CombinedOutput(); err != nil {
-			t.Fatalf("%v %s", err, out)
-		}
-		wts = append(wts, wt)
-	}
+func TestEmptyListGetsNothing(t *testing.T) {
+	_, wt := repo(t)
 	home := t.TempDir()
-	p, _ := settings(t, home, main)
-	start := make(chan struct{})
-	var wg sync.WaitGroup
-	for _, wt := range wts {
-		wg.Add(1)
-		go func(w string) {
-			defer wg.Done()
-			<-start
-			if r, err := Derive(home, w); err != nil || !r.Written {
-				t.Errorf("%s: %+v %v", w, r, err)
-			}
-		}(wt)
-	}
-	close(start)
-	wg.Wait()
-	raw, _ := os.ReadFile(p)
-	var s struct {
-		Trusted []string `json:"trustedWorkspaces"`
-	}
-	if err := json.Unmarshal(raw, &s); err != nil || len(s.Trusted) != n+1 {
-		t.Fatalf("%d entries, want %d: %v\n%s", len(s.Trusted), n+1, err, raw)
-	}
-}
-
-// A managed store behind a symlink is updated through the link.
-func TestSymlinkedStoreKeepsItsLink(t *testing.T) {
-	main, wt := repo(t)
-	home := t.TempDir()
-	p, _ := settings(t, home, main)
-	target := filepath.Join(home, "managed-settings.json")
-	if err := os.Rename(p, target); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(target, p); err != nil {
-		t.Fatal(err)
-	}
-	if r, err := Derive(home, wt); err != nil || !r.Written {
-		t.Fatalf("%+v %v", r, err)
-	}
-	if info, _ := os.Lstat(p); info.Mode()&os.ModeSymlink == 0 {
-		t.Fatal("the symlink was replaced by a file")
-	}
-	if got, _ := os.ReadFile(target); !strings.Contains(string(got), wt) {
-		t.Fatalf("the target was not updated:\n%s", got)
-	}
-}
-
-func TestEmptyListGetsItsFirstEntry(t *testing.T) {
-	main, wt := repo(t)
-	_ = main
-	home := t.TempDir()
-	p, _ := settings(t, home)
-	if r, err := Derive(home, wt); err != nil || r.Written {
+	settings(t, home)
+	if r, err := Derive(home, wt); err != nil || r.Settings != "" {
 		t.Fatalf("an empty list trusts nothing: %+v %v", r, err)
 	}
-	if got, _ := os.ReadFile(p); !strings.Contains(string(got), "\"trustedWorkspaces\": []") {
-		t.Fatalf("settings changed:\n%s", got)
+}
+
+// Args adds --settings to an agy session start only.
+func TestArgsAddsSettingsToAnAgySessionOnly(t *testing.T) {
+	const v = `{"trustedWorkspaces":["/a"]}`
+	for name, tc := range map[string]struct {
+		in, want []string
+		settings string
+	}{
+		"session start":   {[]string{"agy", "--dangerously-skip-permissions", "-i", "brief"}, []string{"agy", "--settings", v, "--dangerously-skip-permissions", "-i", "brief"}, v},
+		"absolute agy":    {[]string{"/opt/homebrew/bin/agy", "-i", "b"}, []string{"/opt/homebrew/bin/agy", "--settings", v, "-i", "b"}, v},
+		"nothing derived": {[]string{"agy", "-i", "b"}, []string{"agy", "-i", "b"}, ""},
+		"subcommand":      {[]string{"agy", "mcp", "list"}, []string{"agy", "mcp", "list"}, v},
+		"own settings":    {[]string{"agy", "--settings", "{}", "-i", "b"}, []string{"agy", "--settings", "{}", "-i", "b"}, v},
+		"other harness":   {[]string{"codex", "brief"}, []string{"codex", "brief"}, v},
+		"no command":      {nil, nil, v},
+	} {
+		if got := Args(tc.in, tc.settings); strings.Join(got, "\x00") != strings.Join(tc.want, "\x00") {
+			t.Errorf("%s: %q, want %q", name, got, tc.want)
+		}
 	}
 }
 
-func TestNothingIsWrittenWithoutDerivableTrust(t *testing.T) {
+func TestNothingIsDerivedWithoutTrustedMain(t *testing.T) {
 	main, wt := repo(t)
 	plain := t.TempDir()
 	parent := filepath.Dir(main)
@@ -212,14 +167,14 @@ func TestNothingIsWrittenWithoutDerivableTrust(t *testing.T) {
 		home := t.TempDir()
 		p, text := settings(t, home, tc.trusted...)
 		r, err := Derive(home, tc.dir)
-		if err != nil || r.Written || !strings.Contains(r.Note, tc.note) {
+		if err != nil || r.Settings != "" || !strings.Contains(r.Note, tc.note) {
 			t.Errorf("%s: %+v %v", name, r, err)
 		}
 		if got, _ := os.ReadFile(p); string(got) != text {
 			t.Errorf("%s: settings changed:\n%s", name, got)
 		}
 	}
-	if r, err := Derive(t.TempDir(), wt); err != nil || r.Written || !strings.Contains(r.Note, "no trust store") {
+	if r, err := Derive(t.TempDir(), wt); err != nil || r.Settings != "" || !strings.Contains(r.Note, "no trust store") {
 		t.Errorf("missing store: %+v %v", r, err)
 	}
 }
