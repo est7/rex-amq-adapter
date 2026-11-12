@@ -707,16 +707,15 @@ func (s Store) ClearEpisode(block string) error {
 	return err
 }
 
-// HealthMark is what the watchdog last told the session about an agent's
-// transcript, so each finding is reported once, and whether the agent's last
-// turn ended in an error (a stop hook reported it).
+// HealthMark is what the watchdog last told the session about an agent, so
+// each finding is reported once. Only the watchdog writes it.
 type HealthMark struct {
+	// HealthBy is the agent run (turnKey) LastHungID and LastStallAt belong
+	// to; another run in the block starts clean.
+	HealthBy string `json:"health_by,omitempty"`
+	// LastHungID is the tool call id of the last hung call told.
 	LastHungID  string    `json:"last_hung_id,omitempty"`
 	LastStallAt time.Time `json:"last_stall_at,omitempty"`
-	// TurnErroredAt is when TurnErroredBy (handle/agent session) last ended a
-	// turn in an error; a new turn of that agent clears it.
-	TurnErroredAt time.Time `json:"turn_errored_at,omitempty"`
-	TurnErroredBy string    `json:"turn_errored_by,omitempty"`
 	// BlockedSince is when the agent run BlockedBy (turnKey) was first seen
 	// on a blocked prompt or a trust screen in the current episode;
 	// BlockedTold that it was told. Another run in the block starts its own.
@@ -726,7 +725,7 @@ type HealthMark struct {
 }
 
 // LockHealth serialises the read-modify-write of block's HealthMark between
-// the orchestrator watchdog and stop/error hooks.
+// watchdog runs.
 func (s Store) LockHealth(ctx context.Context, block string) (func(), error) {
 	return fsutil.Flock(ctx, filepath.Join(s.P.watchdog(), "."+fileKey(block)+".health.lock"))
 }
@@ -757,6 +756,52 @@ func (s Store) PutHealthMark(block string, m HealthMark) error {
 		return err
 	}
 	return fsutil.WriteAtomic(s.healthPath(block), b)
+}
+
+// TurnError is a stop hook's note that the agent run By (turnKey) ended a
+// turn in an error At; that agent's next turn removes it. It is one value
+// in a file of its own, written whole and removed whole, so the hooks need
+// no lock and never wait on the watchdog.
+type TurnError struct {
+	At time.Time `json:"at"`
+	By string    `json:"by"`
+}
+
+func (s Store) turnErrorPath(block string) string {
+	return filepath.Join(s.P.Home, "turn-error", fileKey(block)+".json")
+}
+
+// TurnError returns block's turn error; ok is false when there is none.
+func (s Store) TurnError(block string) (te TurnError, ok bool, err error) {
+	b, err := os.ReadFile(s.turnErrorPath(block))
+	if errors.Is(err, fs.ErrNotExist) {
+		return TurnError{}, false, nil
+	}
+	if err != nil {
+		return TurnError{}, false, err
+	}
+	if err := json.Unmarshal(b, &te); err != nil {
+		return TurnError{}, false, fmt.Errorf("%s: %w", s.turnErrorPath(block), err)
+	}
+	return te, !te.At.IsZero(), nil
+}
+
+// PutTurnError replaces block's turn error.
+func (s Store) PutTurnError(block string, te TurnError) error {
+	b, err := json.Marshal(te)
+	if err != nil {
+		return err
+	}
+	return fsutil.WriteAtomic(s.turnErrorPath(block), b)
+}
+
+// ClearTurnError removes block's turn error.
+func (s Store) ClearTurnError(block string) error {
+	err := os.Remove(s.turnErrorPath(block))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	return err
 }
 
 // Summon is what a summoner wrote before launching an agent, keyed by the

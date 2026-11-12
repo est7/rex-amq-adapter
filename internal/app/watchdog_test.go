@@ -436,7 +436,7 @@ func TestWatchdogReportsTheOrchestratorsOwnPaneElsewhere(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := e.markTurnError(context.Background(), peer); err != nil {
+		if err := e.markTurnError(peer); err != nil {
 			t.Fatal(err)
 		}
 		before := codexUnread(t, e)

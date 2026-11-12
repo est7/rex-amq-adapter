@@ -25,20 +25,6 @@ import (
 // desktop. Zero keys.
 
 func (e Env) blocked(ctx context.Context, orch store.Record, s Session, rec store.Record) error {
-	unlock, err := e.Store.LockHealth(ctx, rec.BlockID)
-	if err != nil {
-		return err
-	}
-	defer unlock()
-	mark, err := e.Store.HealthMark(rec.BlockID)
-	if err != nil {
-		return err
-	}
-	if mark.BlockedBy != turnKey(rec) {
-		// Another run's episode: this run starts its own.
-		mark.BlockedSince, mark.BlockedTold = time.Time{}, false
-	}
-	what := ""
 	st, reports, err := e.Rex.ProgramStatus(ctx, rec.BlockID)
 	if err != nil {
 		return err
@@ -47,6 +33,7 @@ func (e Env) blocked(ctx context.Context, orch store.Record, s Session, rec stor
 	if err != nil {
 		return err
 	}
+	what := ""
 	switch {
 	case reports && core.AgentState(st.State) == core.StateBlocked:
 		what = "its status reports blocked"
@@ -58,22 +45,47 @@ func (e Env) blocked(ctx context.Context, orch store.Record, s Session, rec stor
 			what = "a trust screen is up: " + phrase
 		}
 	}
+	desktop, err := e.tellBlocked(ctx, orch, s, rec, what, vt)
+	for _, text := range desktop {
+		e.desktop("rex-amq-adapter", text)
+	}
+	return err
+}
+
+// tellBlocked advances rec's blocked episode under LockHealth from what
+// the pane showed (what is "" when no prompt is up), mailing the notice once
+// and recording it only once sent. It returns what the desktop should hear,
+// told after the lock is released.
+func (e Env) tellBlocked(ctx context.Context, orch store.Record, s Session, rec store.Record, what, vt string) (desktop []string, err error) {
+	unlock, err := e.Store.LockHealth(ctx, rec.BlockID)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	mark, err := e.Store.HealthMark(rec.BlockID)
+	if err != nil {
+		return nil, err
+	}
+	if mark.BlockedBy != turnKey(rec) {
+		// Another run's episode: this run starts its own.
+		mark.BlockedSince, mark.BlockedTold = time.Time{}, false
+	}
 	now := e.Now()
 	if what == "" {
 		// The prompt is gone: the episode ends. Mail coming or going does
 		// not end it, and does not change who reports it.
 		if !mark.BlockedSince.IsZero() {
 			mark.BlockedSince, mark.BlockedTold, mark.BlockedBy = time.Time{}, false, ""
-			return e.Store.PutHealthMark(rec.BlockID, mark)
+			return nil, e.Store.PutHealthMark(rec.BlockID, mark)
 		}
-		return nil
+		return nil, nil
 	}
 	if mark.BlockedSince.IsZero() {
 		mark.BlockedSince, mark.BlockedBy = now, turnKey(rec)
-		return e.Store.PutHealthMark(rec.BlockID, mark)
+		return nil, e.Store.PutHealthMark(rec.BlockID, mark)
 	}
 	if mark.BlockedTold || now.Sub(mark.BlockedSince) < core.StuckFor {
-		return nil
+		return nil, nil
 	}
 	lines := lastLines(vt, core.ReportLines)
 	e.blockedLog(orch, rec, what, mark.BlockedSince, lines)
@@ -82,21 +94,21 @@ func (e Env) blocked(ctx context.Context, orch store.Record, s Session, rec stor
 		if other, ok := e.otherFamily(s, rec, orch); ok {
 			body += "\n\nSent to you because the orchestrator " + string(orch.Handle) + " is the one waiting and cannot read mail."
 			if err := e.sendSystem(ctx, rec.Handle, other.Handle, subject, body); err != nil {
-				return err
+				return nil, err
 			}
 		}
-		e.desktop("rex-amq-adapter", "orchestrator "+string(rec.Handle)+" waits on you: "+what)
+		desktop = append(desktop, "orchestrator "+string(rec.Handle)+" waits on you: "+what)
 	} else {
 		if err := e.sendSystem(ctx, rec.Handle, orch.Handle, subject, body); err != nil {
-			return err
+			return nil, err
 		}
 		if strings.Contains(strings.ToLower(what), "permission") {
-			e.desktop("rex-amq-adapter", string(rec.Handle)+" waits on a permission prompt")
+			desktop = append(desktop, string(rec.Handle)+" waits on a permission prompt")
 		}
 	}
 	e.wdLog(orch, rec, "blocked", "", what)
 	mark.BlockedTold = true
-	return e.Store.PutHealthMark(rec.BlockID, mark)
+	return desktop, e.Store.PutHealthMark(rec.BlockID, mark)
 }
 
 // blockedLog keeps one line per blocked episode in logs/blocked.log: when

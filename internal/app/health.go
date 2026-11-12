@@ -29,30 +29,59 @@ func (e Env) health(ctx context.Context, orch store.Record, s Session, rec store
 	if st, ok, err := e.Rex.ProgramStatus(ctx, rec.BlockID); err == nil && ok {
 		working = core.AgentState(st.State) == core.StateWorking
 	}
-	now := e.Now()
-	h := core.Assess(tail, working, now)
+	h := core.Assess(tail, working, e.Now())
+	if h.Hung == nil && !h.Stalled {
+		return nil
+	}
+	screen := e.screenLines(ctx, rec)
+	desktop, err := e.tellFindings(ctx, orch, s, rec, tail, h, screen)
+	for _, text := range desktop {
+		e.desktop("rex-amq-adapter", text)
+	}
+	return err
+}
+
+// tellFindings tells each finding of h not yet told about rec's agent run,
+// and records it only once it is sent, so a failed send is tried again on
+// the next poll. Rex is read before and the desktop told after, never under
+// LockHealth; it returns what the desktop should hear.
+func (e Env) tellFindings(ctx context.Context, orch store.Record, s Session, rec store.Record, tail core.Tail, h core.Health, screen []string) (desktop []string, err error) {
 	unlock, err := e.Store.LockHealth(ctx, rec.BlockID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer unlock()
 	mark, err := e.Store.HealthMark(rec.BlockID)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if h.Hung != nil && h.Hung.ID != mark.LastHungID {
-		mark.LastHungID = h.Hung.ID
-		if err := e.healthNotice(ctx, orch, s, rec, core.NoticeToolHung, tail, h, e.screenLines(ctx, rec)); err != nil {
-			return err
+	if key := turnKey(rec); mark.HealthBy != key {
+		// Another run's findings: this run starts clean.
+		mark.HealthBy, mark.LastHungID, mark.LastStallAt = key, "", time.Time{}
+	}
+	if h.Hung != nil && h.Hung.ToolID != mark.LastHungID {
+		text, err := e.healthNotice(ctx, orch, s, rec, core.NoticeToolHung, tail, h, screen)
+		if err != nil {
+			return desktop, err
+		}
+		desktop = append(desktop, text...)
+		mark.LastHungID = h.Hung.ToolID
+		if err := e.Store.PutHealthMark(rec.BlockID, mark); err != nil {
+			return desktop, err
 		}
 	}
 	if h.Stalled && !tail.LastAt.Equal(mark.LastStallAt) {
+		text, err := e.healthNotice(ctx, orch, s, rec, core.NoticeStalled, tail, h, screen)
+		if err != nil {
+			return desktop, err
+		}
+		desktop = append(desktop, text...)
 		mark.LastStallAt = tail.LastAt
-		if err := e.healthNotice(ctx, orch, s, rec, core.NoticeStalled, tail, h, e.screenLines(ctx, rec)); err != nil {
-			return err
+		if err := e.Store.PutHealthMark(rec.BlockID, mark); err != nil {
+			return desktop, err
 		}
 	}
-	return e.Store.PutHealthMark(rec.BlockID, mark)
+	return desktop, nil
 }
 
 func (e Env) screenLines(ctx context.Context, rec store.Record) []string {
@@ -65,23 +94,23 @@ func (e Env) screenLines(ctx context.Context, rec store.Record) []string {
 
 // healthNotice mails the finding in rec's name to the orchestrator; a finding
 // about the orchestrator itself goes to a live agent of another model family,
-// or to the user's desktop when there is none.
-func (e Env) healthNotice(ctx context.Context, orch store.Record, s Session, rec store.Record, code string, tail core.Tail, h core.Health, screen []string) error {
+// or, when there is none, to the user's desktop: it returns that text for the
+// caller to show once it holds no lock.
+func (e Env) healthNotice(ctx context.Context, orch store.Record, s Session, rec store.Record, code string, tail core.Tail, h core.Health, screen []string) (desktop []string, err error) {
 	subject, body := core.HealthNotice(peerOf(rec), code, tail, h, screen, e.Now())
 	to, ok := e.findingRecipient(s, rec, orch)
 	if !ok {
-		e.desktop("rex-amq-adapter", string(rec.Handle)+": "+code+", and no agent of another model family is in the session")
 		e.wdLog(orch, rec, "notice-desktop", "", code+": no other family in the session")
-		return nil
+		return []string{string(rec.Handle) + ": " + code + ", and no agent of another model family is in the session"}, nil
 	}
 	if to != orch.Handle {
 		body += "\n\nSent to you because the finding is about the orchestrator " + string(orch.Handle) + " itself."
 	}
 	if err := e.sendSystem(ctx, rec.Handle, to, subject, body); err != nil {
-		return err
+		return nil, err
 	}
 	e.wdLog(orch, rec, "notice", "", fmt.Sprintf("%s -> %s (%d rows)", code, to, len(tail.Rows)))
-	return nil
+	return nil, nil
 }
 
 // turnKey names one agent run in a pane: a new agent in the same pane, or a
@@ -94,8 +123,8 @@ func turnKey(rec store.Record) string {
 // enough that it may still be unable to act (a usage limit on its account);
 // its next turn, or core.StalledFor, ends that.
 func (e Env) flagged(rec store.Record) bool {
-	m, err := e.Store.HealthMark(rec.BlockID)
-	return err == nil && !m.TurnErroredAt.IsZero() && m.TurnErroredBy == turnKey(rec) && e.Now().Sub(m.TurnErroredAt) < core.StalledFor
+	te, ok, err := e.Store.TurnError(rec.BlockID)
+	return err == nil && ok && te.By == turnKey(rec) && e.Now().Sub(te.At) < core.StalledFor
 }
 
 func (e Env) readHookTail(ctx context.Context, kind core.Kind, in HookInput, rec store.Record) (core.Tail, bool) {
@@ -143,24 +172,14 @@ func (e Env) codexTurnError(ctx context.Context, loc Location, in HookInput) (de
 // starts or ends normally, touching disk only when one is set. A hook from
 // another agent (a `claude -p` the pane's agent runs, a Codex thread of a
 // shared daemon) leaves it alone.
-func (e Env) clearTurnError(ctx context.Context, kind core.Kind, block string, in HookInput) {
-	if m, err := e.Store.HealthMark(block); err != nil || m.TurnErroredAt.IsZero() {
+func (e Env) clearTurnError(kind core.Kind, block string, in HookInput) {
+	if _, ok, err := e.Store.TurnError(block); err != nil || !ok {
 		return
 	}
 	if rec, ok, err := e.Store.Record(block); err != nil || !ok || e.recordFit(kind, rec, in) == foreign {
 		return
 	}
-	unlock, err := e.Store.LockHealth(ctx, block)
-	if err != nil {
-		return
-	}
-	defer unlock()
-	m, err := e.Store.HealthMark(block)
-	if err != nil || m.TurnErroredAt.IsZero() {
-		return
-	}
-	m.TurnErroredAt, m.TurnErroredBy = time.Time{}, ""
-	_ = e.Store.PutHealthMark(block, m)
+	_ = e.Store.ClearTurnError(block)
 }
 
 // reportTurnError tells the agent that should act (core.ErrorRecipient) that
@@ -196,8 +215,15 @@ func (e Env) reportTurnError(ctx context.Context, kind core.Kind, loc Location, 
 			detail = h.Errors[len(h.Errors)-1].Text
 		}
 	}
+	summary := string(rec.Handle) + ": " + code
+	if detail != "" {
+		summary += ": " + detail
+	}
 	if code == core.NoticeTurnError {
-		if err := e.markTurnError(ctx, rec); err != nil {
+		if err := e.markTurnError(rec); err != nil {
+			// Unmarked, the agent would be routed further error notices
+			// though it may be unable to act: the user hears instead.
+			e.desktop("rex-amq-adapter", summary+" (turn-error flag failed: "+err.Error()+")")
 			return err
 		}
 	}
@@ -206,10 +232,6 @@ func (e Env) reportTurnError(ctx context.Context, kind core.Kind, loc Location, 
 		cand, ok := byHandle[h]
 		return ok && e.flagged(cand)
 	})
-	summary := string(rec.Handle) + ": " + code
-	if detail != "" {
-		summary += ": " + detail
-	}
 	if !found {
 		e.desktop("rex-amq-adapter", summary)
 		return nil
@@ -223,18 +245,8 @@ func (e Env) reportTurnError(ctx context.Context, kind core.Kind, loc Location, 
 }
 
 // markTurnError records that rec's turn ended in an error, for flagged.
-func (e Env) markTurnError(ctx context.Context, rec store.Record) error {
-	unlock, err := e.Store.LockHealth(ctx, rec.BlockID)
-	if err != nil {
-		return err
-	}
-	defer unlock()
-	m, err := e.Store.HealthMark(rec.BlockID)
-	if err != nil {
-		return err
-	}
-	m.TurnErroredAt, m.TurnErroredBy = e.Now().UTC(), turnKey(rec)
-	return e.Store.PutHealthMark(rec.BlockID, m)
+func (e Env) markTurnError(rec store.Record) error {
+	return e.Store.PutTurnError(rec.BlockID, store.TurnError{At: e.Now().UTC(), By: turnKey(rec)})
 }
 
 // sessionPeersForError reads only stored records (no Rex IPC inside the stop
