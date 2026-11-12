@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 // Result says what Derive found for one harness.
@@ -130,7 +131,22 @@ func lookup(trusted []string, path string) (string, bool) {
 // main checkout is <common>'s parent. ok is false for a main checkout, a
 // plain directory, or anything that does not fit that shape.
 func MainCheckout(dir string) (main string, ok bool, err error) {
-	raw, err := os.ReadFile(filepath.Join(dir, ".git"))
+	pointer := filepath.Join(dir, ".git")
+	ownInfo, err := os.Lstat(pointer)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	if !ownInfo.Mode().IsRegular() {
+		return "", false, nil
+	}
+	stat, ok := ownInfo.Sys().(*syscall.Stat_t)
+	if !ok || stat.Nlink != 1 {
+		return "", false, nil
+	}
+	raw, err := os.ReadFile(pointer)
 	if errors.Is(err, os.ErrNotExist) {
 		return "", false, nil
 	}
@@ -171,8 +187,8 @@ func MainCheckout(dir string) (main string, ok bool, err error) {
 	if info, err := os.Stat(filepath.Join(commonDir, "HEAD")); err != nil || info.IsDir() {
 		return "", false, nil
 	}
-	// The registration must point back at this very .git file: a copied
-	// pointer in another directory names a gitdir that registers someone else.
+	// Both the registered directory and pointer must match: a pointer alias
+	// must never extend trust to a different directory.
 	back, err := os.ReadFile(filepath.Join(gitdir, "gitdir"))
 	if err != nil {
 		return "", false, nil
@@ -181,12 +197,19 @@ func MainCheckout(dir string) (main string, ok bool, err error) {
 	if !filepath.IsAbs(registered) {
 		registered = filepath.Join(gitdir, registered)
 	}
-	regInfo, err := os.Stat(registered)
+	registeredDir, err := os.Stat(filepath.Dir(registered))
 	if err != nil {
 		return "", false, nil
 	}
-	ownInfo, err := os.Stat(filepath.Join(dir, ".git"))
-	if err != nil || !os.SameFile(regInfo, ownInfo) {
+	candidateDir, err := os.Stat(dir)
+	if err != nil || !os.SameFile(registeredDir, candidateDir) {
+		return "", false, nil
+	}
+	regInfo, err := os.Lstat(registered)
+	if err != nil {
+		return "", false, nil
+	}
+	if !regInfo.Mode().IsRegular() || !os.SameFile(regInfo, ownInfo) {
 		return "", false, nil
 	}
 	return filepath.Dir(commonDir), true, nil
