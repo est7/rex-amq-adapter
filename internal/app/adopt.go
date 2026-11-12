@@ -220,6 +220,8 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	if err := e.Store.PutRecord(rec); err != nil {
 		return Adoption{}, err
 	}
+	// Before the waker starts, so it reads them from the start.
+	e.alignHolds(ctx, rec, own.Role)
 	var decision amq.WakeDecision
 	if kind.InProcess() {
 		// The agent's own extension delivers. A waker left from an earlier
@@ -236,7 +238,7 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 		}
 	}
 
-	if err := e.ensureOrchestratorWatcher(rec); err != nil {
+	if err := e.ensureSessionWatcher(rec); err != nil {
 		fmt.Fprintf(Diagnostics, "%v\n", err)
 	}
 	// The record carries the role, so briefing and orchestrator behaviour read one
@@ -313,7 +315,8 @@ func (e Env) joinSession(ctx context.Context, rec store.Record, blk rex.Block, r
 		}
 	}
 	mates := core.SessionMates(rec.BlockID, windowOf, peers)
-	if !arrived {
+	if !arrived || core.Stealth(rec.Role) {
+		// A narrator or personal agent arrives unannounced.
 		return mates
 	}
 	e.tellMates(ctx, peerOf(rec), mates, core.JoinedNotice(peerOf(rec)))

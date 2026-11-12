@@ -259,9 +259,10 @@ func (s Store) readRecords() ([]Record, error) {
 	return out, nil
 }
 
-// LockWatch is held by h's orchestrator watcher, so there is at most one.
-func (s Store) LockWatch(ctx context.Context, h core.Handle) (func(), error) {
-	return fsutil.Flock(ctx, filepath.Join(s.P.Home, "watch", string(h)+".lock"))
+// LockWatch is held by the watcher of session k, so a session has at most
+// one, whichever orchestrator or narrator started it.
+func (s Store) LockWatch(ctx context.Context, k core.SessionKey) (func(), error) {
+	return fsutil.Flock(ctx, filepath.Join(s.P.Home, "watch", sessionKey(k)+".lock"))
 }
 
 // LockLifecycle serialises adoption, departure, and collection.
@@ -835,7 +836,8 @@ func (s Store) PendingSummons(session string, now time.Time) (int, error) {
 			continue
 		}
 		var sm Summon
-		if json.Unmarshal(b, &sm) == nil && sm.Session == session && now.Sub(sm.At) < PendingSummonFor {
+		// A Stealth launch (a narrator) takes no place a worker would.
+		if json.Unmarshal(b, &sm) == nil && sm.Session == session && now.Sub(sm.At) < PendingSummonFor && !core.Stealth(sm.For) {
 			n++
 		}
 	}

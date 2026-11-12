@@ -227,7 +227,8 @@ func (e Env) reserve(ctx context.Context, caller store.Record, s Session, kind s
 	}
 	live := 0
 	for _, rec := range recs {
-		if rec.Live() && s.holds(rec) {
+		// A Stealth agent takes no place a worker would.
+		if rec.Live() && s.holds(rec) && !core.Stealth(rec.Role) {
 			live++
 		}
 	}
@@ -283,7 +284,7 @@ func (e Env) resume(ctx context.Context, caller store.Record, s Session, r Summo
 		return res, nil
 	}
 	label := core.PaneLabel(departed.Handle, departed.Role, departed.Task)
-	block, err := e.launch(ctx, caller, s, label, cwd, res.Token, cmd)
+	block, err := e.launch(ctx, caller, s, departed.Role, label, cwd, res.Token, cmd)
 	if err != nil {
 		_ = e.Store.DeleteSummon(res.Token)
 		return res, err
@@ -330,7 +331,7 @@ func (e Env) start(ctx context.Context, caller store.Record, s Session, r Summon
 		}
 		cwd = r.Cwd
 	}
-	block, err := e.launch(ctx, caller, s, label, cwd, res.Token, startCommand(kind, brief))
+	block, err := e.launch(ctx, caller, s, role, label, cwd, res.Token, startCommand(kind, brief))
 	if err != nil {
 		_ = e.Store.DeleteSummon(res.Token)
 		return res, err
@@ -342,8 +343,8 @@ func (e Env) start(ctx context.Context, caller store.Record, s Session, r Summon
 
 // launch opens the pane beside the caller, or in a new tab when the
 // caller's pane is too small to split, running cmd with the token in its
-// environment.
-func (e Env) launch(ctx context.Context, caller store.Record, s Session, label, cwd, token string, cmd []string) (string, error) {
+// environment. A narrator (role) gets a tab of its own instead.
+func (e Env) launch(ctx context.Context, caller store.Record, s Session, role, label, cwd, token string, cmd []string) (string, error) {
 	if cwd == "" {
 		cwd, _ = os.Getwd()
 	}
@@ -353,6 +354,9 @@ func (e Env) launch(ctx context.Context, caller store.Record, s Session, label, 
 		cmd = trust.Args(cmd, t.Settings)
 	}
 	cmd = append([]string{"env", SummonEnv + "=" + token}, cmd...)
+	if role == core.NarratorRole {
+		return e.launchNarrator(ctx, s, label, cwd, cmd)
+	}
 	if size, err := e.Rex.Size(ctx, caller.BlockID); err == nil && size.Rows > 0 && size.Rows < 2*core.TinyRows {
 		window, shell, err := e.Rex.NewTab(ctx, s.id, label)
 		if err != nil {
@@ -370,6 +374,27 @@ func (e Env) launch(ctx context.Context, caller store.Record, s Session, label, 
 		return block, nil
 	}
 	return e.Rex.NewSplit(ctx, s.id, caller.BlockID, label, cwd, cmd)
+}
+
+// launchNarrator opens a session's narrator in a background tab of its own,
+// named and claimed as the narrator tab (core.WindowNarrator): Rex does not
+// focus it, it never splits a worker's tab, and no follower rule renames it.
+// It is a tab rather than a detached pane: closing a detached last pane
+// takes its window along, and a detached pane has no size to wait on.
+func (e Env) launchNarrator(ctx context.Context, s Session, label, cwd string, cmd []string) (string, error) {
+	window, shell, err := e.Rex.NewTab(ctx, s.id, core.NarratorTab)
+	if err != nil {
+		return "", err
+	}
+	if err := ClaimTab(e.Store, s.id, window, core.NarratorTab); err != nil {
+		fmt.Fprintf(Diagnostics, "record the narrator tab %s: %v\n", window, err)
+	}
+	block, err := e.Rex.NewSplit(ctx, s.id, shell, label, cwd, cmd)
+	if err != nil {
+		return "", err
+	}
+	_ = e.Rex.CloseBlock(ctx, shell)
+	return block, nil
 }
 
 func startCommand(kind core.Kind, brief string) []string {

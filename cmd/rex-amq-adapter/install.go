@@ -173,7 +173,7 @@ func runInternal(args []string) int {
 		fmt.Println(paneTitle(args[2], os.Stdin))
 		return 0
 	}
-	return fail(errors.New("__internal: want `skill`, `watch <server> <handle>`, or `pane-title --agent K`"))
+	return fail(errors.New("__internal: want `skill`, `watch <server> <session>`, or `pane-title --agent K`"))
 }
 
 // paneTitle answers a harness that asks for its window title (Antigravity's

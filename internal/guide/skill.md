@@ -121,7 +121,7 @@ eval "$(rex-amq-adapter env)" && amq reply --id <message-id> --body "<answer>"
 ```bash
 rex-amq-adapter who      # agents in this Rex session only, including yourself
 eval "$(rex-amq-adapter env)" && amq send --to codex-01 --subject "<short subject>" --body "<request>"
-rex-amq-adapter who --all  # also this session's departed agents reserved for a resume
+rex-amq-adapter who --all  # also this session's departed agents reserved for a resume, and its narrator
 ```
 
 The Rex session is the awareness boundary: a session holds one task, a tab

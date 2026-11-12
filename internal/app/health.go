@@ -239,8 +239,12 @@ func (e Env) markTurnError(ctx context.Context, rec store.Record) error {
 
 // sessionPeersForError reads only stored records (no Rex IPC inside the stop
 // hook budget): peers in rec's session via together(), and rec's crew lead from
-// rec.Crew and rec.Cwd.
+// rec.Crew and rec.Cwd. A Stealth agent (core.Stealth) is never told of
+// another's error, and its own goes to the desktop: no worker hears of it.
 func (e Env) sessionPeersForError(rec store.Record) ([]core.Peer, map[core.Handle]store.Record, string) {
+	if core.Stealth(rec.Role) {
+		return nil, nil, ""
+	}
 	recs, err := e.Store.Records()
 	if err != nil {
 		return nil, nil, ""
@@ -248,7 +252,7 @@ func (e Env) sessionPeersForError(rec store.Record) ([]core.Peer, map[core.Handl
 	byHandle := make(map[core.Handle]store.Record, len(recs))
 	var peers []core.Peer
 	for _, r := range recs {
-		if !r.Live() || r.Handle == rec.Handle || !together(r, rec) {
+		if !r.Live() || r.Handle == rec.Handle || !together(r, rec) || core.Stealth(r.Role) {
 			continue
 		}
 		byHandle[r.Handle] = r
@@ -276,14 +280,15 @@ func (e Env) findingRecipient(s Session, rec, orch store.Record) (to core.Handle
 }
 
 // otherFamily finds a live agent in s of a model family other than rec's and
-// the orchestrator's, whose own last turn did not end in an error.
+// the orchestrator's, whose own last turn did not end in an error. A Stealth
+// agent never takes over a stalled goal.
 func (e Env) otherFamily(s Session, rec, orch store.Record) (store.Record, bool) {
 	recs, err := e.Store.Records()
 	if err != nil {
 		return store.Record{}, false
 	}
 	for _, r := range recs {
-		if r.Live() && s.holds(r) && r.Kind != rec.Kind && r.Kind != orch.Kind && r.Handle != rec.Handle && !e.flagged(r) {
+		if r.Live() && s.holds(r) && !core.Stealth(r.Role) && r.Kind != rec.Kind && r.Kind != orch.Kind && r.Handle != rec.Handle && !e.flagged(r) {
 			return r, true
 		}
 	}

@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -31,11 +32,12 @@ func (p Peer) named() string {
 // in self's own block (an agent this one replaced there). windowOf places
 // every block of the session; a peer whose block it does not list is
 // elsewhere. A Rex session holds one task, whose agents may fill several tabs
-// (a tab is a team), so these are the agents "beside" this one.
+// (a tab is a team), so these are the agents "beside" this one. A Stealth
+// agent (a narrator, a personal agent) is nobody's mate.
 func SessionMates(selfBlock string, windowOf map[string]string, peers []Peer) []Peer {
 	var out []Peer
 	for _, p := range peers {
-		if _, placed := windowOf[p.Block]; placed && p.Block != selfBlock {
+		if _, placed := windowOf[p.Block]; placed && p.Block != selfBlock && !Stealth(p.Role) {
 			out = append(out, p)
 		}
 	}
@@ -128,7 +130,13 @@ func OrchestratorLeft(p Peer) (subject, body string) {
 // DepartureMail says who hears at once that left departed: every orchestrator
 // among others, the other live agents in its session, or, when left owned the
 // goal, one peer to report that. to is empty when no orchestrator is involved.
+// A Stealth agent's departure is nobody's mail, and none is told to one: the
+// session watcher tells a narrator itself.
 func DepartureMail(left Peer, session string, others []Peer) (to []Handle, subject, body string) {
+	if Stealth(left.Role) {
+		return nil, "", ""
+	}
+	others = slices.DeleteFunc(slices.Clone(others), func(p Peer) bool { return Stealth(p.Role) })
 	for _, p := range others {
 		if p.Role == OrchestratorRole {
 			to = append(to, p.Handle)

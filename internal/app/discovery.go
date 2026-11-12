@@ -175,10 +175,11 @@ func (e Env) SuperviseSession(ctx context.Context, s Session) error {
 	return errors.Join(errs...)
 }
 
-// SessionAgents projects the running agents s holds, and with departed the
-// ones reserved for a resume: who's rows. It reads records and mailboxes
-// only.
-func (e Env) SessionAgents(s Session, departed bool) ([]core.Agent, error) {
+// SessionAgents projects the running agents s holds: who's rows. With all,
+// the admin view, it adds the ones reserved for a resume and the Stealth
+// agents (a narrator, a personal agent) the ordinary view leaves out. It
+// reads records and mailboxes only.
+func (e Env) SessionAgents(s Session, all bool) ([]core.Agent, error) {
 	recs, err := e.Store.Records()
 	if err != nil {
 		return nil, err
@@ -186,7 +187,7 @@ func (e Env) SessionAgents(s Session, departed bool) ([]core.Agent, error) {
 	v := view{scope: Scope{Kind: ScopeSession, Server: s.server, SessionID: s.id}, sessions: []Session{s}}
 	var held []store.Record
 	for _, r := range recs {
-		if v.holds(r) && (r.Live() || departed) {
+		if v.holds(r) && (r.Live() || all) && (all || !core.Stealth(r.Role)) {
 			held = append(held, r)
 		}
 	}

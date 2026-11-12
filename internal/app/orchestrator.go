@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -17,8 +18,9 @@ import (
 
 // A live orchestrator coordinates its Rex session: it owns the goal, so it
 // hears at once when an agent there departs, even when idle. A session
-// without one reports departures to the user and gets nothing here. Session notes wait
-// for a prompt, so these go as mail, which rings a doorbell.
+// without one reports departures to the user. Session notes wait for a
+// prompt, so these go as mail, which rings a doorbell. One watcher per
+// session reconciles it while an orchestrator or a narrator is live there.
 
 const (
 	// watchEvery bounds how late a crash or a closed pane is noticed.
@@ -27,7 +29,7 @@ const (
 	watchBudget = 10 * time.Second
 	// watchGiveUp is how many looks in a row may fail before the watcher
 	// exits: without a Rex server it would otherwise run forever. The
-	// orchestrator's next turn starts a new one.
+	// next turn of the session's orchestrator or narrator starts a new one.
 	watchGiveUp = 12
 )
 
@@ -61,17 +63,27 @@ func (e Env) wakeForDeparture(ctx context.Context, rec store.Record) error {
 	return errors.Join(errs...)
 }
 
-// ensureOrchestratorWatcher starts the watcher of an orchestrator unless one runs. An
-// agent that departs without a hook leaves nothing to react to, and an
-// orchestrator is often idle, so its session needs a process of its own. Hooks call
-// this; the watcher ends with its orchestrator.
-func (e Env) ensureOrchestratorWatcher(rec store.Record) error {
-	if rec.Role != core.OrchestratorRole {
+// watches reports whether r keeps its session's watcher running: a live
+// orchestrator (the watchdog reports to it) or a live narrator (the watcher
+// tells it what changed).
+func watches(r store.Record) bool {
+	return r.Live() && placed(r) && (r.Role == core.OrchestratorRole || r.Role == core.NarratorRole)
+}
+
+// ensureSessionWatcher starts the watcher of rec's session unless one runs.
+// An agent that departs without a hook leaves nothing to react to, and an
+// orchestrator or narrator is often idle, so its session needs a process of
+// its own. Hooks call this; the watcher is the session's, not rec's, so it
+// outlives an orchestrator while a narrator stays, and ends when neither is
+// left.
+func (e Env) ensureSessionWatcher(rec store.Record) error {
+	if !watches(rec) {
 		return nil
 	}
+	key := core.SessionKey{Server: rec.Server, SessionID: rec.SessionID}
 	done, cancel := context.WithCancel(context.Background())
 	cancel() // a cancelled context tries the lock once
-	unlock, err := e.Store.LockWatch(done, rec.Handle)
+	unlock, err := e.Store.LockWatch(done, key)
 	if err != nil {
 		return nil // held: a watcher runs
 	}
@@ -79,41 +91,51 @@ func (e Env) ensureOrchestratorWatcher(rec store.Record) error {
 	if err := os.MkdirAll(e.Paths.Logs(), 0o700); err != nil {
 		return err
 	}
-	logf, err := os.OpenFile(filepath.Join(e.Paths.Logs(), "watch-"+string(rec.Handle)+".log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	logf, err := os.OpenFile(filepath.Join(e.Paths.Logs(), "watch-"+fileName(rec.SessionID)+".log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return err
 	}
 	defer logf.Close()
-	cmd := exec.Command(e.SelfBin, "__internal", "watch", rec.Server, string(rec.Handle))
+	cmd := exec.Command(e.SelfBin, "__internal", "watch", rec.Server, rec.SessionID)
 	cmd.Stdout, cmd.Stderr = logf, logf
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start the orchestrator watcher: %w", err)
+		return fmt.Errorf("start the session watcher: %w", err)
 	}
 	return cmd.Process.Release()
 }
 
-// WatchOrchestrator reconciles h's session until h is no longer a live orchestrator, so
-// its departure and its peers' are noticed without a hook. A second watcher
-// finds the lock held and returns.
-func (e Env) WatchOrchestrator(ctx context.Context, h core.Handle) error {
+// fileName makes a session id safe as part of a file name.
+func fileName(id string) string { return strings.NewReplacer(":", "_", "/", "_").Replace(id) }
+
+// WatchSession reconciles session key until no orchestrator or narrator is
+// live in it, so departures are noticed without a hook, the orchestrator's
+// watchdog runs, and the narrator hears what changed. A second watcher finds
+// the lock held and returns.
+func (e Env) WatchSession(ctx context.Context, key core.SessionKey) error {
 	lockCtx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
-	unlock, err := e.Store.LockWatch(lockCtx, h)
+	unlock, err := e.Store.LockWatch(lockCtx, key)
 	if err != nil {
 		return nil
 	}
 	defer unlock()
 	for failures := 0; ; {
-		rec, ok, err := e.liveRecord(h)
+		recs, err := e.Store.Records()
 		if err != nil {
 			return err
 		}
-		if !ok || rec.Role != core.OrchestratorRole {
-			return nil // gone, or it joined a crew in another role
+		var keepers []store.Record
+		for _, r := range recs {
+			if watches(r) && r.Server == key.Server && r.SessionID == key.SessionID {
+				keepers = append(keepers, r)
+			}
 		}
-		if err := e.watchOnce(ctx, rec); err != nil {
-			fmt.Fprintf(Diagnostics, "watch %s: %v\n", h, err)
+		if len(keepers) == 0 {
+			return nil // nobody left to report to
+		}
+		if err := e.watchOnce(ctx, key, keepers); err != nil {
+			fmt.Fprintf(Diagnostics, "watch %s: %v\n", key.SessionID, err)
 			if failures++; failures >= watchGiveUp {
 				return err
 			}
@@ -126,26 +148,16 @@ func (e Env) WatchOrchestrator(ctx context.Context, h core.Handle) error {
 	}
 }
 
-func (e Env) liveRecord(h core.Handle) (store.Record, bool, error) {
-	recs, err := e.Store.Records()
-	if err != nil {
-		return store.Record{}, false, err
-	}
-	for _, r := range recs {
-		if r.Handle == h && r.Live() {
-			return r, true, nil
-		}
-	}
-	return store.Record{}, false, nil
-}
-
-func (e Env) watchOnce(ctx context.Context, rec store.Record) error {
+// watchOnce looks at session key once: it reconciles the session, runs the
+// watchdog for each live orchestrator (keepers), and tells each live narrator
+// what changed.
+func (e Env) watchOnce(ctx context.Context, key core.SessionKey, keepers []store.Record) error {
 	ctx, cancel := context.WithTimeout(ctx, watchBudget)
 	defer cancel()
-	s, err := e.FindSession(ctx, rec.BlockID)
+	s, err := e.loadSession(ctx, key.Server, key.SessionID)
 	if errors.Is(err, rex.ErrNotFound) {
-		// The orchestrator's own pane closed; its session can no longer be found.
-		return e.collect(ctx, func(r store.Record) bool { return r.Handle == rec.Handle })
+		// The session itself is gone: its agents' blocks went with it.
+		return e.collect(ctx, func(r store.Record) bool { return r.Server == key.Server && r.SessionID == key.SessionID })
 	}
 	if err != nil {
 		return err
@@ -153,8 +165,18 @@ func (e Env) watchOnce(ctx context.Context, rec store.Record) error {
 	if err := e.CollectSession(ctx, s); err != nil {
 		return err
 	}
-	// The watchdog's own failures are logged, never counted against the
-	// watcher: a layout call that times out must not end the session's watch.
-	e.watchdog(ctx, rec, s)
-	return nil
+	for _, r := range keepers {
+		// The watchdog's own failures are logged, never counted against the
+		// watcher: a layout call that times out must not end the session's watch.
+		if r.Role == core.OrchestratorRole {
+			e.watchdog(ctx, r, s)
+		}
+	}
+	var errs []error
+	for _, r := range keepers {
+		if r.Role == core.NarratorRole {
+			errs = append(errs, e.tellNarrator(ctx, key, r))
+		}
+	}
+	return errors.Join(errs...)
 }

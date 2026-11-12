@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -261,6 +263,7 @@ func (e Env) announceMail(ctx context.Context, rec store.Record, in HookInput, e
 	if err != nil {
 		return Reply{}, err
 	}
+	unread = e.holdBack(rec, unread, ledger.IDs)
 	now := e.Now()
 	in2 := core.AnnounceInput{Event: event, Unread: unread, Announced: ledger.IDs, StopHookActive: in.StopHookActive, Idle: in.Idle}
 	if !ledger.At.IsZero() {
@@ -282,6 +285,46 @@ func (e Env) announceMail(ctx context.Context, rec store.Record, in HookInput, e
 	return e.withWindowNotes(rec.Handle, window, identity, mail)
 }
 
+// holdBack leaves out of unread the messages not yet announced while rec's
+// doorbell hold (its .wake.settings, which its waker applies too) still
+// holds them, so a hook or Pi's mail watcher tells of routine mail no sooner
+// than the waker would ring for it; urgent mail is never held. A hold that
+// cannot be read holds nothing: it batches, it guards nothing.
+func (e Env) holdBack(rec store.Record, unread []string, announced map[string]bool) []string {
+	root, h := e.Paths.Root(), string(rec.Handle)
+	normal, low, err := amq.ReadHolds(root, h)
+	if err != nil {
+		fmt.Fprintf(Diagnostics, "read the doorbell hold of %s: %v\n", h, err)
+		return unread
+	}
+	if normal <= 0 && low <= 0 {
+		return unread
+	}
+	var fresh []core.Waiting
+	for _, id := range unread {
+		if announced[id] {
+			continue
+		}
+		w := core.Waiting{Priority: core.PriorityUrgent}
+		hdr, herr := amq.ReadHeader(root, h, amq.BoxUnread, id)
+		info, serr := os.Stat(filepath.Join(amq.Inbox(root, h), id+".md"))
+		if herr == nil && serr == nil {
+			w = core.Waiting{Priority: hdr.Priority, Arrived: info.ModTime()}
+		}
+		fresh = append(fresh, w)
+	}
+	if _, held := core.HoldUntil(fresh, normal, low, e.Now()); !held {
+		return unread
+	}
+	var out []string
+	for _, id := range unread {
+		if announced[id] {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
 // withWindowNotes builds the reply, taking h's queued window notes when
 // window is set. Taking them is the last step that can fail, so a hook that
 // fails earlier leaves them queued for the next prompt. The caller holds h's
@@ -300,14 +343,20 @@ func (e Env) withWindowNotes(h core.Handle, window bool, identity, mail string) 
 // identityNotice tells a newly adopted agent who it is, who is beside it,
 // and what its crew and role ask of it.
 func (e Env) identityNotice(ctx context.Context, a Adoption, unread int) string {
-	notice := joinNotices(core.SessionNotice(a.Record.Handle, e.EnvCommand(), unread), core.MatesNotice(a.Mates)) +
+	mates := core.MatesNotice(a.Mates)
+	if core.Stealth(a.Record.Role) {
+		// A narrator never mails a worker, and a personal agent only a
+		// linked narrator: neither is told to reach its session's agents.
+		mates = ""
+	}
+	notice := joinNotices(core.SessionNotice(a.Record.Handle, e.EnvCommand(), unread), mates) +
 		"\n" + core.TaskNotice(a.Record.Handle, a.Record.Role, e.SelfBin+" title", a.Record.Task)
 	if brief := core.BriefNotice(e.briefing(ctx, a)); brief != "" {
 		notice += "\n\n" + brief
 	}
 	// After the briefing, so it reads as the word on whom "the human" means;
 	// an orchestrator hears this from its own role prompt.
-	if a.Record.Role != core.OrchestratorRole {
+	if a.Record.Role != core.OrchestratorRole && !core.Stealth(a.Record.Role) {
 		if orch := core.OrchestratorNotice(a.Mates); orch != "" {
 			notice += "\n\n" + orch
 		}

@@ -84,7 +84,8 @@ func (e Env) Join(ctx context.Context, loc Location, crewName, role string) (Joi
 	if rec.Role == core.OrchestratorRole && was != core.OrchestratorRole {
 		e.tellMates(ctx, peerOf(rec), mates, "")
 	}
-	if err := e.ensureOrchestratorWatcher(rec); err != nil {
+	e.alignHolds(ctx, rec, was)
+	if err := e.ensureSessionWatcher(rec); err != nil {
 		fmt.Fprintf(Diagnostics, "%v\n", err)
 	}
 	out := Joined{Record: rec, Label: core.PaneLabel(rec.Handle, rec.Role, rec.Task), Crew: c}
@@ -93,7 +94,7 @@ func (e Env) Join(ctx context.Context, loc Location, crewName, role string) (Joi
 		name = e.tabCrew(ctx, rec, blk.SessionID, blk.WindowID)
 	}
 	out.Briefing = joinNotices(core.BriefNotice(e.briefingIn(ctx, rec, rec.Role, name)))
-	if rec.Role != core.OrchestratorRole {
+	if rec.Role != core.OrchestratorRole && !core.Stealth(rec.Role) {
 		if orch := core.OrchestratorNotice(mates); orch != "" {
 			out.Briefing = strings.TrimSpace(out.Briefing + "\n\n" + orch)
 		}

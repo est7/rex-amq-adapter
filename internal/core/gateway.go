@@ -18,6 +18,13 @@ const (
 	NarratorRole = "narrator"
 )
 
+// Stealth reports whether an agent of role stays out of its session's
+// ordinary views: a Narrator observes its Epic and a Personal agent talks
+// only to linked Narrators, so neither is a mate a worker lists, mails,
+// hears join or leave, reports to, or hands a stalled goal to. Explicit
+// admin views (who --all, events) still show them.
+func Stealth(role string) bool { return role == NarratorRole || role == PersonalRole }
+
 // SessionKey names a Rex session (an Epic, or a Personal agent's session)
 // across servers.
 type SessionKey struct {

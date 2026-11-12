@@ -38,6 +38,7 @@ Agent and user commands:
   who [--all]               list agents in this Rex session only, with their roles
                             and tabs;
                             --all adds this session's departed agents reserved for a resume
+                            and the narrator and personal agents ordinary views leave out
   events --json [--session S | --tab | --all]
                             stream this Rex session's agents and mail as NDJSON
                             (snapshot, then upsert/remove/event/heartbeat
@@ -76,6 +77,16 @@ Agent and user commands:
                             narrator of Epic session EPIC_SESSION exchange
                             mail; without one, list your links
   unlink EPIC_SESSION       revoke such a link; both take effect at once
+  view [--session S]        print a session's view (view.json): its members, open
+                            obligations, recent mail, and what it could not cover;
+                            the narrator's, orchestrator's, or a linked personal
+                            agent's to read
+  view refresh [--summary TEXT|@FILE]
+                            (the narrator) rebuild the view without moving mail or
+                            writing a receipt, keeping or replacing its narrative
+  view read --ids ID[,ID...]
+                            (the narrator) read messages of its session by id,
+                            receipt-free; mail from elsewhere is a coverage gap
   trust <dir>               derive, for a linked worktree of a repository the user
                             already trusts in Antigravity, that trust for DIR, so a
                             peer started there meets no folder dialog; writes
@@ -132,6 +143,8 @@ func run(args []string) int {
 		return runManaged(cmd, rest)
 	case "link", "unlink":
 		return runLink(cmd == "link", rest)
+	case "view":
+		return runView(rest)
 	case "join":
 		return runJoin(rest)
 	case "setup", "status", "remove":
@@ -363,7 +376,7 @@ func runTitle(args []string) int {
 
 func runWho(args []string) int {
 	fs := flag.NewFlagSet("who", flag.ContinueOnError)
-	all := fs.Bool("all", false, "also list this session's departed agents still reserved for a resume")
+	all := fs.Bool("all", false, "also list this session's departed agents still reserved for a resume, and its narrator and personal agents")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -462,18 +475,17 @@ func runEvents(args []string) int {
 	return 0
 }
 
-// runWatch is the orchestrator watcher, started by a orchestrator's hooks. It ends with
-// its orchestrator.
-func runWatch(server, handle string) int {
-	h, err := core.ParseHandle(handle)
-	if err != nil {
-		return fail(err)
+// runWatch is a session's watcher, started by the hooks of its orchestrator
+// or narrator. It ends when the session has neither.
+func runWatch(server, session string) int {
+	if server == "" || session == "" {
+		return fail(errors.New("__internal watch: want <server> <session>"))
 	}
 	env, err := app.NewEnv(server)
 	if err != nil {
 		return fail(err)
 	}
-	if err := env.WatchOrchestrator(context.Background(), h); err != nil {
+	if err := env.WatchSession(context.Background(), core.SessionKey{Server: server, SessionID: session}); err != nil {
 		return fail(err)
 	}
 	return 0

@@ -302,9 +302,9 @@ Epic session `cross-session-amq` to its own task. `rex skill setup
 
 | Mode | Label | Who writes it |
 |---|---|---|
-| `auto` (follower) | the pane label of the one agent in it | the adapter, at adoption, `title`, `join --role`, a departure (`park`), and every reconciliation of the session (`who`, the orchestrator's watcher) |
+| `auto` (follower) | the pane label of the one agent in it | the adapter, at adoption, `title`, `join --role`, a departure (`park`), and every reconciliation of the session (`who`, the session's watcher) |
 | `crew` | `<crew>` or `<crew> \| <topic>` | `join CREW` and `tab <crew>` claim it; the user may add a topic |
-| `narrator` | `narrator` | reserved: `tab narrator` claims it, nothing names it yet |
+| `narrator` | `narrator` | `summon narrator` opens it in the background (never focused) and claims it; `tab narrator` claims one too |
 | `manual` | whatever the user typed | the user; the adapter never writes it again |
 
 A tab `summon` opens (when the caller's pane is too small to split) is
@@ -523,7 +523,7 @@ lifecycle lock, which also serialises agents that start together:
   live agent recorded in the same session. The record keeps the session and
   window its block was last seen in (`session_id`, `window_id`), because a
   crashed agent's block is already gone when collection finds it. Each session reconciliation
-  (`who`, an orchestrator watcher) writes the layout into the records.
+  (`who`, a session watcher) writes the layout into the records.
 - A send to a departed handle succeeds in amq, and its mail waits for a resume
   that may never come. Sending is a tool call, so the sender's next hook reads
   its outbox past `ledger/<handle>.sent`. New mail makes it check the agents
@@ -657,13 +657,16 @@ attendance. The crew file stays out of the role lookup, and the prompt is
   mailed to report and stop, without taking over. Its turn ending reaches the
   user through their notification hooks.
 - A hook-less departure (a crash, and possibly a closed pane) has nothing to
-  react to, so each orchestrator has a watcher: a detached
-  `__internal watch <server> <handle>` that reconciles its session every 5 s. One
-  `flock` per handle keeps it single; adoption and the end of a turn (`Stop`,
-  Pi's settle) start it when missing.
-  It exits when the orchestrator is no longer live, or after a minute of failed
-  looks, since without a Rex server it would otherwise run forever. It costs one
-  process and only orchestrator sessions pay it.
+  react to, so a session with an orchestrator or a narrator has a watcher: a
+  detached `__internal watch <server> <session>` that reconciles the session
+  every 5 s, runs the watchdog for each live orchestrator, and tells a live
+  narrator what changed (see Narrator, section 8). One `flock` per session keeps
+  it single; adoption, `join`, and the end of a turn (`Stop`, Pi's settle) of an
+  orchestrator or narrator start it when missing. It belongs to the session, so
+  it outlives an orchestrator while a narrator stays, and exits when neither is
+  live, or after a minute of failed looks, since without a Rex server it would
+  otherwise run forever. It costs one process and only sessions with an
+  orchestrator or a narrator pay it.
 - Permission and question dialogs are not events here: the user's notification
   hooks already report them, and an orchestrator must not answer a peer's
   permission dialog.
@@ -1020,7 +1023,7 @@ because it runs inside an adoption's hook budget. "Left" notes are advice and
 go once. Records written before this field read as finished.
 
 **Garbage collection** runs over every record before every adoption and on
-`rex-amq-adapter collect`; `rex-amq-adapter who` and an orchestrator watcher run it only
+`rex-amq-adapter collect`; `rex-amq-adapter who` and a session watcher run it only
 for their tab, and it finishes unfinished departures. A live record whose block is gone or now runs
 a different foreground process is parked like a departure (waker retired,
 `departed_at` set, session-mates told it left); a departed record older than 7 days is deleted with its
@@ -1128,14 +1131,16 @@ Overridable with `REX_AMQ_ADAPTER_HOME` (tests use a temporary directory).
 │       ├── links/<personal>__<epic>.json   a Personal session linked with an Epic's narrator
 │       ├── provenance/<msg_id>.json        sender and recipients (session, generation) at sending, op, system
 │       ├── provenance/pending/<token>.json the same before amq returned the id
-│       └── quarantine/<handle>/<msg_id>.md (+ .json reason)  mail the gateway took out of an inbox
+│       ├── quarantine/<handle>/<msg_id>.md (+ .json reason)  mail the gateway took out of an inbox
+│       ├── sessions/<session_id>/view.json  the session's view, written whole by its narrator
+│       └── sessions/<session_id>/pulse.json what the session's watcher last told the narrator
 ├── bin/inject                the wrapper amq wake runs as --inject-via
 ├── records/<handle>.json     one record per handle
 ├── ledger/<handle>.json      announced message ids
 ├── ledger/<handle>.sent      the last sent message checked for a departed recipient
 ├── inject/<handle>.jsonl     injector outcomes
 ├── logs/<handle>.log         amq wake stdout/stderr
-├── logs/watch-<handle>.log   an orchestrator watcher's stdout/stderr
+├── logs/watch-<session>.log  a session watcher's stdout/stderr
 ├── logs/hooks.log            hook failures
 ├── logs/summon.log           summon launches and self-attested grants
 ├── window/<handle>           window notes (joins, departures) queued for the next prompt
@@ -1145,7 +1150,7 @@ Overridable with `REX_AMQ_ADAPTER_HOME` (tests use a temporary directory).
 ├── summons/<token>.json      pending summon launches reserving a place in the session's cap
 ├── pending/<block>           a doorbell written and not yet known to be submitted
 ├── adopt-failed/<block>      when adopting the block's agent last failed (back-off)
-├── watch/<handle>.lock       held by an orchestrator's watcher
+├── watch/<server|session>.lock  held by a session's watcher
 ├── watchdog/<block>.json     the watchdog's recovery episode for a block
 ├── watchdog/<block>.health.json  findings already told, the blocked episode, the last turn error
 ├── logs/watchdog.log         one JSON line per watchdog step
@@ -1188,11 +1193,51 @@ This is a policy on the supported paths, not a sandbox: any process of the same
 UNIX user can read and write the mailbox files, and `amq` run directly with
 another `--me` names any sender. `events` only reads and applies no gate.
 
+### Narrator
+
+A `narrator` (`core.Stealth`, like a `personal` agent) observes its Epic
+without taking part. It is nobody's mate: `who` (but not `who --all`), start
+notices, join and leave notes, departure mail, error routing, the watchdog,
+the cross-family takeover, and the summon cap all leave it out. `summon
+narrator` opens it in a background `narrator` tab of its own.
+
+It observes in two tiers, neither of which moves a message, writes a receipt,
+or reads a mailbox as its owner (`view refresh`):
+
+1. Envelopes: the session's agents, their recent mail headers, and the open
+   obligations `amq thread open --owed-by/--owed-to --json` finds without
+   reading a body.
+2. Bodies by exact id: `amq thread --id <thread> --agents <session> --message-ids
+   <ids> --include-body --json`, which reads every copy (inbox new and cur,
+   outbox sent), only for messages whose send-time provenance places sender
+   and every recipient in the session. By default that is the orchestrator's
+   control-plane mail; `view read --ids` reads named peer mail on demand.
+
+What was not read is listed in `coverage_gaps` (`peer_mail_body_not_read`,
+`unverified_provenance` for mail sent without the adapter, `other_session`,
+`not_found`, truncation), never guessed. The view (`sessions/<id>/view.json`:
+`as_of` cursor, Epic label, members, obligations, activity, control-plane
+excerpts, gaps, limits, the narrator's own `--summary`) is written whole; the
+narrator, the session's orchestrator, a pane with no agent in that session,
+and a personal agent linked to the Epic read it with `view`; anyone else is
+refused.
+
+The narrator takes no member mail. The session's watcher compares a
+deterministic pulse of the session (members, tasks, newest mail id, attention
+from health marks) and mails the narrator adapter system mail from itself:
+`urgent` for a departure or new attention (a turn error, a wait on the human, a
+stall), `normal` for members or tasks, `low` for mail alone. A routine change
+while the last notice is unread rides along with it. A narrator's
+`.wake.settings` get `--hold-normal 2m --hold-low 10m` (`amq wake config`)
+when it is adopted, and `announceMail` applies amq's hold rule to mail not yet
+announced, so Pi's mail watcher and every busy hook batch as its waker does;
+urgent mail skips the hold.
+
 ## 9. Module layout
 
 ```
 cmd/rex-amq-adapter/   subcommands: hook, inject, env, title, who, events, await, collect, crews, tab, trust, summon, join, send, reply, read, drain, thread, trace, dlq, list, link, unlink, setup, status, remove, __internal, version
-internal/app/          entry points: observe, ask core, act (adopt, inject, announce, depart, collect, discovery, await, orchestrator watcher and watchdog, summon, join, the events stream); who runs a command (Caller); the hook's process ancestry (golang.org/x/sys)
+internal/app/          entry points: observe, ask core, act (adopt, inject, announce, depart, collect, discovery, await, session watcher, narrator view, and watchdog, summon, join, the events stream); who runs a command (Caller); the hook's process ancestry (golang.org/x/sys)
 internal/core/         pure policy: the gateway (CanExchange), handle choice, roles and pane labels, inject decision, announce decision, session-mates, notice text, the observer's projection and diff
 internal/crew/         crew and role prompt lookup across project, user, and built-in layers; crew headers (lead, members); built-in prompts
 internal/fsutil/       flock and atomic replace
