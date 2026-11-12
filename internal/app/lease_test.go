@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
+	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 // The recorded pid is alive but is not the process this hook comes from: the
@@ -237,5 +238,45 @@ func TestProcessAncestorsAreNamed(t *testing.T) {
 	self := filepath.Base(os.Args[0])
 	if a[0].Name == "" || !strings.HasPrefix(self, a[0].Name) {
 		t.Errorf("this process is named %q, want a prefix of %q", a[0].Name, self)
+	}
+}
+
+// Only the record's own session can vouch for a hook from another process: a
+// resumed agent names the session the record holds. A hook that names none,
+// or a record that holds none, proves nothing, so the record is another
+// agent's. From the record's own process the session does not matter (agy
+// runs each subagent as a conversation of its own in the same process).
+func TestRecordFitTrustsAnotherProcessOnlyForTheRecordsOwnSession(t *testing.T) {
+	const agentPID, otherPID = 0x3ffffff1, 0x3ffffff2
+	ancestry := map[bool][]proc{
+		true:  {{0x3ffffff3, "rex-amq-adapter"}, {0x3ffffff4, "sh"}, {agentPID, "agent"}},
+		false: {{0x3ffffff3, "rex-amq-adapter"}, {0x3ffffff4, "sh"}, {otherPID, "agent"}},
+	}
+	for _, kind := range []core.Kind{core.Claude, core.Codex, core.Pi, core.Agy} {
+		for _, c := range []struct {
+			name              string
+			sameProcess       bool
+			recSess, hookSess string
+			want              fit
+		}{
+			{"another process, hook names no session", false, "s1", "", foreign},
+			{"another process, neither names a session", false, "", "", foreign},
+			{"another process, record holds no session", false, "", "s2", foreign},
+			{"another process, another session", false, "s1", "s2", foreign},
+			{"another process, the record's session", false, "s1", "s1", staleLease},
+			{"own process, the record's session", true, "s1", "s1", own},
+			{"own process, another session", true, "s1", "s2", own},
+			{"own process, hook names no session", true, "s1", "", own},
+		} {
+			e := Env{Ancestors: func() ([]proc, error) { return ancestry[c.sameProcess], nil }}
+			rec := store.Record{Kind: kind, Server: "unix:///fake.sock", AgentPID: agentPID, AgentSessionID: c.recSess}
+			in := HookInput{SessionID: c.hookSess}
+			if kind == core.Agy {
+				in = normalize(kind, HookInput{ConversationID: c.hookSess})
+			}
+			if got := e.recordFit(kind, rec, in); got != c.want {
+				t.Errorf("%s, %s: fit %d, want %d (own %d, staleLease %d, foreign %d)", kind, c.name, got, c.want, own, staleLease, foreign)
+			}
+		}
 	}
 }

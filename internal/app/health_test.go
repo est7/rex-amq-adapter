@@ -798,3 +798,40 @@ func TestTurnErrorRoutingThroughTheHook(t *testing.T) {
 		t.Fatalf("nobody to tell: desktop %v", *desktop3)
 	}
 }
+
+// A hook from another process that names no session cannot be the pane's
+// agent resuming: it reports nothing in the pane agent's name and leaves its
+// error mark, as a nested session naming its own session does.
+func TestTurnErrorHooksNamingNoSessionFromAnotherProcessAreIgnored(t *testing.T) {
+	e, _, _, _, _, desktop := healthWorld(t)
+	rec := claude04(t, e)
+	term := e.Rex.(*fakeTerm)
+	if term.fgs == nil {
+		term.fgs = map[string]rex.Process{}
+	}
+	term.fgs["block:c"] = rex.Process{PID: 42, Name: "claude"}
+	if err := e.markTurnError(context.Background(), rec); err != nil {
+		t.Fatal(err)
+	}
+	marked, err := e.Store.HealthMark("block:c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	loc := Location{Server: "unix:///fake.sock", Block: "block:c"}
+	nameless := HookInput{AgentPID: 99}
+	failure := nameless
+	failure.Error = "rate_limit"
+	if _, err := e.Hook(context.Background(), EventStopFailure, core.Claude, loc, failure); err != nil {
+		t.Fatal(err)
+	}
+	if len(inboxOf(t, e, "orch-01")) != 0 || len(inboxOf(t, e, "codex")) != 0 || len(*desktop) != 0 {
+		t.Fatalf("a hook naming no session reported in claude-04's name: orchestrator %v codex %v desktop %v", inboxOf(t, e, "orch-01"), inboxOf(t, e, "codex"), *desktop)
+	}
+	if m, err := e.Store.HealthMark("block:c"); err != nil || !m.TurnErroredAt.Equal(marked.TurnErroredAt) {
+		t.Fatalf("a hook naming no session re-marked claude-04: before %v after %+v err %v", marked.TurnErroredAt, m, err)
+	}
+	_, _ = e.Hook(context.Background(), EventPrompt, core.Claude, loc, nameless)
+	if !e.flagged(rec) {
+		t.Fatal("a hook naming no session cleared claude-04's error mark")
+	}
+}

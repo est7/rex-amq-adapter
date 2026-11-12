@@ -159,8 +159,11 @@ func (e Env) namesAnother(title string, rec store.Record) (bool, error) {
 // runs: a terminal client titled with one of them shows that session.
 func (e Env) jobNames() (map[string]bool, error) {
 	names := map[string]bool{}
+	if e.ClaudeDir == "" {
+		return names, nil
+	}
 	b, err := os.ReadFile(filepath.Join(e.ClaudeDir, "daemon", "roster.json"))
-	if errors.Is(err, fs.ErrNotExist) || e.ClaudeDir == "" {
+	if errors.Is(err, fs.ErrNotExist) {
 		return names, nil
 	}
 	if err != nil {

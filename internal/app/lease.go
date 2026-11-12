@@ -28,8 +28,8 @@ const (
 	// belongs to another program. Adopt again; the mailbox is still its own.
 	staleLease
 	// foreign: the record belongs to another agent: another kind replaced it
-	// in the block, or another process holds another session. Adopt again,
-	// and never use its mailbox.
+	// in the block, or another process does not name the record's session.
+	// Adopt again, and never use its mailbox.
 	foreign
 )
 
@@ -39,10 +39,12 @@ func (e Env) recordFit(kind core.Kind, rec store.Record, in HookInput) fit {
 		return foreign
 	}
 	if !e.sameProcess(rec, in) {
-		if in.SessionID != "" && rec.AgentSessionID != "" && in.SessionID != rec.AgentSessionID {
-			return foreign
+		// Only the record's own session vouches for another process: a hook
+		// that names none, or a record that holds none, proves nothing.
+		if in.SessionID != "" && in.SessionID == rec.AgentSessionID {
+			return staleLease
 		}
-		return staleLease
+		return foreign
 	}
 	// Another session from the record's own process is not taken as a
 	// switch: agy runs each subagent as a conversation of its own in the same
