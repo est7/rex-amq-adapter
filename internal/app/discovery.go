@@ -135,7 +135,7 @@ func (e Env) followMoves(ctx context.Context, s Session) error {
 		if !ok || (r.WindowID == placed && r.SessionID == s.id) {
 			continue
 		}
-		r.WindowID, r.SessionID = placed, s.id
+		r = r.Placed(r.Server, s.id, placed)
 		if l := s.tabs[placed]; l != "" {
 			cwd := r.Cwd
 			r.Crew = e.crewOfTab(placed, l, func() string { return cwd })

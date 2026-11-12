@@ -56,8 +56,11 @@ func TestCanExchangeMatrix(t *testing.T) {
 		{"reviewer replies to implementer", revA, implA, Operation{Kind: OpReply}, nil, true, ReasonSameEpic},
 		{"roleless peers", plainA, implA, send, nil, true, ReasonSameEpic},
 		{"self", implA, implA, send, nil, true, ReasonSelf},
-		{"unplaced sender", Endpoint{Handle: "alice"}, implA, send, nil, false, ReasonUnplaced},
-		{"sender named system", Endpoint{Handle: "system", Role: OrchestratorRole}, narrA, Operation{Kind: OpSend}, nil, false, ReasonUnplaced},
+		{"sender outside rex to a member", Endpoint{Handle: "alice"}, implA, send, nil, true, ReasonOutside},
+		{"sender outside rex to a narrator", Endpoint{Handle: "alice"}, narrA, send, nil, false, ReasonNarratorObserves},
+		{"sender outside rex to personal", Endpoint{Handle: "alice"}, me, send, nil, false, ReasonPersonalOnly},
+		{"forged system sender to a narrator", Endpoint{Handle: "system", Role: OrchestratorRole}, narrA, Operation{Kind: OpSend}, nil, false, ReasonNarratorObserves},
+		{"member to a recipient outside rex", implA, Endpoint{Handle: "alice"}, send, nil, false, ReasonUnplaced},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			d := CanExchange(c.from, c.to, c.op, c.links)

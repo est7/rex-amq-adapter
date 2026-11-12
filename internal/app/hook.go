@@ -256,7 +256,7 @@ func (e Env) announceMail(ctx context.Context, rec store.Record, in HookInput, e
 	if err != nil {
 		return Reply{}, err
 	}
-	unread, err := amq.Unread(e.Paths.Root(), string(rec.Handle))
+	unread, err := e.admit(rec)
 	if err != nil {
 		return Reply{}, err
 	}

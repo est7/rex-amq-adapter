@@ -86,6 +86,7 @@ const (
 	ReasonLinked           = "personal_narrator_linked"
 	ReasonSystem           = "adapter_system_mail"
 	ReasonControl          = "narrator_control"
+	ReasonOutside          = "sender_outside_rex"
 	ReasonFenced           = "addressed_to_prior_placement"
 	ReasonNotLinked        = "personal_narrator_not_linked"
 	ReasonPersonalOnly     = "personal_reaches_only_a_linked_narrator"
@@ -112,8 +113,17 @@ func CanExchange(sender, recipient Endpoint, op Operation, links []Link) Decisio
 	if sender.Role == PersonalRole || recipient.Role == PersonalRole {
 		return personal(sender, recipient, links)
 	}
-	if !sender.placed() || !recipient.placed() {
+	if !recipient.placed() {
 		return deny(ReasonUnplaced)
+	}
+	if !sender.placed() {
+		// A handle the adapter never adopted (the user, a script on the
+		// queue) reaches the members it mails, as it always has; never the
+		// Narrator, whose only senders are named above and below.
+		if recipient.Role == NarratorRole {
+			return deny(ReasonNarratorObserves)
+		}
+		return allow(ReasonOutside)
 	}
 	if sender.Session() != recipient.Session() {
 		return deny(ReasonCrossEpic)

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -325,4 +326,42 @@ func SendSystem(ctx context.Context, amqBin, root, from, to, subject, body strin
 func SendKind(ctx context.Context, amqBin, root, from, to, kind, subject, body string) error {
 	_, err := runAmq(ctx, amqBin, "send", "--root", root, "--me", from, "--to", to, "--kind", kind, "--priority", "normal", "--subject", subject, "--body", body)
 	return err
+}
+
+// Sent is what amq send and amq reply report with --json.
+type Sent struct {
+	ID     string   `json:"id"`
+	To     []string `json:"to"`
+	Thread string   `json:"thread"`
+}
+
+// Post runs amq send or amq reply (verb) with args, which name neither the
+// root nor --json, and returns what was sent and amq's JSON report.
+func Post(ctx context.Context, amqBin, root, verb string, args ...string) (Sent, []byte, error) {
+	out, err := runAmq(ctx, amqBin, append([]string{verb, "--root", root, "--json"}, args...)...)
+	if err != nil {
+		return Sent{}, out, err
+	}
+	var s Sent
+	if err := json.Unmarshal(out, &s); err != nil || s.ID == "" {
+		return Sent{}, out, fmt.Errorf("amq %s reported no message id: %q", verb, out)
+	}
+	return s, out, nil
+}
+
+// Run runs amq with args, its output going to stdout and stderr, and
+// returns its exit status. err is set only when amq could not be run.
+func Run(ctx context.Context, amqBin string, stdin io.Reader, stdout, stderr io.Writer, args ...string) (int, error) {
+	cmd := exec.CommandContext(ctx, amqBin, append([]string{"--no-update-check"}, args...)...)
+	cmd.Env = amqEnv()
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
+	err := cmd.Run()
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return ee.ExitCode(), nil
+	}
+	if err != nil {
+		return 1, err
+	}
+	return 0, nil
 }

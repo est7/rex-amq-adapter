@@ -83,7 +83,7 @@ func (e Env) inject(ctx context.Context, r InjectRequest) core.Outcome {
 	}); !ok {
 		return o
 	}
-	unread, err := amq.Unread(r.Root, string(r.Handle))
+	unread, err := e.admit(rec)
 	if err != nil {
 		return deferredErr("inbox_unreadable", err)
 	}

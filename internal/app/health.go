@@ -293,7 +293,7 @@ func (e Env) otherFamily(s Session, rec, orch store.Record) (store.Record, bool)
 // sendSystem mails a report or notice in from's name as system mail
 // (amq.SystemLabel), which the bounce check never reads as from's own.
 func (e Env) sendSystem(ctx context.Context, from, to core.Handle, subject, body string) error {
-	return amq.SendSystem(ctx, e.AmqBin, e.Paths.Root(), string(from), string(to), subject, body)
+	return e.sendAs(ctx, from, to, true, "--kind", "status", "--priority", "normal", "--labels", amq.SystemLabel, "--subject", subject, "--body", body)
 }
 
 // desktop reaches the user's desktop through Env.Notify.

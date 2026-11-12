@@ -10,7 +10,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/core"
 	"github.com/est7/rex-amq-adapter/internal/rex"
 	"github.com/est7/rex-amq-adapter/internal/store"
@@ -52,7 +51,7 @@ func (e Env) wakeForDeparture(ctx context.Context, rec store.Record) error {
 	to, subject, body := core.DepartureMail(left, rec.AgentSessionID, others)
 	var errs []error
 	for _, h := range to {
-		if err := amq.Send(ctx, e.AmqBin, e.Paths.Root(), string(rec.Handle), string(h), subject, body); err != nil {
+		if err := e.sendAs(ctx, rec.Handle, h, true, "--kind", "status", "--priority", "normal", "--subject", subject, "--body", body); err != nil {
 			errs = append(errs, fmt.Errorf("tell %s: %w", h, err))
 		}
 	}

@@ -41,6 +41,16 @@ type Header struct {
 	Subject string    `json:"subject"`
 	Created time.Time `json:"created"`
 	Labels  []string  `json:"labels"`
+	// Context is the sender's context object, of which only the adapter's
+	// own key is read (ContextOf).
+	Context map[string]json.RawMessage `json:"context,omitempty"`
+}
+
+// ContextOf decodes the value under key in the header's context into v;
+// ok is false when there is none or it does not decode.
+func (h Header) ContextOf(key string, v any) bool {
+	raw, ok := h.Context[key]
+	return ok && json.Unmarshal(raw, v) == nil
 }
 
 // SystemLabel marks mail the adapter sends in an agent's name (a report, a
@@ -150,4 +160,26 @@ func ReadReceipt(root, handle, name string) (Receipt, error) {
 		return Receipt{}, fmt.Errorf("receipt %s of %s has schema %d; this adapter reads schema %d", name, handle, r.Schema, MailboxSchema)
 	}
 	return r, nil
+}
+
+// ReadDLQHeader reads the header of the message dead-lettered as dlqID in
+// handle's box: amq wraps the original file in an envelope of its own.
+func ReadDLQHeader(root, handle string, box Box, dlqID string) (Header, error) {
+	b, err := os.ReadFile(filepath.Join(root, "agents", handle, filepath.FromSlash(string(box)), dlqID+".md"))
+	if err != nil {
+		return Header{}, err
+	}
+	rest, ok := bytes.CutPrefix(b, []byte("---\n"))
+	if !ok {
+		return Header{}, errors.New("dead letter has no envelope")
+	}
+	_, original, ok := bytes.Cut(rest, []byte("\n---\n"))
+	if !ok {
+		return Header{}, errors.New("dead letter envelope is not closed")
+	}
+	h, err := parseHeader(original)
+	if err == nil && h.Schema != MailboxSchema {
+		err = fmt.Errorf("dead letter %s of %s has header schema %d", dlqID, handle, h.Schema)
+	}
+	return h, err
 }
