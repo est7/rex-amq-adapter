@@ -119,8 +119,13 @@ func parse(screen string) []line {
 					break
 				}
 			}
-			if final == 'm' {
+			switch final {
+			case 'm':
 				sgr(string(rs[start:i]), &dim, &reverse, &fg, &bg)
+			case 'C':
+				for range cufCount(string(rs[start:i])) {
+					cur = append(cur, cell{ch: ' '})
+				}
 			}
 		case ch == '\n':
 			lines = append(lines, cur)
@@ -134,6 +139,22 @@ func parse(screen string) []line {
 		lines = append(lines, cur)
 	}
 	return lines
+}
+
+// cufCount parses CSI Ps C's column advance (ECMA-48 default 1, 0 -> 1;
+// private or multi-param sequences -> 0), capped so malformed input stays bounded.
+func cufCount(params string) int {
+	if params == "" {
+		return 1
+	}
+	n := 0
+	for _, r := range params {
+		if r < '0' || r > '9' {
+			return 0
+		}
+		n = min(n*10+int(r-'0'), 512)
+	}
+	return max(n, 1)
 }
 
 func sgr(params string, dim, reverse *bool, fg, bg *string) {
@@ -204,15 +225,29 @@ func isRule(l line) bool {
 	return utf8.RuneCountInString(t) >= 10 && strings.Trim(t, "─") == ""
 }
 
-// isBorder reports a box border: a rule, or a rule that opens with at least
-// ten `─` and carries a label (Claude Code puts the session title there:
-// `──── <title> ─`).
-func isBorder(l line) bool {
+// isTopBorder reports an input box's top border: a plain rule, or (for Claude
+// Code, which draws a session title or Ink borderText in its top edge) a line
+// starting with `─` or the title's single-space left pad (` <title> ─` when no
+// leading `─` fit on a narrow pane) and capped at the right with ` ─` (or Ink's
+// start-aligned `─── <label> ───`).
+func isTopBorder(l line, allowTitle bool) bool {
 	if isRule(l) {
 		return true
 	}
+	if !allowTitle || len(l) < 2 {
+		return false
+	}
+	if l[0].ch != '─' && (l[0].ch != ' ' || unicode.IsSpace(l[1].ch)) {
+		return false
+	}
 	t := strings.TrimSpace(l.text())
-	return strings.HasPrefix(t, strings.Repeat("─", 10))
+	if utf8.RuneCountInString(t) < 10 {
+		return false
+	}
+	if strings.HasSuffix(t, " ─") {
+		return true
+	}
+	return strings.HasPrefix(t, "─── ") && strings.HasSuffix(t, "─")
 }
 
 // typed is the text in a box's cells: non-blank, not dim or in kind's hint
@@ -252,12 +287,12 @@ func inputBox(kind string, lines []line) ([]line, bool) {
 		return []line{row}, ok
 	}
 	switch kind {
-	// `❯` right under a border, continued until the next border.
+	// `❯` right under a border (plain or titled), continued until the bottom rule.
 	case "claude":
-		return ruledBox(lines, '❯')
-	// Antigravity (agy) draws the same ruled box with `>`.
+		return ruledBox(lines, '❯', true)
+	// Antigravity (agy) draws the same ruled box with `>`, untitled on both edges.
 	case "agy":
-		return ruledBox(lines, '>')
+		return ruledBox(lines, '>', false)
 	// `›`, continued over the rows that share its background: Codex wraps
 	// long input onto indented rows painted like the first, and its status
 	// line below is unpainted. Without a background only `›`'s row counts.
@@ -386,16 +421,18 @@ func squash(s string) string {
 	return strings.Join(strings.Fields(s), "")
 }
 
-// ruledBox is an input box whose first row starts with glyph right under a
-// border, continued until the next border.
-func ruledBox(lines []line, glyph rune) ([]line, bool) {
-	at := lastIndex(lines, func(i int, l line) bool { return trimmedStarts(l, string(glyph)) && i > 0 && isBorder(lines[i-1]) })
+// ruledBox is an input box whose first row starts with glyph right under a top
+// border, continued until the closing horizontal rule.
+func ruledBox(lines []line, glyph rune, titledTop bool) ([]line, bool) {
+	at := lastIndex(lines, func(i int, l line) bool {
+		return trimmedStarts(l, string(glyph)) && i > 0 && isTopBorder(lines[i-1], titledTop)
+	})
 	if at < 0 {
 		return nil, false
 	}
 	end := -1
 	for i := at + 1; i < len(lines); i++ {
-		if isBorder(lines[i]) {
+		if isRule(lines[i]) {
 			end = i
 			break
 		}
