@@ -42,8 +42,9 @@ own inference, steered by wording that leaves room for it:
   primed caution; CLAUDE.md:39 does say a goal contract always names pushing its branches, but
   make-goal does not repeat it where SCOPE is written.
 Real gap behind the instinct: est7/rex-amq-adapter is PUBLIC, so pushing a security-audit branch
-publishes unfixed findings — not a two-way door. make-goal has no sanctioned way to express
-"hold the push" for such a run; the lead had to hold it ad hoc under Blocked on me.
+publishes unfixed findings — not a two-way door. Correction (review by codex-01): the hold is sanctioned. make-goal:12,55 and run-goal:16 keep the
+resident Doors, which hold an outward action that would publish private content. The gap is only that
+make-goal's SCOPE text does not point there.
 Fix sketch: SKILL.md:53 -> "exactly push+PR or merge; there is no local scope (lint fails it). When
 pushing would publish something sensitive (public repo + security findings), keep push+PR and add a
 BOUNDARIES line holding the push; run-goal treats it as a held outward action."

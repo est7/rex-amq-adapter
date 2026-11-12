@@ -1,0 +1,7 @@
+{"actual":"empty","name":"wide titled empty","screen":"────────── qa(claude-01) | [audit] task ─\n❯ \n──────────────────────────────────────────────────────\n"}
+{"actual":"unknown","name":"narrow titled empty","screen":" implementer(claude-90) | Track B Slice s1: CanExch… ─\n❯ \n──────────────────────────────────────────────────────\n"}
+{"actual":"unknown","name":"narrow titled draft","screen":" implementer(claude-90) | Track B Slice s1: CanExch… ─\n❯ existing draft\n──────────────────────────────────────────────────────\n"}
+{"actual":"unknown","name":"short titled empty","screen":"─ qa(claude-01) | [audit] task ─\n❯ \n──────────────────────────────────────────────────────\n"}
+Task("修修修修修修修修修修修修修修修修修")="修修修修修修修修修修修修修修修…"
+Task("🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀")="🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀…"
+Task("👩\u200d💻👩\u200d💻👩\u200d💻👩\u200d💻👩\u200d💻👩\u200d💻👩\u200d💻👩\u200d💻")="👩\u200d💻👩\u200d💻👩\u200d💻👩\u200d💻👩\u200d💻👩\u200d💻…"

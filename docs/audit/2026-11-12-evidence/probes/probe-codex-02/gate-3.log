@@ -1,0 +1,14 @@
+ok  	github.com/est7/rex-amq-adapter/cmd/rex-amq-adapter	9.672s
+ok  	github.com/est7/rex-amq-adapter/internal/amq	2.327s
+ok  	github.com/est7/rex-amq-adapter/internal/app	175.008s
+ok  	github.com/est7/rex-amq-adapter/internal/core	0.538s
+ok  	github.com/est7/rex-amq-adapter/internal/crew	0.538s
+ok  	github.com/est7/rex-amq-adapter/internal/e2e	0.541s
+?   	github.com/est7/rex-amq-adapter/internal/fsutil	[no test files]
+?   	github.com/est7/rex-amq-adapter/internal/guide	[no test files]
+ok  	github.com/est7/rex-amq-adapter/internal/install	1.702s
+ok  	github.com/est7/rex-amq-adapter/internal/rex	1.044s
+ok  	github.com/est7/rex-amq-adapter/internal/screen	0.545s
+ok  	github.com/est7/rex-amq-adapter/internal/store	1.808s
+ok  	github.com/est7/rex-amq-adapter/internal/transcript	1.315s
+ok  	github.com/est7/rex-amq-adapter/internal/trust	2.086s

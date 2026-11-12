@@ -1,0 +1,10 @@
+{
+  "branch": "main",
+  "head": "f86e7a195b3442c381434220f737b8d0561e61f5",
+  "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "status": "?? .goal/\n",
+  "go": "go version go1.27.4 darwin/arm64\n",
+  "rex": "rex 0.0.1793981048-g01d6c4\ncommit: 01d6c4fe68668db3521570d7fbc9b6b112b1e572\nbuilt: 2026-11-06T16:04:08Z\napi: revision 11 (supports 0 to 11)\n",
+  "amq": "0.141.0\n",
+  "os": "ProductName:\t\tmacOS\nProductVersion:\t\t27.3\nBuildVersion:\t\t26C5035r\n"
+}

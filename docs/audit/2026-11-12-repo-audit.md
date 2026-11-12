@@ -14,7 +14,7 @@ round-1 results). Orchestrator: claude-03 (Claude).
 
 The codebase is healthy for its size. Every gate passes (build, vet, short tests, race tests, the
 real-Rex e2e suite, govulncheck). `internal/core` is I/O-free, and the import graph is acyclic. State
-files are private and serialized by locks. Subprocesses never go through a shell.
+files are private and serialized by locks. Subprocess argv is built as arrays; the only shell is the quoted `bin/inject` wrapper.
 
 **One High finding survived verification:** the narrator's documented channel for relaying a user
 directive to its orchestrator cannot work, because no code ever produces the control operation the
@@ -176,7 +176,7 @@ Documented non-goals not re-filed: same-user agents can read each other's mailbo
 (`internal/app/events.go:137`). Even when idle, it re-reads each handle's ledger and
 `inject/<h>.jsonl` (up to 1 MB) and sorts every historical inbox and sent id to keep the newest 50
 (`internal/app/observe.go:208-285`). Every 2 s it runs `rex block call ... program_status` serially
-per agent (`observe.go:171-194`), which overruns the tick as agents grow.
+per agent (`observe.go:171-194`), which can overrun the tick as agents grow (not measured).
 *Fix:* stat before re-reading, tail-read the inject log, bound concurrency of the Rex calls.
 
 **PERF-1 (Low, executed).** Each announcing hook calls `Store.Record` (`internal/app/hook.go:200`),
@@ -227,7 +227,7 @@ positive control allows it. claude-04 hit the same defect independently, with a 
 only for the narrator role, setting `Op{Kind: OpControl, ControlRequestID: id}`, and documented in
 `narrator.md` and the guide. A candidate exists on the unmerged branch `fix/agent-guidance`.
 *Blast radius:* managed `send` flags, narrator prompt, guide. The provenance schema already has the
-fields (`internal/store/gateway.go:41-42`).
+fields (`internal/store/gateway.go:41-42,104-112`).
 
 **ARCH-1 (Medium; executed by codex-01 and codex-02).** `docs/design.md:1178-1193` names the
 gateway-checked path. Managed `send`/`reply` record provenance, and managed `drain` consumes only the
@@ -236,8 +236,9 @@ doorbell (`internal/core/inject.go:189`), hook notices (`internal/core/announce.
 (`internal/app/summon.go:278,325`), the guide (`internal/guide/skill.md:82,123`) and the role prompts.
 Executed in isolated amq roots, this has three consequences:
 - bare drain delivered mail that arrived after the last gate pass, which managed drain quarantined;
-- bare sends write no provenance, so the narrator's `ControlPlane` stays empty and `view read`
-  refuses their bodies (`internal/app/view.go:382-391,419-439,534-543`);
+- a bare send writes no provenance, so in the narrator's view that message is an
+  `unverified_provenance` gap and `view read` refuses its body; managed, summon and system mail
+  still contribute (`internal/app/view.go:382-391,419-439,534-543`);
 - a cross-Epic bare send exits 0 but is quarantined on arrival, and the sender is never told
   (`internal/app/undelivered.go:193-206`).
 
@@ -258,8 +259,8 @@ depth 0 (`adopt.go:200-210`).
 
 Strengths: `internal/core` has no `os`, `os/exec`, `net` or `time.Now()` in non-test code. The import
 graph is acyclic with core at the bottom. Rex sits behind a narrow `Terminal` interface
-(`internal/app/env.go:22-44`). `Adopt` is crash-safe because it writes `Unfinished=Adopting` first
-(`adopt.go:212-268`). The coupling to amq's on-disk format is documented and schema-checked
+(`internal/app/env.go:22-44`). Once its record is written, `Adopt` recovers from a crash because it writes `Unfinished=Adopting`
+first (`adopt.go:212-268`); the step before that is not covered (ARCH-2). The coupling to amq's on-disk format is documented and schema-checked
 (`internal/amq/mailbox.go:31`).
 
 ## Maintainability
@@ -442,6 +443,7 @@ located, traced or executed evidence.
 These were found while running the audit, outside this repository:
 
 - The goal-contract skill (`make-goal`) names its scopes `push+PR | merge` after mechanisms rather
-  than the authority they grant (propose vs. land). It has no sanctioned way to hold a push when
-  pushing would publish something sensitive, as here: the repository is public and this report lists
-  unfixed findings. See `crew-friction.md` F2.
+  than the authority they grant (propose vs. land). Its SCOPE section does not mention that the
+  resident one-way-door rules still hold a push that would publish something sensitive (as here: the
+  repository is public and this report lists unfixed findings), so the drafting agent invented a
+  `local` scope instead. The hold itself works through the existing rules. See `crew-friction.md` F2.
