@@ -1124,6 +1124,11 @@ Overridable with `REX_AMQ_ADAPTER_HOME` (tests use a temporary directory).
 ```
 ~/.local/state/rex-amq-adapter/
 ├── amq-root/                 shared AMQ root (agents/, meta/config.json)
+│   └── extensions/rex-amq-adapter/   the gateway's state, which amq cleanup leaves alone
+│       ├── links/<personal>__<epic>.json   a Personal session linked with an Epic's narrator
+│       ├── provenance/<msg_id>.json        sender and recipients (session, generation) at sending, op, system
+│       ├── provenance/pending/<token>.json the same before amq returned the id
+│       └── quarantine/<handle>/<msg_id>.md (+ .json reason)  mail the gateway took out of an inbox
 ├── bin/inject                the wrapper amq wake runs as --inject-via
 ├── records/<handle>.json     one record per handle
 ├── ledger/<handle>.json      announced message ids
@@ -1148,18 +1153,45 @@ Overridable with `REX_AMQ_ADAPTER_HOME` (tests use a temporary directory).
 └── lifecycle.lock
 ```
 
+### Gateway
+
+One AMQ root holds every Epic (a Rex session) and every Personal agent
+(`core.CanExchange`). Members of one
+Epic mail each other; Epics never do. A `personal` agent and the `narrator` of
+an Epic its session is linked with (`link`/`unlink`) mail each other, and
+nothing else crosses sessions. The narrator takes no member mail, only the
+adapter's own notices (provenance `system`, never a header label or a sender
+named `system`); its one message into the Epic is a control directive to the
+orchestrator carrying a request id. A handle the adapter never adopted (the
+user, a script) still reaches ordinary members, never a narrator or a Personal
+agent. A move of a handle to another session starts a generation
+(`Record.Generation`), and mail addressed to an earlier one is fenced.
+
+The adapter applies the policy where it sends (`summon`, notices, and the
+managed `send`/`reply`), where mail arrives (the injector, the session-start
+and announce hooks, before a Pi extension is handed the inbox: refused mail
+moves to the quarantine, unread and with no receipt), and on the managed
+`read`, `drain`, `thread`, `trace`, `dlq read`, and `list`. Each send records
+its provenance under a token in the message's context before amq delivers it,
+so an arrival checked before amq returns the id is judged by it. Mail sent with
+`amq` directly has no provenance and is judged by its sender's record now.
+
+This is a policy on the supported paths, not a sandbox: any process of the same
+UNIX user can read and write the mailbox files, and `amq` run directly with
+another `--me` names any sender. `events` only reads and applies no gate.
+
 ## 9. Module layout
 
 ```
-cmd/rex-amq-adapter/   subcommands: hook, inject, env, title, who, events, await, collect, crews, tab, trust, summon, join, setup, status, remove, __internal, version
+cmd/rex-amq-adapter/   subcommands: hook, inject, env, title, who, events, await, collect, crews, tab, trust, summon, join, send, reply, read, drain, thread, trace, dlq, list, link, unlink, setup, status, remove, __internal, version
 internal/app/          entry points: observe, ask core, act (adopt, inject, announce, depart, collect, discovery, await, orchestrator watcher and watchdog, summon, join, the events stream); who runs a command (Caller); the hook's process ancestry (golang.org/x/sys)
-internal/core/         pure policy: handle choice, roles and pane labels, inject decision, announce decision, session-mates, notice text, the observer's projection and diff
+internal/core/         pure policy: the gateway (CanExchange), handle choice, roles and pane labels, inject decision, announce decision, session-mates, notice text, the observer's projection and diff
 internal/crew/         crew and role prompt lookup across project, user, and built-in layers; crew headers (lead, members); built-in prompts
 internal/fsutil/       flock and atomic replace
 internal/rex/          rex CLI client: process, program_status, capture, write, block and window labels, whoami, block list, new window
 internal/amq/          wake check/start/repair/retire, mailbox registration, inbox listing (ported); read-only mailbox, header, and receipt readers
 internal/screen/       input-box classifier (ported from herdr-amq-adapter)
-internal/store/        records, ledger, inject log, window notes, reservations, locks
+internal/store/        records, ledger, inject log, window notes, reservations, locks; the gateway's links, provenance, and quarantine
 internal/e2e/          scripted agents on a private Rex server and real amq wake
 internal/install/      settings.json / hooks.json merge, stub skills, supervisor and task-tool settings (config.toml through go-toml)
 internal/guide/        embedded agent guide
