@@ -6,7 +6,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
 	"github.com/est7/rex-amq-adapter/internal/rex"
@@ -525,5 +527,40 @@ func TestAStaleJobRecordIsMovedByAToolCall(t *testing.T) {
 	}
 	if _, failed, _ := w.e.Store.AdoptFailedAt(stale); failed {
 		t.Error("the job's failed adoption was recorded against another agent's pane")
+	}
+}
+
+// With no Claude config directory there is no supervisor roster to read:
+// jobNames must not read daemon/roster.json relative to the working
+// directory. A FIFO there blocks any reader, so a stray read hangs.
+func TestJobNamesWithoutAClaudeDirReadsNothing(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "daemon"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(filepath.Join(dir, "daemon", "roster.json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	type result struct {
+		names map[string]bool
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() {
+		names, err := Env{}.jobNames()
+		done <- result{names, err}
+	}()
+	select {
+	case r := <-done:
+		if r.err != nil || len(r.names) != 0 {
+			t.Errorf("jobNames() = %v, %v; want no names, no error", r.names, r.err)
+		}
+	case <-time.After(2 * time.Second):
+		// Unblock the stray reader so the test process can exit.
+		if f, err := os.OpenFile(filepath.Join(dir, "daemon", "roster.json"), os.O_WRONLY, 0); err == nil {
+			f.Close()
+		}
+		t.Fatal("jobNames read ./daemon/roster.json from the working directory with ClaudeDir unset")
 	}
 }
