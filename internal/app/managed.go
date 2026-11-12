@@ -134,6 +134,9 @@ func (m managed) post(ctx context.Context, verb string, args []string) (int, err
 				o.To = append(o.To, core.Handle(h))
 			}
 		}
+		if len(o.To) == 0 {
+			return 2, fmt.Errorf("%w: send needs at least one recipient in --to", ErrUsage)
+		}
 	}
 	if mailFlagPresent(fs, "context") {
 		if path, ok := strings.CutPrefix(*ctxObj, "@"); ok {

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -200,5 +202,25 @@ func TestManagedMailFlagValuesRemainLiteral(t *testing.T) {
 	}
 	if p, ok, err := e.Store.ProvenanceOf(ids[0], "", "", nil); err != nil || !ok || p.From.Handle != "claude-02" || len(p.To) != 1 || p.To[0].Handle != "codex-01" {
 		t.Fatalf("provenance changed: %+v %v %v", p, ok, err)
+	}
+}
+
+func TestManagedMailRejectsEmptyRecipientListBeforeProvenance(t *testing.T) {
+	for _, to := range []string{"", ",", " ", " , \t , "} {
+		t.Run(to, func(t *testing.T) {
+			e, ctx := managedWorld(t)
+			out, code, err := run(t, e, ctx, "claude-02", "send", "--to", to, "--body", "must not be sent")
+			if code != 2 || !errors.Is(err, ErrUsage) {
+				t.Errorf("empty recipients: code=%d err=%v out=%q", code, err, out)
+			}
+			pending := filepath.Join(e.Paths.Extensions(), "provenance", "pending")
+			entries, err := os.ReadDir(pending)
+			if err != nil && !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+			if len(entries) != 0 {
+				t.Errorf("invalid recipients created pending provenance: %v", entries)
+			}
+		})
 	}
 }
