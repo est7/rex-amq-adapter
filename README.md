@@ -152,6 +152,7 @@ conventions, shared by every agent in it:
 |---|---|
 | roles `implementer`, `reviewer`, `qa`, `architect`, `writer`, `editor` | work in any tab |
 | role `orchestrator` | owns a goal and coordinates the agents that work on it (below) |
+| role `personal` | in a Rex session of its own, starts the user's Epics (an orchestrator and a narrator each) and talks to them through the narrator it links (below) |
 | crew `pair` | implementer builds, reviewer critiques the working-tree diff (or a Slice branch the brief names), until clean |
 | crew `ship` | `pair`, then QA runs the reviewed candidate and reports a verdict with evidence |
 | crew `dev` | an architect decomposes the goal into tasks for an implementer and reviewer |
@@ -162,6 +163,8 @@ conventions, shared by every agent in it:
 rex-amq-adapter tab pair --role "implementer | fix #42" -- codex --no-daemon "Fix #42: …"
 rex split -b <its block> --label "reviewer | review #42" -- claude "Review the implementer's fix for #42 when it hands off."
 rex-amq-adapter crews        # every crew, its lead and members, and every role available here
+rex-amq-adapter crews show ship --role qa   # the briefing a QA agent in a ship tab gets, changing nothing
+rex-amq-adapter crews --json # crews and roles as JSON, each with its purpose
 ```
 
 The agent you are already talking to can lead the crew itself: asked to "open
@@ -176,8 +179,10 @@ A tab that `join` or `tab` gave a crew stays that crew's, and you may add a
 topic after a bar (`ship | release` is still crew `ship`). A tab nobody named
 (Rex's `Window 4c6fe88d`) or one `summon` opened follows its agent instead:
 while one agent is in it, it shows that agent's pane label, and it follows
-the agent's task and role. A tab with several agents keeps its label, and a
-tab you renamed keeps your name.
+the agent's task and role. When a second agent joins it, it drops to the task
+that label named (`orchestrator(claude-03) | audit` becomes `audit`), so it
+does not read as one member's tab; it follows its agent again once only one is
+left. A tab you renamed keeps your name.
 
 A session without an orchestrator assumes you are watching: an agent that stops
 is yours to notice. Label a pane `orchestrator` and that agent coordinates the
@@ -194,6 +199,16 @@ rex-amq-adapter tab pair --role orchestrator -- claude "/goal Load skill run-goa
 ```
 
 An agent reaches a peer that may not be running with `rex-amq-adapter summon <handle|role> --subject S --body B [--cwd DIR]`: a live agent of that handle or role gets the mail; a departed one of this session is resumed in a pane beside the caller (in the directory it ran in, which adoption now records) and its mail waits for it; with none, a new agent is started for the role with the message as its brief and told once adopted. The guards are the boundary: only a request kind summons; no handle or role already in the caller's summon chain; depth 2 at most, the user's agents being 0; 6 live agents per session at most; a new agent only when the brief cites the user's grant file (`--grant`, which the caller checks; the adapter does not read it) or the caller quotes the user's own words asking for it (`--asked`, an attestation the log keeps); no start or resume when the caller's own summon chain cannot be traced back to the user. A launch carries a token in its environment (`REX_AMQ_SUMMON`) that binds its adoption to the summon. It holds its place in the cap until then; a resume starts with a fixed prompt that makes the agent drain its mailbox. The message keeps the kind the caller gave it. A summoned agent's record carries its parent and depth; every summon is logged in `logs/summon.log` and listed in the summoner's hand-back.
+
+A personal agent runs Epics without working in them. Give an agent in a Rex
+session of its own (your `~/me`, say) the role with `rex-amq-adapter join
+--role personal`, and ask it for an Epic: its briefing has it open a Rex
+session for the Epic (`rex new`), start the orchestrator there with the goal
+as its brief (`rex run -s … --label "orchestrator | <goal>"`), start the
+Epic's narrator (`rex-amq-adapter tab narrator -s … --role narrator`), and
+`link` the Epic to itself. From then on it reads the Epic with `view --session`
+and asks or directs it only through the narrator, which relays your decisions
+to the orchestrator verbatim; the Epic's workers never see either of them.
 
 Your own crews and roles override the built-in ones by name: a crew is a
 directory holding `team-conventions.md` and, optionally, `<role>.md` for a
@@ -222,6 +237,7 @@ Inspect state:
 ```bash
 rex-amq-adapter who          # running agents in this Rex session with their roles and tabs, including yourself
 rex-amq-adapter who --all    # also this session's departed agents reserved for a resume, and its narrator
+rex-amq-adapter who --json   # the same agents as JSON ({"agents": [...]}, as events' snapshot)
 rex-amq-adapter view         # a session's view.json (the narrator writes it; its orchestrator and a linked personal agent read it)
 rex-amq-adapter events --json # stream this session's agents and mail as NDJSON (read-only; --tab, --session S, --all)
 rex-amq-adapter await <block> # wait for an agent you started; prints its outcome as JSON

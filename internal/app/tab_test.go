@@ -159,6 +159,46 @@ func TestFollowerTabOfSeveralBlocksIsNotOverwrittenUntilParkLeavesOne(t *testing
 	}
 }
 
+// A follower tab that showed its first agent's pane label drops to that
+// agent's task when a second agent joins it, so the tab names the team's
+// work rather than one member (est9, 2026-11-12: who's TAB column read
+// "orchestrator(claude-03) | crew audit goal" for all four agents).
+func TestFollowerTabDropsToTheTaskWhenASecondAgentJoins(t *testing.T) {
+	e, term := tabWorld(t, placeholder, "block:a")
+	ctx := context.Background()
+	a, _ := startPi(t, e, "block:a", "s1")
+	if _, err := e.SetTask(ctx, Location{Block: "block:a"}, "crew audit goal"); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := tabOf(term, "window:1"), string(a)+" | crew audit goal"; got != want {
+		t.Fatalf("alone, the tab shows %q, want %q", got, want)
+	}
+	// A pane with no agent (a preview, a shell) is not a second agent.
+	term.mu.Lock()
+	term.windows["block:preview"] = "window:1"
+	term.mu.Unlock()
+	s, err := e.FindSession(ctx, "block:a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.CollectSession(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := tabOf(term, "window:1"), string(a)+" | crew audit goal"; got != want {
+		t.Fatalf("beside a preview pane, the tab shows %q, want %q", got, want)
+	}
+	term.mu.Lock()
+	term.windows["block:b"] = "window:1"
+	term.mu.Unlock()
+	startPi(t, e, "block:b", "s2")
+	if got := tabOf(term, "window:1"); got != "crew audit goal" {
+		t.Errorf("with two agents the tab shows %q, want the task alone", got)
+	}
+	if l := ledgerOf(t, e, "window:1"); l.Mode != core.WindowAuto || l.LastLabel != "crew audit goal" {
+		t.Errorf("ledger %+v, want auto with the task", l)
+	}
+}
+
 // A departed agent's own tab keeps the label it had: its pane label is
 // unchanged, and nobody else is in the tab to follow.
 func TestFollowerTabParkOfItsOnlyAgentKeepsTheLabel(t *testing.T) {

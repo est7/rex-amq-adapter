@@ -72,7 +72,7 @@ func TestBuiltinCrewsAreCompleteAndSmall(t *testing.T) {
 			t.Errorf("built-in crew %s has no conventions: %+v", crew, got[crew])
 		}
 	}
-	if roles := strings.Join(got[""].Roles, ","); roles != "architect,editor,implementer,narrator,orchestrator,qa,reviewer,writer" {
+	if roles := strings.Join(got[""].Roles, ","); roles != "architect,editor,implementer,narrator,orchestrator,personal,qa,reviewer,writer" {
 		t.Errorf("shared roles: %s", roles)
 	}
 	for _, e := range entries {
@@ -232,5 +232,18 @@ func TestCrewTabName(t *testing.T) {
 	}
 	if Name("ship | login") != "ship-login" {
 		t.Errorf("Name changed: %q", Name("ship | login"))
+	}
+}
+
+func TestPurposeSaysMoreThanWhoItIs(t *testing.T) {
+	for text, want := range map[string]string{
+		"You are QA. You run the candidate the way a user would. Then report.": "You are QA. You run the candidate the way a user would.",
+		"This tab is a two-agent loop: the implementer builds. More.\n\n1. x":  "This tab is a two-agent loop: the implementer builds.",
+		"One line\nwrapped here.\n\nSecond paragraph.":                         "One line wrapped here.",
+		"": "",
+	} {
+		if got := Purpose(text); got != want {
+			t.Errorf("Purpose(%q) = %q, want %q", text, got, want)
+		}
 	}
 }

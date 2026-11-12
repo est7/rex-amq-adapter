@@ -312,8 +312,12 @@ recorded `auto` under its launch label, `<role> | <task>`, and adoption brings
 it to the agent's pane label. A tab the ledger does not know is a follower only
 while it shows Rex's placeholder, `Window ` and eight lowercase hex digits
 (`Window 4c6fe88d`); it is recorded `auto` when first seen so. A follower is
-renamed only while it holds exactly one block whose agent is live: a tab of
-several agents keeps its label until it holds one again, and the adapter's
+renamed to its agent's pane label only while it holds exactly one block whose
+agent is live. A follower of several blocks that still shows the pane label it
+was last given drops to that label's task (`orchestrator(claude-03) | audit`
+becomes `audit`), since one member's label would read as the whole team's in
+`who`'s TAB column; one showing no task keeps its label until it holds one
+block again. The adapter's
 tabs of other kinds (the watchdog's `overflow`) stay unrecorded and are never
 renamed. A follower whose label is neither the placeholder, the label the
 adapter last gave it, nor its agent's current pane label was renamed by
@@ -582,7 +586,12 @@ adoption:
   block's foreground process): `.agents/crews` there or above, then
   `~/.config/rex-amq-adapter/crews`, then the built-in set. The first file
   found wins whole; a crew's own `<role>.md` beats the shared
-  `roles/<role>.md`. Conventions win over a role prompt where they differ.
+  `roles/<role>.md`. Conventions win over a role prompt where they differ. The
+  start notice stays within 9,000 of the 10,000 characters Claude Code takes
+  from a hook (a longer one is replaced by a file path and a 2,000-character
+  preview): identity, mail commands, mates, and who stands for the human stay
+  inline, and a crew or role prompt that does not fit, or is longer than 4,000
+  characters, is named by its file instead (`core.StartNotice`).
 - A tab that names no crew (Rex's default `Window 82b616eb`, a follower
   showing an agent's pane label, any unknown name) gives role prompts only, so a reviewer split into an ordinary tab is
   still briefed. An agent without a role in such a tab hears nothing more.
@@ -1170,7 +1179,9 @@ an Epic its session is linked with (`link`/`unlink`) mail each other, and
 nothing else crosses sessions. The narrator takes no member mail, only the
 adapter's own notices (provenance `system`, never a header label or a sender
 named `system`); its one message into the Epic is a control directive to the
-orchestrator carrying a request id. A handle the adapter never adopted (the
+orchestrator carrying a request id, sent with the managed `send --control
+<request id>` (the only path that records `op: control`, and refused to any
+caller but a narrator; a plain send from a narrator is refused). A handle the adapter never adopted (the
 user, a script) still reaches ordinary members, never a narrator or a Personal
 agent. A move of a handle to another session starts a generation
 (`Record.Generation`), and mail addressed to an earlier one is fenced.

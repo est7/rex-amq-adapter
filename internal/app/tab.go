@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
@@ -85,21 +86,23 @@ func (e Env) followTabIn(ctx context.Context, s Session, window string, recs []s
 			blocks = append(blocks, b)
 		}
 	}
-	want := ""
-	if len(blocks) == 1 {
-		for _, r := range recs {
-			if r.Live() && r.BlockID == blocks[0] {
-				want = core.PaneLabel(r.Handle, r.Role, r.Task)
-			}
+	want, agents := "", 0
+	for _, r := range recs {
+		if !r.Live() || !slices.Contains(blocks, r.BlockID) {
+			continue
+		}
+		agents++
+		if len(blocks) == 1 {
+			want = core.PaneLabel(r.Handle, r.Role, r.Task)
 		}
 	}
 	t, _, err := e.Store.Tab(window)
 	if err != nil {
 		return err
 	}
-	next, rename := core.FollowTab(t.State(), label, len(blocks), want)
-	if rename {
-		if err := e.Rex.RenameWindow(ctx, window, want); err != nil {
+	next, rename := core.FollowTab(t.State(), label, len(blocks), agents, want)
+	if rename != "" {
+		if err := e.Rex.RenameWindow(ctx, window, rename); err != nil {
 			return err
 		}
 	}

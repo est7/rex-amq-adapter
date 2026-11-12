@@ -544,3 +544,57 @@ func TestOrchestratorNoticeNamesEveryOrchestratorAndAFallback(t *testing.T) {
 		t.Fatalf("two orchestrators: %q", two)
 	}
 }
+
+// startParts is a start notice's fixed parts as a hook composes them: the
+// identity and mail line with five mates and unread mail, the task line,
+// and the orchestrator's routing line.
+func startParts(role string) (head, tail string) {
+	mates := []Peer{{Handle: "claude-01", Kind: Claude, Role: OrchestratorRole}, {Handle: "codex-03", Kind: Codex, Role: "implementer"}, {Handle: "codex-04", Kind: Codex, Role: "qa"}, {Handle: "claude-05", Kind: Claude, Role: "writer"}, {Handle: "claude-06", Kind: Claude, Role: "architect"}}
+	bin := "/opt/homebrew/opt/rex-amq-adapter/bin/rex-amq-adapter"
+	head = SessionNotice("codex-02", role, bin+" env", 1) + " " + MatesNotice(mates) + "\n" + TaskNotice("codex-02", role, bin+" title", "review guidance")
+	return head, OrchestratorNotice(mates)
+}
+
+// Claude Code replaces a hook's context longer than ContextCap with a file
+// path and a 2,000-character preview, losing what follows. A start notice
+// therefore keeps within StartBudget: identity, mail and routing stay
+// inline, and a prompt that does not fit is named by its file (codex-01's
+// s1 review: two 4,000-character custom prompts made 10,075).
+func TestStartNoticeKeepsWithinTheHookBudget(t *testing.T) {
+	head, tail := startParts("reviewer")
+	conv, role := strings.Repeat("x", MaxInline), strings.Repeat("y", MaxInline)
+	b := Briefing{Crew: "custom", Conventions: conv, ConventionsPath: "/c/team-conventions.md", Role: "reviewer", RolePrompt: role, RolePath: "/c/reviewer.md"}
+	n := StartNotice(head, b, tail)
+	if l := ContextLen(n); l > StartBudget {
+		t.Fatalf("notice is %d long, budget %d", l, StartBudget)
+	}
+	if !strings.HasPrefix(n, head) || !strings.HasSuffix(n, tail) || tail == "" {
+		t.Fatalf("identity, mail or routing left the notice:\n%.300s … %.300s", n, n[max(0, len(n)-300):])
+	}
+	inline, named := 0, 0
+	for _, p := range []struct{ text, path string }{{conv, b.ConventionsPath}, {role, b.RolePath}} {
+		switch {
+		case strings.Contains(n, p.text):
+			inline++
+		case strings.Contains(n, "read "+p.path):
+			named++
+		}
+	}
+	if inline != 1 || named != 1 {
+		t.Errorf("want one prompt inline and one named by its file, got %d inline, %d named", inline, named)
+	}
+	// What fits is composed as before: head, briefing, tail.
+	small := Briefing{Crew: "pair", Conventions: "Review first.", Role: "reviewer", RolePrompt: "You review."}
+	if got, want := StartNotice(head, small, tail), head+"\n\n"+BriefNotice(small)+"\n\n"+tail; got != want {
+		t.Errorf("a notice within budget changed:\n%q\nwant\n%q", got, want)
+	}
+	if got := StartNotice(head, Briefing{}, ""); got != head {
+		t.Errorf("no briefing and no routing: %q", got)
+	}
+}
+
+func TestContextLenCountsUTF16Units(t *testing.T) {
+	if ContextLen("ab") != 2 || ContextLen("队列") != 2 || ContextLen("🙂") != 2 {
+		t.Error("ContextLen counts as JavaScript's String length does")
+	}
+}
