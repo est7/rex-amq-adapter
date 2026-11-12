@@ -301,6 +301,11 @@ REX_AMQ_LIVE=1 go test ./internal/rex/     # inside a Rex terminal: the rex CLI 
 Run one test suite at a time: e2e hooks that exceed their budget under
 several concurrent suites fail the test instead of retrying.
 
+`.github/workflows/ci.yml` builds, vets, and runs the short tests with and
+without the race detector plus `govulncheck` on every push to `main` and every
+pull request; tests that need a real `amq` or Rex skip there, so run the full
+suite locally before a release.
+
 To release, run the tests, then push an annotated tag whose message body is
 the release notes (`git tag -a vX.Y.Z -F notes.txt`, subject line `vX.Y.Z`).
 `.github/workflows/release.yml` builds the four archives and `SHA256SUMS` and
