@@ -77,6 +77,16 @@ Agent and user commands:
                             narrator of Epic session EPIC_SESSION exchange
                             mail; without one, list your links
   unlink EPIC_SESSION       revoke such a link; both take effect at once
+  view [--session S]        print a session's view (view.json): its members, open
+                            obligations, recent mail, and what it could not cover;
+                            the narrator's, orchestrator's, or a linked personal
+                            agent's to read
+  view refresh [--summary TEXT|@FILE]
+                            (the narrator) rebuild the view without moving mail or
+                            writing a receipt, keeping or replacing its narrative
+  view read --ids ID[,ID...]
+                            (the narrator) read messages of its session by id,
+                            receipt-free; mail from elsewhere is a coverage gap
   trust <dir>               derive, for a linked worktree of a repository the user
                             already trusts in Antigravity, that trust for DIR, so a
                             peer started there meets no folder dialog; writes
@@ -133,6 +143,8 @@ func run(args []string) int {
 		return runManaged(cmd, rest)
 	case "link", "unlink":
 		return runLink(cmd == "link", rest)
+	case "view":
+		return runView(rest)
 	case "join":
 		return runJoin(rest)
 	case "setup", "status", "remove":
