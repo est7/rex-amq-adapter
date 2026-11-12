@@ -1,10 +1,12 @@
 package amq
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -41,6 +43,16 @@ type Header struct {
 	Subject string    `json:"subject"`
 	Created time.Time `json:"created"`
 	Labels  []string  `json:"labels"`
+	// Context is the sender's context object, of which only the adapter's
+	// own key is read (ContextOf).
+	Context map[string]json.RawMessage `json:"context,omitempty"`
+}
+
+// ContextOf decodes the value under key in the header's context into v;
+// ok is false when there is none or it does not decode.
+func (h Header) ContextOf(key string, v any) bool {
+	raw, ok := h.Context[key]
+	return ok && json.Unmarshal(raw, v) == nil
 }
 
 // SystemLabel marks mail the adapter sends in an agent's name (a report, a
@@ -50,24 +62,48 @@ const SystemLabel = "rex-amq-adapter"
 // System reports whether the adapter sent the message.
 func (h Header) System() bool { return slices.Contains(h.Labels, SystemLabel) }
 
-// maxHeader bounds how much of a message is read for its header.
-const maxHeader = 64 << 10
+// MaxMessage is the largest message file amq reads (its format.MaxMessageSize);
+// a header is read within it, however long.
+const MaxMessage = 10 << 20
 
-func parseHeader(b []byte) (Header, error) {
-	rest, ok := bytes.CutPrefix(b, []byte("---json\n"))
-	if !ok {
+// readHeader decodes a message header the way amq does: a "---json" line
+// (a CR before its newline allowed), then one JSON object, then "---". It
+// reads no further than the header.
+func readHeader(r io.Reader) (Header, error) {
+	br := bufio.NewReader(io.LimitReader(r, MaxMessage))
+	line, err := br.ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return Header{}, err
+	}
+	if strings.TrimRight(line, "\r\n") != "---json" {
 		return Header{}, errors.New("message has no JSON header")
 	}
-	header, _, ok := bytes.Cut(rest, []byte("\n---"))
-	if !ok {
-		return Header{}, errors.New("message header is not closed")
-	}
+	dec := json.NewDecoder(br)
 	var h Header
-	if err := json.Unmarshal(header, &h); err != nil {
+	if err := dec.Decode(&h); err != nil {
 		return Header{}, fmt.Errorf("decode message header: %w", err)
 	}
-	return h, nil
+	rest := bufio.NewReader(io.MultiReader(dec.Buffered(), br))
+	for {
+		b, err := rest.ReadByte()
+		if err != nil {
+			return Header{}, errors.New("message header is not closed")
+		}
+		if b == ' ' || b == '\t' || b == '\r' || b == '\n' {
+			continue
+		}
+		if b != '-' {
+			return Header{}, errors.New("message header is not closed")
+		}
+		var tail [2]byte
+		if _, err := io.ReadFull(rest, tail[:]); err != nil || tail != [2]byte{'-', '-'} {
+			return Header{}, errors.New("message header is not closed")
+		}
+		return h, nil
+	}
 }
+
+func parseHeader(b []byte) (Header, error) { return readHeader(bytes.NewReader(b)) }
 
 // Box is a directory of handle's mailbox that holds messages.
 type Box string
@@ -94,12 +130,7 @@ func ReadHeader(root, handle string, box Box, id string) (Header, error) {
 		return Header{}, err
 	}
 	defer f.Close()
-	b := make([]byte, maxHeader)
-	n, err := f.Read(b)
-	if err != nil && n == 0 {
-		return Header{}, err
-	}
-	h, err := parseHeader(b[:n])
+	h, err := readHeader(f)
 	if err == nil && h.Schema != MailboxSchema {
 		err = fmt.Errorf("message %s in %s has header schema %d; this adapter reads schema %d", id, handle, h.Schema, MailboxSchema)
 	}
@@ -150,4 +181,26 @@ func ReadReceipt(root, handle, name string) (Receipt, error) {
 		return Receipt{}, fmt.Errorf("receipt %s of %s has schema %d; this adapter reads schema %d", name, handle, r.Schema, MailboxSchema)
 	}
 	return r, nil
+}
+
+// ReadDLQHeader reads the header of the message dead-lettered as dlqID in
+// handle's box: amq wraps the original file in an envelope of its own.
+func ReadDLQHeader(root, handle string, box Box, dlqID string) (Header, error) {
+	b, err := os.ReadFile(filepath.Join(root, "agents", handle, filepath.FromSlash(string(box)), dlqID+".md"))
+	if err != nil {
+		return Header{}, err
+	}
+	rest, ok := bytes.CutPrefix(b, []byte("---\n"))
+	if !ok {
+		return Header{}, errors.New("dead letter has no envelope")
+	}
+	_, original, ok := bytes.Cut(rest, []byte("\n---\n"))
+	if !ok {
+		return Header{}, errors.New("dead letter envelope is not closed")
+	}
+	h, err := parseHeader(original)
+	if err == nil && h.Schema != MailboxSchema {
+		err = fmt.Errorf("dead letter %s of %s has header schema %d", dlqID, handle, h.Schema)
+	}
+	return h, err
 }

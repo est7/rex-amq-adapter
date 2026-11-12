@@ -176,6 +176,9 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	// role the pane is labelled with, whoever wrote it, so a pane keeps its
 	// purpose across agents.
 	if hasOwn {
+		// A handle resumed in another session starts a generation there.
+		here := own.Placed(server, blk.SessionID, blk.WindowID, now)
+		rec.Generation, rec.PlacedAt = here.Generation, here.PlacedAt
 		rec.FirstAdoptedAt = own.InitialAdoptedAt()
 		if own.WindowID == "" || own.WindowID == blk.WindowID {
 			rec.Crew = own.Crew
@@ -247,7 +250,9 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	// The tab follows even when the pane label was right already: Rex names
 	// a new tab "Window <8-hex>", and a summoned agent's tab its launch label.
 	e.followTab(ctx, blk.SessionID, blk.WindowID)
-	unread, err := amq.Unread(e.Paths.Root(), string(handle))
+	// The gate runs before the agent is told of its mail, and before a Pi
+	// extension, handed the inbox, reads it.
+	unread, err := e.admit(rec)
 	if err != nil {
 		return Adoption{}, err
 	}

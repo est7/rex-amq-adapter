@@ -184,8 +184,9 @@ func (e Env) sessionStart(ctx context.Context, kind core.Kind, loc Location, in 
 }
 
 // announce is the in-band fast path: one record read, two directory reads,
-// and the ledger. No subprocess runs unless the agent has just sent mail, so
-// it is cheap on every tool call.
+// the ledger, and for each unread message its header and provenance (the
+// arrival gate, admit). No subprocess runs unless the agent has just sent
+// mail, so it is cheap on every tool call.
 //
 // An agent without a finished adoption is adopted here first. That happens
 // when SessionStart never ran the adapter: Codex runs new hooks only after the
@@ -256,7 +257,7 @@ func (e Env) announceMail(ctx context.Context, rec store.Record, in HookInput, e
 	if err != nil {
 		return Reply{}, err
 	}
-	unread, err := amq.Unread(e.Paths.Root(), string(rec.Handle))
+	unread, err := e.admit(rec)
 	if err != nil {
 		return Reply{}, err
 	}

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -64,6 +65,17 @@ Agent and user commands:
                             then delivers. Guards: a request kind only, no cycle,
                             depth 2 at most, 6 live agents per session at most, and
                             a new agent only with the user's words or grant file
+  send|reply|read|drain|thread|trace|dlq|list [AMQ FLAGS...]
+                            amq's mail commands, run as you on the adapter's
+                            root after the gateway allows them: Epics do not
+                            mail each other, a narrator takes no member mail,
+                            and mail addressed to you before you moved to
+                            another session stays fenced. --me, --root,
+                            --session, and --project are the adapter's to set
+  link [EPIC_SESSION]       (a personal agent) let this session and the
+                            narrator of Epic session EPIC_SESSION exchange
+                            mail; without one, list your links
+  unlink EPIC_SESSION       revoke such a link; both take effect at once
   trust <dir>               derive, for a linked worktree of a repository the user
                             already trusts in Antigravity, that trust for DIR, so a
                             peer started there meets no folder dialog; writes
@@ -116,6 +128,10 @@ func run(args []string) int {
 		return runTrust(rest)
 	case "summon":
 		return runSummon(rest)
+	case "send", "reply", "read", "drain", "thread", "trace", "dlq", "list":
+		return runManaged(cmd, rest)
+	case "link", "unlink":
+		return runLink(cmd == "link", rest)
 	case "join":
 		return runJoin(rest)
 	case "setup", "status", "remove":
@@ -781,4 +797,65 @@ func version() string {
 		rev += "-modified"
 	}
 	return rev
+}
+
+// runManaged runs a managed mail command as the agent running it.
+func runManaged(verb string, args []string) int {
+	env, loc, err := caller()
+	if err != nil {
+		return fail(err)
+	}
+	return managedMail(env, loc, verb, args, os.Stdin, os.Stdout, os.Stderr)
+}
+
+func managedMail(env app.Env, loc app.Location, verb string, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	code, err := env.ManagedMail(ctx, loc, verb, args, stdin, stdout, stderr)
+	if err != nil {
+		fmt.Fprintf(stderr, "rex-amq-adapter: %s: %v\n", verb, err)
+		if errors.Is(err, app.ErrUsage) {
+			return 2
+		}
+		if code == 0 {
+			code = 1
+		}
+	}
+	return code
+}
+
+func runLink(link bool, args []string) int {
+	if len(args) > 1 || len(args) == 1 && strings.HasPrefix(args[0], "-") || !link && len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: rex-amq-adapter link [EPIC_SESSION] | unlink EPIC_SESSION")
+		return 2
+	}
+	env, loc, err := caller()
+	if err != nil {
+		return fail(err)
+	}
+	if len(args) == 0 {
+		links, err := env.LinksOf(loc)
+		if err != nil {
+			return fail(err)
+		}
+		for _, l := range links {
+			fmt.Println(l.Epic.SessionID)
+		}
+		return 0
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	l, changed, err := env.Link(ctx, loc, args[0], link)
+	if err != nil {
+		return fail(err)
+	}
+	switch {
+	case link:
+		fmt.Printf("linked %s with the narrator of %s\n", l.Personal.SessionID, l.Epic.SessionID)
+	case changed:
+		fmt.Printf("unlinked %s from %s\n", l.Personal.SessionID, l.Epic.SessionID)
+	default:
+		fmt.Printf("%s was not linked with %s\n", l.Personal.SessionID, l.Epic.SessionID)
+	}
+	return 0
 }

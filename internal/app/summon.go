@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/core"
 	"github.com/est7/rex-amq-adapter/internal/store"
 	"github.com/est7/rex-amq-adapter/internal/transcript"
@@ -133,7 +132,7 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 	}
 	if len(live) > 0 {
 		for _, rec := range live {
-			if err := amq.SendKind(ctx, e.AmqBin, e.Paths.Root(), string(caller.Handle), string(rec.Handle), r.Kind, r.Subject, r.Body); err != nil {
+			if err := e.mailAs(ctx, caller.Handle, rec.Handle, r.Kind, r.Subject, r.Body); err != nil {
 				return res, err
 			}
 			res.Handles = append(res.Handles, rec.Handle)
@@ -144,7 +143,7 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 	}
 	if departed != nil {
 		// Its mailbox waits for a resume whatever the guards say.
-		if err := amq.SendKind(ctx, e.AmqBin, e.Paths.Root(), string(caller.Handle), string(departed.Handle), r.Kind, r.Subject, r.Body); err != nil {
+		if err := e.mailAs(ctx, caller.Handle, departed.Handle, r.Kind, r.Subject, r.Body); err != nil {
 			return res, err
 		}
 		res.Mailed = true
@@ -413,7 +412,7 @@ func (e Env) Deliver(ctx context.Context, loc Location, h core.Handle, kind, sub
 	if !ok || !caller.Live() {
 		return errors.New("no AMQ identity for this pane")
 	}
-	return amq.SendKind(ctx, e.AmqBin, e.Paths.Root(), string(caller.Handle), string(h), kind, subject, body)
+	return e.mailAs(ctx, caller.Handle, h, kind, subject, body)
 }
 
 // summonLog appends one JSON line per summon to logs/summon.log. It is an

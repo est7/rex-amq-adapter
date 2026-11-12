@@ -74,10 +74,17 @@ type Record struct {
 	// was last seen in: at adoption, then whenever its session is reconciled.
 	// The session is the agent's awareness boundary: departure tells the agents
 	// recorded in it, because a crashed agent's block can no longer be placed.
-	SessionID      string `json:"session_id,omitempty"`
-	WindowID       string `json:"window_id,omitempty"`
-	AgentPID       int    `json:"agent_pid"`
-	AgentSessionID string `json:"agent_session_id,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
+	WindowID  string `json:"window_id,omitempty"`
+	// Generation counts the handle's moves between sessions (Placed): mail
+	// addressed to it in a session it left is fenced from it
+	// (core.CanExchange).
+	Generation int `json:"generation,omitempty"`
+	// PlacedAt is when Generation last changed: the handle's copies of mail
+	// sent before it are fenced from it.
+	PlacedAt       time.Time `json:"placed_at,omitempty"`
+	AgentPID       int       `json:"agent_pid"`
+	AgentSessionID string    `json:"agent_session_id,omitempty"`
 	// Role is what the agent is for ("reviewer", "orchestrator"; "" for none): the
 	// launcher's pane label at adoption, or a crew role taken with join. It
 	// chooses the agent's briefing and makes an orchestrator; the pane label
