@@ -274,8 +274,9 @@ eval "$(rex-amq-adapter env)" && rex-amq-adapter summon reviewer --subject "revi
 A live agent of that handle or role in your session gets the mail; when
 several agents of a role are live, summon refuses: name one by handle. A departed one of this session is resumed in a pane beside you,
 in the directory it ran in, and its mail waits for it. With none, a new agent
-is started for the role (`--harness` picks the CLI; reviewer, editor, qa and
-explorer default to Codex, the rest to Claude Code), with the message as its
+is started for the role (`--harness` picks the CLI; reviewer, editor and qa
+default to Codex, every other built-in or custom role, a custom `explorer`
+included, to Claude Code), with the message as its
 brief, in your directory or the one `--cwd` names (a Slice worktree), and told
 once it is adopted. With `--cwd` it only ever starts a new agent there, a
 second one of a live role included: it refuses a handle and a directory a live
