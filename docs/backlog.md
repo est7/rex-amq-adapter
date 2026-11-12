@@ -15,39 +15,26 @@ doing.
 | ID | Finding | Effort | Notes |
 |----|---------|--------|-------|
 | U1 | **Harness static facts have no single owner.** About 60 per-kind branches across 12 files. `core.Dirs` (`internal/core/harness.go`, plan 001) is the start of a home for them. The rest: launch/resume argv (`app/summon.go:362-391`), session env vars (`app/caller.go:20-28`), the hook event vocabulary (defined in both `install/install.go:104-155,667` and `app/hook.go:17-30` plus `hookEventNames`), the agy settings path (`install.go:57`, `trust.go:42`), and Claude's supervisor roster parsed twice (`app/claudejob.go:40,162`). | M–L | Static facts only. Behavioral identity checks (`hook.go:56/62/70`, `adopt.go:56-72`, `lease.go:108`) stay as branches in the flow; see Rejected. |
-| U2 | **AMQ has no seam.** `Terminal` fakes Rex, but amq is called as package functions, so most app test files need the real `amq` binary (`lifecycle_test.go:18-23`, `realAmqEnv`). On a machine without it, about 75% of app tests **skip** while `-short` reports green. Release CI runs only `go vet` (`.github/workflows/release.yml:24`). | M | Do this first among U2/U4: it makes U4 cheap to test. A pure call-site refactor. |
-| U3 | **Remaining core policy tests.** `TinyPane`, `GuardSummon` and `ErrorRecipient` still have no test in `internal/core`; `ErrorRecipient`'s table test lives in `app/health_test.go:520`, and `Assess` is tested only from `internal/transcript`. | S | Can go any time. |
+| U2 | **AMQ has no seam.** `Terminal` fakes Rex, but amq is called as package functions, so most app test files need the real `amq` binary (`lifecycle_test.go:18-23`, `realAmqEnv`). On a machine without it, about 75% of app tests **skip** while `-short` reports green; release CI runs `go test ./...` so pure-Go suites execute on every tag while real-AMQ suites skip. | M | Do this first among U2/U4: it makes U4 cheap to test. A pure call-site refactor. |
+| U3 | **Remaining core policy tests.** `TinyPane` and `GuardSummon` still have no test in `internal/core`; `Assess` is tested from `internal/transcript`. | S | Can go any time (`ErrorRecipient` direct tests shipped in v0.12.0). |
 | U4 | **Pure decisions inside app, interleaved with I/O.** Adopt's re-adoption rule (`app/adopt.go:148-212`, where `Rex.Foreground` and the consuming `Store.TakeSummon` sit mid-block and must be hoisted with care) and summon target resolution and refusals (`app/summon.go:91-169`). | M ×2 | Depends on U2. Existing world tests stay unedited as the parity oracle; new core table tests are additive. |
 | U5 | Minor duplication. The inject argv layout is positional in 3 places (`amq/wake.go:47`, `amq/lifecycle.go:149`, `cmd/rex-amq-adapter/main.go:245`). Trust derivation differs between `cmd/rex-amq-adapter/main.go:549` and `app/summon.go:343`. summon's deliver-after-adopt step lives untested in `main.go:600-620`. The three log writers (`summonLog`, `wdLog`, `blockedLog`) are hand-rolled separately. | S each | Low change pressure. If the log writers are merged, keep plan 002's rule: an audit log never decides the outcome of the action it records. |
-| U6 | Dead code. `core.SummonLine` has no references. `core.LastDelivery` and `core.DeliveryStatus` are used only by tests (DeliveryStatus is a parity copy of `DoorbellSummary`). | S | Deleting DeliveryStatus means rewriting `TestDoorbellSummaryIsDeliveryStatus` with literal expectations. |
+| U6 | Test-only helpers. `core.LastDelivery` and `core.DeliveryStatus` are used only by tests (DeliveryStatus is a parity copy of `DoorbellSummary`; `core.SummonLine` was removed in v0.12.0). | S | Deleting DeliveryStatus means rewriting `TestDoorbellSummaryIsDeliveryStatus` with literal expectations. |
 
 ## Open findings from the watchdog audits
 
 From agy-65's state-machine audit and its signoff rounds on the v0.11.4
-watchdog refactor. None was fixed there; agy-65 verified each claim marked
-"verified", the rest are its claims only.
+watchdog refactor. Five verified items shipped in v0.12.0 (`ToolID` hung dedup,
+`ErrorRecipient` multi-family `skippedKinds`, `recordFit` cross-process session
+match + `jobNames` empty-`ClaudeDir` guard, and splitting hook `store.TurnError`
+from watchdog `store.HealthMark` with lock-external Rex sampling); what remains:
 
-- **Codex hung-tool reports can be dropped** (verified). The hung-tool
-  dedup in `app/health.go` compares `Row.ID`, which Codex rows take from
-  `"ordinal"`; a row without it has an empty id, which equals a fresh mark's
-  empty `LastHungID`, so the report is never sent. Key the dedup on
-  `Row.ToolID` instead.
-- **`ErrorRecipient` remembers only the first skipped family** (verified).
-  `core/health.go` keeps a single `skippedKind`, so step 5 can route a
-  turn error to another family that is also flagged. Track every skipped
-  kind.
-- **An empty session id reads as `staleLease`** (verified, rarely
-  reachable). `app/lease.go` returns `foreign` only when both session ids
-  are non-empty; a hook with none falls to `staleLease`, and
-  `reportTurnError` / `clearTurnError` then act in the pane owner's name.
-  Claude Code and Codex hooks always carry a session id.
-- **HealthMark keying and lock scope** (agy-65's claims, not verified):
-  `LastHungID`, `LastStallAt` and the turn-error fields are keyed by block,
-  so a resumed or moved agent can lose or inherit them; `LockHealth` is held
-  across Rex, amq and `osascript` calls that stop hooks wait on.
-- **Pi's session directory override.** Pi 0.84.2 also honors
-  `PI_CODING_AGENT_SESSION_DIR` (`dist/main.js:551`), which moves sessions
-  out of `PI_CODING_AGENT_DIR`. `core.Dirs` does not read it.
+- **Pi's session directory override.** Pi honors `--session-dir`,
+  `PI_CODING_AGENT_SESSION_DIR`, and `settings.sessionDir` (`dist/main.js:551`),
+  writing flat `<dir>/<ts>_<id>.jsonl` files (`dist/core/session-manager.js:1316`).
+  Reading the observer's own env in `core.Dirs` would miss Pi's actual session
+  file; if scheduled later, `pi_extension.js` should report
+  `ctx.sessionManager.getSessionFile()` into `store.Record` for `ReadPath`.
 - Also from that audit, not pursued: two orchestrators in one session share
   a block's episode without a lock; a stale deferral run from long ago lets
   new mail skip the 30 s wait; a 0x0 size counts as large enough; the
@@ -93,9 +80,6 @@ watchdog refactor. None was fixed there; agy-65 verified each claim marked
 
 ## Out-of-scope observations
 
-- `app/claudejob.go:162-164` (`jobNames`) reads `daemon/roster.json` before
-  checking `e.ClaudeDir == ""`, so an empty dir reads a path relative to the
-  cwd. Harmless today.
 - Not audited: correctness, security, performance, dependencies, DX and docs
   beyond what the architecture pass hit; `install.go` past its agent table
   (about 700 lines); `store` and `rex` internals.

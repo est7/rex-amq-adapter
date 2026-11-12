@@ -958,10 +958,13 @@ Rex call inside the hook budget): the agent that summoned it, its crew lead in
 the same tab, the earliest agent in its tab, the session's orchestrator, and,
 when one of those is itself flagged and the code is not `turn_limit`, a live
 agent of another model family. With none, or when the send fails, the desktop
-hears. A `turn_error` flags the agent (`store.HealthMark` `TurnErroredAt` /
-`TurnErroredBy`, keyed by handle and agent session) so it is passed over as a
-recipient; its next `SessionStart`, `UserPromptSubmit`, `PreInvocation`, or
-normal stop clears the flag, and it expires after 15 minutes.
+hears. A `turn_error` flags the agent (`store.TurnError` `At` / `By` at
+`turn-error/<block>.json`, keyed by handle and agent session, separate from the
+watchdog's `store.HealthMark` so hooks need no lock) so it is passed over as a
+recipient (and every skipped flagged owner's model family is excluded from the
+cross-family fallback); its next `SessionStart`, `UserPromptSubmit`,
+`PreInvocation`, or normal stop removes the flag, and it expires after 15
+minutes.
 
 **Lazy adoption.** `UserPromptSubmit`, `PostToolUse`, and `Stop` adopt the
 agent first when its block has no live record, and add the identity notice to
