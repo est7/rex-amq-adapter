@@ -203,9 +203,10 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 			rec.Cwd = own.Cwd
 		}
 	}
-	if sm, ok, err := e.Store.TakeSummon(in.SummonToken); err != nil {
+	sm, summoned, err := e.Store.Summon(in.SummonToken)
+	if err != nil {
 		fmt.Fprintf(Diagnostics, "read the summon of %s: %v\n", in.SummonToken, err)
-	} else if ok && !again {
+	} else if summoned && !again {
 		rec.Parent, rec.Depth, rec.SummonedFor = sm.Parent, sm.Depth, sm.For
 	}
 	// Recorded as unfinished until the waker and label follow: a move within
@@ -219,6 +220,13 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	// the adoption.
 	if err := e.Store.PutRecord(rec); err != nil {
 		return Adoption{}, err
+	}
+	// The committed record preserves lineage if token cleanup fails or the
+	// process exits here; a retry keeps that lineage and finishes cleanup.
+	if summoned {
+		if err := e.Store.DeleteSummon(in.SummonToken); err != nil {
+			return Adoption{}, fmt.Errorf("consume committed summon %s: %w", in.SummonToken, err)
+		}
 	}
 	// Before the waker starts, so it reads them from the start.
 	e.alignHolds(ctx, rec, own.Role)

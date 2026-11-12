@@ -195,7 +195,13 @@ Make the changes in this order; each step has tests before the next.
    wrote. Test like `TestAgyHookGroup` / `TestPiExtension`.
 7. **Guide** — `internal/guide/skill.md`: name the kind in the first
    paragraph and add its launch-with-brief form to "Start a peer".
-8. **Docs** — `docs/design.md` §2 (primitives with evidence), §6 (lifecycle
+8. **Launch and resume** — `internal/app/summon.go`: add explicit cases to
+   `startCommand` and `resumeCommand`; an unlisted kind must be refused rather
+   than launch another harness. Verify the installed CLI parser before choosing
+   prompt arguments: Claude/Codex/Pi accept `--` before a positional brief;
+   Antigravity takes its brief as the value of `-i`. Test a dash-leading brief
+   through `Summon` and the native resume form before marking the kind supported.
+9. **Docs** — `docs/design.md` §2 (primitives with evidence), §6 (lifecycle
    notes for the kind), §11 (end-to-end rows); `README.md` (supported agents,
    tested version, install notes such as approvals).
 
