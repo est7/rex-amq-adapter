@@ -141,8 +141,9 @@ data. Every notice, doorbell, start brief, guide line, and role prompt names
 the adapter's mail commands (`rex-amq-adapter drain`, `send`, `reply`), never
 bare `amq`: they find the caller's identity themselves, and the gateway's
 drain reads only mail its gate admitted while its send records provenance
-(Gateway, below). Text the adapter writes quotes its absolute path; the guide
-and prompts use the bare name.
+(Gateway, below). The doorbell, hook and start notices, and summon's briefs
+quote the adapter's absolute path; the guide, role prompts, and the mates,
+joined and error notes use the bare name.
 
 ### Interplay with amq wake
 
@@ -866,10 +867,11 @@ stood by.
 
 ### How an agent finds its identity
 
-`rex-amq-adapter env` resolves the
-caller's record (`Caller`) and prints `export AM_ROOT=… AM_ME=…`. Agents run
-`eval "$(rex-amq-adapter env)"` before each `amq` command. No identity files.
-The same resolution places `title`, `who`, `tab`, `join`, and `events`.
+Every command resolves the caller's record itself (`Caller`), so an agent runs
+`rex-amq-adapter drain`, `send` or `reply` with no setup. No identity files.
+The same resolution places `title`, `who`, `tab`, `join`, `events` and the
+managed mail verbs. `rex-amq-adapter env` prints `export AM_ROOT=… AM_ME=…`
+from it, for a person or a script that runs raw `amq`.
 
 Each harness sets its session id afresh in its tool shells, overwriting an
 inherited value: `CLAUDE_CODE_SESSION_ID`, `CODEX_THREAD_ID`, `PI_SESSION_ID`
