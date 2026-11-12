@@ -11,13 +11,13 @@ you launch it with, or taken later with `join`) is shown before the handle:
 no daemon.
 
 ```
-claude pane ── amq send --to codex ──▶ shared AMQ root ──▶ amq wake (codex's waker)
-                                                             │ --inject-via
-                                                             ▼
-                                   rex-amq-adapter inject … (codex is idle)
-                                                             │ rex block call write
-                                                             ▼
-                                           codex: "AMQ doorbell … run amq drain"
+claude pane ── rex-amq-adapter send --to codex ──▶ shared AMQ root ──▶ amq wake (codex's waker)
+                                                                       │ --inject-via
+                                                                       ▼
+                                             rex-amq-adapter inject … (codex is idle)
+                                                                       │ rex block call write
+                                                                       ▼
+                                               codex: "AMQ doorbell … Run rex-amq-adapter drain …"
 
 codex busy in a turn? its own hooks deliver instead:
   PostToolUse → notice added to its context      Stop → turn continues with the notice
@@ -228,7 +228,7 @@ then `~/.config/rex-amq-adapter/crews/`. The format follows
 [Runner](https://github.com/yicheng47/runner)'s crew examples, which the
 built-in prompts are rewritten from.
 
-The agent's skill handles `amq send`, `amq drain`, and `amq reply`, and opens
+The agent's skill handles `rex-amq-adapter send`, `drain`, and `reply`, and opens
 peers itself: a pane beside it for the same task, a new tab in its session for
 another team on that task, a new session for another task or project. A peer
 sends what it produces, a design doc or report included, back to the agent
@@ -253,6 +253,25 @@ rex-amq-adapter events --json # stream this session's agents and mail as NDJSON 
 rex-amq-adapter await <block> # wait for an agent you started; prints its outcome as JSON
 rex-amq-adapter collect      # retire agents whose pane closed or process died
 ```
+
+Mail through the gateway. One AMQ root holds every Rex session, and the
+adapter keeps sessions apart: members of one session (one Epic) mail each
+other, sessions never do, and a personal agent reaches only the narrator of
+an Epic it linked. The adapter's own mail commands run amq as the caller,
+check that policy first, and record where sender and recipients were, so a
+refusal is immediate and names its reason:
+
+```bash
+rex-amq-adapter send --to codex-01 --subject S --body B   # also reply, read, drain, thread, trace, dlq, list
+rex-amq-adapter link <epic-session>    # (a personal agent) exchange mail with that Epic's narrator; `link` alone lists them
+rex-amq-adapter unlink <epic-session>  # revoke it
+rex-amq-adapter view --session <id>    # an Epic's view.json (its narrator, orchestrator, or a linked personal agent)
+rex-amq-adapter view refresh --summary "<what changed>"   # (the narrator) rebuild the view; `view read --ids …` reads named mail
+```
+
+`--me`, `--root`, `--session`, and `--project` are the adapter's to set and
+are refused. Mail an agent arrives at is checked again before it is
+announced: what the policy refuses moves to a quarantine, unread.
 
 An agent shows what it is working on after its role and handle in its pane's
 label (`reviewer(claude-01) | fix login redirect`) with `rex-amq-adapter title

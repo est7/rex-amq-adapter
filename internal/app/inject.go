@@ -91,7 +91,7 @@ func (e Env) inject(ctx context.Context, r InjectRequest) core.Outcome {
 		return core.Outcome{Progress: core.Accepted, Code: "nothing_unread", Note: "the mail was drained before delivery"}
 	}
 
-	doorbell := core.Doorbell(len(unread), r.Handle, e.EnvCommand())
+	doorbell := core.Doorbell(len(unread), r.Handle, e.SelfBin)
 	// Recorded before the write: if this process dies after writing, the
 	// next attempt still knows which text in the box is ours.
 	if err := e.Store.SetPending(r.Block, doorbell); err != nil {

@@ -1,6 +1,8 @@
 package e2e
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +14,28 @@ func TestAnIdleAgentIsToldOfMailByADoorbell(t *testing.T) {
 	w.ready("alice")
 	w.send("alice", "claude-01", "hello")
 	w.until("a doorbell", 20*time.Second, func() bool { return strings.Contains(w.got("alice"), "AMQ doorbell") })
+}
+
+// The doorbell's own command drains through the adapter's gateway: the
+// agent that runs it gets the body, and amq records it drained (ARCH-1).
+func TestADoorbellPromptedAgentDrainsThroughTheGateway(t *testing.T) {
+	w := newWorld(t)
+	w.newTab("alice", "")
+	w.ready("alice")
+	w.write(filepath.Join(w.dir, "alice.obey"), "")
+	w.send("alice", "claude-01", "hello through the gateway")
+	drained := func() string { b, _ := os.ReadFile(filepath.Join(w.dir, "alice.drained")); return string(b) }
+	w.until("the doorbell's drain", 20*time.Second, func() bool { return strings.Contains(drained(), "exit=") })
+	got := w.got("alice")
+	if !strings.Contains(got, w.adapter+" drain --include-body") || strings.Contains(got, "amq drain") {
+		t.Errorf("doorbell %q does not name the adapter's drain", got)
+	}
+	if out := drained(); !strings.Contains(out, "exit=0") || !strings.Contains(out, "hello through the gateway") {
+		t.Fatalf("drain:\n%s\n%s", out, w.dump())
+	}
+	if left, _ := os.ReadDir(filepath.Join(w.root(), "agents", "claude-01", "inbox", "new")); len(left) != 0 {
+		t.Errorf("%d messages still unread after the drain", len(left))
+	}
 }
 
 func TestAwaitReportsWhatBecameOfAStartedAgent(t *testing.T) {

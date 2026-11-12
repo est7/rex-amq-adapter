@@ -275,7 +275,7 @@ func (e Env) announceMail(ctx context.Context, rec store.Record, in HookInput, e
 		if err := e.Store.SetAnnounced(rec.Handle, core.MergeAnnounced(ledger.IDs, unread, unread), now); err != nil {
 			return Reply{}, err
 		}
-		mail = core.HookNotice(a, rec.Handle, e.EnvCommand(), event)
+		mail = core.HookNotice(a, rec.Handle, e.SelfBin, event)
 	}
 	mail = joinNotices(e.takeUndelivered(rec, sent), mail)
 	// A Stop hook never blocks only to state the identity.
@@ -349,7 +349,7 @@ func (e Env) identityNotice(ctx context.Context, a Adoption, unread int) string 
 		// linked narrator: neither is told to reach its session's agents.
 		mates = ""
 	}
-	head := joinNotices(core.SessionNotice(a.Record.Handle, a.Record.Role, e.EnvCommand(), unread), mates) +
+	head := joinNotices(core.SessionNotice(a.Record.Handle, a.Record.Role, e.SelfBin, unread), mates) +
 		"\n" + core.TaskNotice(a.Record.Handle, a.Record.Role, e.SelfBin+" title", a.Record.Task)
 	// After the briefing, so it reads as the word on whom "the human" means;
 	// an orchestrator hears this from its own role prompt.

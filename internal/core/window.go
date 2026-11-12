@@ -54,12 +54,12 @@ func MatesNotice(mates []Peer) string {
 		names[i] = m.named()
 	}
 	return "Agents beside you in this Rex session: " + strings.Join(names, ", ") +
-		". Reach them with `amq send --to <handle>`."
+		". Reach them with `rex-amq-adapter send --to <handle>`."
 }
 
 // JoinedNotice tells a session-mate that p started beside it.
 func JoinedNotice(p Peer) string {
-	return fmt.Sprintf("AMQ: %s joined your Rex session. Reach it with `amq send --to %s`.", p.named(), p.Handle)
+	return fmt.Sprintf("AMQ: %s joined your Rex session. Reach it with `rex-amq-adapter send --to %s`.", p.named(), p.Handle)
 }
 
 // OrchestratorNotice tells an agent that an orchestrator among mates

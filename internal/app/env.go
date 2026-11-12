@@ -133,9 +133,6 @@ func userHome() string {
 	return h
 }
 
-// EnvCommand is what agents run to load their identity.
-func (e Env) EnvCommand() string { return e.SelfBin + " env" }
-
 // HookInput is the part of a hook payload the adapter reads. Claude Code and
 // Codex use the snake_case names; Antigravity uses camelCase and different
 // fields (see normalize).

@@ -1,6 +1,7 @@
 package core
 
 import (
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -137,8 +138,8 @@ func TestOutcomeExitCode(t *testing.T) {
 }
 
 func TestDoorbellCarriesNoMessageContent(t *testing.T) {
-	d := Doorbell(2, "claude-2", "/x/rex-amq-adapter env")
-	want := `AMQ doorbell: 2 unread message(s) for claude-2 (you are claude-2 in Rex; skill: rex-amq-adapter). Run eval "$(/x/rex-amq-adapter env)" && amq drain --include-body, then act on each message.`
+	d := Doorbell(2, "claude-2", "/x/rex-amq-adapter")
+	want := `AMQ doorbell: 2 unread message(s) for claude-2 (you are claude-2 in Rex; skill: rex-amq-adapter). Run /x/rex-amq-adapter drain --include-body, then act on each message.`
 	if d != want {
 		t.Fatalf("got %q\nwant %q", d, want)
 	}
@@ -184,8 +185,11 @@ func TestMergeAnnouncedDropsDrainedIDs(t *testing.T) {
 }
 
 func TestHookNoticeCarriesNoMessageContent(t *testing.T) {
-	n := HookNotice(Announcement{Speak: true, Unread: 3, Fresh: 1}, "codex", "/x env", TurnEnding)
-	for _, want := range []string{"3 unread", "(1 new)", "codex", `eval "$(/x env)"`, "amq drain --include-body", "before ending your turn", "skill: rex-amq-adapter"} {
+	n := HookNotice(Announcement{Speak: true, Unread: 3, Fresh: 1}, "codex", "/x/rex-amq-adapter", TurnEnding)
+	if bareAmq.MatchString(n) {
+		t.Errorf("notice teaches bare amq mail, which skips the gateway: %q", n)
+	}
+	for _, want := range []string{"3 unread", "(1 new)", "codex", "/x/rex-amq-adapter drain --include-body", "before ending your turn", "skill: rex-amq-adapter"} {
 		if !strings.Contains(n, want) {
 			t.Errorf("notice %q lacks %q", n, want)
 		}
@@ -270,13 +274,13 @@ func TestSessionMatesAreTheOtherAgentsInTheSameSession(t *testing.T) {
 		t.Fatalf("an unknown session has no mates, got %+v", got)
 	}
 	got = []Peer{got[0], got[2]}
-	if s := MatesNotice(got); !strings.Contains(s, "codex-01 (codex), agy-01 (agy)") || !strings.Contains(s, "amq send") {
+	if s := MatesNotice(got); !strings.Contains(s, "codex-01 (codex), agy-01 (agy)") || !strings.Contains(s, "rex-amq-adapter send --to <handle>") {
 		t.Fatalf("mates notice %q", s)
 	}
 	if MatesNotice(nil) != "" {
 		t.Fatal("no mates must say nothing")
 	}
-	if s := JoinedNotice(got[0]); !strings.Contains(s, "codex-01 (codex) joined") || !strings.Contains(s, "amq send --to codex-01") {
+	if s := JoinedNotice(got[0]); !strings.Contains(s, "codex-01 (codex) joined") || !strings.Contains(s, "rex-amq-adapter send --to codex-01") {
 		t.Fatalf("joined notice %q", s)
 	}
 }
@@ -551,7 +555,7 @@ func TestOrchestratorNoticeNamesEveryOrchestratorAndAFallback(t *testing.T) {
 func startParts(role string) (head, tail string) {
 	mates := []Peer{{Handle: "claude-01", Kind: Claude, Role: OrchestratorRole}, {Handle: "codex-03", Kind: Codex, Role: "implementer"}, {Handle: "codex-04", Kind: Codex, Role: "qa"}, {Handle: "claude-05", Kind: Claude, Role: "writer"}, {Handle: "claude-06", Kind: Claude, Role: "architect"}}
 	bin := "/opt/homebrew/opt/rex-amq-adapter/bin/rex-amq-adapter"
-	head = SessionNotice("codex-02", role, bin+" env", 1) + " " + MatesNotice(mates) + "\n" + TaskNotice("codex-02", role, bin+" title", "review guidance")
+	head = SessionNotice("codex-02", role, bin, 1) + " " + MatesNotice(mates) + "\n" + TaskNotice("codex-02", role, bin+" title", "review guidance")
 	return head, OrchestratorNotice(mates)
 }
 
@@ -598,3 +602,7 @@ func TestContextLenCountsUTF16Units(t *testing.T) {
 		t.Error("ContextLen counts as JavaScript's String length does")
 	}
 }
+
+// bareAmq matches an instruction to run amq's own mail commands, which skip
+// the adapter's gateway (ARCH-1).
+var bareAmq = regexp.MustCompile(`\bamq (drain|send|reply)\b`)
