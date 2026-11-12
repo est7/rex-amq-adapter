@@ -10,6 +10,24 @@ maintainability, documentation), codex-02 (Codex; testing, automation, accessibi
 runner), agy-01 (Antigravity/Gemini; all nine dimensions, independent and blind to the others'
 round-1 results). Orchestrator: claude-03 (Claude).
 
+## Status after v0.13.0
+
+v0.13.0 (released 2026-11-12) fixes the findings below; each fix has a regression test that fails
+on this audit's base and was accepted against the release candidate
+(https://github.com/est7/rex-amq-adapter/releases/tag/v0.13.0).
+
+| Fixed | Where |
+|---|---|
+| ARCH-3, DOC-1, AUTO-2, AUTO-4, A11Y-3, A11Y-2 (part) | #5 |
+| SEC-1, SEC-3, ARCH-2, SCAL-1, MAINT-1 | #6 |
+| SEC-2, A11Y-2 (managed send/reply help and stdin) | #8 |
+| ARCH-1, DOC-2 | #9 |
+| AUTO-1 | #4 |
+
+A11Y-2 is only partly fixed: `join`, `events` and `view --help` still exit 2, and `collect --help`
+runs a collection. Still open: SCAL-2, PERF-1, PERF-2, MAINT-2, MAINT-3, SEC-4, A11Y-1, AUTO-3,
+AUTO-5, TEST-1 (no integration CI with real Rex and amq).
+
 ## Summary
 
 The codebase is healthy for its size. Every gate passes (build, vet, short tests, race tests, the
