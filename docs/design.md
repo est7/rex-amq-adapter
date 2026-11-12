@@ -586,7 +586,12 @@ adoption:
   block's foreground process): `.agents/crews` there or above, then
   `~/.config/rex-amq-adapter/crews`, then the built-in set. The first file
   found wins whole; a crew's own `<role>.md` beats the shared
-  `roles/<role>.md`. Conventions win over a role prompt where they differ.
+  `roles/<role>.md`. Conventions win over a role prompt where they differ. The
+  start notice stays within 9,000 of the 10,000 characters Claude Code takes
+  from a hook (a longer one is replaced by a file path and a 2,000-character
+  preview): identity, mail commands, mates, and who stands for the human stay
+  inline, and a crew or role prompt that does not fit, or is longer than 4,000
+  characters, is named by its file instead (`core.StartNotice`).
 - A tab that names no crew (Rex's default `Window 82b616eb`, a follower
   showing an agent's pane label, any unknown name) gives role prompts only, so a reviewer split into an ordinary tab is
   still briefed. An agent without a role in such a tab hears nothing more.
