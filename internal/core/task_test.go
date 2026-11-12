@@ -52,10 +52,8 @@ func TestTaskNoticeAsksForATaskOrSaysWhatThePaneShows(t *testing.T) {
 // guide stays the place for starting peers.
 func TestSessionNoticeCarriesTheMailCommands(t *testing.T) {
 	n := SessionNotice("codex-02", "qa", "/x/rex-amq-adapter", 1)
-	for _, bare := range []string{"amq drain", "amq reply", "amq send"} {
-		if strings.Contains(n, bare) {
-			t.Errorf("notice teaches a bare %q, which skips the gateway:\n%s", bare, n)
-		}
+	if bareAmq.MatchString(n) {
+		t.Errorf("notice teaches bare amq mail, which skips the gateway:\n%s", n)
 	}
 	for _, want := range []string{
 		"/x/rex-amq-adapter drain --include-body",

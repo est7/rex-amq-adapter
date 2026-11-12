@@ -1,6 +1,7 @@
 package core
 
 import (
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -185,8 +186,8 @@ func TestMergeAnnouncedDropsDrainedIDs(t *testing.T) {
 
 func TestHookNoticeCarriesNoMessageContent(t *testing.T) {
 	n := HookNotice(Announcement{Speak: true, Unread: 3, Fresh: 1}, "codex", "/x/rex-amq-adapter", TurnEnding)
-	if strings.Contains(n, "amq drain") {
-		t.Errorf("notice teaches a bare amq drain: %q", n)
+	if bareAmq.MatchString(n) {
+		t.Errorf("notice teaches bare amq mail, which skips the gateway: %q", n)
 	}
 	for _, want := range []string{"3 unread", "(1 new)", "codex", "/x/rex-amq-adapter drain --include-body", "before ending your turn", "skill: rex-amq-adapter"} {
 		if !strings.Contains(n, want) {
@@ -601,3 +602,7 @@ func TestContextLenCountsUTF16Units(t *testing.T) {
 		t.Error("ContextLen counts as JavaScript's String length does")
 	}
 }
+
+// bareAmq matches an instruction to run amq's own mail commands, which skip
+// the adapter's gateway (ARCH-1).
+var bareAmq = regexp.MustCompile(`\bamq (drain|send|reply)\b`)
