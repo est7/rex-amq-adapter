@@ -836,8 +836,9 @@ func (s Store) PutSummon(token string, sm Summon) error {
 	return fsutil.WriteAtomic(s.summonPath(token), b)
 }
 
-// TakeSummon returns and removes the summon launched under token, if any.
-func (s Store) TakeSummon(token string) (Summon, bool, error) {
+// Summon reads the launch under token without consuming its reservation.
+// The caller deletes it only after committing the adopting record.
+func (s Store) Summon(token string) (Summon, bool, error) {
 	if token == "" {
 		return Summon{}, false, nil
 	}
@@ -852,10 +853,10 @@ func (s Store) TakeSummon(token string) (Summon, bool, error) {
 	if err := json.Unmarshal(b, &sm); err != nil {
 		return Summon{}, false, fmt.Errorf("%s: %w", s.summonPath(token), err)
 	}
-	return sm, true, os.Remove(s.summonPath(token))
+	return sm, true, nil
 }
 
-// DeleteSummon frees a reservation whose launch failed.
+// DeleteSummon frees a reservation after adoption commits or launch fails.
 func (s Store) DeleteSummon(token string) error {
 	err := os.Remove(s.summonPath(token))
 	if errors.Is(err, fs.ErrNotExist) {
