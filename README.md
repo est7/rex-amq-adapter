@@ -202,13 +202,23 @@ An agent reaches a peer that may not be running with `rex-amq-adapter summon <ha
 
 A personal agent runs Epics without working in them. Give an agent in a Rex
 session of its own (your `~/me`, say) the role with `rex-amq-adapter join
---role personal`, and ask it for an Epic: its briefing has it open a Rex
-session for the Epic (`rex new`), start the orchestrator there with the goal
-as its brief (`rex run -s … --label "orchestrator | <goal>"`), start the
-Epic's narrator (`rex-amq-adapter tab narrator -s … --role narrator`), and
-`link` the Epic to itself. From then on it reads the Epic with `view --session`
-and asks or directs it only through the narrator, which relays your decisions
-to the orchestrator verbatim; the Epic's workers never see either of them.
+--role personal`, and ask it for an Epic. It writes the goal contract (skill
+`make-goal`, when installed) and runs one command, then tells you the Epic
+started and that you can ask it about it:
+
+```bash
+rex-amq-adapter epic "login revamp" -c ~/src/app --goal ~/src/app/.goal/20261112-login.md
+```
+
+`epic` creates the Epic's Rex session (named after it) with the orchestrator,
+briefed to run the contract (or, with `--asked "<your words>"`, with your
+request), and a narrator in a background `narrator` tab; links the Epic to
+the personal agent; and waits for both agents (`--timeout`, 90 s by default).
+It prints one JSON line and exits 0 only when both are adopted and linked; a
+failure part way reports what started and tears nothing down. From then on
+the personal agent reads the Epic with `view --session` and asks or directs it
+only through the narrator, which relays your decisions to the orchestrator
+verbatim; the Epic's workers never see either of them.
 
 Your own crews and roles override the built-in ones by name: a crew is a
 directory holding `team-conventions.md` and, optionally, `<role>.md` for a

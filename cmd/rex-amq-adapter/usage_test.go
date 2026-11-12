@@ -142,3 +142,14 @@ func TestVersionFlagIsTheVersionCommand(t *testing.T) {
 		}
 	}
 }
+
+// epic needs a name and takes only its own flags; usage errors exit 2 before
+// anything is resolved or started.
+func TestEpicRejectsBadUsage(t *testing.T) {
+	isolate(t)
+	for _, args := range [][]string{nil, {"--goal", "g.md"}, {"x", "--nope"}, {"x", "extra"}, {"x", "--timeout", "soon"}} {
+		if code := runEpic(args); code != 2 {
+			t.Errorf("epic %v: exit %d, want 2", args, code)
+		}
+	}
+}

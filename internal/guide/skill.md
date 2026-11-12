@@ -307,12 +307,20 @@ shows the task of the agent that was there first.
 
 A personal agent works in a Rex session of its own and runs the user's Epics
 from there, one Rex session each, each driven by an orchestrator and watched by
-a narrator it links to. Take the role in your pane with
-`rex-amq-adapter join --role personal`; its briefing gives the commands
-(`rex new`, `rex run` for the orchestrator, `tab narrator -s` for the
-narrator, `link`, `view --session`), and `crews show --role personal` prints
-it beforehand. Only a `personal` agent links, and the narrator is the only
-agent of an Epic it mails.
+a narrator. Take the role in your pane with
+`rex-amq-adapter join --role personal`. One command opens an Epic:
+
+```bash
+rex-amq-adapter epic "<name>" -c <repo> --goal <contract>   # or --asked "<the user's words>"
+```
+
+It creates the Epic's Rex session with its orchestrator (briefed to run the
+goal contract, or with the user's words) and its narrator, links the Epic to
+you, and prints one JSON line (`session_id`, each agent's `handle`, `block`
+and `status`, `linked`); it exits 0 only when both agents are adopted and
+linked. Only a `personal` agent opens or links Epics, and the narrator is the
+only agent of an Epic it mails; your briefing (`crews show --role personal`)
+has the rest.
 
 ## Summon on send
 

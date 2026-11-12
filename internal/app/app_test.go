@@ -58,6 +58,8 @@ type fakeTerm struct {
 	newTabs        []string
 	launches       []launch
 	states         map[string]rex.Status // block -> program status, overriding state
+	sessions_      []fakeSession         // NewSession calls that created one
+	newSessionErr  error                 // NewSession fails
 }
 
 func (f *fakeTerm) Whoami(context.Context) (rex.Server, error) {
@@ -682,6 +684,35 @@ func (f *fakeTerm) NewSplit(_ context.Context, session, anchor, label, dir strin
 	f.windows[id] = w
 	f.launches = append(f.launches, launch{Block: id, Label: label, Dir: dir, Command: command})
 	return id, nil
+}
+
+// NewSession creates session:epic-<n>; pane i of it is block:epic-<n>-<i>
+// in window:epic-<n>-<i>.
+func (f *fakeTerm) NewSession(_ context.Context, label string, panes []rex.Pane) (string, []string, []string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.newSessionErr != nil {
+		return "", nil, nil, f.newSessionErr
+	}
+	f.sessions_ = append(f.sessions_, fakeSession{label: label, panes: panes})
+	n := len(f.sessions_)
+	session := fmt.Sprintf("session:epic-%d", n)
+	var windows, blocks []string
+	for i, p := range panes {
+		w, b := fmt.Sprintf("window:epic-%d-%d", n, i+1), fmt.Sprintf("block:epic-%d-%d", n, i+1)
+		if f.windows == nil {
+			f.windows = map[string]string{}
+		}
+		if f.tabs == nil {
+			f.tabs = map[string]string{}
+		}
+		if f.sessions == nil {
+			f.sessions = map[string]string{}
+		}
+		f.windows[b], f.tabs[w], f.sessions[w] = w, p.Tab, session
+		windows, blocks = append(windows, w), append(blocks, b)
+	}
+	return session, windows, blocks, nil
 }
 
 type launch struct {

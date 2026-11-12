@@ -189,28 +189,6 @@ func TestManagedMailReply(t *testing.T) {
 	}
 }
 
-func TestManagedMailTakeFlag(t *testing.T) {
-	for _, c := range []struct {
-		args   []string
-		name   string
-		valued bool
-		value  string
-		rest   string
-		found  bool
-	}{
-		{[]string{"--to", "a", "--body", "b"}, "to", true, "a", "--body b", true},
-		{[]string{"-to=a", "x"}, "to", true, "a", "x", true},
-		{[]string{"--json", "--to", "a"}, "json", false, "true", "--to a", true},
-		{[]string{"--body", "--to looks like a flag"}, "to", true, "", "--body --to looks like a flag", false},
-		{[]string{"--", "--to", "a"}, "to", true, "", "-- --to a", false},
-	} {
-		v, rest, found := takeFlag(c.args, c.name, c.valued)
-		if v != c.value || strings.Join(rest, " ") != c.rest || found != c.found {
-			t.Errorf("takeFlag(%q, %s) = %q %q %v", c.args, c.name, v, rest, found)
-		}
-	}
-}
-
 // A narrator's one write into its Epic is a user-control directive to the
 // orchestrator, sent with --control <request id> (core.OpControl). Without
 // it, or to anyone else, the gateway refuses, and what arrives through the
