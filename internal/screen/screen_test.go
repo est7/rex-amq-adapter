@@ -152,4 +152,145 @@ func TestClaudeBoxWithATitledBorder(t *testing.T) {
 	if got := Check("claude", "── note\n❯ old prompt\n"+rule+"\n"); got != Unknown {
 		t.Errorf("short dash line taken as a border: %v", got)
 	}
+	if got := Check("claude", "──────────── note\n❯ old prompt\n"+rule+"\n"); got != Unknown {
+		t.Errorf("uncapped dash line taken as a border: %v", got)
+	}
+}
+
+// On a narrow phone pane (e.g. 54 cols >= TinyColumns), Claude Code's Vst
+// prompt border leaves 0..9 leading `─` before the padded session title and
+// closes the right edge with ` ─`, while the bottom edge stays a plain rule.
+func TestClaudeNarrowTitledBorder(t *testing.T) {
+	rule54 := strings.Repeat("─", 54)
+	// Exact SGR and NBSP layout emitted by `rex capture --format=vt` on a
+	// 54-column phone pane when the adapter's title fills the top border (F=0).
+	phoneTop := "\x1b[0m\x1b[38;2;138;138;138m orchestrator(claude-03) | [rex-amq-adapter] v0.13.… ─\x1b[0m"
+	phoneBottom := "\x1b[0m\x1b[38;2;138;138;138m" + rule54 + "\x1b[0m"
+	phoneStatus := "\x1b[2C\x1b[0m\x1b[38;5;14mrex-amq-adapter\x1b[0m\n"
+	// Verbatim 54-col live phone capture (`rex capture --trim`) from claude-03.
+	livePhoneCap := "⏺ 现在 pane 是 54 列宽，正好落在 agy 说的 40–59\n" +
+		"  列区间里。再抓输入框那几行：\n" +
+		"  ● Bash(eval \"$(/opt/homebrew/opt/rex-amq-adapter…)\n\n" +
+		"✳ Finding a sunbeam… (16s · thought for 1s)\n" +
+		"⚠ 这里值得改 · 报告里的编号和证据文件的编号对不…  [-]\n" +
+		"1: 看看完整   2: 追问   3: 忽略\n" +
+		"✦ 顺便懂一点 · 每个被拉起的 peer 都是一个独立的…\n" +
+		"4: 看看解释   5: 我懂了   6: 追问   7: 忽略\n\n" +
+		" orchestrator(claude-03) | [rex-amq-adapter] v0.13.… ─\n" +
+		"❯\u00a0握\n" +
+		rule54 + "\n" +
+		"  rex-amq-adapter (main*) | Opus 5.5 | eff high | w…\n" +
+		"  ⏵⏵ bypass permissions on (shift+tab to cycle)\n"
+
+	if got := Check("claude", livePhoneCap); got != Typed || !BoxHolds("claude", livePhoneCap, "握") {
+		t.Fatalf("live 54-col phone capture with draft: got %v, holds=%v", got, BoxHolds("claude", livePhoneCap, "握"))
+	}
+	if got := Check("claude", strings.Replace(livePhoneCap, "❯\u00a0握", "❯\u00a0", 1)); got != Empty {
+		t.Fatalf("live 54-col phone capture when idle: got %v, want empty", got)
+	}
+
+	cases := []struct {
+		name string
+		kind string
+		vt   string
+		want Draft
+	}{
+		{
+			name: "54-col F=0 phone VT empty",
+			kind: "claude",
+			vt:   "✶ Churned…\n\n" + phoneTop + "\n\x1b[0m\x1b[38;2;102;102;102m❯\u00a0\x1b[0m\n" + phoneBottom + "\n" + phoneStatus,
+			want: Empty,
+		},
+		{
+			name: "54-col F=0 phone VT draft",
+			kind: "claude",
+			vt:   phoneTop + "\n\x1b[0m\x1b[38;2;102;102;102m❯\u00a0\x1b[0mhalf typed on phone\n" + phoneBottom + "\n" + phoneStatus,
+			want: Typed,
+		},
+		{
+			name: "54-col F=0 unstyled CSI 1C spaces",
+			kind: "claude",
+			vt:   "\x1b[1Corchestrator(claude-03)\x1b[1C|\x1b[1C[rex-amq-adapter]\x1b[1Cv0.13.…\x1b[1C─\n❯\u00a0\n" + rule54 + "\n",
+			want: Empty,
+		},
+		{
+			name: "54-col F=1 CJK title truncation",
+			kind: "claude",
+			vt:   "─ orchestrator(claude-03) | [rex-amq-adapter] 项目探索… ─\n❯\u00a0\n" + rule54 + "\n",
+			want: Empty,
+		},
+		{
+			name: "62-col F=9 boundary",
+			kind: "claude",
+			vt:   strings.Repeat("─", 9) + " orchestrator(claude-03) | [rex-amq-adapter] v0.13.0 ─\n❯\u00a0\n" + strings.Repeat("─", 62) + "\n",
+			want: Empty,
+		},
+		{
+			name: "40-col TinyColumns floor",
+			kind: "claude",
+			vt:   " orchestrator(claude-03) | [rex-amq-… ─\n❯\u00a0\n" + strings.Repeat("─", 40) + "\n",
+			want: Empty,
+		},
+		{
+			name: "30-col narrowest titled box",
+			kind: "claude",
+			vt:   " orchestrator(claude-03) | … ─\n❯\u00a0draft\n" + strings.Repeat("─", 30) + "\n",
+			want: Typed,
+		},
+		{
+			name: "Ink start-aligned borderText",
+			kind: "claude",
+			vt:   "─── dim hint ─────────────────────────────────────────\n❯\u00a0\n" + rule54 + "\n",
+			want: Empty,
+		},
+		{
+			name: "multiline draft with space-dash or leading dashes inside box",
+			kind: "claude",
+			vt:   phoneTop + "\n❯ first line\n  second line ─\n──────────── not a bottom rule\n" + phoneBottom + "\n",
+			want: Typed,
+		},
+		{
+			name: "2-space indented transcript line ending in space-dash is not a border",
+			kind: "claude",
+			vt:   "  assistant prose ending with ─\n❯ old prompt\n" + rule54 + "\n",
+			want: Unknown,
+		},
+		{
+			name: "Claude Insight banner is not a border",
+			kind: "claude",
+			vt:   "★ Insight ─────────────────────────────────────\n❯ old prompt\n" + rule54 + "\n",
+			want: Unknown,
+		},
+		{
+			name: "markdown hash rule is not a border",
+			kind: "claude",
+			vt:   "# ─── Write your reply below ──────────────────\n❯ old prompt\n" + rule54 + "\n",
+			want: Unknown,
+		},
+		{
+			name: "agy blockquote under prose ending in space-dash is not a box",
+			kind: "agy",
+			vt:   " prose ending with ─\n> quoted line\n" + rule54 + "\n",
+			want: Unknown,
+		},
+	}
+	for _, c := range cases {
+		if got := Check(c.kind, c.vt); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+	if !BoxHolds("claude", phoneTop+"\n❯\u00a0first line\n  second line ─\n──────────── not a bottom rule\n"+phoneBottom+"\n", "first line second line ─ ──────────── not a bottom rule") {
+		t.Fatal("multiline draft ending with ` ─` or leading `─`s truncated the box early")
+	}
+	// Default/zero CUF advances one space; private CSI sequences ending in C
+	// emit no phantom space and huge counts stay bounded.
+	if got := Check("claude", "\x1b[Corchestrator(claude-03) | [rex-amq-adapter] v0.13.…\x1b[0C─\n❯\u00a0\n"+rule54+"\n"); got != Empty {
+		t.Errorf("default/zero CUF titled border: got %v, want empty", got)
+	}
+	if got := Check("claude", "\x1b[?25C★ Insight ────────────────────────── ─\n❯ old\n"+rule54+"\n"); got != Unknown {
+		t.Errorf("private CSI ?C injected phantom leading space: got %v, want unknown", got)
+	}
+	if got := Check("claude", " orchestrator(claude-03) | [rex-amq-adapter] v0.13.… ─\n❯\u00a0\x1b[999999C\n"+rule54+"\n"); got != Empty {
+		t.Errorf("clamped CUF inside empty box: got %v, want empty", got)
+	}
 }
