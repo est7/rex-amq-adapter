@@ -38,6 +38,7 @@ Agent and user commands:
   who [--all]               list agents in this Rex session only, with their roles
                             and tabs;
                             --all adds this session's departed agents reserved for a resume
+                            and the narrator and personal agents ordinary views leave out
   events --json [--session S | --tab | --all]
                             stream this Rex session's agents and mail as NDJSON
                             (snapshot, then upsert/remove/event/heartbeat
@@ -363,7 +364,7 @@ func runTitle(args []string) int {
 
 func runWho(args []string) int {
 	fs := flag.NewFlagSet("who", flag.ContinueOnError)
-	all := fs.Bool("all", false, "also list this session's departed agents still reserved for a resume")
+	all := fs.Bool("all", false, "also list this session's departed agents still reserved for a resume, and its narrator and personal agents")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

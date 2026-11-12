@@ -48,7 +48,8 @@ func (e Env) watchdog(ctx context.Context, orch store.Record, s Session) {
 		return
 	}
 	for _, r := range recs {
-		if !r.Live() || !s.holds(r) {
+		// A Stealth agent is not the orchestrator's to supervise.
+		if !r.Live() || !s.holds(r) || core.Stealth(r.Role) {
 			continue
 		}
 		if !r.Kind.InProcess() {

@@ -307,7 +307,7 @@ func (e Env) identityNotice(ctx context.Context, a Adoption, unread int) string 
 	}
 	// After the briefing, so it reads as the word on whom "the human" means;
 	// an orchestrator hears this from its own role prompt.
-	if a.Record.Role != core.OrchestratorRole {
+	if a.Record.Role != core.OrchestratorRole && !core.Stealth(a.Record.Role) {
 		if orch := core.OrchestratorNotice(a.Mates); orch != "" {
 			notice += "\n\n" + orch
 		}

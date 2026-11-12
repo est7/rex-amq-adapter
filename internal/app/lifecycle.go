@@ -184,9 +184,10 @@ func (e Env) clearWindowNotes(ctx context.Context, h core.Handle) error {
 // leaveSession queues, for each live agent recorded in rec's session, a note
 // that rec's agent left. It reads only records, so a crash found by
 // collection, whose block is gone, is told like a SessionEnd. Like a join
-// it is advice: a failure is reported, and the departure stands.
+// it is advice: a failure is reported, and the departure stands. A Stealth
+// agent (core.Stealth) neither is told nor tells.
 func (e Env) leaveSession(ctx context.Context, rec store.Record) {
-	if !placed(rec) {
+	if !placed(rec) || core.Stealth(rec.Role) {
 		return
 	}
 	recs, err := e.Store.Records()
@@ -196,7 +197,7 @@ func (e Env) leaveSession(ctx context.Context, rec store.Record) {
 	}
 	note := core.LeftNotice(peerOf(rec))
 	for _, r := range recs {
-		if r.Live() && r.Handle != rec.Handle && together(r, rec) {
+		if r.Live() && r.Handle != rec.Handle && together(r, rec) && !core.Stealth(r.Role) {
 			if err := e.noteWindow(ctx, r.Handle, note); err != nil {
 				fmt.Fprintf(Diagnostics, "tell %s that %s left: %v\n", r.Handle, rec.Handle, err)
 			}

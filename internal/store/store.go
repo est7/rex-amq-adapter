@@ -835,7 +835,8 @@ func (s Store) PendingSummons(session string, now time.Time) (int, error) {
 			continue
 		}
 		var sm Summon
-		if json.Unmarshal(b, &sm) == nil && sm.Session == session && now.Sub(sm.At) < PendingSummonFor {
+		// A Stealth launch (a narrator) takes no place a worker would.
+		if json.Unmarshal(b, &sm) == nil && sm.Session == session && now.Sub(sm.At) < PendingSummonFor && !core.Stealth(sm.For) {
 			n++
 		}
 	}

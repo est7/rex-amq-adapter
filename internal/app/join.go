@@ -93,7 +93,7 @@ func (e Env) Join(ctx context.Context, loc Location, crewName, role string) (Joi
 		name = e.tabCrew(ctx, rec, blk.SessionID, blk.WindowID)
 	}
 	out.Briefing = joinNotices(core.BriefNotice(e.briefingIn(ctx, rec, rec.Role, name)))
-	if rec.Role != core.OrchestratorRole {
+	if rec.Role != core.OrchestratorRole && !core.Stealth(rec.Role) {
 		if orch := core.OrchestratorNotice(mates); orch != "" {
 			out.Briefing = strings.TrimSpace(out.Briefing + "\n\n" + orch)
 		}

@@ -313,7 +313,8 @@ func (e Env) joinSession(ctx context.Context, rec store.Record, blk rex.Block, r
 		}
 	}
 	mates := core.SessionMates(rec.BlockID, windowOf, peers)
-	if !arrived {
+	if !arrived || core.Stealth(rec.Role) {
+		// A narrator or personal agent arrives unannounced.
 		return mates
 	}
 	e.tellMates(ctx, peerOf(rec), mates, core.JoinedNotice(peerOf(rec)))
