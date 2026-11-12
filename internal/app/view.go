@@ -354,11 +354,9 @@ func (e Env) buildView(ctx context.Context, narr store.Record, key core.SessionK
 	for _, r := range members {
 		m := ViewMember{Handle: r.Handle, Kind: r.Kind, Role: r.Role, Task: r.Task, Live: r.Live(), DepartedAt: r.DepartedAt, DepartReason: r.DepartReason}
 		if r.Live() {
-			mark, err := e.Store.HealthMark(r.BlockID)
-			if err != nil {
+			if m.Attention, err = e.attention(r); err != nil {
 				return v, err
 			}
-			m.Attention = attention(r, mark)
 		}
 		v.Members = append(v.Members, m)
 		handles = append(handles, r.Handle)

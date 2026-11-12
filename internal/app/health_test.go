@@ -262,11 +262,11 @@ func TestClaudeStopFailureReportsOnceAndMarksTheAgentRun(t *testing.T) {
 	if _, err := e.Hook(context.Background(), EventPrompt, core.Claude, loc, HookInput{SessionID: "sid-c4", AgentPID: 42}); err != nil {
 		t.Fatal(err)
 	}
-	if m, _ := e.Store.HealthMark("block:c"); e.flagged(rec) || !m.TurnErroredAt.IsZero() {
+	if m, ok, _ := e.Store.TurnError("block:c"); e.flagged(rec) || ok {
 		t.Fatalf("a new turn left the mark: %+v", m)
 	}
 	// So does time, when the agent never takes another turn.
-	if err := e.markTurnError(context.Background(), rec); err != nil || !e.flagged(rec) {
+	if err := e.markTurnError(rec); err != nil || !e.flagged(rec) {
 		t.Fatalf("re-mark: %v", err)
 	}
 	*now = now.Add(core.StalledFor + time.Minute)
@@ -417,7 +417,7 @@ func TestAgyStopClassifiesTerminationReasons(t *testing.T) {
 	if err != nil || r.Notice == "" {
 		t.Fatalf("NO_TOOL_CALL with unread mail must announce: r=%+v err=%v", r, err)
 	}
-	if m, err := e.Store.HealthMark("block:agy"); err != nil || !m.TurnErroredAt.IsZero() {
+	if m, ok, err := e.Store.TurnError("block:agy"); err != nil || ok {
 		t.Fatalf("normal stop must clear TurnErroredAt: %+v err=%v", m, err)
 	}
 
@@ -428,7 +428,7 @@ func TestAgyStopClassifiesTerminationReasons(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if m, err := e.Store.HealthMark("block:agy"); err != nil || !m.TurnErroredAt.IsZero() {
+	if m, ok, err := e.Store.TurnError("block:agy"); err != nil || ok {
 		t.Fatalf("turn_limit must not set TurnErroredAt: %+v err=%v", m, err)
 	}
 }
@@ -491,7 +491,7 @@ func TestPiSettleClassifiesOutcomes(t *testing.T) {
 	if err != nil || r.Notice == "" {
 		t.Fatalf("Pi completed settle with unread mail must announce: r=%+v err=%v", r, err)
 	}
-	if m, err := e.Store.HealthMark("block:pi"); err != nil || !m.TurnErroredAt.IsZero() {
+	if m, ok, err := e.Store.TurnError("block:pi"); err != nil || ok {
 		t.Fatalf("completed settle must clear TurnErroredAt: %+v err=%v", m, err)
 	}
 	if len(inboxOf(t, e, "orch-01")) != 1 {
@@ -712,7 +712,7 @@ func TestTurnErrorHooksFromAnotherAgentInThePaneAreIgnored(t *testing.T) {
 		term.fgs = map[string]rex.Process{}
 	}
 	term.fgs["block:c"] = rex.Process{PID: 42, Name: "claude"}
-	if err := e.markTurnError(context.Background(), rec); err != nil {
+	if err := e.markTurnError(rec); err != nil {
 		t.Fatal(err)
 	}
 	loc := Location{Server: "unix:///fake.sock", Block: "block:c"}
@@ -747,7 +747,7 @@ func TestTurnErrorRoutingThroughTheHook(t *testing.T) {
 
 	e, _, orch, _, _, desktop := healthWorld(t)
 	claude04(t, e)
-	if err := e.markTurnError(context.Background(), orch); err != nil {
+	if err := e.markTurnError(orch); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := e.Hook(context.Background(), EventStopFailure, core.Claude, loc, failure); err != nil {
@@ -810,10 +810,10 @@ func TestTurnErrorHooksNamingNoSessionFromAnotherProcessAreIgnored(t *testing.T)
 		term.fgs = map[string]rex.Process{}
 	}
 	term.fgs["block:c"] = rex.Process{PID: 42, Name: "claude"}
-	if err := e.markTurnError(context.Background(), rec); err != nil {
+	if err := e.markTurnError(rec); err != nil {
 		t.Fatal(err)
 	}
-	marked, err := e.Store.HealthMark("block:c")
+	marked, _, err := e.Store.TurnError("block:c")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -827,8 +827,8 @@ func TestTurnErrorHooksNamingNoSessionFromAnotherProcessAreIgnored(t *testing.T)
 	if len(inboxOf(t, e, "orch-01")) != 0 || len(inboxOf(t, e, "codex")) != 0 || len(*desktop) != 0 {
 		t.Fatalf("a hook naming no session reported in claude-04's name: orchestrator %v codex %v desktop %v", inboxOf(t, e, "orch-01"), inboxOf(t, e, "codex"), *desktop)
 	}
-	if m, err := e.Store.HealthMark("block:c"); err != nil || !m.TurnErroredAt.Equal(marked.TurnErroredAt) {
-		t.Fatalf("a hook naming no session re-marked claude-04: before %v after %+v err %v", marked.TurnErroredAt, m, err)
+	if m, ok, err := e.Store.TurnError("block:c"); err != nil || !ok || !m.At.Equal(marked.At) {
+		t.Fatalf("a hook naming no session re-marked claude-04: before %v after %+v err %v", marked.At, m, err)
 	}
 	_, _ = e.Hook(context.Background(), EventPrompt, core.Claude, loc, nameless)
 	if !e.flagged(rec) {

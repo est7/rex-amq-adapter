@@ -35,11 +35,9 @@ func (e Env) sessionPulse(key core.SessionKey) (core.SessionPulse, error) {
 			return p, err
 		}
 		if r.Live() {
-			mark, err := e.Store.HealthMark(r.BlockID)
-			if err != nil {
+			if m.Attention, err = e.attention(r); err != nil {
 				return p, err
 			}
-			m.Attention = attention(r, mark)
 		}
 		p.Members = append(p.Members, m)
 	}
@@ -63,19 +61,27 @@ func (e Env) lastMail(h core.Handle) (string, error) {
 
 // attention is what waits on someone in r's block: its own turn that ended in
 // an error, its own run waiting on the human, a stall.
-func attention(r store.Record, m store.HealthMark) []string {
+func (e Env) attention(r store.Record) ([]string, error) {
+	mark, err := e.Store.HealthMark(r.BlockID)
+	if err != nil {
+		return nil, err
+	}
+	te, hasErr, err := e.Store.TurnError(r.BlockID)
+	if err != nil {
+		return nil, err
+	}
 	var out []string
 	at := func(what string, t time.Time) { out = append(out, what+"@"+t.UTC().Format(time.RFC3339)) }
-	if !m.TurnErroredAt.IsZero() && m.TurnErroredBy == turnKey(r) {
-		at("turn_error", m.TurnErroredAt)
+	if hasErr && te.By == turnKey(r) {
+		at("turn_error", te.At)
 	}
-	if !m.BlockedSince.IsZero() && m.BlockedBy == turnKey(r) {
-		at("waiting_on_the_human", m.BlockedSince)
+	if !mark.BlockedSince.IsZero() && mark.BlockedBy == turnKey(r) {
+		at("waiting_on_the_human", mark.BlockedSince)
 	}
-	if !m.LastStallAt.IsZero() {
-		at("stalled", m.LastStallAt)
+	if !mark.LastStallAt.IsZero() && (mark.HealthBy == "" || mark.HealthBy == turnKey(r)) {
+		at("stalled", mark.LastStallAt)
 	}
-	return out
+	return out, nil
 }
 
 // tellNarrator mails narr, the session's narrator, what changed in session
