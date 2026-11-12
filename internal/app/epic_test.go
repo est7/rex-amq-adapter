@@ -72,6 +72,15 @@ func TestOpenEpicStartsOrchestratorAndNarratorAndLinks(t *testing.T) {
 	if orch.Tab != "" || orch.Label != "orchestrator | login revamp" || orch.Command[0] != "claude" || !strings.Contains(orch.Command[len(orch.Command)-1], goal) {
 		t.Errorf("orchestrator pane %+v", orch)
 	}
+	// The brief is make-goal's file-delivery prompt whole: run-goal stops at
+	// either exit, so a run whose Slices are all blocked hands back instead
+	// of asking for more work (codex-01's s5 review).
+	brief := orch.Command[len(orch.Command)-1]
+	for _, want := range []string{"/goal Load skill run-goal. Execute the goal contract at " + goal + "; it is the grant.", "Done when every DONE WHEN line holds on fresh evidence", "or when every Slice left is blocked (a thrash fuse, a Boundaries item, or a Slice it builds on) and the hand-back lists each under Blocked on me."} {
+		if !strings.Contains(brief, want) {
+			t.Errorf("orchestrator brief lacks %q:\n%s", want, brief)
+		}
+	}
 	if tab, ok, err := e.Store.Tab("window:epic-1-1"); err != nil || !ok || tab.Mode != core.WindowNarrator {
 		t.Errorf("narrator tab not claimed: %+v %v %v", tab, ok, err)
 	}
@@ -140,4 +149,23 @@ func TestOpenEpicReportsAMidwayFailureWithoutTearingDown(t *testing.T) {
 type fakeSession struct {
 	label string
 	panes []rex.Pane
+}
+
+// The Epic's Rex session carries its whole name; only pane labels shorten
+// it, to their task width.
+func TestOpenEpicKeepsTheWholeNameForTheSession(t *testing.T) {
+	e, term, loc, goal := openEpicWorld(t)
+	name := "login revamp with SSO, passkeys and account recovery"
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	if _, err := e.OpenEpic(ctx, loc, EpicRequest{Name: name, Dir: filepath.Dir(goal), Goal: goal}); err != nil {
+		t.Fatal(err)
+	}
+	s := term.sessions_[0]
+	if s.label != name {
+		t.Errorf("session label %q, want %q", s.label, name)
+	}
+	if l := s.panes[1].Label; l != "orchestrator | "+core.Task(name) || l == "orchestrator | "+name {
+		t.Errorf("orchestrator pane label %q", l)
+	}
 }

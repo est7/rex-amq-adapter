@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
 	"github.com/est7/rex-amq-adapter/internal/rex"
@@ -66,10 +68,16 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 	if caller.Role != core.PersonalRole {
 		return EpicResult{}, fmt.Errorf("%w: only a %s agent opens Epics, and %s is %q", ErrRefused, core.PersonalRole, caller.Handle, caller.Role)
 	}
-	name := core.Task(r.Name)
+	// The session carries the Epic's whole name (Rex takes up to 128
+	// characters); pane labels carry it shortened to their task width.
+	name := strings.Join(strings.Fields(r.Name), " ")
 	if name == "" {
 		return EpicResult{}, fmt.Errorf("%w: name the Epic", ErrUsage)
 	}
+	if utf8.RuneCountInString(name) > maxSessionLabel {
+		return EpicResult{}, fmt.Errorf("%w: an Epic's name is at most %d characters", ErrUsage, maxSessionLabel)
+	}
+	task := core.Task(name)
 	dir, err := filepath.Abs(r.Dir)
 	if err != nil {
 		return EpicResult{}, err
@@ -92,8 +100,8 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 	// the session's active tab; the orchestrator's keeps Rex's placeholder
 	// name, so it follows its agent (core.FollowTab).
 	panes := []rex.Pane{
-		{Tab: core.NarratorTab, Label: core.NarratorRole + core.PaneSeparator + name, Dir: dir, Command: e.withTrust(dir, startCommand(core.DefaultHarness(core.NarratorRole), narrate))},
-		{Label: core.OrchestratorRole + core.PaneSeparator + name, Dir: dir, Command: e.withTrust(dir, startCommand(kind, brief))},
+		{Tab: core.NarratorTab, Label: core.NarratorRole + core.PaneSeparator + task, Dir: dir, Command: e.withTrust(dir, startCommand(core.DefaultHarness(core.NarratorRole), narrate))},
+		{Label: core.OrchestratorRole + core.PaneSeparator + task, Dir: dir, Command: e.withTrust(dir, startCommand(kind, brief))},
 	}
 	session, windows, blocks, err := e.Rex.NewSession(ctx, name, panes)
 	if err != nil {
@@ -122,6 +130,9 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 	return res, errors.Join(errs...)
 }
 
+// maxSessionLabel is the longest session label Rex takes (session.create).
+const maxSessionLabel = 128
+
 // orchestratorBrief is the orchestrator's first prompt: run the goal
 // contract, which is its grant, or the user's words as they asked.
 func orchestratorBrief(kind core.Kind, r EpicRequest) (string, error) {
@@ -138,7 +149,11 @@ func orchestratorBrief(kind core.Kind, r EpicRequest) (string, error) {
 	if info, err := os.Stat(goal); err != nil || !info.Mode().IsRegular() {
 		return "", fmt.Errorf("%w: the goal contract %s is not a readable file, so it grants nothing", ErrRefused, r.Goal)
 	}
-	run := "Load skill run-goal. Execute the goal contract at " + goal + "; it is the grant."
+	// make-goal's prompt for a contract kept in a file, whole: run-goal ends
+	// at either exit, so a run whose Slices are all blocked hands back.
+	run := "Load skill run-goal. Execute the goal contract at " + goal + "; it is the grant. " +
+		"Done when every DONE WHEN line holds on fresh evidence, or when every Slice left is blocked " +
+		"(a thrash fuse, a Boundaries item, or a Slice it builds on) and the hand-back lists each under Blocked on me."
 	if kind == core.Claude {
 		run = "/goal " + run
 	}
