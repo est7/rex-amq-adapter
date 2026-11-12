@@ -373,7 +373,7 @@ func (e Env) buildView(ctx context.Context, narr store.Record, key core.SessionK
 	for i, h := range handles {
 		agents[i] = string(h)
 	}
-	open, err := amq.ThreadOpen(ctx, e.AmqBin, e.Paths.Root(), string(narr.Handle), agents)
+	open, err := e.AMQ.ThreadOpen(ctx, e.Paths.Root(), string(narr.Handle), agents)
 	if err != nil {
 		return v, err
 	}
@@ -458,11 +458,11 @@ func (e Env) readBodies(ctx context.Context, me core.Handle, agents []string, hs
 	}
 	for _, th := range threads {
 		ids := byThread[th]
-		msgs, err := amq.ThreadRead(ctx, e.AmqBin, e.Paths.Root(), string(me), th, agents, ids)
+		msgs, err := e.AMQ.ThreadRead(ctx, e.Paths.Root(), string(me), th, agents, ids)
 		if err != nil {
 			msgs = nil
 			for _, id := range ids {
-				one, err := amq.ThreadRead(ctx, e.AmqBin, e.Paths.Root(), string(me), th, agents, []string{id})
+				one, err := e.AMQ.ThreadRead(ctx, e.Paths.Root(), string(me), th, agents, []string{id})
 				if err != nil {
 					missing = append(missing, id)
 					continue

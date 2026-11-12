@@ -22,11 +22,11 @@ func TestANewAgentSkipsAHandleWithUnreadMail(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			e := realAmqEnv(t, &fakeTerm{state: "working"})
 			ctx := context.Background()
-			if err := amq.EnsureMailbox(ctx, e.AmqBin, e.Paths.Root(), "agy-01"); err != nil {
+			if err := amq.EnsureMailbox(ctx, binOf(e), e.Paths.Root(), "agy-01"); err != nil {
 				t.Fatal(err)
 			}
 			if c.unread {
-				if err := amq.Send(ctx, e.AmqBin, e.Paths.Root(), "alice", "agy-01", "hi", "for the agent that left"); err != nil {
+				if err := amq.Send(ctx, binOf(e), e.Paths.Root(), "alice", "agy-01", "hi", "for the agent that left"); err != nil {
 					t.Fatal(err)
 				}
 			}

@@ -92,7 +92,7 @@ func (e Env) ensureWaker(ctx context.Context, rec store.Record) error {
 	if err := e.prepareInjector(); err != nil {
 		return err
 	}
-	_, _, err := amq.Ensure(ctx, e.AmqBin, e.waker(rec), e.Paths.Logs())
+	_, _, err := e.AMQ.Ensure(ctx, e.waker(rec), e.Paths.Logs())
 	return err
 }
 
@@ -132,7 +132,7 @@ func (e Env) park(ctx context.Context, rec store.Record, reason string) error {
 			return fmt.Errorf("restore the injector wrapper to retire %s's waker: %w", rec.Handle, err)
 		}
 	}
-	if _, err := amq.RetireHandle(ctx, e.AmqBin, e.Paths.Root(), string(rec.Handle)); err != nil {
+	if _, err := e.AMQ.RetireHandle(ctx, e.Paths.Root(), string(rec.Handle)); err != nil {
 		return err
 	}
 	now := e.Now().UTC()

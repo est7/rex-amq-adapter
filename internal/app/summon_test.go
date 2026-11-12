@@ -34,7 +34,7 @@ func add(t *testing.T, e Env, r store.Record) {
 	if err := e.Store.PutRecord(r); err != nil {
 		t.Fatal(err)
 	}
-	if err := amq.EnsureMailbox(context.Background(), e.AmqBin, e.Paths.Root(), string(r.Handle)); err != nil {
+	if err := amq.EnsureMailbox(context.Background(), binOf(e), e.Paths.Root(), string(r.Handle)); err != nil {
 		t.Fatal(err)
 	}
 	if r.Live() {
@@ -83,7 +83,7 @@ func adoptLaunch(t *testing.T, e Env, term *fakeTerm, l launch, kind core.Kind, 
 		t.Fatal(err)
 	}
 	h, blk := a.Record.Handle, l.Block
-	t.Cleanup(func() { _, _ = amq.RetireFor(context.Background(), e.AmqBin, e.Paths.Root(), string(h), blk) })
+	t.Cleanup(func() { _, _ = amq.RetireFor(context.Background(), binOf(e), e.Paths.Root(), string(h), blk) })
 	return a.Record
 }
 

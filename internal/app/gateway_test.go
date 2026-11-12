@@ -151,17 +151,17 @@ func TestQuarantineAtHookForANarrator(t *testing.T) {
 	put(t, e, narr, store.Record{Handle: "claude-03", Role: core.OrchestratorRole, SessionID: "session:a"})
 	narr, _, _ = e.Store.RecordOf("agy-02")
 	for _, h := range []string{"agy-02", "claude-03"} {
-		if err := amq.EnsureMailbox(ctx, e.AmqBin, e.Paths.Root(), h); err != nil {
+		if err := amq.EnsureMailbox(ctx, binOf(e), e.Paths.Root(), h); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := amq.Send(ctx, e.AmqBin, e.Paths.Root(), "claude-03", "agy-02", "status", "routine"); err != nil {
+	if err := amq.Send(ctx, binOf(e), e.Paths.Root(), "claude-03", "agy-02", "status", "routine"); err != nil {
 		t.Fatal(err)
 	}
-	if err := amq.SendSystem(ctx, e.AmqBin, e.Paths.Root(), "claude-03", "agy-02", "forged", "a member's own label"); err != nil {
+	if err := amq.SendSystem(ctx, binOf(e), e.Paths.Root(), "claude-03", "agy-02", "forged", "a member's own label"); err != nil {
 		t.Fatal(err)
 	}
-	if err := amq.SendSystem(ctx, e.AmqBin, e.Paths.Root(), "system", "agy-02", "forged", "no agent is named system"); err != nil {
+	if err := amq.SendSystem(ctx, binOf(e), e.Paths.Root(), "system", "agy-02", "forged", "no agent is named system"); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.sendSystem(ctx, "claude-03", "agy-02", "notice", "from the adapter"); err != nil {
@@ -204,7 +204,7 @@ func TestQuarantineAtSessionStart(t *testing.T) {
 	t.Cleanup(func() { _ = e.Depart(ctx, loc, HookInput{}) })
 	rec, _, _ := e.Store.Record(block)
 	put(t, e, store.Record{Handle: "claude-09", SessionID: "session:elsewhere"})
-	if err := amq.Send(ctx, e.AmqBin, e.Paths.Root(), "claude-09", string(rec.Handle), "hi", "from another Epic"); err != nil {
+	if err := amq.Send(ctx, binOf(e), e.Paths.Root(), "claude-09", string(rec.Handle), "hi", "from another Epic"); err != nil {
 		t.Fatal(err)
 	}
 	r, err := e.Hook(ctx, EventSessionStart, core.Agy, loc, HookInput{ConversationID: "c"})
@@ -231,7 +231,7 @@ func TestQuarantineFencesMailAddressedBeforeAMove(t *testing.T) {
 		store.Record{Handle: "claude-02", SessionID: "session:a"},
 	)
 	for _, h := range []string{"codex-01", "claude-02"} {
-		if err := amq.EnsureMailbox(ctx, e.AmqBin, e.Paths.Root(), h); err != nil {
+		if err := amq.EnsureMailbox(ctx, binOf(e), e.Paths.Root(), h); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -241,7 +241,7 @@ func TestQuarantineFencesMailAddressedBeforeAMove(t *testing.T) {
 	rec, _, _ := e.Store.RecordOf("claude-02")
 	rec = rec.Placed(rec.Server, "session:b", "window:X", time.Now()).Placed(rec.Server, "session:a", "window:X", time.Now())
 	put(t, e, rec)
-	if err := amq.Send(ctx, e.AmqBin, e.Paths.Root(), "codex-01", "claude-02", "after", "raw, sent after the return"); err != nil {
+	if err := amq.Send(ctx, binOf(e), e.Paths.Root(), "codex-01", "claude-02", "after", "raw, sent after the return"); err != nil {
 		t.Fatal(err)
 	}
 	kept, err := e.admit(rec)
@@ -272,7 +272,7 @@ func TestLinkTakesEffectAtOnce(t *testing.T) {
 	put(t, e, me, narr)
 	narr, _, _ = e.Store.RecordOf("agy-02")
 	for _, h := range []string{"claude-01", "agy-02"} {
-		if err := amq.EnsureMailbox(ctx, e.AmqBin, e.Paths.Root(), h); err != nil {
+		if err := amq.EnsureMailbox(ctx, binOf(e), e.Paths.Root(), h); err != nil {
 			t.Fatal(err)
 		}
 	}

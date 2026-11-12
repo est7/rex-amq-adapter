@@ -77,7 +77,7 @@ func (m managed) run(ctx context.Context, verb string, args ...any) (int, error)
 			argv = append(argv, a...)
 		}
 	}
-	return amq.Run(ctx, m.e.AmqBin, m.stdin, m.stdout, m.stderr, argv...)
+	return m.e.AMQ.Run(ctx, m.stdin, m.stdout, m.stderr, argv...)
 }
 
 func (m managed) post(ctx context.Context, verb string, args []string) (int, error) {
@@ -274,7 +274,7 @@ func (m managed) consume(ctx context.Context, ids []string, limit int, withBody 
 			continue
 		}
 		var out, errb bytes.Buffer
-		code, err := amq.Run(ctx, m.e.AmqBin, nil, &out, &errb, "read", "--root", m.root, "--me", m.me(), "--id", id, "--json")
+		code, err := m.e.AMQ.Run(ctx, nil, &out, &errb, "read", "--root", m.root, "--me", m.me(), "--id", id, "--json")
 		if err != nil {
 			return drained, 1, err
 		}
@@ -360,7 +360,7 @@ func (m managed) trace(ctx context.Context, args []string) (int, error) {
 		return 1, err
 	}
 	var out, errb bytes.Buffer
-	code, err := amq.Run(ctx, m.e.AmqBin, nil, &out, &errb, append([]string{"trace", id, "--root", m.root, "--json"}, mailFlagArgs(fs, "follow", "from")...)...)
+	code, err := m.e.AMQ.Run(ctx, nil, &out, &errb, append([]string{"trace", id, "--root", m.root, "--json"}, mailFlagArgs(fs, "follow", "from")...)...)
 	if err != nil || code != 0 {
 		_, _ = m.stderr.Write(errb.Bytes())
 		return code, err
@@ -498,7 +498,7 @@ func (m managed) dlq(ctx context.Context, args []string) (int, error) {
 		}
 	}
 	child := append([]string{"dlq", sub, "--root", m.root, "--me", m.me()}, mailFlagArgs(fs, "id", "new", "cur", "all", "force", "older-than", "dry-run", "yes", "json", "strict")...)
-	return amq.Run(ctx, m.e.AmqBin, m.stdin, m.stdout, m.stderr, child...)
+	return m.e.AMQ.Run(ctx, m.stdin, m.stdout, m.stderr, child...)
 }
 
 // list lists the caller's inbox as JSON, without the messages the gateway
@@ -530,7 +530,7 @@ func (m managed) list(ctx context.Context, args []string) (int, error) {
 		return 1, err
 	}
 	var out, errb bytes.Buffer
-	code, err := amq.Run(ctx, m.e.AmqBin, nil, &out, &errb, append([]string{"list", "--root", m.root, "--me", m.me(), "--json"}, forwarded...)...)
+	code, err := m.e.AMQ.Run(ctx, nil, &out, &errb, append([]string{"list", "--root", m.root, "--me", m.me(), "--json"}, forwarded...)...)
 	if err != nil || code != 0 {
 		_, _ = m.stderr.Write(errb.Bytes())
 		return code, err

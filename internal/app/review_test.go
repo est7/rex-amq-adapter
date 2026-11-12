@@ -43,7 +43,7 @@ func TestManagedMailDrainTakesOnlyAdmittedMail(t *testing.T) {
 		t.Fatalf("admit %v %v", kept, err)
 	}
 	// Arrives between the gate and the consumption.
-	if err := amq.Send(ctx, e.AmqBin, e.Paths.Root(), "claude-09", "claude-02", "late", "cross-Epic, after the gate"); err != nil {
+	if err := amq.Send(ctx, binOf(e), e.Paths.Root(), "claude-09", "claude-02", "late", "cross-Epic, after the gate"); err != nil {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
@@ -63,7 +63,7 @@ func TestManagedMailDrainTakesOnlyAdmittedMail(t *testing.T) {
 	// Through the command: mail arriving between its gate and its reads
 	// stays unread.
 	afterAdmit = func() {
-		if err := amq.Send(ctx, e.AmqBin, e.Paths.Root(), "claude-09", "claude-02", "later", "cross-Epic, inside the drain"); err != nil {
+		if err := amq.Send(ctx, binOf(e), e.Paths.Root(), "claude-09", "claude-02", "later", "cross-Epic, inside the drain"); err != nil {
 			t.Error(err)
 		}
 	}
@@ -157,7 +157,7 @@ func TestManagedMailConcurrentDrainsReportEachMessageOnce(t *testing.T) {
 func TestQuarantineReadsLongHeadersAndFailsClosed(t *testing.T) {
 	e, ctx := managedWorld(t)
 	pad, _ := json.Marshal(map[string]string{"pad": strings.Repeat("x", 70<<10)})
-	if _, _, err := amq.Post(ctx, e.AmqBin, e.Paths.Root(), "send", "--me", "claude-09", "--to", "claude-02", "--subject", "big", "--body", "b", "--context", string(pad)); err != nil {
+	if _, _, err := amq.Post(ctx, binOf(e), e.Paths.Root(), "send", "--me", "claude-09", "--to", "claude-02", "--subject", "big", "--body", "b", "--context", string(pad)); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(amq.Inbox(e.Paths.Root(), "claude-02"), "corrupt.md"), []byte("---json\n{\"schema\":1,\"id\"\n---\nbody\n"), 0o600); err != nil {
@@ -229,12 +229,12 @@ exit 1
 	if err := os.WriteFile(fake, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	real := e.AmqBin
-	e.AmqBin = fake
+	real := binOf(e)
+	e.AMQ = amq.CLI{Bin: fake}
 	if err := e.mailAs(ctx, "codex-01", "claude-02", "todo", "s", "b"); err == nil {
 		t.Fatal("the fake amq did not fail")
 	}
-	e.AmqBin = real
+	e.AMQ = amq.CLI{Bin: real}
 	hdr, err := amq.ReadHeader(e.Paths.Root(), "claude-02", amq.BoxUnread, "fault-1")
 	if err != nil {
 		t.Fatal(err)
@@ -257,7 +257,7 @@ exit 1
 func TestManagedMailFencesSentMailAfterAMove(t *testing.T) {
 	e, ctx := managedWorld(t)
 	before := sendJSON(t, e, ctx, "claude-02", "--to", "codex-01", "--subject", "s", "--body", "sent in Epic a", "--thread", "t/a")
-	raw, _, err := amq.Post(ctx, e.AmqBin, e.Paths.Root(), "send", "--me", "claude-02", "--to", "codex-01", "--subject", "raw", "--body", "raw in Epic a", "--thread", "t/a")
+	raw, _, err := amq.Post(ctx, binOf(e), e.Paths.Root(), "send", "--me", "claude-02", "--to", "codex-01", "--subject", "raw", "--body", "raw in Epic a", "--thread", "t/a")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +274,7 @@ func TestManagedMailFencesSentMailAfterAMove(t *testing.T) {
 		t.Fatalf("thread after the move: %d %v", code, err)
 	}
 	put(t, e, store.Record{Handle: "pi-04", SessionID: "session:b"})
-	if err := amq.EnsureMailbox(ctx, e.AmqBin, e.Paths.Root(), "pi-04"); err != nil {
+	if err := amq.EnsureMailbox(ctx, binOf(e), e.Paths.Root(), "pi-04"); err != nil {
 		t.Fatal(err)
 	}
 	after := sendJSON(t, e, ctx, "claude-02", "--to", "pi-04", "--subject", "s", "--body", "sent in Epic b", "--thread", "t/b")
@@ -292,14 +292,14 @@ func TestManagedMailTraceShowsOnlyScopedEvidence(t *testing.T) {
 	put(t, e, store.Record{Handle: "pi-03", SessionID: "session:a"})
 	// The fixture's codex mailbox is partial; amq trace scans every one.
 	for _, h := range []string{"pi-03", "codex"} {
-		if err := amq.EnsureMailbox(ctx, e.AmqBin, e.Paths.Root(), h); err != nil {
+		if err := amq.EnsureMailbox(ctx, binOf(e), e.Paths.Root(), h); err != nil {
 			t.Fatal(err)
 		}
 	}
 	q := sendJSON(t, e, ctx, "codex-01", "--to", "claude-02", "--subject", "q", "--body", "?", "--kind", "question")
 	mine := sendJSON(t, e, ctx, "claude-02", "--to", "codex-01", "--subject", "r1", "--body", "to you", "--refs", q)
 	peer := sendJSON(t, e, ctx, "claude-02", "--to", "pi-03", "--subject", "r2", "--body", "to a peer", "--refs", q)
-	other, _, err := amq.Post(ctx, e.AmqBin, e.Paths.Root(), "send", "--me", "claude-09", "--to", "claude-02", "--subject", "r3", "--body", "from Epic b", "--refs", q)
+	other, _, err := amq.Post(ctx, binOf(e), e.Paths.Root(), "send", "--me", "claude-09", "--to", "claude-02", "--subject", "r3", "--body", "from Epic b", "--refs", q)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -346,7 +346,7 @@ func TestManagedMailDrainSkipsWhatARawDrainTook(t *testing.T) {
 	e, ctx := managedWorld(t)
 	id := sendJSON(t, e, ctx, "codex-01", "--to", "claude-02", "--subject", "s", "--body", "b")
 	afterAdmit = func() {
-		if _, err := amq.Run(ctx, e.AmqBin, nil, &bytes.Buffer{}, &bytes.Buffer{}, "drain", "--root", e.Paths.Root(), "--me", "claude-02"); err != nil {
+		if _, err := amq.Run(ctx, binOf(e), nil, &bytes.Buffer{}, &bytes.Buffer{}, "drain", "--root", e.Paths.Root(), "--me", "claude-02"); err != nil {
 			t.Error(err)
 		}
 	}
@@ -404,7 +404,7 @@ body
 // trace withholds that text along with the evidence.
 func TestManagedMailTraceWithholdsDiagnosticsAboutOtherMail(t *testing.T) {
 	e, ctx := managedWorld(t)
-	if err := amq.EnsureMailbox(ctx, e.AmqBin, e.Paths.Root(), "codex"); err != nil {
+	if err := amq.EnsureMailbox(ctx, binOf(e), e.Paths.Root(), "codex"); err != nil {
 		t.Fatal(err)
 	}
 	q := sendJSON(t, e, ctx, "codex-01", "--to", "claude-02", "--subject", "q", "--body", "?")
@@ -412,7 +412,7 @@ func TestManagedMailTraceWithholdsDiagnosticsAboutOtherMail(t *testing.T) {
 		t.Fatal(err)
 	}
 	var raw bytes.Buffer
-	if _, err := amq.Run(ctx, e.AmqBin, nil, &raw, &raw, "trace", q, "--root", e.Paths.Root(), "--json"); err != nil || !strings.Contains(raw.String(), "other-epic-secret-id") {
+	if _, err := amq.Run(ctx, binOf(e), nil, &raw, &raw, "trace", q, "--root", e.Paths.Root(), "--json"); err != nil || !strings.Contains(raw.String(), "other-epic-secret-id") {
 		t.Fatalf("the fault did not take: amq trace does not name the file: %v %s", err, raw.String())
 	}
 	for _, args := range [][]string{{q, "--json"}, {q}, {q, "--follow", "--json"}} {

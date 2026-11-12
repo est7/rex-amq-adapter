@@ -203,7 +203,7 @@ func claude04(t *testing.T, e Env) store.Record {
 	if err := e.Store.PutRecord(rec); err != nil {
 		t.Fatal(err)
 	}
-	if err := amq.EnsureMailbox(context.Background(), e.AmqBin, e.Paths.Root(), "claude-04"); err != nil {
+	if err := amq.EnsureMailbox(context.Background(), binOf(e), e.Paths.Root(), "claude-04"); err != nil {
 		t.Fatal(err)
 	}
 	return rec
@@ -288,7 +288,7 @@ func TestCodexStopReportsTaskCompleteErrorWithoutBlocking(t *testing.T) {
 	)
 	// Put unread mail in codex's inbox: an errored Stop must still return Reply{}
 	// rather than blocking to announce mail.
-	if err := amq.Send(context.Background(), e.AmqBin, e.Paths.Root(), "orch-01", "codex", "ping", "unread"); err != nil {
+	if err := amq.Send(context.Background(), binOf(e), e.Paths.Root(), "orch-01", "codex", "ping", "unread"); err != nil {
 		t.Fatal(err)
 	}
 	rawPath := `"` + rollout + `"`
@@ -324,7 +324,7 @@ func TestCodexStopIgnoresAnErrorTheTurnRecoveredFrom(t *testing.T) {
 		`{"timestamp":"2026-11-10T01:59:30.000Z","ordinal":6,"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"retried, all good"}]}}`,
 		`{"timestamp":"2026-11-10T01:59:40.000Z","ordinal":7,"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-ok"}}`,
 	)
-	if err := amq.Send(context.Background(), e.AmqBin, e.Paths.Root(), "orch-01", "codex", "ping", "unread"); err != nil {
+	if err := amq.Send(context.Background(), binOf(e), e.Paths.Root(), "orch-01", "codex", "ping", "unread"); err != nil {
 		t.Fatal(err)
 	}
 	r, err := e.Hook(context.Background(), EventStop, core.Codex, Location{Server: "unix:///fake.sock", Block: block}, HookInput{
@@ -356,7 +356,7 @@ func TestAgyStopClassifiesTerminationReasons(t *testing.T) {
 	if err := e.Store.PutRecord(agyRec); err != nil {
 		t.Fatal(err)
 	}
-	if err := amq.EnsureMailbox(context.Background(), e.AmqBin, e.Paths.Root(), "agy-09"); err != nil {
+	if err := amq.EnsureMailbox(context.Background(), binOf(e), e.Paths.Root(), "agy-09"); err != nil {
 		t.Fatal(err)
 	}
 	loc := Location{Server: "unix:///fake.sock", Block: "block:agy"}
@@ -407,7 +407,7 @@ func TestAgyStopClassifiesTerminationReasons(t *testing.T) {
 	}
 
 	// 4. NO_TOOL_CALL -> normal stop (clears TurnErroredAt and announces unread mail)
-	if err := amq.Send(context.Background(), e.AmqBin, e.Paths.Root(), "orch-01", "agy-09", "task", "hello"); err != nil {
+	if err := amq.Send(context.Background(), binOf(e), e.Paths.Root(), "orch-01", "agy-09", "task", "hello"); err != nil {
 		t.Fatal(err)
 	}
 	r, err := e.Hook(context.Background(), EventStop, core.Agy, loc, HookInput{
@@ -448,7 +448,7 @@ func TestPiSettleClassifiesOutcomes(t *testing.T) {
 	if err := e.Store.PutRecord(piRec); err != nil {
 		t.Fatal(err)
 	}
-	if err := amq.EnsureMailbox(context.Background(), e.AmqBin, e.Paths.Root(), "pi-06"); err != nil {
+	if err := amq.EnsureMailbox(context.Background(), binOf(e), e.Paths.Root(), "pi-06"); err != nil {
 		t.Fatal(err)
 	}
 	loc := Location{Server: "unix:///fake.sock", Block: "block:pi"}
@@ -480,7 +480,7 @@ func TestPiSettleClassifiesOutcomes(t *testing.T) {
 	}
 
 	// 3. Outcome: "completed" -> normal announce path (clears TurnErroredAt)
-	if err := amq.Send(context.Background(), e.AmqBin, e.Paths.Root(), "orch-01", "pi-06", "task", "next"); err != nil {
+	if err := amq.Send(context.Background(), binOf(e), e.Paths.Root(), "orch-01", "pi-06", "task", "next"); err != nil {
 		t.Fatal(err)
 	}
 	r, err := e.Hook(context.Background(), EventSettle, core.Pi, loc, HookInput{
@@ -499,7 +499,7 @@ func TestPiSettleClassifiesOutcomes(t *testing.T) {
 	}
 
 	// 4. Unknown future outcome -> treated as normal path (no error mail)
-	if err := amq.Send(context.Background(), e.AmqBin, e.Paths.Root(), "orch-01", "pi-06", "task", "after-unknown"); err != nil {
+	if err := amq.Send(context.Background(), binOf(e), e.Paths.Root(), "orch-01", "pi-06", "task", "after-unknown"); err != nil {
 		t.Fatal(err)
 	}
 	r, err = e.Hook(context.Background(), EventSettle, core.Pi, loc, HookInput{
@@ -771,7 +771,7 @@ func TestTurnErrorRoutingThroughTheHook(t *testing.T) {
 	if err := e2.Store.PutRecord(lead); err != nil {
 		t.Fatal(err)
 	}
-	if err := amq.EnsureMailbox(context.Background(), e2.AmqBin, e2.Paths.Root(), "agy-07"); err != nil {
+	if err := amq.EnsureMailbox(context.Background(), binOf(e2), e2.Paths.Root(), "agy-07"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := e2.Hook(context.Background(), EventStopFailure, core.Claude, loc, failure); err != nil {

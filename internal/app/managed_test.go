@@ -28,7 +28,7 @@ func managedWorld(t *testing.T) (Env, context.Context) {
 		store.Record{Handle: "claude-09", SessionID: "session:b"},
 	)
 	for _, h := range []string{"codex-01", "claude-02", "claude-09"} {
-		if err := amq.EnsureMailbox(ctx, e.AmqBin, e.Paths.Root(), h); err != nil {
+		if err := amq.EnsureMailbox(ctx, binOf(e), e.Paths.Root(), h); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -109,7 +109,7 @@ func TestManagedMailReadDrainAndThread(t *testing.T) {
 	}
 	var first amq.Sent
 	_ = json.Unmarshal([]byte(out), &first)
-	if err := amq.Send(ctx, e.AmqBin, e.Paths.Root(), "claude-09", "claude-02", "other epic", "raw"); err != nil {
+	if err := amq.Send(ctx, binOf(e), e.Paths.Root(), "claude-09", "claude-02", "other epic", "raw"); err != nil {
 		t.Fatal(err)
 	}
 	out, code, err := run(t, e, ctx, "claude-02", "drain", "--include-body", "--json")
@@ -174,7 +174,7 @@ func TestManagedMailReply(t *testing.T) {
 		t.Fatalf("provenance %+v %v", p, ok)
 	}
 	// A message from another Epic cannot be replied to.
-	if err := amq.Send(ctx, e.AmqBin, e.Paths.Root(), "claude-09", "claude-02", "x", "raw"); err != nil {
+	if err := amq.Send(ctx, binOf(e), e.Paths.Root(), "claude-09", "claude-02", "x", "raw"); err != nil {
 		t.Fatal(err)
 	}
 	unread, _ := amq.Unread(e.Paths.Root(), "claude-02")
@@ -200,7 +200,7 @@ func TestManagedMailNarratorControlReachesOnlyTheOrchestrator(t *testing.T) {
 		store.Record{Handle: "claude-03", Role: core.OrchestratorRole, SessionID: "session:a"},
 	)
 	for _, h := range []string{"claude-05", "claude-03"} {
-		if err := amq.EnsureMailbox(ctx, e.AmqBin, e.Paths.Root(), h); err != nil {
+		if err := amq.EnsureMailbox(ctx, binOf(e), e.Paths.Root(), h); err != nil {
 			t.Fatal(err)
 		}
 	}

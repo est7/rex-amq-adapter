@@ -154,7 +154,7 @@ func (e Env) alignHolds(ctx context.Context, rec store.Record, was string) {
 	if n, l, err := amq.ReadHolds(e.Paths.Root(), h); err == nil && n == normal && l == low {
 		return
 	}
-	if err := amq.ConfigureHolds(ctx, e.AmqBin, e.Paths.Root(), h, normal, low); err != nil {
+	if err := e.AMQ.ConfigureHolds(ctx, e.Paths.Root(), h, normal, low); err != nil {
 		fmt.Fprintf(Diagnostics, "set the doorbell hold of %s: %v\n", h, err)
 	}
 }

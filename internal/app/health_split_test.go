@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"github.com/est7/rex-amq-adapter/internal/amq"
 	"os"
 	"path/filepath"
 	"strings"
@@ -66,8 +67,8 @@ func TestHungToolCallsAreToldOncePerCallID(t *testing.T) {
 
 	writeRollout(t, e.TranscriptHome, codexCallA, codexOutA, codexCallB, codexOutB, codexCallC)
 	failing := e
-	failing.AmqBin = filepath.Join(t.TempDir(), "amq-fails")
-	if err := os.WriteFile(failing.AmqBin, []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
+	failing.AMQ = amq.CLI{Bin: filepath.Join(t.TempDir(), "amq-fails")}
+	if err := os.WriteFile(binOf(failing), []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	failing.watchdog(context.Background(), orch, s)
@@ -138,11 +139,11 @@ func TestASlowWatchdogPollDoesNotHoldUpTheStopHook(t *testing.T) {
 				wd.Rex = &gatedTerm{fakeTerm: term, block: "block:c", entered: entered, release: release}
 			case "amq send":
 				dir := t.TempDir()
-				wd.AmqBin = filepath.Join(dir, "amq-slow")
+				wd.AMQ = amq.CLI{Bin: filepath.Join(dir, "amq-slow")}
 				script := "#!/bin/sh\ntouch '" + filepath.Join(dir, "entered") + "'\n" +
 					"i=0; while [ ! -f '" + filepath.Join(dir, "release") + "' ] && [ $i -lt 60 ]; do sleep 0.05; i=$((i+1)); done\n" +
-					"exec '" + e.AmqBin + "' \"$@\"\n"
-				if err := os.WriteFile(wd.AmqBin, []byte(script), 0o700); err != nil {
+					"exec '" + binOf(e) + "' \"$@\"\n"
+				if err := os.WriteFile(binOf(wd), []byte(script), 0o700); err != nil {
 					t.Fatal(err)
 				}
 				go func() {
