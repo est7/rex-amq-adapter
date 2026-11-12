@@ -352,3 +352,63 @@ func parseStatusReason(out []byte) (status, reason string) {
 	_ = json.Unmarshal(out, &doc)
 	return doc.Status, doc.Reason
 }
+
+// A waker can hold the first doorbell for routine mail (amq wake --hold-normal,
+// --hold-low): the deadline of a waiting message is its inbox file's mtime
+// plus its priority's hold, urgent mail is never held, and a cohort rings at
+// its earliest deadline. The settings live in the agent's .wake.settings,
+// where the adapter's hooks read them too, so every route to the agent
+// batches alike.
+
+// ConfigureHolds sets handle's doorbell holds through amq (amq wake config),
+// which validates them and tells a running waker; zero holds unset them.
+func ConfigureHolds(ctx context.Context, amqBin, root, handle string, normal, low time.Duration) error {
+	args := []string{"wake", "config", "--root", root, "--me", handle}
+	if normal > 0 || low > 0 {
+		args = append(args, "--hold-normal", normal.String(), "--hold-low", low.String())
+	} else {
+		args = append(args, "--unset", "hold_normal", "--unset", "hold_low")
+	}
+	if _, err := runAmq(ctx, amqBin, args...); err != nil {
+		return fmt.Errorf("amq wake config for %s: %w", handle, err)
+	}
+	return nil
+}
+
+// ReadHolds reads handle's doorbell holds from its .wake.settings; both are
+// zero when it sets none.
+func ReadHolds(root, handle string) (normal, low time.Duration, err error) {
+	b, err := os.ReadFile(filepath.Join(root, "agents", handle, ".wake.settings"))
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, 0, nil
+	}
+	if err != nil {
+		return 0, 0, err
+	}
+	var doc struct {
+		Schema   int `json:"schema"`
+		Settings struct {
+			HoldNormal string `json:"hold_normal"`
+			HoldLow    string `json:"hold_low"`
+		} `json:"settings"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
+		return 0, 0, fmt.Errorf("decode the wake settings of %s: %w", handle, err)
+	}
+	if doc.Schema != 1 {
+		return 0, 0, fmt.Errorf("wake settings of %s: schema %d, want 1", handle, doc.Schema)
+	}
+	parse := func(s string) (time.Duration, error) {
+		if s == "" {
+			return 0, nil
+		}
+		return time.ParseDuration(s)
+	}
+	if normal, err = parse(doc.Settings.HoldNormal); err != nil {
+		return 0, 0, err
+	}
+	if low, err = parse(doc.Settings.HoldLow); err != nil {
+		return 0, 0, err
+	}
+	return normal, low, nil
+}

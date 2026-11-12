@@ -308,3 +308,62 @@ func TestSessionWatcherTellsTheNarrator(t *testing.T) {
 	noReceipts(t, e, "codex-01")
 	noReceipts(t, e, "codex-03")
 }
+
+// selfNotice puts a system notice of priority into h's inbox, as the
+// session watcher does.
+func selfNotice(t *testing.T, e Env, h core.Handle, priority string) string {
+	t.Helper()
+	sent, _, err := e.post(context.Background(), Outgoing{
+		Op: core.Operation{Kind: core.OpSend, System: true}, From: h, To: []core.Handle{h},
+		Args: []string{"--allow-self", "--kind", "status", "--priority", priority, "--labels", amq.SystemLabel, "--subject", "s", "--body", "b"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sent.ID
+}
+
+// A narrator gets doorbell holds in its .wake.settings when it is adopted,
+// and the adapter's hooks apply them as its waker would: Pi's mail watcher
+// and a busy hook stay quiet about routine mail until its hold ends, urgent
+// mail is told at once, and an agent that stops being a narrator loses them.
+func TestNarratorHoldBatchesHooksAndPi(t *testing.T) {
+	term := &fakeTerm{state: "idle", windows: map[string]string{"block:n": "window:2"}}
+	e := realAmqEnv(t, term)
+	// Real time, so a message's file is never dated after now (amq does not
+	// hold future-dated mail); skip moves it on.
+	var skip time.Duration
+	e.Now = func() time.Time { return time.Now().Add(skip) }
+	narr, _ := startPiAs(t, e, term, "block:n", "sn", "narrator")
+	normal, low, err := amq.ReadHolds(e.Paths.Root(), string(narr))
+	if err != nil || normal != narratorHoldNormal || low != narratorHoldLow {
+		t.Fatalf("holds %v %v %v", normal, low, err)
+	}
+	selfNotice(t, e, narr, core.PriorityNormal)
+	for _, ev := range []string{EventMail, EventPostTool} {
+		if s := notice(t, e, ev, core.Pi, "block:n", "sn"); s != "" {
+			t.Fatalf("%s told of held routine mail: %q", ev, s)
+		}
+	}
+	skip = narratorHoldNormal + time.Second
+	if s := notice(t, e, EventMail, core.Pi, "block:n", "sn"); !strings.Contains(s, "1 unread message(s) for "+string(narr)) {
+		t.Fatalf("routine mail past its hold: %q", s)
+	}
+
+	// Newly held routine mail waits again; urgent mail takes it along at once.
+	selfNotice(t, e, narr, core.PriorityLow)
+	if s := notice(t, e, EventMail, core.Pi, "block:n", "sn"); s != "" {
+		t.Fatalf("held low mail was told: %q", s)
+	}
+	selfNotice(t, e, narr, core.PriorityUrgent)
+	if s := notice(t, e, EventMail, core.Pi, "block:n", "sn"); !strings.Contains(s, "3 unread message(s)") || !strings.Contains(s, "(2 new)") {
+		t.Fatalf("urgent mail did not skip the hold: %q", s)
+	}
+
+	rec := recordOf(t, e, narr)
+	rec.Role = "reviewer"
+	e.alignHolds(context.Background(), rec, core.NarratorRole)
+	if normal, low, err := amq.ReadHolds(e.Paths.Root(), string(narr)); err != nil || normal != 0 || low != 0 {
+		t.Fatalf("a former narrator keeps holds %v %v %v", normal, low, err)
+	}
+}

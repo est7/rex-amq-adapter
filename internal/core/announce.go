@@ -136,3 +136,35 @@ func TaskNotice(h Handle, role, titleCmd, task string) string {
 
 // EpicRule tells an agent that the Rex session label is not its to set.
 const EpicRule = "The Rex session label names the human's Epic (1 Rex session = 1 Epic): never run `rex session rename` for your own task."
+
+// Waiting is an unread message as a doorbell hold sees it: its priority and
+// when its inbox file was written.
+type Waiting struct {
+	Priority string
+	Arrived  time.Time
+}
+
+// HoldUntil applies amq's doorbell hold to the messages not yet announced
+// (amq wake --hold-normal/--hold-low): each is due at its arrival plus its
+// priority's hold (a missing priority is normal; urgent is due at once; one
+// dated in the future has no hold), and all of them are due at the earliest.
+// held is false when they are due by now.
+func HoldUntil(fresh []Waiting, holdNormal, holdLow time.Duration, now time.Time) (until time.Time, held bool) {
+	for i, w := range fresh {
+		hold := holdNormal
+		switch w.Priority {
+		case PriorityUrgent:
+			hold = 0
+		case PriorityLow:
+			hold = holdLow
+		}
+		due := w.Arrived.Add(hold)
+		if hold <= 0 || w.Arrived.After(now) {
+			due = now
+		}
+		if i == 0 || due.Before(until) {
+			until = due
+		}
+	}
+	return until, len(fresh) > 0 && now.Before(until)
+}

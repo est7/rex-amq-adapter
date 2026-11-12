@@ -84,6 +84,7 @@ func (e Env) Join(ctx context.Context, loc Location, crewName, role string) (Joi
 	if rec.Role == core.OrchestratorRole && was != core.OrchestratorRole {
 		e.tellMates(ctx, peerOf(rec), mates, "")
 	}
+	e.alignHolds(ctx, rec, was)
 	if err := e.ensureSessionWatcher(rec); err != nil {
 		fmt.Fprintf(Diagnostics, "%v\n", err)
 	}

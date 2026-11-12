@@ -3,6 +3,7 @@ package core
 import (
 	"slices"
 	"testing"
+	"time"
 )
 
 // A narrator and a personal agent are nobody's mates, never hear of a
@@ -76,5 +77,35 @@ func TestSessionWatcherPulse(t *testing.T) {
 	stuck.Attention = append(slices.Clone(b.Attention), "turn_error@3")
 	if c := ComparePulse(p, SessionPulse{Members: []PulseMember{a, stuck}}); c.Priority != PriorityUrgent || len(c.Lines) != 1 || c.Lines[0] != "codex-02: turn error" {
 		t.Fatalf("attention: %+v", c)
+	}
+}
+
+// The hook hold is amq's: arrival plus the priority's hold, urgent and
+// future-dated mail at once, and a cohort due at its earliest message.
+func TestNarratorHoldUntil(t *testing.T) {
+	now := time.Date(2026, 11, 12, 3, 0, 0, 0, time.UTC)
+	ago := func(d time.Duration) time.Time { return now.Add(-d) }
+	for _, c := range []struct {
+		name  string
+		fresh []Waiting
+		held  bool
+		until time.Time
+	}{
+		{"nothing waits", nil, false, time.Time{}},
+		{"normal inside its hold", []Waiting{{Priority: PriorityNormal, Arrived: ago(30 * time.Second)}}, true, now.Add(90 * time.Second)},
+		{"missing priority is normal", []Waiting{{Arrived: ago(30 * time.Second)}}, true, now.Add(90 * time.Second)},
+		{"normal past its hold", []Waiting{{Priority: PriorityNormal, Arrived: ago(3 * time.Minute)}}, false, now.Add(-time.Minute)},
+		{"low holds longer", []Waiting{{Priority: PriorityLow, Arrived: ago(3 * time.Minute)}}, true, now.Add(7 * time.Minute)},
+		{"urgent skips the hold", []Waiting{{Priority: PriorityLow, Arrived: ago(time.Second)}, {Priority: PriorityUrgent, Arrived: ago(time.Second)}}, false, now},
+		{"future-dated mail is not held", []Waiting{{Priority: PriorityNormal, Arrived: now.Add(time.Hour)}}, false, now},
+		{"the earliest deadline rules", []Waiting{{Priority: PriorityLow, Arrived: ago(time.Minute)}, {Priority: PriorityNormal, Arrived: ago(time.Minute)}}, true, now.Add(time.Minute)},
+	} {
+		until, held := HoldUntil(c.fresh, 2*time.Minute, 10*time.Minute, now)
+		if held != c.held || !until.Equal(c.until) {
+			t.Errorf("%s: held %v until %v, want %v until %v", c.name, held, until, c.held, c.until)
+		}
+	}
+	if _, held := HoldUntil([]Waiting{{Priority: PriorityNormal, Arrived: now}}, 0, 0, now); held {
+		t.Error("no hold configured holds nothing")
 	}
 }

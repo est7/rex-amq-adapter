@@ -220,6 +220,8 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	if err := e.Store.PutRecord(rec); err != nil {
 		return Adoption{}, err
 	}
+	// Before the waker starts, so it reads them from the start.
+	e.alignHolds(ctx, rec, own.Role)
 	var decision amq.WakeDecision
 	if kind.InProcess() {
 		// The agent's own extension delivers. A waker left from an earlier

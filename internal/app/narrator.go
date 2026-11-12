@@ -124,3 +124,31 @@ func (e Env) tellNarrator(ctx context.Context, key core.SessionKey, narr store.R
 	}
 	return e.Store.PutPulse(key.SessionID, store.PulseCursor{Pulse: now, Notice: sent.ID, At: at})
 }
+
+// A narrator's doorbell holds: routine mail (a status question, a routine
+// notice) rings it after at most these, batched; urgent mail at once.
+const (
+	narratorHoldNormal = 2 * time.Minute
+	narratorHoldLow    = 10 * time.Minute
+)
+
+// alignHolds gives a narrator its doorbell holds in .wake.settings, which its
+// waker and the adapter's hooks both apply, and takes them from an agent
+// that was one (was) and no longer is. A failure is reported, never fatal:
+// holds batch mail, they guard nothing.
+func (e Env) alignHolds(ctx context.Context, rec store.Record, was string) {
+	var normal, low time.Duration
+	switch {
+	case rec.Role == core.NarratorRole:
+		normal, low = narratorHoldNormal, narratorHoldLow
+	case was != core.NarratorRole:
+		return
+	}
+	h := string(rec.Handle)
+	if n, l, err := amq.ReadHolds(e.Paths.Root(), h); err == nil && n == normal && l == low {
+		return
+	}
+	if err := amq.ConfigureHolds(ctx, e.AmqBin, e.Paths.Root(), h, normal, low); err != nil {
+		fmt.Fprintf(Diagnostics, "set the doorbell hold of %s: %v\n", h, err)
+	}
+}
