@@ -28,7 +28,7 @@ var RequestKinds = map[string]bool{"question": true, "review_request": true, "to
 // none: review roles on another family than the usual implementer.
 func DefaultHarness(role string) Kind {
 	switch role {
-	case "reviewer", "editor", "qa", "explorer":
+	case "reviewer", "editor", "qa":
 		return Codex
 	}
 	return Claude
@@ -83,9 +83,4 @@ func LooksLikeHandle(s string) bool {
 		return false
 	}
 	return strings.Trim(s[i+1:], "0123456789") == ""
-}
-
-// SummonLine is what the summoner lists in its hand-back for each summon.
-func SummonLine(action string, target string, handle Handle, parent Handle, depth int, why string) string {
-	return fmt.Sprintf("summon: %s %s -> %s (parent %s, depth %d): %s", action, target, handle, parent, depth, why)
 }
