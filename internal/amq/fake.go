@@ -21,21 +21,49 @@ import (
 // keeps wakers in memory.
 //
 // It does not do what only amq can: it starts no waker process, so no
-// doorbell is injected; it computes no open obligations (ThreadOpen reports
-// none); it derives no defaults amq reports for a reply (kind answer, a
+// doorbell is injected; it computes no open obligations (ThreadOpen fails with
+// ErrNotEmulated unless a test sets OpenObligations); it derives no defaults amq reports for a reply (kind answer, a
 // priority from the kind); and it runs none of amq's own verbs (Run fails
 // with exit status 2).
 // A test that needs those runs against amq itself (CLI). The contract tests
 // in this package run the same scenarios against both, so the two cannot
 // drift apart unnoticed.
 type Fake struct {
-	// Fail, when set, is asked before every operation; a non-nil error fails
-	// the operation before it has any effect.
+	// Fail, when set, is asked at each step amq would run, named after amq's
+	// command ("init", "send", "reply", "wake check", "wake start",
+	// "wake repair", "wake retire", "wake config", "thread open", "thread");
+	// a non-nil error fails that step, as a failing amq command would.
 	Fail func(op string, args []string) error
+	// OpenObligations, when set, is what ThreadOpen reports: a test states
+	// the obligations of its world, because the fake cannot compute them.
+	OpenObligations *OpenObligations
 
+	st *fakeState
+}
+
+// fakeState is what a Fake and the copies WithFail makes share: one mailbox
+// root's wakers, as one amq install has.
+type fakeState struct {
 	mu     sync.Mutex
 	wakers map[string]*WakeState
 	seq    int
+}
+
+var fakeInit sync.Mutex
+
+func (f *Fake) state() *fakeState {
+	fakeInit.Lock()
+	defer fakeInit.Unlock()
+	if f.st == nil {
+		f.st = &fakeState{wakers: map[string]*WakeState{}}
+	}
+	return f.st
+}
+
+// WithFail is a Fake sharing f's wakers whose steps fail as fail says, the
+// way a wrapper script around one amq install fails some of its commands.
+func (f *Fake) WithFail(fail func(op string, args []string) error) *Fake {
+	return &Fake{Fail: fail, OpenObligations: f.OpenObligations, st: f.state()}
 }
 
 // ErrNotEmulated is what Fake returns for an operation only amq performs.
@@ -54,8 +82,9 @@ func (f *Fake) EnsureMailbox(ctx context.Context, root, handle string) error {
 	if err := f.fail("init", root, handle); err != nil {
 		return err
 	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	fs := f.state()
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
 	cfg := struct {
 		Agents     []string `json:"agents"`
 		CreatedUTC string   `json:"created_utc"`
@@ -94,8 +123,9 @@ func (f *Fake) Post(ctx context.Context, root, verb string, args ...string) (Sen
 	if err != nil {
 		return Sent{}, nil, err
 	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	fs := f.state()
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
 	h := Header{Schema: MailboxSchema, From: fl["me"], Subject: fl["subject"], Priority: fl["priority"], Kind: fl["kind"]}
 	var refs []string
 	switch verb {
@@ -148,8 +178,8 @@ func (f *Fake) Post(ctx context.Context, root, verb string, args ...string) (Sen
 		body = string(b)
 	}
 	now := time.Now().UTC()
-	f.seq++
-	h.ID = fmt.Sprintf("%s.%03dZ_pid%d_%08x", now.Format("2006-01-02T15-04-05"), now.Nanosecond()/1e6, os.Getpid(), f.seq)
+	fs.seq++
+	h.ID = fmt.Sprintf("%s.%03dZ_pid%d_%08x", now.Format("2006-01-02T15-04-05"), now.Nanosecond()/1e6, os.Getpid(), fs.seq)
 	h.Created = now
 	file := messageFile(h, refs, body)
 	for _, to := range h.To {
@@ -269,31 +299,42 @@ func wakerKey(root, handle string) string { return canonPath(root) + "\x00" + ha
 // with amq: keep a matching live one, repair a stale one with the same target,
 // replace anything else. No process is started.
 func (f *Fake) Ensure(ctx context.Context, w Waker, logDir string) (WakeState, WakeDecision, error) {
-	if err := f.fail("wake", w.Root, w.Handle); err != nil {
+	if err := f.fail("wake check", w.Root, w.Handle); err != nil {
 		return WakeState{}, 0, err
 	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
+	fs := f.state()
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
 	want := w.Target()
-	st := f.stateLocked(w.Root, w.Handle)
+	st := fs.waker(w.Root, w.Handle)
 	decision := DecideWake(st, want)
 	switch decision {
 	case DecisionKeep:
 		return st, decision, nil
 	case DecisionRepair:
-		f.wakers[wakerKey(w.Root, w.Handle)].Live, f.wakers[wakerKey(w.Root, w.Handle)].Status = true, "valid"
-	default:
-		f.seq++
-		if f.wakers == nil {
-			f.wakers = map[string]*WakeState{}
+		if err := f.fail("wake repair", w.Root, w.Handle); err != nil {
+			return WakeState{}, decision, err
 		}
-		f.wakers[wakerKey(w.Root, w.Handle)] = &WakeState{Status: "valid", Live: true, PID: 100000 + f.seq, Generation: fmt.Sprintf("fake-%d", f.seq), Target: want, HasTarget: true}
+		fs.wakers[wakerKey(w.Root, w.Handle)].Live, fs.wakers[wakerKey(w.Root, w.Handle)].Status = true, "valid"
+	default:
+		if err := f.fail("wake retire", w.Root, w.Handle); err != nil {
+			return WakeState{}, decision, err
+		}
+		delete(fs.wakers, wakerKey(w.Root, w.Handle))
+		if err := f.fail("wake start", w.Root, w.Handle); err != nil {
+			return WakeState{}, decision, err
+		}
+		if err := launchable(w.InjectVia); err != nil {
+			return WakeState{}, decision, fmt.Errorf("waker for %s not live: %w", w.Handle, err)
+		}
+		fs.seq++
+		fs.wakers[wakerKey(w.Root, w.Handle)] = &WakeState{Status: "valid", Live: true, PID: 100000 + fs.seq, Generation: fmt.Sprintf("fake-%d", fs.seq), Target: want, HasTarget: true}
 	}
-	return f.stateLocked(w.Root, w.Handle), decision, nil
+	return fs.waker(w.Root, w.Handle), decision, nil
 }
 
-func (f *Fake) stateLocked(root, handle string) WakeState {
-	if s, ok := f.wakers[wakerKey(root, handle)]; ok {
+func (fs *fakeState) waker(root, handle string) WakeState {
+	if s, ok := fs.wakers[wakerKey(root, handle)]; ok {
 		return *s
 	}
 	return WakeState{Status: "missing"}
@@ -301,17 +342,19 @@ func (f *Fake) stateLocked(root, handle string) WakeState {
 
 // Waker reports handle's waker as amq wake check would.
 func (f *Fake) Waker(root, handle string) WakeState {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.stateLocked(root, handle)
+	fs := f.state()
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	return fs.waker(root, handle)
 }
 
 // Kill makes handle's waker die, leaving its lock stale, as a killed amq wake
 // does.
 func (f *Fake) Kill(root, handle string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if s, ok := f.wakers[wakerKey(root, handle)]; ok {
+	fs := f.state()
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if s, ok := fs.wakers[wakerKey(root, handle)]; ok {
 		s.Live, s.Status, s.PID = false, "stale", 0
 	}
 }
@@ -325,25 +368,33 @@ func (f *Fake) RetireHandle(ctx context.Context, root, handle string) (bool, err
 }
 
 func (f *Fake) retire(root, handle string, ours func(WakeTarget) bool) (bool, error) {
-	if err := f.fail("wake retire", root, handle); err != nil {
+	if err := f.fail("wake check", root, handle); err != nil {
 		return false, err
 	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	st := f.stateLocked(root, handle)
+	fs := f.state()
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	st := fs.waker(root, handle)
 	if st.Status == "missing" || !ours(st.Target) {
 		return false, nil
 	}
-	delete(f.wakers, wakerKey(root, handle))
+	if err := f.fail("wake retire", root, handle); err != nil {
+		return false, err
+	}
+	delete(fs.wakers, wakerKey(root, handle))
 	return true, nil
 }
 
-// ThreadOpen reports no open obligations: computing them is amq's.
+// ThreadOpen reports the obligations a test set: computing them is amq's, so
+// without them it fails rather than invent an answer.
 func (f *Fake) ThreadOpen(ctx context.Context, root, me string, handles []string) (OpenObligations, error) {
 	if err := f.fail("thread open", root, me); err != nil {
 		return OpenObligations{}, err
 	}
-	return OpenObligations{}, nil
+	if f.OpenObligations == nil {
+		return OpenObligations{}, fmt.Errorf("amq thread open: %w", ErrNotEmulated)
+	}
+	return *f.OpenObligations, nil
 }
 
 // ThreadRead reads exactly ids of thread from the copies agents hold, failing
@@ -389,6 +440,28 @@ func (f *Fake) Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Write
 		verb = args[0]
 	}
 	return 2, fmt.Errorf("amq %s: %w", verb, ErrNotEmulated)
+}
+
+// launchable reports why amq would not run inject as a waker's injector: it
+// must be an executable regular file that neither it nor its directory lets
+// other users write (amq refuses --inject-via otherwise).
+func launchable(inject string) error {
+	st, err := os.Stat(inject)
+	if err != nil {
+		return err
+	}
+	if !st.Mode().IsRegular() || st.Mode().Perm()&0o111 == 0 {
+		return fmt.Errorf("%s is not an executable file", inject)
+	}
+	if st.Mode().Perm()&0o022 != 0 {
+		return fmt.Errorf("%s is writable by others", inject)
+	}
+	if dir, err := os.Stat(filepath.Dir(inject)); err != nil {
+		return err
+	} else if dir.Mode().Perm()&0o022 != 0 {
+		return fmt.Errorf("%s is under a directory others can write", inject)
+	}
+	return nil
 }
 
 func writeJSON(path string, v any) error {

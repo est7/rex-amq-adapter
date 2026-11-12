@@ -177,6 +177,7 @@ func TestSessionViewTwoTierRefresh(t *testing.T) {
 // agent's to read; a worker and an unlinked personal agent are refused.
 func TestSessionViewReadAccess(t *testing.T) {
 	e := viewWorld(t)
+	noOpenObligations(e) // access is the point here, not obligations
 	ctx := context.Background()
 	if _, err := e.ReadSessionView(ctx, Location{Block: "block:pi-05"}, ""); !errors.Is(err, ErrNoView) {
 		t.Fatalf("before any refresh: %v", err)

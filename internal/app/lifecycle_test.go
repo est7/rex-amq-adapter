@@ -294,6 +294,14 @@ func needsAmq(t *testing.T, e Env, why string) {
 	}
 }
 
+// noOpenObligations states, for amq.Fake, that the test's world has no open
+// obligations (the fake cannot compute them); amq itself computes them.
+func noOpenObligations(e Env) {
+	if f, ok := e.AMQ.(*amq.Fake); ok {
+		f.OpenObligations = &amq.OpenObligations{}
+	}
+}
+
 // realBin is the amq binary e runs, for a test that calls amq itself or wraps
 // it in a fault-injecting script; under the fake such a test is skipped and
 // runs with REX_AMQ_REAL=1.

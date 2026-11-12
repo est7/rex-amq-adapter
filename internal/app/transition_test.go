@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,11 +14,29 @@ import (
 	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
-// amqThat wraps the real amq in a script, so a test can fail one of its
-// commands: while the file fail exists, a command matching the shell pattern
-// condition exits 1.
+// amqThat makes one of amq's commands fail while the file fail exists. The
+// condition is a shell pattern over amq's argv: under amq itself a wrapper
+// script applies it; under amq.Fake it names the fake's step that runs the
+// same command, so the test's assertions run in both.
 func amqThat(t *testing.T, e *Env, fail, condition string) {
 	t.Helper()
+	if f, ok := e.AMQ.(*amq.Fake); ok {
+		step, known := map[string]string{
+			`*" send "*`:        "send",
+			`*" check "*`:       "wake check",
+			`*" wake --root "*`: "wake start",
+		}[condition]
+		if !known {
+			t.Fatalf("amqThat: no fake step for condition %s", condition)
+		}
+		e.AMQ = f.WithFail(func(op string, _ []string) error {
+			if _, err := os.Stat(fail); err == nil && op == step {
+				return fmt.Errorf("amq %s: injected failure", op)
+			}
+			return nil
+		})
+		return
+	}
 	script := filepath.Join(t.TempDir(), "amq.sh")
 	text := "#!/bin/sh\nif [ -e '" + fail + "' ]; then case \" $* \" in " + condition + ") exit 1 ;; esac; fi\nexec '" + realBin(t, *e) + "' \"$@\"\n"
 	if err := os.WriteFile(script, []byte(text), 0o700); err != nil {

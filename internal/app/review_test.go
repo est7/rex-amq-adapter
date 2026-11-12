@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -212,31 +213,12 @@ func TestQuarantineKeepsProvenanceOfASendThatTimedOut(t *testing.T) {
 // still vouch for the delivered copy.
 func TestQuarantineKeepsPendingProvenanceWhenDeliveryIsUnknown(t *testing.T) {
 	e, ctx := managedWorld(t)
-	fake := filepath.Join(t.TempDir(), "amq")
-	script := `#!/bin/sh
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --to) to=$2; shift ;;
-    --me) me=$2; shift ;;
-    --context) ctx=$2; shift ;;
-    --root) root=$2; shift ;;
-  esac
-  shift
-done
-mkdir -p "$root/agents/$to/inbox/new"
-printf -- '---json\n{"schema":1,"id":"fault-1","from":"%s","to":["%s"],"thread":"t","subject":"s","created":"2026-11-12T00:00:00Z","context":%s}\n---\nbody\n' "$me" "$to" "$ctx" > "$root/agents/$to/inbox/new/fault-1.md"
-echo "killed after delivery" >&2
-exit 1
-`
-	if err := os.WriteFile(fake, []byte(script), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	real := realBin(t, e)
-	e.AMQ = amq.CLI{Bin: fake}
+	orig := e.AMQ
+	e.AMQ = deliveredThenKilled{orig}
 	if err := e.mailAs(ctx, "codex-01", "claude-02", "todo", "s", "b"); err == nil {
-		t.Fatal("the fake amq did not fail")
+		t.Fatal("the send did not fail")
 	}
-	e.AMQ = amq.CLI{Bin: real}
+	e.AMQ = orig
 	hdr, err := amq.ReadHeader(e.Paths.Root(), "claude-02", amq.BoxUnread, "fault-1")
 	if err != nil {
 		t.Fatal(err)
@@ -436,4 +418,34 @@ func TestManagedMailTraceWithholdsDiagnosticsAboutOtherMail(t *testing.T) {
 			t.Fatalf("trace %v lost scoped evidence: %s", args, out)
 		}
 	}
+}
+
+// deliveredThenKilled is a Queue whose send is killed after it delivered the
+// message (fault-1) and before it wrote the outbox copy or reported the id.
+type deliveredThenKilled struct{ Queue }
+
+func (q deliveredThenKilled) Post(_ context.Context, root, verb string, args ...string) (amq.Sent, []byte, error) {
+	flag := map[string]string{}
+	for i := 0; i+1 < len(args); i++ {
+		if strings.HasPrefix(args[i], "--") {
+			flag[args[i]] = args[i+1]
+		}
+	}
+	to, me, ctxJSON := flag["--to"], flag["--me"], flag["--context"]
+	if ctxJSON == "" {
+		ctxJSON = "{}"
+	}
+	file := `---json
+{"schema":1,"id":"fault-1","from":"` + me + `","to":["` + to + `"],"thread":"t","subject":"s","created":"2026-11-12T00:00:00Z","context":` + ctxJSON + `}
+---
+body
+`
+	dir := filepath.Join(root, "agents", to, "inbox", "new")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return amq.Sent{}, nil, err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "fault-1.md"), []byte(file), 0o600); err != nil {
+		return amq.Sent{}, nil, err
+	}
+	return amq.Sent{}, []byte("killed after delivery"), fmt.Errorf("amq %s: killed after delivery", verb)
 }

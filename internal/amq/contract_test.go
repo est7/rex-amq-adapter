@@ -2,6 +2,7 @@ package amq
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -174,5 +175,78 @@ func TestResolveBinRejectsAMissingOverride(t *testing.T) {
 	t.Setenv("REX_AMQ_AMQ", t.TempDir())
 	if bin, err := ResolveBin(); err == nil {
 		t.Fatalf("resolved directory %q as amq", bin)
+	}
+}
+
+// An injector amq would not run starts no waker, on either target: a missing
+// file, a file that is not executable, and one under a directory other users
+// can write (amq refuses --inject-via there).
+func TestQueueContractRefusesAnUnsafeInjector(t *testing.T) {
+	for _, tc := range targets(t) {
+		t.Run(tc.name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "root")
+			if err := tc.q.EnsureMailbox(context.Background(), root, "bob"); err != nil {
+				t.Fatal(err)
+			}
+			dir := t.TempDir()
+			noExec := filepath.Join(dir, "noexec.sh")
+			if err := os.WriteFile(noExec, []byte("#!/bin/sh\nexit 1\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			shared := filepath.Join(dir, "shared")
+			if err := os.Mkdir(shared, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(shared, 0o777); err != nil {
+				t.Fatal(err)
+			}
+			inShared := filepath.Join(shared, "inject.sh")
+			if err := os.WriteFile(inShared, []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			for name, inject := range map[string]string{"missing": filepath.Join(dir, "absent"), "not executable": noExec, "shared directory": inShared} {
+				ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+				w := Waker{InjectVia: inject, Server: "unix:///tmp/rex.sock", Block: "block:one", Handle: "bob", Root: root}
+				st, _, err := tc.q.Ensure(ctx, w, filepath.Join(dir, "logs"))
+				cancel()
+				if err == nil || st.Live {
+					t.Errorf("%s injector: a waker came up: %+v %v", name, st, err)
+				}
+				_, _ = tc.q.RetireHandle(context.Background(), root, "bob")
+			}
+		})
+	}
+}
+
+// Open obligations are amq's to compute: amq reports an unanswered question,
+// and the fake refuses rather than report none.
+func TestThreadOpenIsAmqsOrStated(t *testing.T) {
+	for _, tc := range targets(t) {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			root := filepath.Join(t.TempDir(), "root")
+			for _, h := range []string{"alice", "bob"} {
+				if err := tc.q.EnsureMailbox(ctx, root, h); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, _, err := tc.q.Post(ctx, root, "send", "--me", "alice", "--to", "bob", "--kind", "question", "--subject", "q", "--body", "?"); err != nil {
+				t.Fatal(err)
+			}
+			open, err := tc.q.ThreadOpen(ctx, root, "alice", []string{"alice", "bob"})
+			if f, ok := tc.q.(*Fake); ok {
+				if !errors.Is(err, ErrNotEmulated) {
+					t.Fatalf("the fake invented obligations: %+v %v", open, err)
+				}
+				f.OpenObligations = &OpenObligations{}
+				if got, err := f.ThreadOpen(ctx, root, "alice", []string{"bob"}); err != nil || len(got.Obligations) != 0 {
+					t.Fatalf("a stated world: %+v %v", got, err)
+				}
+				return
+			}
+			if err != nil || len(open.Obligations) != 1 || open.Obligations[0].OwedBy.Handle != "bob" {
+				t.Fatalf("amq's open obligations: %+v %v", open, err)
+			}
+		})
 	}
 }
