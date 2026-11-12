@@ -1213,10 +1213,11 @@ another `--me` names any sender. `events` only reads and applies no gate.
 (`app.Env.OpenEpic`) is the whole start, so a personal agent runs one command
 and its user sees no steps. It refuses a caller that is not a live `personal`
 agent, and needs a grant as `summon` does: a goal contract that is a regular
-file, which the orchestrator's brief runs (`/goal Load skill run-goal. Execute
-the goal contract at <abs>; it is the grant.` for Claude Code), or the user's
-own words, which become the brief. One `session.create` makes the Epic's Rex
-session, labelled `<name>`, with two windows, all or none: a `narrator` tab
+file, which the orchestrator's brief runs (make-goal's prompt for a contract
+in a file, whole, so the run ends at either of its exits, `/goal`-prefixed for
+Claude Code), or the user's own words, which become the brief. One
+`session.create` makes the Epic's Rex session, labelled with the whole name
+(pane labels shorten it to their task width), with two windows, all or none: a `narrator` tab
 (claimed in the tab ledger) whose agent is told whose personal agent it
 narrates for, and the orchestrator's tab, last and so active, left with Rex's
 placeholder name so it follows its agent. Then the session is linked to the
