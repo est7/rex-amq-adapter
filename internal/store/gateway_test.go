@@ -116,6 +116,14 @@ func TestQuarantineMovesTheMessage(t *testing.T) {
 	if ids, _ := s.QuarantinedIDs("codex"); len(ids) != 1 {
 		t.Fatalf("quarantined %v", ids)
 	}
+	// A second check of a message another one already quarantined leaves
+	// that one's reason in place.
+	if moved, err := s.Quarantine(src, q); err != nil || moved {
+		t.Fatalf("second quarantine: %v %v", moved, err)
+	}
+	if r, err := s.QuarantineReason("codex", "m1"); err != nil || r.Decision.Reason != core.ReasonCrossEpic {
+		t.Fatalf("reason after a second check: %+v %v", r, err)
+	}
 	if _, err := os.Stat(filepath.Join(s.P.Extensions(), "quarantine", "codex", "m2.json")); !os.IsNotExist(err) {
 		t.Fatalf("reason left for a missing message: %v", err)
 	}

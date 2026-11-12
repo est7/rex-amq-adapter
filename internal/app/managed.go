@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"slices"
 	"strings"
 
@@ -109,6 +110,13 @@ func (m managed) post(ctx context.Context, verb string, args []string) (int, err
 		}
 	}
 	if ctxObj, args, found = takeFlag(args, "context", true); found {
+		if path, ok := strings.CutPrefix(ctxObj, "@"); ok {
+			b, err := os.ReadFile(path)
+			if err != nil {
+				return 1, err
+			}
+			ctxObj = string(b)
+		}
 		o.Context = json.RawMessage(ctxObj)
 	}
 	_, args, asJSON = takeFlag(args, "json", false)

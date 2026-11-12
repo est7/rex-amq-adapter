@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -73,6 +75,20 @@ func TestManagedMailSend(t *testing.T) {
 	var orch string
 	if !h.ContextOf("orchestrator", &orch) || orch != "claude-03" {
 		t.Fatalf("the sender's context was lost: %v", h.Context)
+	}
+	// --context @file reads the object from the file, as amq does.
+	ctxFile := filepath.Join(t.TempDir(), "ctx.json")
+	if err := os.WriteFile(ctxFile, []byte(`{"orchestrator":"claude-04"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, _, err = run(t, e, ctx, "claude-02", "send", "--to", "codex-01", "--body", "b", "--json", "--context", "@"+ctxFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = json.Unmarshal([]byte(out), &sent)
+	h, _ = amq.ReadHeader(e.Paths.Root(), "codex-01", amq.BoxUnread, sent.ID)
+	if !h.ContextOf("orchestrator", &orch) || orch != "claude-04" {
+		t.Fatalf("context from a file: %v", h.Context)
 	}
 	// The body comes from stdin when --body names none.
 	var o bytes.Buffer

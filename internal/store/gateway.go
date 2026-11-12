@@ -251,9 +251,14 @@ func (s Store) Quarantine(src string, q Quarantined) (moved bool, err error) {
 	if err := writeJSON(filepath.Join(dir, fileKey(q.ID)+".json"), q); err != nil {
 		return false, err
 	}
-	err = os.Rename(src, filepath.Join(dir, fileKey(q.ID)+".md"))
+	dst := filepath.Join(dir, fileKey(q.ID)+".md")
+	err = os.Rename(src, dst)
 	if errors.Is(err, fs.ErrNotExist) {
-		_ = os.Remove(filepath.Join(dir, fileKey(q.ID)+".json"))
+		// Drained by its agent: the reason is for nothing. Quarantined by a
+		// concurrent check: the reason (the same decision) is that one's.
+		if _, serr := os.Stat(dst); errors.Is(serr, fs.ErrNotExist) {
+			_ = os.Remove(filepath.Join(dir, fileKey(q.ID)+".json"))
+		}
 		return false, nil
 	}
 	return err == nil, err
