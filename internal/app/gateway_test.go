@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/core"
@@ -71,8 +73,9 @@ func noReceipts(t *testing.T, e Env, h string) {
 }
 
 // The injector rings only for mail its agent may receive: the rest leaves
-// the inbox for the quarantine, unread and without a drained receipt. A
-// file without a readable header stays where it is.
+// the inbox for the quarantine, unread and without a drained receipt. The
+// gate fails closed: a file whose header cannot be read is quarantined, and a
+// header past 64 KiB is read whole, as amq reads it.
 func TestQuarantineAtInject(t *testing.T) {
 	f := &fakeTerm{state: "idle", submit: true}
 	e := fixture(t, f, "m0")
@@ -85,23 +88,43 @@ func TestQuarantineAtInject(t *testing.T) {
 	headed(t, e, "codex", "m1", "orch-01")
 	headed(t, e, "codex", "m2", "claude-09")
 	headed(t, e, "codex", "m3", "agy-05", amq.SystemLabel)
+	big, _ := json.Marshal(map[string]any{"schema": 1, "id": "m4", "from": "claude-09", "to": []string{"codex"}, "thread": "p2p/x", "subject": "s", "created": "2026-11-12T00:00:00Z", "context": map[string]string{"pad": strings.Repeat("x", 70<<10)}})
+	if err := os.WriteFile(filepath.Join(amq.Inbox(e.Paths.Root(), "codex"), "m4.md"), []byte("---json\n"+string(big)+"\n---\nbody\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(amq.Inbox(e.Paths.Root(), "codex"), "m5.md"), []byte("---json\n{\"schema\":1,\"id\"\n---\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if o := inject(e); o.Progress != core.Accepted {
 		t.Fatalf("got %+v", o)
 	}
-	if len(f.writes) != 1 || !strings.Contains(f.writes[0], "2 unread message(s) for codex") {
+	if len(f.writes) != 1 || !strings.Contains(f.writes[0], "1 unread message(s) for codex") {
 		t.Fatalf("doorbell %q", f.writes)
 	}
-	if got, _ := amq.Unread(e.Paths.Root(), "codex"); !slices.Equal(got, []string{"m0", "m1"}) {
+	if got, _ := amq.Unread(e.Paths.Root(), "codex"); !slices.Equal(got, []string{"m1"}) {
 		t.Fatalf("inbox %v", got)
 	}
-	want := map[string]string{"m2": core.ReasonCrossEpic, "m3": core.ReasonNarratorWorker}
-	if got := quarantined(t, e, "codex"); len(got) != 2 || got["m2"] != want["m2"] || got["m3"] != want["m3"] {
+	want := map[string]string{"m0": core.ReasonUnreadableHeader, "m2": core.ReasonCrossEpic, "m3": core.ReasonNarratorWorker, "m4": core.ReasonCrossEpic, "m5": core.ReasonUnreadableHeader}
+	if got := quarantined(t, e, "codex"); !maps.Equal(got, want) {
 		t.Fatalf("quarantine %v, want %v", got, want)
 	}
-	if ann, _ := e.Store.Announced("codex"); ann.IDs["m2"] || ann.IDs["m3"] || !ann.IDs["m1"] {
+	if ann, _ := e.Store.Announced("codex"); len(ann.IDs) != 1 || !ann.IDs["m1"] {
 		t.Fatalf("announced %v", ann.IDs)
 	}
 	noReceipts(t, e, "codex")
+}
+
+// An agent in no session (a synthetic record) keeps a file whose header
+// cannot be read: the fail-closed rule is for placed agents.
+func TestQuarantineSparesUnplacedRecords(t *testing.T) {
+	f := &fakeTerm{state: "idle", submit: true}
+	e := fixture(t, f, "m0")
+	if o := inject(e); o.Progress != core.Accepted || len(f.writes) != 1 {
+		t.Fatalf("got %+v writes %q", o, f.writes)
+	}
+	if got := quarantined(t, e, "codex"); len(got) != 0 {
+		t.Fatalf("quarantine %v", got)
+	}
 }
 
 // A doorbell is not rung for mail that is all quarantined.
@@ -216,7 +239,7 @@ func TestQuarantineFencesMailAddressedBeforeAMove(t *testing.T) {
 		t.Fatal(err)
 	}
 	rec, _, _ := e.Store.RecordOf("claude-02")
-	rec = rec.Placed(rec.Server, "session:b", "window:2").Placed(rec.Server, "session:a", "window:1")
+	rec = rec.Placed(rec.Server, "session:b", "window:X", time.Now()).Placed(rec.Server, "session:a", "window:X", time.Now())
 	put(t, e, rec)
 	if err := amq.Send(ctx, e.AmqBin, e.Paths.Root(), "codex-01", "claude-02", "after", "raw, sent after the return"); err != nil {
 		t.Fatal(err)

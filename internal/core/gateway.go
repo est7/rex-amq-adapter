@@ -40,8 +40,8 @@ type Endpoint struct {
 // Session is the session e is in.
 func (e Endpoint) Session() SessionKey { return SessionKey{Server: e.Server, SessionID: e.SessionID} }
 
-// placed reports whether e is known to be in a Rex session.
-func (e Endpoint) placed() bool { return e.Server != "" && e.SessionID != "" }
+// Placed reports whether e is known to be in a Rex session.
+func (e Endpoint) Placed() bool { return e.Server != "" && e.SessionID != "" }
 
 // Link is a grant the user made: Personal's session may exchange mail with
 // the Narrator of Epic.
@@ -95,6 +95,9 @@ const (
 	ReasonNarratorObserves = "narrator_takes_no_member_mail"
 	ReasonNarratorRoutine  = "narrator_sends_orchestrator_control_only"
 	ReasonNarratorWorker   = "narrator_never_mails_workers"
+	// ReasonUnreadableHeader: a file in an inbox whose header cannot be read
+	// names no sender to judge, so it is refused (the gate fails closed).
+	ReasonUnreadableHeader = "unreadable_header"
 )
 
 func allow(reason string) Decision { return Decision{Allow: true, Reason: reason} }
@@ -113,10 +116,10 @@ func CanExchange(sender, recipient Endpoint, op Operation, links []Link) Decisio
 	if sender.Role == PersonalRole || recipient.Role == PersonalRole {
 		return personal(sender, recipient, links)
 	}
-	if !recipient.placed() {
+	if !recipient.Placed() {
 		return deny(ReasonUnplaced)
 	}
-	if !sender.placed() {
+	if !sender.Placed() {
 		// A handle the adapter never adopted (the user, a script on the
 		// queue) reaches the members it mails, as it always has; never the
 		// Narrator, whose only senders are named above and below.
@@ -155,7 +158,7 @@ func personal(sender, recipient Endpoint, links []Link) Decision {
 	if other.Role != NarratorRole {
 		return deny(ReasonPersonalOnly)
 	}
-	if !p.placed() || !other.placed() {
+	if !p.Placed() || !other.Placed() {
 		return deny(ReasonUnplaced)
 	}
 	for _, l := range links {

@@ -133,16 +133,20 @@ func TestQuarantineMovesTheMessage(t *testing.T) {
 // or the first placement, does not.
 func TestPlacedCountsSessionMoves(t *testing.T) {
 	r := Record{Handle: "codex", Server: "unix:///rex.sock"}
-	r = r.Placed("unix:///rex.sock", "session:a", "window:1")
+	r = r.Placed("unix:///rex.sock", "session:a", "window:X", time.Now())
 	if r.Generation != 0 {
 		t.Fatalf("first placement: %d", r.Generation)
 	}
-	r = r.Placed("unix:///rex.sock", "session:a", "window:2")
-	if r.Generation != 0 || r.WindowID != "window:2" {
+	r = r.Placed("unix:///rex.sock", "session:a", "window:2", time.Now())
+	if r.Generation != 0 || r.WindowID != "window:2" || !r.PlacedAt.IsZero() {
 		t.Fatalf("tab move: %+v", r)
 	}
-	r = r.Placed("unix:///rex.sock", "session:b", "window:3")
-	r = r.Placed("unix:///rex.sock", "session:a", "window:1")
+	r = r.Placed("unix:///rex.sock", "session:b", "window:X", time.Now())
+	back := time.Now()
+	r = r.Placed("unix:///rex.sock", "session:a", "window:X", back)
+	if !r.PlacedAt.Equal(back.UTC()) {
+		t.Fatalf("placed at %v, want %v", r.PlacedAt, back)
+	}
 	if r.Generation != 2 || r.Endpoint().Generation != 2 || r.Endpoint().SessionID != "session:a" {
 		t.Fatalf("after leaving and returning: %+v", r)
 	}

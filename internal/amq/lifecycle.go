@@ -336,14 +336,17 @@ type Sent struct {
 }
 
 // Post runs amq send or amq reply (verb) with args, which name neither the
-// root nor --json, and returns what was sent and amq's JSON report.
+// root nor --json, and returns what was sent and amq's JSON report. A send
+// that failed after delivering (a --wait-for that timed out) returns its id
+// with the error.
 func Post(ctx context.Context, amqBin, root, verb string, args ...string) (Sent, []byte, error) {
 	out, err := runAmq(ctx, amqBin, append([]string{verb, "--root", root, "--json"}, args...)...)
-	if err != nil {
-		return Sent{}, out, err
-	}
 	var s Sent
-	if err := json.Unmarshal(out, &s); err != nil || s.ID == "" {
+	_ = json.Unmarshal(out, &s)
+	if err != nil {
+		return s, out, err
+	}
+	if s.ID == "" {
 		return Sent{}, out, fmt.Errorf("amq %s reported no message id: %q", verb, out)
 	}
 	return s, out, nil

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -162,11 +163,6 @@ func (s Store) CommitProvenance(p Provenance) error {
 	return nil
 }
 
-// DropPendingProvenance forgets a token whose send failed.
-func (s Store) DropPendingProvenance(token string) {
-	_ = os.Remove(s.pendingPath(token))
-}
-
 // ProvenanceOf finds the provenance of message id, or of the pending token
 // its header carries. A pending record names no id, so it counts only for a
 // message from its sender to one of its recipients. ok is false when the
@@ -292,6 +288,12 @@ func (s Store) QuarantineReason(h core.Handle, id string) (Quarantined, error) {
 	return q, json.Unmarshal(b, &q)
 }
 
+// LockConsume serialises the managed commands that take mail out of h's
+// inbox, so two of them never both report one message.
+func (s Store) LockConsume(ctx context.Context, h core.Handle) (func(), error) {
+	return fsutil.Flock(ctx, filepath.Join(s.P.ledgers(), "."+fileKey(string(h))+".consume.lock"))
+}
+
 // RecordOf returns h's record (a handle has at most one); ok is false when
 // there is none.
 func (s Store) RecordOf(h core.Handle) (Record, bool, error) {
@@ -314,12 +316,13 @@ func (r Record) Endpoint() core.Endpoint {
 	return core.Endpoint{Handle: r.Handle, Role: r.Role, Server: r.Server, SessionID: r.SessionID, Generation: r.Generation}
 }
 
-// Placed returns r moved to session (on its server) and window, a new
-// generation when the session is another: mail addressed to it in the session
-// it left is no longer its.
-func (r Record) Placed(server, session, window string) Record {
+// Placed returns r moved to session (on its server) and window at at, a new
+// generation when the session is another: mail addressed to it, or sent by
+// it, in the session it left is no longer its.
+func (r Record) Placed(server, session, window string, at time.Time) Record {
 	if r.SessionID != "" && (r.SessionID != session || r.Server != server) {
 		r.Generation++
+		r.PlacedAt = at.UTC()
 	}
 	r.Server, r.SessionID, r.WindowID = server, session, window
 	return r

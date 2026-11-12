@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/core"
@@ -133,7 +134,7 @@ func TestManagedMailReadDrainAndThread(t *testing.T) {
 	}
 	// claude-02 leaves Epic a and comes back: its old mail is fenced.
 	rec, _, _ := e.Store.RecordOf("claude-02")
-	put(t, e, rec.Placed(rec.Server, "session:b", "window:9").Placed(rec.Server, "session:a", "window:1"))
+	put(t, e, rec.Placed(rec.Server, "session:b", "window:X", time.Now()).Placed(rec.Server, "session:a", "window:X", time.Now()))
 	for _, c := range [][]string{{"read", "--id", first.ID}, {"trace", first.ID}} {
 		if _, _, err := run(t, e, ctx, "claude-02", c[0], c[1:]...); !errors.Is(err, ErrRefused) {
 			t.Fatalf("%s after the move: %v", c[0], err)

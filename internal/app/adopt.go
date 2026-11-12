@@ -177,7 +177,8 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	// purpose across agents.
 	if hasOwn {
 		// A handle resumed in another session starts a generation there.
-		rec.Generation = own.Placed(server, blk.SessionID, blk.WindowID).Generation
+		here := own.Placed(server, blk.SessionID, blk.WindowID, now)
+		rec.Generation, rec.PlacedAt = here.Generation, here.PlacedAt
 		rec.FirstAdoptedAt = own.InitialAdoptedAt()
 		if own.WindowID == "" || own.WindowID == blk.WindowID {
 			rec.Crew = own.Crew

@@ -1,10 +1,12 @@
 package amq
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -60,24 +62,48 @@ const SystemLabel = "rex-amq-adapter"
 // System reports whether the adapter sent the message.
 func (h Header) System() bool { return slices.Contains(h.Labels, SystemLabel) }
 
-// maxHeader bounds how much of a message is read for its header.
-const maxHeader = 64 << 10
+// MaxMessage is the largest message file amq reads (its format.MaxMessageSize);
+// a header is read within it, however long.
+const MaxMessage = 10 << 20
 
-func parseHeader(b []byte) (Header, error) {
-	rest, ok := bytes.CutPrefix(b, []byte("---json\n"))
-	if !ok {
+// readHeader decodes a message header the way amq does: a "---json" line
+// (a CR before its newline allowed), then one JSON object, then "---". It
+// reads no further than the header.
+func readHeader(r io.Reader) (Header, error) {
+	br := bufio.NewReader(io.LimitReader(r, MaxMessage))
+	line, err := br.ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return Header{}, err
+	}
+	if strings.TrimRight(line, "\r\n") != "---json" {
 		return Header{}, errors.New("message has no JSON header")
 	}
-	header, _, ok := bytes.Cut(rest, []byte("\n---"))
-	if !ok {
-		return Header{}, errors.New("message header is not closed")
-	}
+	dec := json.NewDecoder(br)
 	var h Header
-	if err := json.Unmarshal(header, &h); err != nil {
+	if err := dec.Decode(&h); err != nil {
 		return Header{}, fmt.Errorf("decode message header: %w", err)
 	}
-	return h, nil
+	rest := bufio.NewReader(io.MultiReader(dec.Buffered(), br))
+	for {
+		b, err := rest.ReadByte()
+		if err != nil {
+			return Header{}, errors.New("message header is not closed")
+		}
+		if b == ' ' || b == '\t' || b == '\r' || b == '\n' {
+			continue
+		}
+		if b != '-' {
+			return Header{}, errors.New("message header is not closed")
+		}
+		var tail [2]byte
+		if _, err := io.ReadFull(rest, tail[:]); err != nil || tail != [2]byte{'-', '-'} {
+			return Header{}, errors.New("message header is not closed")
+		}
+		return h, nil
+	}
 }
+
+func parseHeader(b []byte) (Header, error) { return readHeader(bytes.NewReader(b)) }
 
 // Box is a directory of handle's mailbox that holds messages.
 type Box string
@@ -104,12 +130,7 @@ func ReadHeader(root, handle string, box Box, id string) (Header, error) {
 		return Header{}, err
 	}
 	defer f.Close()
-	b := make([]byte, maxHeader)
-	n, err := f.Read(b)
-	if err != nil && n == 0 {
-		return Header{}, err
-	}
-	h, err := parseHeader(b[:n])
+	h, err := readHeader(f)
 	if err == nil && h.Schema != MailboxSchema {
 		err = fmt.Errorf("message %s in %s has header schema %d; this adapter reads schema %d", id, handle, h.Schema, MailboxSchema)
 	}

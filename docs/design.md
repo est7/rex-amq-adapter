@@ -1171,10 +1171,18 @@ The adapter applies the policy where it sends (`summon`, notices, and the
 managed `send`/`reply`), where mail arrives (the injector, the session-start
 and announce hooks, before a Pi extension is handed the inbox: refused mail
 moves to the quarantine, unread and with no receipt), and on the managed
-`read`, `drain`, `thread`, `trace`, `dlq read`, and `list`. Each send records
-its provenance under a token in the message's context before amq delivers it,
-so an arrival checked before amq returns the id is judged by it. Mail sent with
-`amq` directly has no provenance and is judged by its sender's record now.
+`read`, `drain`, `thread`, `trace`, `dlq read`, and `list`. For a placed agent
+the arrival gate fails closed: a file whose header cannot be read is
+quarantined (headers are read whole, as amq reads them). A managed `drain`
+reads by exact id only the mail its own gate admitted, one drain per agent at
+a time; a managed `trace` shows only evidence about messages the caller may
+read, in their senders' and recipients' mailboxes. What an agent sent from a
+placement it has left is fenced from it too. Each send records its provenance
+under a token in the message's context before amq delivers it, so an arrival
+checked before amq returns the id is judged by it; when amq fails without an
+id and no outbox copy carries the token, delivery cannot be ruled out and the
+pending record stays. Mail sent with `amq` directly has no provenance and is
+judged by its sender's record now.
 
 This is a policy on the supported paths, not a sandbox: any process of the same
 UNIX user can read and write the mailbox files, and `amq` run directly with

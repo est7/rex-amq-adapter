@@ -59,8 +59,10 @@ func (e Env) judge(reader store.Record, h amq.Header, links []core.Link) (core.D
 
 // admit is the arrival gate: it moves the unread mail rec may not receive
 // into the quarantine, unread and without a receipt, and returns the ids
-// left. A message whose header cannot be read stays: it may be mid-write,
-// and amq's own reader dead-letters a malformed one.
+// left. For an agent in a session it fails closed: a file whose header
+// cannot be read (corrupt, unclosed, of another schema) names no sender to
+// judge, and is quarantined too. amq renames whole files into place, so none
+// is read mid-write.
 func (e Env) admit(rec store.Record) ([]string, error) {
 	root, h := e.Paths.Root(), string(rec.Handle)
 	ids, err := amq.Unread(root, h)
@@ -73,14 +75,23 @@ func (e Env) admit(rec store.Record) ([]string, error) {
 	}
 	var kept []string
 	for _, id := range ids {
+		var d core.Decision
+		var from core.Endpoint
 		hdr, err := amq.ReadHeader(root, h, amq.BoxUnread, id)
-		if err != nil {
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			continue // drained or quarantined by another reader
+		case err != nil && !rec.Endpoint().Placed():
+			// A record in no session (a test's synthetic one) keeps it:
+			// every readable sender is refused to it anyway.
 			kept = append(kept, id)
 			continue
-		}
-		d, from, err := e.judge(rec, hdr, links)
-		if err != nil {
-			return nil, err
+		case err != nil:
+			d = core.Decision{Reason: core.ReasonUnreadableHeader}
+		default:
+			if d, from, err = e.judge(rec, hdr, links); err != nil {
+				return nil, err
+			}
 		}
 		if d.Allow {
 			kept = append(kept, id)
@@ -137,7 +148,7 @@ func (e Env) post(ctx context.Context, o Outgoing) (amq.Sent, []byte, error) {
 		if !ok {
 			return amq.Sent{}, nil, fmt.Errorf("no message %s in the mailbox of %s", o.ReplyTo, o.From)
 		}
-		if o.Check && orig.box != amq.BoxSent {
+		if o.Check {
 			if err := e.exposed(o.From, orig); err != nil {
 				return amq.Sent{}, nil, err
 			}
@@ -178,16 +189,39 @@ func (e Env) post(ctx context.Context, o Outgoing) (amq.Sent, []byte, error) {
 		return amq.Sent{}, nil, err
 	}
 	sent, out, err := amq.Post(ctx, e.AmqBin, e.Paths.Root(), verb, append(append(args, "--context", string(ctxJSON)), o.Args...)...)
-	if err != nil {
-		e.Store.DropPendingProvenance(p.Token)
+	if err != nil && sent.ID == "" {
+		// amq may have failed after delivering (it delivers before it
+		// writes the outbox copy): the copy carries the token if it exists.
+		sent.ID = e.sentWithToken(o.From, p.Token)
+	}
+	if sent.ID == "" {
+		// Delivery cannot be ruled out: the pending record stays, and
+		// vouches for a delivered copy by the token it carries.
 		return sent, out, err
 	}
 	p.ID = sent.ID
-	if err := e.Store.CommitProvenance(p); err != nil {
+	if cerr := e.Store.CommitProvenance(p); cerr != nil {
 		// Delivered: the pending record still vouches for it.
-		fmt.Fprintf(Diagnostics, "record the provenance of %s: %v\n", sent.ID, err)
+		fmt.Fprintf(Diagnostics, "record the provenance of %s: %v\n", sent.ID, cerr)
 	}
-	return sent, out, nil
+	return sent, out, err
+}
+
+// sentWithToken finds the message in h's outbox that carries token, ""
+// when none does.
+func (e Env) sentWithToken(h core.Handle, token string) string {
+	ids, err := amq.IDs(e.Paths.Root(), string(h), amq.BoxSent)
+	if err != nil {
+		return ""
+	}
+	for i := len(ids) - 1; i >= 0; i-- {
+		hdr, err := amq.ReadHeader(e.Paths.Root(), string(h), amq.BoxSent, ids[i])
+		var ac adapterContext
+		if err == nil && hdr.ContextOf(store.ProvenanceContextKey, &ac) && ac.Token == token {
+			return hdr.ID
+		}
+	}
+	return ""
 }
 
 // sendAs is the adapter's own send in from's name: a notice (system) or an
@@ -210,8 +244,9 @@ func (e Env) mailAs(ctx context.Context, from, to core.Handle, kind, subject, bo
 func withToken(own json.RawMessage, token string) ([]byte, error) {
 	obj := map[string]json.RawMessage{}
 	if len(own) > 0 {
-		if err := json.Unmarshal(own, &obj); err != nil {
-			return nil, fmt.Errorf("--context must be a JSON object: %w", err)
+		// null decodes into a nil map without an error: refused too.
+		if err := json.Unmarshal(own, &obj); err != nil || obj == nil {
+			return nil, fmt.Errorf("--context must be a JSON object, not %.40q", own)
 		}
 	}
 	ac, err := json.Marshal(adapterContext{Token: token})
@@ -244,19 +279,23 @@ func (e Env) findMessage(h core.Handle, id string) (located, bool, error) {
 	return located{}, false, nil
 }
 
-// exposed refuses reader a message it received that the gateway would not
-// deliver to it now: from another or an earlier session, or one it may not
-// receive at all.
+// exposed refuses reader a message in its mailbox that the gateway would not
+// show it now: one received that it would not deliver to it now (from
+// another or an earlier session, or one it may not receive at all), or one
+// it sent from a placement it has since left.
 func (e Env) exposed(reader core.Handle, m located) error {
-	if m.box == amq.BoxSent {
-		return nil
-	}
 	rec, ok, err := e.Store.RecordOf(reader)
 	if err != nil {
 		return err
 	}
 	if !ok {
 		return fmt.Errorf("%w: %s has no record", ErrRefused, reader)
+	}
+	if m.box == amq.BoxSent {
+		if !e.sentHere(rec, m.header) {
+			return refused(fmt.Sprintf("%s reading %s, sent before it moved", reader, m.id), core.Decision{Reason: core.ReasonFenced})
+		}
+		return nil
 	}
 	links, err := e.Store.Links()
 	if err != nil {
@@ -334,4 +373,21 @@ func (e Env) LinksOf(loc Location) ([]core.Link, error) {
 		}
 	}
 	return out, err
+}
+
+// sentHere reports whether rec sent h from where it is now: its provenance
+// names rec's current placement, or, without provenance, it was created
+// after rec's last move.
+func (e Env) sentHere(rec store.Record, h amq.Header) bool {
+	var ac adapterContext
+	h.ContextOf(store.ProvenanceContextKey, &ac)
+	p, ok, err := e.Store.ProvenanceOf(h.ID, ac.Token, rec.Handle, h.To)
+	if err != nil {
+		return false
+	}
+	if ok {
+		now := rec.Endpoint()
+		return p.From.Server == now.Server && p.From.SessionID == now.SessionID && p.From.Generation == now.Generation
+	}
+	return rec.Generation == 0 || !h.Created.Before(rec.PlacedAt)
 }

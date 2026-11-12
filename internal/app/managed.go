@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -50,10 +51,7 @@ func (e Env) ManagedMail(ctx context.Context, loc Location, verb string, args []
 	case "read":
 		return m.read(ctx, args)
 	case "drain":
-		if _, err := e.admit(rec); err != nil {
-			return 1, err
-		}
-		return m.run(ctx, "drain", "--me", m.me(), args)
+		return m.drain(ctx, args)
 	case "thread":
 		return m.thread(ctx, args)
 	case "trace":
@@ -175,14 +173,152 @@ func (m managed) read(ctx context.Context, args []string) (int, error) {
 	return m.run(ctx, "read", "--me", m.me(), "--id", id, rest)
 }
 
+// drain takes the caller's unread mail the arrival gate admitted, and only
+// that: each kept message is read by its exact id (amq read moves it to
+// inbox/cur and writes its drained receipt), so mail that arrives after the
+// gate waits for the next check instead of being drained unjudged. Managed
+// drains of one agent take turns (LockConsume). The output is amq drain's.
+func (m managed) drain(ctx context.Context, args []string) (int, error) {
+	limit := 20
+	lim, rest, found := takeFlag(args, "limit", true)
+	if found {
+		if _, err := fmt.Sscan(lim, &limit); err != nil || limit < 0 {
+			return 2, fmt.Errorf("%w: --limit %q", ErrUsage, lim)
+		}
+	}
+	_, rest, withBody := takeFlag(rest, "include-body", false)
+	_, rest, asJSON := takeFlag(rest, "json", false)
+	if len(rest) > 0 {
+		return 2, fmt.Errorf("%w: a managed drain takes --limit, --include-body, and --json; not %q", ErrUsage, rest)
+	}
+	unlock, err := m.e.Store.LockConsume(ctx, m.rec.Handle)
+	if err != nil {
+		return 1, err
+	}
+	defer unlock()
+	kept, err := m.e.admit(m.rec)
+	if err != nil {
+		return 1, err
+	}
+	afterAdmit()
+	drained, code, err := m.consume(ctx, kept, limit, withBody)
+	if err != nil {
+		return code, err
+	}
+	return 0, m.printDrained(drained, withBody, asJSON)
+}
+
+// afterAdmit runs between a managed drain's gate and its consumption; tests
+// deliver mail there.
+var afterAdmit = func() {}
+
+// consume reads the messages ids (up to limit; 0 is no limit) still in the
+// caller's inbox/new, and no other.
+func (m managed) consume(ctx context.Context, ids []string, limit int, withBody bool) ([]map[string]any, int, error) {
+	drained := []map[string]any{}
+	for _, id := range ids {
+		if limit > 0 && len(drained) >= limit {
+			break
+		}
+		// Still unread: amq read also finds a copy a raw drain moved to
+		// inbox/cur, which is not this drain's to report.
+		if _, err := os.Stat(filepath.Join(amq.Inbox(m.root, m.me()), id+".md")); err != nil {
+			continue
+		}
+		var out, errb bytes.Buffer
+		code, err := amq.Run(ctx, m.e.AmqBin, nil, &out, &errb, "read", "--root", m.root, "--me", m.me(), "--id", id, "--json")
+		if err != nil {
+			return nil, 1, err
+		}
+		if code == 3 {
+			continue // gone since
+		}
+		if code != 0 {
+			_, _ = m.stderr.Write(errb.Bytes())
+			return nil, code, fmt.Errorf("read %s", id)
+		}
+		var msg struct {
+			Body   string         `json:"body"`
+			Header map[string]any `json:"header"`
+		}
+		if err := json.Unmarshal(out.Bytes(), &msg); err != nil || msg.Header == nil {
+			return nil, 1, fmt.Errorf("decode amq read of %s: %q", id, out.Bytes())
+		}
+		item := msg.Header
+		delete(item, "schema")
+		if withBody {
+			item["body"] = msg.Body
+		}
+		item["moved_to_cur"] = true
+		drained = append(drained, item)
+	}
+	return drained, 0, nil
+}
+
+// printDrained writes drained as amq drain does: JSON {drained, count}, or
+// one block per message, and nothing when there is none.
+func (m managed) printDrained(drained []map[string]any, withBody, asJSON bool) error {
+	if asJSON {
+		b, err := json.MarshalIndent(map[string]any{"drained": drained, "count": len(drained)}, "", "  ")
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintf(m.stdout, "%s\n", b)
+		return err
+	}
+	if len(drained) == 0 {
+		return nil
+	}
+	field := func(item map[string]any, k string) string {
+		if v, ok := item[k].(string); ok && v != "" {
+			return v
+		}
+		return "-"
+	}
+	fmt.Fprintf(m.stdout, "[AMQ] %d new message(s) for %s:\n\n", len(drained), m.me())
+	for _, it := range drained {
+		fmt.Fprintf(m.stdout, "- From: %s\n  Thread: %s\n  ID: %s\n  Subject: %s\n  Priority: %s\n  Kind: %s\n  Created: %s\n",
+			field(it, "from"), field(it, "thread"), field(it, "id"), field(it, "subject"), field(it, "priority"), field(it, "kind"), field(it, "created"))
+		if withBody {
+			fmt.Fprintf(m.stdout, "  Body:\n%s\n\n---\n", strings.TrimRight(field(it, "body"), "\n"))
+		}
+	}
+	return nil
+}
+
+// trace joins amq's evidence for a message the caller may read, and shows
+// only the evidence the gateway scopes to it (traceScope). amq trace takes
+// the id before its flags.
 func (m managed) trace(ctx context.Context, args []string) (int, error) {
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
 		return 2, fmt.Errorf("%w: trace needs a message id first", ErrUsage)
 	}
-	if _, err := m.readable(args[0]); err != nil {
+	id := args[0]
+	_, rest, asJSON := takeFlag(args[1:], "json", false)
+	msg, err := m.readable(id)
+	if err != nil {
 		return 1, err
 	}
-	return m.run(ctx, "trace", args)
+	var out, errb bytes.Buffer
+	code, err := amq.Run(ctx, m.e.AmqBin, nil, &out, &errb, append([]string{"trace", id, "--root", m.root, "--json"}, rest...)...)
+	if err != nil || code != 0 {
+		_, _ = m.stderr.Write(errb.Bytes())
+		return code, err
+	}
+	var doc any
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
+		return 1, fmt.Errorf("decode amq trace: %w", err)
+	}
+	doc = traceScope{m: m, traced: msg}.filter(doc)
+	if asJSON {
+		b, err := json.MarshalIndent(doc, "", "  ")
+		if err != nil {
+			return 1, err
+		}
+		_, err = fmt.Fprintf(m.stdout, "%s\n", b)
+		return 0, err
+	}
+	return 0, renderTrace(m.stdout, doc)
 }
 
 // thread shows the messages of a thread in the caller's own mailbox that
