@@ -164,6 +164,7 @@ rex-amq-adapter tab pair --role "implementer | fix #42" -- codex --no-daemon "Fi
 rex split -b <its block> --label "reviewer | review #42" -- claude "Review the implementer's fix for #42 when it hands off."
 rex-amq-adapter crews        # every crew, its lead and members, and every role available here
 rex-amq-adapter crews show ship --role qa   # the briefing a QA agent in a ship tab gets, changing nothing
+rex-amq-adapter crews --json # crews and roles as JSON, each with its purpose
 ```
 
 The agent you are already talking to can lead the crew itself: asked to "open
@@ -236,6 +237,7 @@ Inspect state:
 ```bash
 rex-amq-adapter who          # running agents in this Rex session with their roles and tabs, including yourself
 rex-amq-adapter who --all    # also this session's departed agents reserved for a resume, and its narrator
+rex-amq-adapter who --json   # the same agents as JSON ({"agents": [...]}, as events' snapshot)
 rex-amq-adapter view         # a session's view.json (the narrator writes it; its orchestrator and a linked personal agent read it)
 rex-amq-adapter events --json # stream this session's agents and mail as NDJSON (read-only; --tab, --session S, --all)
 rex-amq-adapter await <block> # wait for an agent you started; prints its outcome as JSON

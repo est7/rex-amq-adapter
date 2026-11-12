@@ -1175,8 +1175,8 @@ nothing else crosses sessions. The narrator takes no member mail, only the
 adapter's own notices (provenance `system`, never a header label or a sender
 named `system`); its one message into the Epic is a control directive to the
 orchestrator carrying a request id, sent with the managed `send --control
-<request id>` (the only path that records `op: control`; a plain send from a
-narrator is refused). A handle the adapter never adopted (the
+<request id>` (the only path that records `op: control`, and refused to any
+caller but a narrator; a plain send from a narrator is refused). A handle the adapter never adopted (the
 user, a script) still reaches ordinary members, never a narrator or a Personal
 agent. A move of a handle to another session starts a generation
 (`Record.Generation`), and mail addressed to an earlier one is fenced.

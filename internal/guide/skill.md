@@ -122,6 +122,7 @@ eval "$(rex-amq-adapter env)" && amq reply --id <message-id> --body "<answer>"
 rex-amq-adapter who      # agents in this Rex session only, including yourself
 eval "$(rex-amq-adapter env)" && amq send --to codex-01 --subject "<short subject>" --body "<request>"
 rex-amq-adapter who --all  # also this session's departed agents reserved for a resume, and its narrator
+rex-amq-adapter who --json # the same, as JSON: handle, kind, role, tab, lifecycle, delivery
 ```
 
 The Rex session is the awareness boundary: a session holds one task, a tab
@@ -278,8 +279,9 @@ Rex tab, lead first:
 | `docs` | writers draft, an editor checks them against the code (an architect, when present, partitions and leads) | architect, writer, editor |
 | `design` | architects argue a design to a decision through sealed proposals and a claim ledger | architect, architect |
 
-`rex-amq-adapter crews` adds the project's and user's own crews and roles;
-read one with `crews show` before relying on it. A crew's conventions bind
+`rex-amq-adapter crews` adds the project's and user's own crews and roles
+(`crews --json` gives each one's members and purpose as data); read one with
+`crews show` before relying on it. A crew's conventions bind
 every agent in its tab, so name a tab after a crew only when the work follows
 them. When none fits (an audit, research, a migration), run the goal with an
 `orchestrator` that starts each peer in its own pane under a built-in role

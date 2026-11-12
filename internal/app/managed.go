@@ -109,6 +109,9 @@ func (m managed) post(ctx context.Context, verb string, args []string) (int, err
 			if control == "" {
 				return 2, fmt.Errorf("%w: --control needs the directive's request id", ErrUsage)
 			}
+			if m.rec.Role != core.NarratorRole {
+				return 1, fmt.Errorf("%w: only a narrator relays a control directive, and %s is %q", ErrRefused, m.rec.Handle, m.rec.Role)
+			}
 			o.Op = core.Operation{Kind: core.OpControl, ControlRequestID: control}
 		}
 		for _, h := range strings.Split(to, ",") {

@@ -235,6 +235,9 @@ func TestManagedMailNarratorControlReachesOnlyTheOrchestrator(t *testing.T) {
 	if _, _, err := run(t, e, ctx, "claude-05", "send", "--to", "claude-02", "--control", "req-7", "--body", "b"); !errors.Is(err, ErrRefused) {
 		t.Fatalf("a narrator's control to a worker: %v", err)
 	}
+	if _, _, err := run(t, e, ctx, "claude-02", "send", "--to", "claude-03", "--control", "req-8", "--body", "b"); !errors.Is(err, ErrRefused) {
+		t.Fatalf("a worker sending a control directive: %v", err)
+	}
 	out, code, err := run(t, e, ctx, "claude-05", "send", "--to", "claude-03", "--control", "req-7", "--subject", "directive", "--body", "the user: ship it", "--json")
 	if err != nil || code != 0 {
 		t.Fatalf("control: %d %v %s", code, err, out)
