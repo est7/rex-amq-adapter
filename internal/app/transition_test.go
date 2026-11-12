@@ -19,7 +19,7 @@ import (
 func amqThat(t *testing.T, e *Env, fail, condition string) {
 	t.Helper()
 	script := filepath.Join(t.TempDir(), "amq.sh")
-	text := "#!/bin/sh\nif [ -e '" + fail + "' ]; then case \" $* \" in " + condition + ") exit 1 ;; esac; fi\nexec '" + binOf(*e) + "' \"$@\"\n"
+	text := "#!/bin/sh\nif [ -e '" + fail + "' ]; then case \" $* \" in " + condition + ") exit 1 ;; esac; fi\nexec '" + realBin(t, *e) + "' \"$@\"\n"
 	if err := os.WriteFile(script, []byte(text), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -28,7 +28,7 @@ func amqThat(t *testing.T, e *Env, fail, condition string) {
 
 func windowAgent(t *testing.T, e Env, h core.Handle, kind core.Kind, role string) store.Record {
 	t.Helper()
-	if err := amq.EnsureMailbox(context.Background(), binOf(e), e.Paths.Root(), string(h)); err != nil {
+	if err := e.AMQ.EnsureMailbox(context.Background(), e.Paths.Root(), string(h)); err != nil {
 		t.Fatal(err)
 	}
 	r := store.Record{Handle: h, Kind: kind, Role: role, Server: "unix:///fake.sock", BlockID: "block:" + string(h), SessionID: "session:s", WindowID: "window:1", AgentPID: os.Getpid(), AgentSessionID: "s-" + string(h)}
@@ -315,7 +315,7 @@ func TestAResumedAgentKeepsItsRoleWhateverThePaneSays(t *testing.T) {
 	ctx := context.Background()
 	loc := Location{Block: block}
 	departed := time.Now().Add(-time.Hour)
-	if err := amq.EnsureMailbox(ctx, binOf(e), e.Paths.Root(), "codex-01"); err != nil {
+	if err := e.AMQ.EnsureMailbox(ctx, e.Paths.Root(), "codex-01"); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.Store.PutRecord(store.Record{Handle: "codex-01", Kind: core.Codex, Role: "reviewer", Server: "unix:///fake.sock", BlockID: "block:gone", AgentSessionID: "s1", DepartedAt: &departed}); err != nil {

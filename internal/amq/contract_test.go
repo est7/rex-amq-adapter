@@ -95,6 +95,21 @@ func TestQueueContract(t *testing.T) {
 				t.Fatal("a send to oneself must be refused")
 			}
 
+			if self, _, err := q.Post(ctx, root, "send", "--me", "alice", "--to", "alice", "--allow-self", "--subject", "note", "--body", "n"); err != nil || self.ID == "" {
+				t.Fatalf("--allow-self sends to oneself: %+v %v", self, err)
+			}
+			waited, _, err := q.Post(ctx, root, "send", "--me", "alice", "--to", "bob", "--subject", "w", "--body", "w", "--wait-for", "drained", "--wait-timeout", "20ms")
+			if err == nil || waited.ID == "" {
+				t.Fatalf("a wait nobody satisfies fails after delivering, with the id: %+v %v", waited, err)
+			}
+			if ids, _ := Unread(root, "bob"); !slices.Contains(ids, waited.ID) {
+				t.Fatalf("the waited send was not delivered: %v", ids)
+			}
+			withRefs, _, err := q.Post(ctx, root, "send", "--me", "alice", "--to", "bob", "--subject", "r", "--body", "r", "--refs", sent.ID)
+			if err != nil || withRefs.ID == "" {
+				t.Fatalf("--refs: %+v %v", withRefs, err)
+			}
+
 			msgs, err := q.ThreadRead(ctx, root, "alice", sent.Thread, []string{"alice", "bob"}, []string{sent.ID, reply.ID})
 			if err != nil || len(msgs) != 2 || msgs[0].Body != "hello\n" || msgs[1].Body != "pong\n" || msgs[0].Kind != "question" || msgs[0].Priority != "urgent" || msgs[0].From != "alice" {
 				t.Fatalf("thread read: %+v %v", msgs, err)

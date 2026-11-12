@@ -36,11 +36,11 @@ func stuckWorld(t *testing.T, box, state string, history bool) (Env, *fakeTerm, 
 		}
 	}
 	for _, h := range []string{"orch-01", "codex"} {
-		if err := amq.EnsureMailbox(context.Background(), binOf(e), e.Paths.Root(), h); err != nil {
+		if err := e.AMQ.EnsureMailbox(context.Background(), e.Paths.Root(), h); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := amq.Send(context.Background(), binOf(e), e.Paths.Root(), "orch-01", "codex", "brief", "do the thing"); err != nil {
+	if err := amq.Send(context.Background(), e.AMQ, e.Paths.Root(), "orch-01", "codex", "brief", "do the thing"); err != nil {
 		t.Fatal(err)
 	}
 	if history {
@@ -343,7 +343,7 @@ func TestWatchdogRecoversTheOrchestratorsOwnPane(t *testing.T) {
 	term.rows[orch.BlockID] = 3
 	term.owner[orch.BlockID] = "client:app"
 	term.resizeIgnored = true
-	if err := amq.Send(context.Background(), binOf(e), e.Paths.Root(), "codex", "orch-01", "brief", "do this"); err != nil {
+	if err := amq.Send(context.Background(), e.AMQ, e.Paths.Root(), "codex", "orch-01", "brief", "do this"); err != nil {
 		t.Fatal(err)
 	}
 	for _, at := range []time.Time{e.Now().Add(-40 * time.Second), e.Now().Add(-10 * time.Second)} {
@@ -373,7 +373,7 @@ func TestWatchdogReportsTheOrchestratorsOwnPaneElsewhere(t *testing.T) {
 			t.Fatal(err)
 		}
 		term.rows[orch.BlockID] = 40
-		if err := amq.Send(context.Background(), binOf(e), e.Paths.Root(), "codex", "orch-01", "brief", "do this"); err != nil {
+		if err := amq.Send(context.Background(), e.AMQ, e.Paths.Root(), "codex", "orch-01", "brief", "do this"); err != nil {
 			t.Fatal(err)
 		}
 		for _, at := range []time.Time{e.Now().Add(-40 * time.Second), e.Now().Add(-10 * time.Second)} {

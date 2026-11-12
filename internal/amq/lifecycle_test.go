@@ -117,7 +117,7 @@ func TestSendIgnoresAnInheritedRoot(t *testing.T) {
 	}
 	t.Setenv("AM_ROOT", other)
 	t.Setenv("AM_ME", "a")
-	if err := Send(ctx, bin, own, "a", "b", "s", "x"); err != nil {
+	if err := Send(ctx, CLI{Bin: bin}, own, "a", "b", "s", "x"); err != nil {
 		t.Fatalf("send with an inherited AM_ROOT: %v", err)
 	}
 	if ids, err := Unread(own, "b"); err != nil || len(ids) != 1 {
@@ -139,7 +139,7 @@ func TestSendSystemLabelsTheMessage(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := SendSystem(ctx, bin, root, "a", "b", "watchdog: x", "body"); err != nil {
+	if err := SendSystem(ctx, CLI{Bin: bin}, root, "a", "b", "watchdog: x", "body"); err != nil {
 		t.Fatal(err)
 	}
 	ids, err := SentAfter(root, "a", "")
@@ -149,7 +149,7 @@ func TestSendSystemLabelsTheMessage(t *testing.T) {
 	if h, err := SentHeader(root, "a", ids[0]); err != nil || !h.System() {
 		t.Fatalf("system mail header %+v (%v): not labelled", h, err)
 	}
-	if err := Send(ctx, bin, root, "a", "b", "s", "x"); err != nil {
+	if err := Send(ctx, CLI{Bin: bin}, root, "a", "b", "s", "x"); err != nil {
 		t.Fatal(err)
 	}
 	ids, err = SentAfter(root, "a", ids[0])

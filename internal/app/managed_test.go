@@ -28,7 +28,7 @@ func managedWorld(t *testing.T) (Env, context.Context) {
 		store.Record{Handle: "claude-09", SessionID: "session:b"},
 	)
 	for _, h := range []string{"codex-01", "claude-02", "claude-09"} {
-		if err := amq.EnsureMailbox(ctx, binOf(e), e.Paths.Root(), h); err != nil {
+		if err := e.AMQ.EnsureMailbox(ctx, e.Paths.Root(), h); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -103,13 +103,14 @@ func TestManagedMailSend(t *testing.T) {
 // an agent before it left its session is not readable after it returns.
 func TestManagedMailReadDrainAndThread(t *testing.T) {
 	e, ctx := managedWorld(t)
+	needsAmq(t, e, "amq's read, drain, thread and list verbs")
 	out, _, err := run(t, e, ctx, "codex-01", "send", "--to", "claude-02", "--subject", "first", "--body", "one", "--json")
 	if err != nil {
 		t.Fatal(err)
 	}
 	var first amq.Sent
 	_ = json.Unmarshal([]byte(out), &first)
-	if err := amq.Send(ctx, binOf(e), e.Paths.Root(), "claude-09", "claude-02", "other epic", "raw"); err != nil {
+	if err := amq.Send(ctx, e.AMQ, e.Paths.Root(), "claude-09", "claude-02", "other epic", "raw"); err != nil {
 		t.Fatal(err)
 	}
 	out, code, err := run(t, e, ctx, "claude-02", "drain", "--include-body", "--json")
@@ -174,7 +175,7 @@ func TestManagedMailReply(t *testing.T) {
 		t.Fatalf("provenance %+v %v", p, ok)
 	}
 	// A message from another Epic cannot be replied to.
-	if err := amq.Send(ctx, binOf(e), e.Paths.Root(), "claude-09", "claude-02", "x", "raw"); err != nil {
+	if err := amq.Send(ctx, e.AMQ, e.Paths.Root(), "claude-09", "claude-02", "x", "raw"); err != nil {
 		t.Fatal(err)
 	}
 	unread, _ := amq.Unread(e.Paths.Root(), "claude-02")
@@ -200,7 +201,7 @@ func TestManagedMailNarratorControlReachesOnlyTheOrchestrator(t *testing.T) {
 		store.Record{Handle: "claude-03", Role: core.OrchestratorRole, SessionID: "session:a"},
 	)
 	for _, h := range []string{"claude-05", "claude-03"} {
-		if err := amq.EnsureMailbox(ctx, binOf(e), e.Paths.Root(), h); err != nil {
+		if err := e.AMQ.EnsureMailbox(ctx, e.Paths.Root(), h); err != nil {
 			t.Fatal(err)
 		}
 	}

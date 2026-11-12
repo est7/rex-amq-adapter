@@ -102,7 +102,7 @@ func (f *Fake) Post(ctx context.Context, root, verb string, args ...string) (Sen
 	case "send":
 		for _, to := range strings.Split(fl["to"], ",") {
 			if to = strings.TrimSpace(to); to != "" {
-				if to == h.From {
+				if to == h.From && fl["allow-self"] != "true" {
 					return Sent{}, nil, fmt.Errorf("refusing send: recipient %q matches the sender", to)
 				}
 				h.To = append(h.To, to)
@@ -127,6 +127,9 @@ func (f *Fake) Post(ctx context.Context, root, verb string, args ...string) (Sen
 		refs = []string{orig.ID}
 	default:
 		return Sent{}, nil, fmt.Errorf("amq.Fake.Post: unknown verb %q", verb)
+	}
+	if r := fl["refs"]; r != "" {
+		refs = append(refs, strings.Split(r, ",")...)
 	}
 	if l := fl["labels"]; l != "" {
 		h.Labels = strings.Split(l, ",")
@@ -159,18 +162,24 @@ func (f *Fake) Post(ctx context.Context, root, verb string, args ...string) (Sen
 	}
 	s := Sent{ID: h.ID, To: h.To, Thread: h.Thread}
 	out, _ := json.Marshal(map[string]any{"id": s.ID, "to": s.To, "thread": s.Thread, "subject": h.Subject, "root": root})
+	if w := fl["wait-for"]; w != "" {
+		// Nothing drains while the fake waits, so a wait always times out,
+		// after delivering, as amq's does when no one drains in time.
+		return s, out, fmt.Errorf("amq %s: delivered %s, but --wait-for %s timed out", verb, s.ID, w)
+	}
 	return s, out, nil
 }
 
 // postFlags parses the flags of amq send and reply that the adapter passes.
 func postFlags(verb string, args []string) (map[string]string, error) {
-	known := map[string]bool{"me": true, "subject": true, "body": true, "kind": true, "priority": true, "labels": true, "context": true}
+	known := map[string]bool{"me": true, "subject": true, "body": true, "kind": true, "priority": true, "labels": true, "context": true, "refs": true, "wait-for": true, "wait-timeout": true}
 	switch verb {
 	case "send":
-		known["to"], known["thread"] = true, true
+		known["to"], known["thread"], known["allow-self"] = true, true, true
 	case "reply":
 		known["id"] = true
 	}
+	boolean := map[string]bool{"allow-self": true}
 	fl := map[string]string{}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -180,6 +189,13 @@ func postFlags(verb string, args []string) (map[string]string, error) {
 		name, value, inline := strings.Cut(strings.TrimLeft(a, "-"), "=")
 		if !strings.HasPrefix(a, "-") || !known[name] {
 			return nil, fmt.Errorf("amq.Fake %s: unknown argument %q", verb, a)
+		}
+		if boolean[name] {
+			if !inline {
+				value = "true"
+			}
+			fl[name] = value
+			continue
 		}
 		if !inline {
 			if i+1 >= len(args) {

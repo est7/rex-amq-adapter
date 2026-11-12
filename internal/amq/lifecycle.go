@@ -313,21 +313,26 @@ func ResolveBin() (string, error) {
 	return "", errors.New("amq not found on PATH, ~/.local/bin, or Homebrew; set REX_AMQ_AMQ")
 }
 
+// Poster sends mail (amq send or reply): CLI and Fake are Posters.
+type Poster interface {
+	Post(ctx context.Context, root, verb string, args ...string) (Sent, []byte, error)
+}
+
 // Send mails body to to, as from, as a status notice.
-func Send(ctx context.Context, amqBin, root, from, to, subject, body string) error {
-	return SendKind(ctx, amqBin, root, from, to, "status", subject, body)
+func Send(ctx context.Context, p Poster, root, from, to, subject, body string) error {
+	return SendKind(ctx, p, root, from, to, "status", subject, body)
 }
 
 // SendSystem mails body to to, in from's name, as system mail: labelled
 // SystemLabel, so the bounce check never reads it as from's own.
-func SendSystem(ctx context.Context, amqBin, root, from, to, subject, body string) error {
-	_, err := runAmq(ctx, amqBin, "send", "--root", root, "--me", from, "--to", to, "--kind", "status", "--priority", "normal", "--labels", SystemLabel, "--subject", subject, "--body", body)
+func SendSystem(ctx context.Context, p Poster, root, from, to, subject, body string) error {
+	_, _, err := p.Post(ctx, root, "send", "--me", from, "--to", to, "--kind", "status", "--priority", "normal", "--labels", SystemLabel, "--subject", subject, "--body", body)
 	return err
 }
 
 // SendKind mails body to to, as from, with an amq message kind.
-func SendKind(ctx context.Context, amqBin, root, from, to, kind, subject, body string) error {
-	_, err := runAmq(ctx, amqBin, "send", "--root", root, "--me", from, "--to", to, "--kind", kind, "--priority", "normal", "--subject", subject, "--body", body)
+func SendKind(ctx context.Context, p Poster, root, from, to, kind, subject, body string) error {
+	_, _, err := p.Post(ctx, root, "send", "--me", from, "--to", to, "--kind", kind, "--priority", "normal", "--subject", subject, "--body", body)
 	return err
 }
 

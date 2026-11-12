@@ -273,7 +273,7 @@ func TestSessionWatcherTellsTheNarrator(t *testing.T) {
 	if n := narratorInbox(t, e); len(n) != 0 {
 		t.Fatalf("nothing changed, yet: %+v", n)
 	}
-	if err := amq.Send(ctx, binOf(e), e.Paths.Root(), "codex-03", "codex-01", "done", "implemented"); err != nil {
+	if err := amq.Send(ctx, e.AMQ, e.Paths.Root(), "codex-03", "codex-01", "done", "implemented"); err != nil {
 		t.Fatal(err)
 	}
 	look()
@@ -288,7 +288,7 @@ func TestSessionWatcherTellsTheNarrator(t *testing.T) {
 	if kept, err := e.admit(recordOf(t, e, "codex-02")); err != nil || len(kept) != 1 {
 		t.Fatalf("the narrator's gate refused the watcher's notice: %v %v", kept, err)
 	}
-	if err := amq.Send(ctx, binOf(e), e.Paths.Root(), "codex-01", "codex-03", "next", "do more"); err != nil {
+	if err := amq.Send(ctx, e.AMQ, e.Paths.Root(), "codex-01", "codex-03", "next", "do more"); err != nil {
 		t.Fatal(err)
 	}
 	look()

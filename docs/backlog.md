@@ -6,16 +6,15 @@ and from the two watchdog audits before it. File and line references were
 taken at `9a12346` unless stated otherwise; check them against the code
 before acting on one.
 
-## Unplanned — waiting on the lifespan decision
+## Unplanned
 
-The adapter's expected lifespan is still open (agent-post is meant to
-replace it). That decides whether the M/L refactors (U1, U2, U4) are worth
-doing.
+est9 decided on 2026-11-12 that the adapter stays (it is not waiting for
+agent-post), so the M/L refactors below are worth doing. U2 is done.
 
 | ID | Finding | Effort | Notes |
 |----|---------|--------|-------|
 | U1 | **Harness static facts have no single owner.** About 60 per-kind branches across 12 files. `core.Dirs` (`internal/core/harness.go`, plan 001) is the start of a home for them. The rest: launch/resume argv (`app/summon.go:362-391`), session env vars (`app/caller.go:20-28`), the hook event vocabulary (defined in both `install/install.go:104-155,667` and `app/hook.go:17-30` plus `hookEventNames`), the agy settings path (`install.go:57`, `trust.go:42`), and Claude's supervisor roster parsed twice (`app/claudejob.go:40,162`). | M–L | Static facts only. Behavioral identity checks (`hook.go:56/62/70`, `adopt.go:56-72`, `lease.go:108`) stay as branches in the flow; see Rejected. |
-| U2 | **AMQ has no seam.** `Terminal` fakes Rex, but amq is called as package functions, so most app test files need the real `amq` binary (`lifecycle_test.go:18-23`, `realAmqEnv`). On a machine without it, about 75% of app tests **skip** while `-short` reports green; release CI runs `go test ./...` so pure-Go suites execute on every tag while real-AMQ suites skip. | M | Do this first among U2/U4: it makes U4 cheap to test. A pure call-site refactor. |
+| U2 | **Done (amq/s2-queue-seam): amq is driven through `Env.AMQ` (`Queue`), with `amq.Fake` in tests.** Was: **AMQ has no seam.** `Terminal` fakes Rex, but amq is called as package functions, so most app test files need the real `amq` binary (`lifecycle_test.go:18-23`, `realAmqEnv`). On a machine without it, about 75% of app tests **skip** while `-short` reports green; release CI runs `go test ./...` so pure-Go suites execute on every tag while real-AMQ suites skip. | M | Do this first among U2/U4: it makes U4 cheap to test. A pure call-site refactor. |
 | U3 | **Remaining core policy tests.** `TinyPane` and `GuardSummon` still have no test in `internal/core`; `Assess` is tested from `internal/transcript`. | S | Can go any time (`ErrorRecipient` direct tests shipped in v0.12.0). |
 | U4 | **Pure decisions inside app, interleaved with I/O.** Adopt's re-adoption rule (`app/adopt.go:148-212`, where `Rex.Foreground` and the consuming `Store.TakeSummon` sit mid-block and must be hoisted with care) and summon target resolution and refusals (`app/summon.go:91-169`). | M ×2 | Depends on U2. Existing world tests stay unedited as the parity oracle; new core table tests are additive. |
 | U5 | Minor duplication. The inject argv layout is positional in 3 places (`amq/wake.go:47`, `amq/lifecycle.go:149`, `cmd/rex-amq-adapter/main.go:245`). Trust derivation differs between `cmd/rex-amq-adapter/main.go:549` and `app/summon.go:343`. summon's deliver-after-adopt step lives untested in `main.go:600-620`. The three log writers (`summonLog`, `wdLog`, `blockedLog`) are hand-rolled separately. | S each | Low change pressure. If the log writers are merged, keep plan 002's rule: an audit log never decides the outcome of the action it records. |
