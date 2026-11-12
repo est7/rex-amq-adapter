@@ -312,8 +312,12 @@ recorded `auto` under its launch label, `<role> | <task>`, and adoption brings
 it to the agent's pane label. A tab the ledger does not know is a follower only
 while it shows Rex's placeholder, `Window ` and eight lowercase hex digits
 (`Window 4c6fe88d`); it is recorded `auto` when first seen so. A follower is
-renamed only while it holds exactly one block whose agent is live: a tab of
-several agents keeps its label until it holds one again, and the adapter's
+renamed to its agent's pane label only while it holds exactly one block whose
+agent is live. A follower of several blocks that still shows the pane label it
+was last given drops to that label's task (`orchestrator(claude-03) | audit`
+becomes `audit`), since one member's label would read as the whole team's in
+`who`'s TAB column; one showing no task keeps its label until it holds one
+block again. The adapter's
 tabs of other kinds (the watchdog's `overflow`) stay unrecorded and are never
 renamed. A follower whose label is neither the placeholder, the label the
 adapter last gave it, nor its agent's current pane label was renamed by
@@ -1170,7 +1174,9 @@ an Epic its session is linked with (`link`/`unlink`) mail each other, and
 nothing else crosses sessions. The narrator takes no member mail, only the
 adapter's own notices (provenance `system`, never a header label or a sender
 named `system`); its one message into the Epic is a control directive to the
-orchestrator carrying a request id. A handle the adapter never adopted (the
+orchestrator carrying a request id, sent with the managed `send --control
+<request id>` (the only path that records `op: control`; a plain send from a
+narrator is refused). A handle the adapter never adopted (the
 user, a script) still reaches ordinary members, never a narrator or a Personal
 agent. A move of a handle to another session starts a generation
 (`Record.Generation`), and mail addressed to an earlier one is fenced.

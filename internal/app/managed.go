@@ -101,6 +101,16 @@ func (m managed) post(ctx context.Context, verb string, args []string) (int, err
 		if to, args, found = takeFlag(args, "to", true); !found || to == "" {
 			return 2, fmt.Errorf("%w: send needs --to", ErrUsage)
 		}
+		// A narrator relays a user-control directive to its orchestrator
+		// under the request id the personal agent gave it: the only mail
+		// the gateway lets it send into its Epic (core.OpControl).
+		var control string
+		if control, args, found = takeFlag(args, "control", true); found {
+			if control == "" {
+				return 2, fmt.Errorf("%w: --control needs the directive's request id", ErrUsage)
+			}
+			o.Op = core.Operation{Kind: core.OpControl, ControlRequestID: control}
+		}
 		for _, h := range strings.Split(to, ",") {
 			if h = strings.TrimSpace(h); h != "" {
 				o.To = append(o.To, core.Handle(h))

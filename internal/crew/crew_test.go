@@ -72,7 +72,7 @@ func TestBuiltinCrewsAreCompleteAndSmall(t *testing.T) {
 			t.Errorf("built-in crew %s has no conventions: %+v", crew, got[crew])
 		}
 	}
-	if roles := strings.Join(got[""].Roles, ","); roles != "architect,editor,implementer,narrator,orchestrator,qa,reviewer,writer" {
+	if roles := strings.Join(got[""].Roles, ","); roles != "architect,editor,implementer,narrator,orchestrator,personal,qa,reviewer,writer" {
 		t.Errorf("shared roles: %s", roles)
 	}
 	for _, e := range entries {

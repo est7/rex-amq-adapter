@@ -349,7 +349,7 @@ func (e Env) identityNotice(ctx context.Context, a Adoption, unread int) string 
 		// linked narrator: neither is told to reach its session's agents.
 		mates = ""
 	}
-	notice := joinNotices(core.SessionNotice(a.Record.Handle, e.EnvCommand(), unread), mates) +
+	notice := joinNotices(core.SessionNotice(a.Record.Handle, a.Record.Role, e.EnvCommand(), unread), mates) +
 		"\n" + core.TaskNotice(a.Record.Handle, a.Record.Role, e.SelfBin+" title", a.Record.Task)
 	if brief := core.BriefNotice(e.briefing(ctx, a)); brief != "" {
 		notice += "\n\n" + brief
