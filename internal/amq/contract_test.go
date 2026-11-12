@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -31,15 +32,36 @@ type contractTarget struct {
 	name  string
 	q     queue
 	wakes func(ctx context.Context, root, handle string) (WakeState, error)
+	// kill makes handle's waker die as a crash would, leaving its lock.
+	kill func(t *testing.T, root, handle string)
 }
 
 // targets is the fake, always, and amq itself when it is installed: every
 // contract below must hold for both, so the fake cannot drift from amq.
 func targets(t *testing.T) []contractTarget {
 	f := &Fake{}
-	out := []contractTarget{{"fake", f, func(_ context.Context, root, h string) (WakeState, error) { return f.Waker(root, h), nil }}}
+	out := []contractTarget{{"fake", f,
+		func(_ context.Context, root, h string) (WakeState, error) { return f.Waker(root, h), nil },
+		func(_ *testing.T, root, h string) { f.Kill(root, h) }}}
 	if bin, err := ResolveBin(); err == nil {
-		out = append(out, contractTarget{"amq", CLI{Bin: bin}, func(ctx context.Context, root, h string) (WakeState, error) { return WakeCheck(ctx, bin, root, h) }})
+		out = append(out, contractTarget{"amq", CLI{Bin: bin},
+			func(ctx context.Context, root, h string) (WakeState, error) { return WakeCheck(ctx, bin, root, h) },
+			func(t *testing.T, root, h string) {
+				st, err := WakeCheck(context.Background(), bin, root, h)
+				if err != nil || st.PID <= 0 {
+					t.Fatalf("no waker to kill: %+v %v", st, err)
+				}
+				if err := syscall.Kill(st.PID, syscall.SIGKILL); err != nil {
+					t.Fatal(err)
+				}
+				for i := 0; i < 50; i++ {
+					if st, _ := WakeCheck(context.Background(), bin, root, h); !st.Live {
+						return
+					}
+					time.Sleep(100 * time.Millisecond)
+				}
+				t.Fatal("the killed waker still reports live")
+			}})
 	} else {
 		t.Logf("amq not installed: the contract runs against the fake only (%v)", err)
 	}
@@ -246,6 +268,44 @@ func TestThreadOpenIsAmqsOrStated(t *testing.T) {
 			}
 			if err != nil || len(open.Obligations) != 1 || open.Obligations[0].OwedBy.Handle != "bob" {
 				t.Fatalf("amq's open obligations: %+v %v", open, err)
+			}
+		})
+	}
+}
+
+// A crashed waker whose injector became unusable is not brought back: a
+// recovery restarts the process, and amq checks the injector again.
+func TestQueueContractDoesNotRecoverAWakerWithABrokenInjector(t *testing.T) {
+	for _, tc := range targets(t) {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			root := filepath.Join(t.TempDir(), "root")
+			if err := tc.q.EnsureMailbox(ctx, root, "bob"); err != nil {
+				t.Fatal(err)
+			}
+			dir := t.TempDir()
+			inject := filepath.Join(dir, "inject.sh")
+			if err := os.WriteFile(inject, []byte("#!/bin/sh\necho AMQ_INJECT_PROGRESS=deferred >&2\nexit 1\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			w := Waker{InjectVia: inject, Server: "unix:///tmp/rex.sock", Block: "block:one", Handle: "bob", Root: root}
+			if st, _, err := tc.q.Ensure(ctx, w, filepath.Join(dir, "logs")); err != nil || !st.Live {
+				t.Fatalf("start: %+v %v", st, err)
+			}
+			t.Cleanup(func() { _, _ = tc.q.RetireHandle(context.Background(), root, "bob") })
+			tc.kill(t, root, "bob")
+			if err := os.Chmod(inject, 0o666); err != nil {
+				t.Fatal(err)
+			}
+			short, stop := context.WithTimeout(ctx, 4*time.Second)
+			st, _, err := tc.q.Ensure(short, w, filepath.Join(dir, "logs"))
+			stop()
+			if err == nil || st.Live {
+				t.Fatalf("recovered a waker with an unusable injector: %+v %v", st, err)
+			}
+			if got, _ := tc.wakes(ctx, root, "bob"); got.Live {
+				t.Fatalf("a waker is live after the refused recovery: %+v", got)
 			}
 		})
 	}

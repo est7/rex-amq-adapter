@@ -315,7 +315,14 @@ func (f *Fake) Ensure(ctx context.Context, w Waker, logDir string) (WakeState, W
 		if err := f.fail("wake repair", w.Root, w.Handle); err != nil {
 			return WakeState{}, decision, err
 		}
-		fs.wakers[wakerKey(w.Root, w.Handle)].Live, fs.wakers[wakerKey(w.Root, w.Handle)].Status = true, "valid"
+		// A repair restarts the waker's process, so amq checks the injector
+		// again: a stale lock whose injector became unusable stays dead.
+		if err := launchable(w.InjectVia); err != nil {
+			return WakeState{}, decision, fmt.Errorf("waker for %s not live: %w", w.Handle, err)
+		}
+		fs.seq++
+		rep := fs.wakers[wakerKey(w.Root, w.Handle)]
+		rep.Live, rep.Status, rep.PID = true, "valid", 100000+fs.seq
 	default:
 		if err := f.fail("wake retire", w.Root, w.Handle); err != nil {
 			return WakeState{}, decision, err
