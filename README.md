@@ -221,7 +221,8 @@ Inspect state:
 
 ```bash
 rex-amq-adapter who          # running agents in this Rex session with their roles and tabs, including yourself
-rex-amq-adapter who --all    # also this session's departed agents reserved for a resume
+rex-amq-adapter who --all    # also this session's departed agents reserved for a resume, and its narrator
+rex-amq-adapter view         # a session's view.json (the narrator writes it; its orchestrator and a linked personal agent read it)
 rex-amq-adapter events --json # stream this session's agents and mail as NDJSON (read-only; --tab, --session S, --all)
 rex-amq-adapter await <block> # wait for an agent you started; prints its outcome as JSON
 rex-amq-adapter collect      # retire agents whose pane closed or process died
@@ -280,8 +281,8 @@ or you), `inject/<handle>.jsonl` (every doorbell
 attempt and why it waited, trimmed past 1 MB; `who` shows the latest as LAST
 DOORBELL, e.g. `deferred box_not_found 23m` when the adapter cannot find an
 agent's input box, or `-` when no mail is waiting and the last attempt was not
-accepted), `watch/` (locks of orchestrator watchers), `watchdog/` (open recovery episodes), `logs/watchdog.log`, `logs/<handle>.log` (amq
-wake), `logs/watch-<handle>.log` (an orchestrator watcher), `logs/hooks.log`
+accepted), `watch/` (locks of session watchers), `watchdog/` (open recovery episodes), `logs/watchdog.log`, `logs/<handle>.log` (amq
+wake), `logs/watch-<session>.log` (a session watcher), `logs/hooks.log`
 (hook failures; hooks run with stderr discarded).
 
 ## Development
