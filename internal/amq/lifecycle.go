@@ -296,6 +296,9 @@ func messageIDs(dir string) ([]string, error) {
 // ResolveBin finds amq on PATH, then in ~/.local/bin and Homebrew.
 func ResolveBin() (string, error) {
 	if p := os.Getenv("REX_AMQ_AMQ"); p != "" {
+		if st, err := os.Stat(p); err != nil || st.IsDir() {
+			return "", fmt.Errorf("REX_AMQ_AMQ=%q names no amq binary", p)
+		}
 		return p, nil
 	}
 	if p, err := exec.LookPath("amq"); err == nil {
