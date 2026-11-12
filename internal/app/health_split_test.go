@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"github.com/est7/rex-amq-adapter/internal/amq"
 	"os"
 	"path/filepath"
 	"strings"
@@ -66,8 +67,8 @@ func TestHungToolCallsAreToldOncePerCallID(t *testing.T) {
 
 	writeRollout(t, e.TranscriptHome, codexCallA, codexOutA, codexCallB, codexOutB, codexCallC)
 	failing := e
-	failing.AmqBin = filepath.Join(t.TempDir(), "amq-fails")
-	if err := os.WriteFile(failing.AmqBin, []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
+	failing.AMQ = amq.CLI{Bin: filepath.Join(t.TempDir(), "amq-fails")}
+	if err := os.WriteFile(realBin(t, failing), []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	failing.watchdog(context.Background(), orch, s)
@@ -137,27 +138,7 @@ func TestASlowWatchdogPollDoesNotHoldUpTheStopHook(t *testing.T) {
 			case "rex capture":
 				wd.Rex = &gatedTerm{fakeTerm: term, block: "block:c", entered: entered, release: release}
 			case "amq send":
-				dir := t.TempDir()
-				wd.AmqBin = filepath.Join(dir, "amq-slow")
-				script := "#!/bin/sh\ntouch '" + filepath.Join(dir, "entered") + "'\n" +
-					"i=0; while [ ! -f '" + filepath.Join(dir, "release") + "' ] && [ $i -lt 60 ]; do sleep 0.05; i=$((i+1)); done\n" +
-					"exec '" + e.AmqBin + "' \"$@\"\n"
-				if err := os.WriteFile(wd.AmqBin, []byte(script), 0o700); err != nil {
-					t.Fatal(err)
-				}
-				go func() {
-					for {
-						if _, err := os.Stat(filepath.Join(dir, "entered")); err == nil {
-							close(entered)
-							return
-						}
-						time.Sleep(10 * time.Millisecond)
-					}
-				}()
-				go func() {
-					<-release
-					_ = os.WriteFile(filepath.Join(dir, "release"), nil, 0o600)
-				}()
+				wd.AMQ = &slowPost{Queue: e.AMQ, entered: entered, release: release}
 			}
 			done := make(chan struct{})
 			go func() {
@@ -237,4 +218,22 @@ func TestAStopHookThatCannotMarkTheErrorTellsTheDesktop(t *testing.T) {
 	if e.flagged(rec) {
 		t.Fatal("claude-04 reads as flagged though the mark was never written")
 	}
+}
+
+// slowPost is a Queue whose sends wait for release (at most 3 s, as a slow
+// amq would), signalling entered when the first one starts.
+type slowPost struct {
+	Queue
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *slowPost) Post(ctx context.Context, root, verb string, args ...string) (amq.Sent, []byte, error) {
+	s.once.Do(func() { close(s.entered) })
+	select {
+	case <-s.release:
+	case <-time.After(3 * time.Second):
+	}
+	return s.Queue.Post(ctx, root, verb, args...)
 }

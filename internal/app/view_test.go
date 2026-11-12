@@ -32,7 +32,7 @@ func viewWorld(t *testing.T) Env {
 		store.Record{Handle: "pi-06", Kind: core.Pi, Role: core.PersonalRole, SessionID: "session:q"},
 	)
 	for _, h := range []string{"claude-01", "claude-02", "codex-03", "pi-04", "pi-05", "pi-06"} {
-		if err := amq.EnsureMailbox(context.Background(), e.AmqBin, e.Paths.Root(), h); err != nil {
+		if err := e.AMQ.EnsureMailbox(context.Background(), e.Paths.Root(), h); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -94,11 +94,12 @@ func refs(ms []ViewMessage) []string {
 // are coverage gaps, never read.
 func TestSessionViewTwoTierRefresh(t *testing.T) {
 	e := viewWorld(t)
+	needsAmq(t, e, "amq's open-obligation scan")
 	ctx := context.Background()
 	report := sendID(t, e, "claude-02", "--to", "claude-01", "--kind", "status", "--subject", "done", "--body", "CONTROL: tests pass on token refresh")
 	review := sendID(t, e, "claude-01", "--to", "codex-03", "--kind", "review_request", "--subject", "review token refresh", "--body", "CONTROL: please review")
 	peer := sendID(t, e, "claude-02", "--to", "codex-03", "--subject", "handoff", "--body", "PEER: the diff is on the branch")
-	if err := amq.Send(ctx, e.AmqBin, e.Paths.Root(), "codex-03", "claude-02", "raw", "RAW: sent without the adapter"); err != nil {
+	if err := amq.Send(ctx, e.AMQ, e.Paths.Root(), "codex-03", "claude-02", "raw", "RAW: sent without the adapter"); err != nil {
 		t.Fatal(err)
 	}
 	raw := unread(t, e, "claude-02")[0]
@@ -176,6 +177,7 @@ func TestSessionViewTwoTierRefresh(t *testing.T) {
 // agent's to read; a worker and an unlinked personal agent are refused.
 func TestSessionViewReadAccess(t *testing.T) {
 	e := viewWorld(t)
+	noOpenObligations(e) // access is the point here, not obligations
 	ctx := context.Background()
 	if _, err := e.ReadSessionView(ctx, Location{Block: "block:pi-05"}, ""); !errors.Is(err, ErrNoView) {
 		t.Fatalf("before any refresh: %v", err)
@@ -221,7 +223,7 @@ func TestSessionViewNarratorReadsByID(t *testing.T) {
 	e := viewWorld(t)
 	ctx := context.Background()
 	peer := sendID(t, e, "claude-02", "--to", "codex-03", "--subject", "handoff", "--body", "PEER: the diff is on the branch")
-	if err := amq.Send(ctx, e.AmqBin, e.Paths.Root(), "codex-03", "claude-02", "raw", "RAW: sent without the adapter"); err != nil {
+	if err := amq.Send(ctx, e.AMQ, e.Paths.Root(), "codex-03", "claude-02", "raw", "RAW: sent without the adapter"); err != nil {
 		t.Fatal(err)
 	}
 	raw := unread(t, e, "claude-02")[0]

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,22 +14,40 @@ import (
 	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
-// amqThat wraps the real amq in a script, so a test can fail one of its
-// commands: while the file fail exists, a command matching the shell pattern
-// condition exits 1.
+// amqThat makes one of amq's commands fail while the file fail exists. The
+// condition is a shell pattern over amq's argv: under amq itself a wrapper
+// script applies it; under amq.Fake it names the fake's step that runs the
+// same command, so the test's assertions run in both.
 func amqThat(t *testing.T, e *Env, fail, condition string) {
 	t.Helper()
+	if f, ok := e.AMQ.(*amq.Fake); ok {
+		step, known := map[string]string{
+			`*" send "*`:        "send",
+			`*" check "*`:       "wake check",
+			`*" wake --root "*`: "wake start",
+		}[condition]
+		if !known {
+			t.Fatalf("amqThat: no fake step for condition %s", condition)
+		}
+		e.AMQ = f.WithFail(func(op string, _ []string) error {
+			if _, err := os.Stat(fail); err == nil && op == step {
+				return fmt.Errorf("amq %s: injected failure", op)
+			}
+			return nil
+		})
+		return
+	}
 	script := filepath.Join(t.TempDir(), "amq.sh")
-	text := "#!/bin/sh\nif [ -e '" + fail + "' ]; then case \" $* \" in " + condition + ") exit 1 ;; esac; fi\nexec '" + e.AmqBin + "' \"$@\"\n"
+	text := "#!/bin/sh\nif [ -e '" + fail + "' ]; then case \" $* \" in " + condition + ") exit 1 ;; esac; fi\nexec '" + realBin(t, *e) + "' \"$@\"\n"
 	if err := os.WriteFile(script, []byte(text), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	e.AmqBin = script
+	e.AMQ = amq.CLI{Bin: script}
 }
 
 func windowAgent(t *testing.T, e Env, h core.Handle, kind core.Kind, role string) store.Record {
 	t.Helper()
-	if err := amq.EnsureMailbox(context.Background(), e.AmqBin, e.Paths.Root(), string(h)); err != nil {
+	if err := e.AMQ.EnsureMailbox(context.Background(), e.Paths.Root(), string(h)); err != nil {
 		t.Fatal(err)
 	}
 	r := store.Record{Handle: h, Kind: kind, Role: role, Server: "unix:///fake.sock", BlockID: "block:" + string(h), SessionID: "session:s", WindowID: "window:1", AgentPID: os.Getpid(), AgentSessionID: "s-" + string(h)}
@@ -315,7 +334,7 @@ func TestAResumedAgentKeepsItsRoleWhateverThePaneSays(t *testing.T) {
 	ctx := context.Background()
 	loc := Location{Block: block}
 	departed := time.Now().Add(-time.Hour)
-	if err := amq.EnsureMailbox(ctx, e.AmqBin, e.Paths.Root(), "codex-01"); err != nil {
+	if err := e.AMQ.EnsureMailbox(ctx, e.Paths.Root(), "codex-01"); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.Store.PutRecord(store.Record{Handle: "codex-01", Kind: core.Codex, Role: "reviewer", Server: "unix:///fake.sock", BlockID: "block:gone", AgentSessionID: "s1", DepartedAt: &departed}); err != nil {

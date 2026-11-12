@@ -348,8 +348,9 @@ several concurrent suites fail the test instead of retrying.
 
 `.github/workflows/ci.yml` builds, vets, and runs the short tests with and
 without the race detector plus `govulncheck` on every push to `main` and every
-pull request; tests that need a real `amq` or Rex skip there, so run the full
-suite locally before a release.
+pull request. The app tests run there against `amq.Fake`; the few that need
+amq itself, and the Rex end-to-end tests, skip. Before a release run the full
+suite locally against amq too: `REX_AMQ_REAL=1 go test ./...`.
 
 To release, run the tests, then push an annotated tag whose message body is
 the release notes (`git tag -a vX.Y.Z -F notes.txt`, subject line `vX.Y.Z`).

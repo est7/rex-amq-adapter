@@ -1381,7 +1381,14 @@ are thin shells. Tests cover the core directly and the shells against fakes and
 temporary directories. `internal/e2e` runs the real binary against a private Rex
 server and real `amq wake`, with scripted agents that report OSC 7501 and draw
 an input box, so a dead waker or a crash can be injected without a model. It
-skips under `go test -short` or when `rex` or `amq` is missing. An end-to-end
+skips under `go test -short` or when `rex` or `amq` is missing. The app suite
+drives amq through `Env.AMQ` (`Queue`, the way `Env.Rex` is a `Terminal`):
+`amq.Fake` writes amq's mailbox files and keeps wakers in memory, so the suite
+runs where amq is not installed; `REX_AMQ_REAL=1` runs the same suite against
+amq itself. `TestQueueContract` runs one set of scenarios against both, so the
+fake cannot drift from amq. A test of what only amq does (its read verbs, open
+obligations, a real waker typing a doorbell) calls `needsAmq` and runs only
+with `REX_AMQ_REAL=1`. An end-to-end
 script drives real agents in scratch Rex tabs.
 
 Connecting a further agent follows [adding-an-agent-kind.md](adding-an-agent-kind.md).
