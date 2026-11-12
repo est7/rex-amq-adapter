@@ -1,0 +1,84 @@
+{
+  "binary_sha256": "0038fc798d97163911a68ced12efb3a076157be03d98ff31034d23bfa068cd5f",
+  "probes": [
+    {
+      "args": [
+        "--help"
+      ],
+      "exit": 0,
+      "stdout": "rex-amq-adapter: AMQ messaging between coding agents in Rex terminals\n\nAgent and user commands:\n  env                       print the AMQ identity of the agent running it, and its\n                            Rex pane when REX_BLOCK names another (eval it)\n  title [TASK...]           show TASK after your role and handle in this pane's\n                            label (\"<role>(<handle>) | <task>\"); no TASK clears it\n  who [--all]               list agents in this Rex session only, with their roles\n                            and tabs;\n                            --all adds this session's departed agents reserved for a resume\n                            and the narrator and personal agents ordinary views leave out\n  events --json [--session S | --tab | --all]\n                            stream this Rex session's agents and mail as NDJSON\n                            (snapshot, then upsert/remove/event/heartbeat\n                            frames); read-only. --tab: this tab only; --all:\n                            every agent of the server\n  await <block> [--timeout D]\n                            wait for the agent started in a block, then print\n                            its outcome as JSON; exits 0 only when adopted\n  collect                   reconcile records with Rex now\n  join [CREW] [--role R]    take role R in crew CREW where you stand: name this\n                            tab after CREW (while no other agent is in it),\n                            relabel your pane, and print the briefing; without\n                            --role, take the crew's lead\n  tab <crew> [--role R] [-c DIR] [-s SESSION] -- COMMAND...\n                            open a Rex tab for a crew, its first pane labelled\n                            with role R, running COMMAND (an agent and its brief)\n  crews [dir]               list the crews (named by a Rex tab), their lead and\n                            members, and the roles (named by a pane label) that\n                            brief agents working in dir\n  summon <handle|role> --subject S --body B [--kind K] [--grant FILE | --asked \"WORDS\"] [--harness H] [--cwd DIR]\n                            send to a peer by handle or role: a live one gets the\n                            mail; a departed one of this session is resumed in a\n                            pane beside you, then gets it; none starts one for the\n                            role (its brief is the message), awaits its adoption,\n                            then delivers. Guards: a request kind only, no cycle,\n                            depth 2 at most, 6 live agents per session at most, and\n                            a new agent only with the user's words or grant file\n  send|reply|read|drain|thread|trace|dlq|list [AMQ FLAGS...]\n                            amq's mail commands, run as you on the adapter's\n                            root after the gateway allows them: Epics do not\n                            mail each other, a narrator takes no member mail,\n                            and mail addressed to you before you moved to\n                            another session stays fenced. --me, --root,\n                            --session, and --project are the adapter's to set\n  link [EPIC_SESSION]       (a personal agent) let this session and the\n                            narrator of Epic session EPIC_SESSION exchange\n                            mail; without one, list your links\n  unlink EPIC_SESSION       revoke such a link; both take effect at once\n  view [--session S]        print a session's view (view.json): its members, open\n                            obligations, recent mail, and what it could not cover;\n                            the narrator's, orchestrator's, or a linked personal\n                            agent's to read\n  view refresh [--summary TEXT|@FILE]\n                            (the narrator) rebuild the view without moving mail or\n                            writing a receipt, keeping or replacing its narrative\n  view read --ids ID[,ID...]\n                            (the narrator) read messages of its session by id,\n                            receipt-free; mail from elsewhere is a coverage gap\n  trust <dir>               derive, for a linked worktree of a repository the user\n                            already trusts in Antigravity, that trust for DIR, so a\n                            peer started there meets no folder dialog; writes\n                            nothing for any other directory (tab runs it for -c)\n\nInstallation:\n  setup|status|remove       install, inspect, or remove the skill, hooks, and\n                            harness settings (agy title, shared supervisors off,\n                            native task tools on)\n\nInternal (run by installed hooks and by amq wake):\n  hook <event> --agent K    session-start | user-prompt-submit | post-tool-use | pre-invocation | stop | stop-failure | session-end | mail | settle\n  inject <server> <block> <handle> <root> <payload>\n  __internal skill          print the agent guide\n  version\n",
+      "stderr": "",
+      "record_task": "audit candidate"
+    },
+    {
+      "args": [
+        "crews",
+        "--help"
+      ],
+      "exit": 0,
+      "stdout": "CREW       CONVENTIONS  LEAD         ROLES                                                                         FROM\n(any tab)  -            -            architect, editor, implementer, narrator, orchestrator, qa, reviewer, writer  built-in\ndesign     yes          architect    architect, architect                                                          built-in\ndev        yes          architect    architect, implementer, reviewer                                              built-in\ndocs       yes          architect    architect, writer, editor                                                     built-in\npair       yes          implementer  implementer, reviewer                                                         built-in\nship       yes          implementer  implementer, reviewer, qa                                                     built-in\n",
+      "stderr": "",
+      "record_task": "audit candidate"
+    },
+    {
+      "args": [
+        "crews",
+        "--json"
+      ],
+      "exit": 0,
+      "stdout": "CREW       CONVENTIONS  LEAD         ROLES                                                                         FROM\n(any tab)  -            -            architect, editor, implementer, narrator, orchestrator, qa, reviewer, writer  built-in\ndesign     yes          architect    architect, architect                                                          built-in\ndev        yes          architect    architect, implementer, reviewer                                              built-in\ndocs       yes          architect    architect, writer, editor                                                     built-in\npair       yes          implementer  implementer, reviewer                                                         built-in\nship       yes          implementer  implementer, reviewer, qa                                                     built-in\n",
+      "stderr": "",
+      "record_task": "audit candidate"
+    },
+    {
+      "args": [
+        "who",
+        "--json"
+      ],
+      "exit": 2,
+      "stdout": "",
+      "stderr": "flag provided but not defined: -json\nUsage of who:\n  -all\n    \talso list this session's departed agents still reserved for a resume, and its narrator and personal agents\n",
+      "record_task": "audit candidate"
+    },
+    {
+      "args": [
+        "title",
+        "--help"
+      ],
+      "exit": 0,
+      "stdout": "qa(codex-qa-probe) | --help\n",
+      "stderr": "read the tab of block:qa-probe: rex target not found: \n",
+      "record_task": "--help"
+    },
+    {
+      "args": [
+        "join",
+        "--help"
+      ],
+      "exit": 2,
+      "stdout": "",
+      "stderr": "Usage of join:\n  -role string\n    \tthe role to take (default: the crew's lead)\nusage: rex-amq-adapter join [CREW] [--role R]\n",
+      "record_task": "--help"
+    },
+    {
+      "args": [
+        "events",
+        "--help"
+      ],
+      "exit": 2,
+      "stdout": "",
+      "stderr": "Usage of events:\n  -all\n    \twatch every agent of the Rex server\n  -json\n    \twrite NDJSON frames (the only format)\n  -session string\n    \twatch Rex session S\n  -tab\n    \twatch the caller's tab only\n",
+      "record_task": "--help"
+    },
+    {
+      "args": [
+        "view",
+        "--help"
+      ],
+      "exit": 2,
+      "stdout": "",
+      "stderr": "rex-amq-adapter: flag: help requested\nusage: rex-amq-adapter view [--session S] | view refresh [--summary TEXT|@FILE] | view read --ids ID[,ID...]\n",
+      "record_task": "--help"
+    }
+  ]
+}
