@@ -43,6 +43,9 @@ type Header struct {
 	Subject string    `json:"subject"`
 	Created time.Time `json:"created"`
 	Labels  []string  `json:"labels"`
+	// Priority is urgent, normal, or low; amq reads a missing one as normal.
+	Priority string `json:"priority,omitempty"`
+	Kind     string `json:"kind,omitempty"`
 	// Context is the sender's context object, of which only the adapter's
 	// own key is read (ContextOf).
 	Context map[string]json.RawMessage `json:"context,omitempty"`

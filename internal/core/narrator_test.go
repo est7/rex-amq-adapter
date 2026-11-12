@@ -43,3 +43,38 @@ func TestNarratorStealthInSessionPolicy(t *testing.T) {
 		t.Fatalf("departure mail went to %v", to)
 	}
 }
+
+// A session's pulse is order-independent; a departure or new attention is
+// urgent, a change of task normal, mail alone low, and no change is nothing.
+func TestSessionWatcherPulse(t *testing.T) {
+	a := PulseMember{Handle: "claude-01", Role: OrchestratorRole, Live: true, Task: "plan", LastMail: "m1"}
+	b := PulseMember{Handle: "codex-02", Role: "reviewer", Live: true, LastMail: "m0", Attention: []string{"y@2", "x@1"}}
+	p := SessionPulse{Members: []PulseMember{a, b}}
+	q := SessionPulse{Members: []PulseMember{{Handle: b.Handle, Role: b.Role, Live: true, LastMail: "m0", Attention: []string{"x@1", "y@2"}}, a}}
+	if p.Digest() != q.Digest() || ComparePulse(p, q).Priority != "" {
+		t.Fatal("the pulse depends on order")
+	}
+	mail := a
+	mail.LastMail = "m2"
+	if c := ComparePulse(p, SessionPulse{Members: []PulseMember{mail, b}}); c.Priority != PriorityLow {
+		t.Fatalf("mail: %+v", c)
+	}
+	task := a
+	task.Task, task.LastMail = "build", "m2"
+	if c := ComparePulse(p, SessionPulse{Members: []PulseMember{task, b}}); c.Priority != PriorityNormal {
+		t.Fatalf("task: %+v", c)
+	}
+	gone := a
+	gone.Live = false
+	if c := ComparePulse(p, SessionPulse{Members: []PulseMember{gone, b}}); c.Priority != PriorityUrgent {
+		t.Fatalf("departure: %+v", c)
+	}
+	if c := ComparePulse(p, SessionPulse{Members: []PulseMember{b}}); c.Priority != PriorityUrgent {
+		t.Fatalf("a member collected away: %+v", c)
+	}
+	stuck := b
+	stuck.Attention = append(slices.Clone(b.Attention), "turn_error@3")
+	if c := ComparePulse(p, SessionPulse{Members: []PulseMember{a, stuck}}); c.Priority != PriorityUrgent || len(c.Lines) != 1 || c.Lines[0] != "codex-02: turn error" {
+		t.Fatalf("attention: %+v", c)
+	}
+}

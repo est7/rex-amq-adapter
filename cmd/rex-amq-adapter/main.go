@@ -463,18 +463,17 @@ func runEvents(args []string) int {
 	return 0
 }
 
-// runWatch is the orchestrator watcher, started by a orchestrator's hooks. It ends with
-// its orchestrator.
-func runWatch(server, handle string) int {
-	h, err := core.ParseHandle(handle)
-	if err != nil {
-		return fail(err)
+// runWatch is a session's watcher, started by the hooks of its orchestrator
+// or narrator. It ends when the session has neither.
+func runWatch(server, session string) int {
+	if server == "" || session == "" {
+		return fail(errors.New("__internal watch: want <server> <session>"))
 	}
 	env, err := app.NewEnv(server)
 	if err != nil {
 		return fail(err)
 	}
-	if err := env.WatchOrchestrator(context.Background(), h); err != nil {
+	if err := env.WatchSession(context.Background(), core.SessionKey{Server: server, SessionID: session}); err != nil {
 		return fail(err)
 	}
 	return 0

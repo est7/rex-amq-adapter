@@ -357,7 +357,7 @@ func TestWatchdogRecoversTheOrchestratorsOwnPane(t *testing.T) {
 	if term.windows[orch.BlockID] != "window:overflow" {
 		t.Fatalf("the orchestrator's block was left detached: window %q, %s", term.windows[orch.BlockID], acted(term))
 	}
-	if err := e.watchOnce(context.Background(), orch); err != nil {
+	if err := e.watchOnce(context.Background(), core.SessionKey{Server: s.server, SessionID: s.id}, []store.Record{orch}); err != nil {
 		t.Fatalf("the watcher cannot look again: %v", err)
 	}
 }

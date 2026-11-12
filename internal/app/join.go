@@ -84,7 +84,7 @@ func (e Env) Join(ctx context.Context, loc Location, crewName, role string) (Joi
 	if rec.Role == core.OrchestratorRole && was != core.OrchestratorRole {
 		e.tellMates(ctx, peerOf(rec), mates, "")
 	}
-	if err := e.ensureOrchestratorWatcher(rec); err != nil {
+	if err := e.ensureSessionWatcher(rec); err != nil {
 		fmt.Fprintf(Diagnostics, "%v\n", err)
 	}
 	out := Joined{Record: rec, Label: core.PaneLabel(rec.Handle, rec.Role, rec.Task), Crew: c}

@@ -78,7 +78,7 @@ func (e Env) SuperviseWaker(ctx context.Context, loc Location) error {
 	if err != nil || !ok || !rec.Live() {
 		return err
 	}
-	if err := e.ensureOrchestratorWatcher(rec); err != nil {
+	if err := e.ensureSessionWatcher(rec); err != nil {
 		fmt.Fprintf(Diagnostics, "%v\n", err)
 	}
 	return e.ensureWaker(ctx, rec)

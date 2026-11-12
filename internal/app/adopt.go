@@ -236,7 +236,7 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 		}
 	}
 
-	if err := e.ensureOrchestratorWatcher(rec); err != nil {
+	if err := e.ensureSessionWatcher(rec); err != nil {
 		fmt.Fprintf(Diagnostics, "%v\n", err)
 	}
 	// The record carries the role, so briefing and orchestrator behaviour read one
