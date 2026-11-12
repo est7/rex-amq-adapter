@@ -71,6 +71,39 @@ IDs below are this report's, and the Source column gives the original ID.
 | 24 | A11Y-3 | Low | Accessibility | A multi-agent tab keeps the first agent's pane label as its name | executed | orchestrator | - |
 | 25 | AUTO-4 | Low | Automation | `await --timeout 60` fails; the flag needs a Go duration the guide does not show | reproduced | orchestrator | - |
 
+### Fix plan
+
+One row per finding: the change, and what it touches beyond its own file. Fixes are not scheduled;
+which to take, and in what order, is the maintainer's call.
+
+| ID | Fix sketch | Blast radius |
+|---|---|---|
+| ARCH-3 | Managed `send --control <request-id>`, narrator role only, producing `OpControl`; document in `narrator.md` and the guide | managed `send` flags, narrator prompt, guide; provenance schema unchanged |
+| SEC-2 | Parse each managed verb with its own flag set; reject routing and unknown flags; build child argv from parsed fields | `send/reply/read/drain/thread/trace/dlq/list` flag acceptance (callers passing raw amq flags get exit 2) |
+| SEC-1 | Compare git's registered back-pointer directory with the candidate; `Lstat`-reject symlinked or hard-linked `.git` | `trust` output and agy `--settings` via `summon`/`tab`; no persisted state |
+| ARCH-1 | After SEC-2, switch doorbell, notices, summon text, guide and role prompts to `rex-amq-adapter drain/send/reply`; bounce a quarantined cross-Epic send to its sender | model-facing text and the core/e2e tests asserting it; CLI unchanged |
+| ARCH-2 | Adopt: read token, commit record, then delete token; route `tab` through `reserve`, or tell depth >= 1 agents to start peers only via `summon` | adoption order in `internal/app/adopt.go`; `tab` may start refusing; guide text |
+| SEC-3 | `--` before the prompt for harnesses that honor it, a leading-dash guard otherwise; `--grant` must be a regular file | launch argv per harness in `startCommand`/`resumeCommand` |
+| AUTO-1 | Push/PR workflow: build, vet, `-short`, `-race`, govulncheck | new workflow file; no runtime change |
+| TEST-1 | macOS integration job with pinned Rex and amq that fails on a required skip; CLI flag-dispatch unit tests | CI provisioning and supported tool versions |
+| AUTO-5 | Pin the installed binary at `setup`; `prepareInjector` refuses to repoint `bin/inject` to a temp or unpinned binary | `who`, hooks, `setup`; the `bin/inject` contract amq wake relies on |
+| DOC-1 | `crews show <crew\|role>`, a purpose line per crew and role, a "Plan a crew" guide section | additive CLI subcommand; guide text |
+| MAINT-1 | Unlisted kind is an error in `startCommand`/`resumeCommand`; add the launch step to the kind checklist | summon refusal text for unknown kinds; doc |
+| DOC-2 | design.md summon section, module and path lists, section-4 subheadings; README and guide command tables | docs only |
+| SCAL-2 | `collect` expires provenance, quarantine, per-block files and logs past a retention window; retire dead handles from amq config | `collect` behavior; nothing live or within the 7-day reservation is removed |
+| PERF-2 | Stat before re-reading, tail-read inject logs, bounded parallel Rex calls in `events` | `events` internals; NDJSON schema unchanged |
+| MAINT-2 | Decide the adapter's lifespan in backlog.md; if it continues, land the `amq` interface (U2) | process and docs; U2 is an internal refactor |
+| MAINT-3 | Move the diagnostics writer onto `Env`; per-phase budgets in `watchOnce` | internal to `internal/app` |
+| SEC-4 | Validate hook ids against a strict charset; confine transcript paths to the harness root; harden `fileKey` | hook normalization; existing ids on disk stay valid |
+| SCAL-1 | Reload the session layout under the lifecycle lock inside `reserve` | summon admission at the cap |
+| A11Y-1 | Recognize a title-first Claude top border by its paired prompt and bottom rule; keep the transcript-line rejection | doorbell readiness for Claude and agy panes |
+| PERF-1 | Rebuildable block-to-handle index; skip an unchanged outbox by directory stamp | store lookup and sent-cursor bookkeeping; index must stay derivable |
+| A11Y-2 | Handle `-h/--help` before resolving the caller or writing state; exit 0; no implicit stdin read from a TTY | help and exit codes of `title`, `crews`, `join`, `events`, `view`, `send` |
+| AUTO-2 | `who --json`, `crews --json`; reject unknown flags; alias `--version` | additive output schemas; invalid input now errors |
+| AUTO-3 | amq, Rex and state rows in `status`; a `state-version` file with one in-band notice on mismatch | `status --json` items; one new state file |
+| A11Y-3 | When a follower tab gains a second live agent, show the lead's task alone or the placeholder | tab naming rules in `internal/core/tab.go` |
+| AUTO-4 | Accept bare seconds in `await --timeout`, or show `60s` in the guide | `await` flag parsing or guide text |
+
 Severity of unverified Medium findings is the raiser's. SEC-4 and SCAL-2 sit at the edge of the
 same-UNIX-user trust the design grants (`docs/design.md:1195-1197`) and may rate Low once checked.
 
