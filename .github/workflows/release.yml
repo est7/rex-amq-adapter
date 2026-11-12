@@ -22,6 +22,11 @@ jobs:
           go-version-file: go.mod
       - name: vet
         run: go vet ./...
+      # Tests that need a real amq or Rex binary skip on a runner without
+      # them; every pure-Go suite runs. The runner is not root, which the
+      # permission-based lock tests rely on.
+      - name: test
+        run: go test ./...
       - name: build
         env:
           TAG: ${{ github.ref_name }}
