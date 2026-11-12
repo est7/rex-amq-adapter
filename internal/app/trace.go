@@ -28,11 +28,29 @@ type traceScope struct {
 	traced located
 }
 
-func (s traceScope) filter(v any) any {
+// withheld replaces trace text that the scope cannot vouch for.
+const withheld = "withheld: a managed trace shows only evidence scoped to you"
+
+// traceLabels are the fields of trace structure (outside an evidence item)
+// that hold a fixed vocabulary or the traced message itself, never text
+// about other mail. Every other string there is diagnostic text from amq's
+// scan of the whole root (a parse error naming another Epic's file) and is
+// withheld.
+var traceLabels = map[string]bool{"schema": true, "message_id": true, "status": true, "state": true, "root": true, "root_identity": true, "scope": true}
+
+func (s traceScope) filter(v any) any { return s.walk(v, false) }
+
+// walk scopes v: an evidence item (an object in a list) is kept or dropped
+// whole by shows; structure outside items keeps only its labels.
+func (s traceScope) walk(v any, inItem bool) any {
 	switch v := v.(type) {
 	case map[string]any:
 		for k, x := range v {
-			v[k] = s.filter(x)
+			if str, ok := x.(string); ok && !inItem && !traceLabels[k] && str != "" {
+				v[k] = withheld
+				continue
+			}
+			v[k] = s.walk(x, inItem)
 		}
 		return v
 	case []any:
@@ -42,7 +60,9 @@ func (s traceScope) filter(v any) any {
 				if !s.shows(obj) {
 					continue
 				}
-				x = s.filter(obj)
+				x = s.walk(obj, true)
+			} else if _, ok := x.(string); ok && !inItem {
+				continue // a list of diagnostic text
 			}
 			out = append(out, x)
 		}

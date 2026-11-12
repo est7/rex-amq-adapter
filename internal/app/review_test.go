@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -352,5 +353,80 @@ func TestManagedMailDrainSkipsWhatARawDrainTook(t *testing.T) {
 	t.Cleanup(func() { afterAdmit = func() {} })
 	if out, _, err := run(t, e, ctx, "claude-02", "drain", "--json"); err != nil || strings.Contains(out, id) || !strings.Contains(out, `"count": 0`) {
 		t.Fatalf("drain: %v %s", err, out)
+	}
+}
+
+// [F1 re-review] A read that fails part way through a drain leaves the
+// messages before it drained; the drain reports them before its error, so
+// none is lost to the agent.
+func TestManagedMailDrainReportsThePrefixBeforeAFailure(t *testing.T) {
+	e, ctx := managedWorld(t)
+	first := sendJSON(t, e, ctx, "codex-01", "--to", "claude-02", "--subject", "s", "--body", "first")
+	// A header the gate can judge (a same-Epic sender) that amq read refuses:
+	// it has no thread.
+	bad := `---json
+{"schema":1,"id":"zz-no-thread","from":"codex-01","to":["claude-02"],"subject":"s","created":"2026-11-12T00:00:00Z"}
+---
+body
+`
+	if err := os.WriteFile(filepath.Join(amq.Inbox(e.Paths.Root(), "claude-02"), "zz-no-thread.md"), []byte(bad), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, asJSON := range []bool{true, false} {
+		args := []string{"--include-body"}
+		if asJSON {
+			args = append(args, "--json")
+		}
+		out, code, err := run(t, e, ctx, "claude-02", "drain", args...)
+		if asJSON {
+			if err == nil || code == 0 || !strings.Contains(out, first) || !strings.Contains(out, `"count": 1`) {
+				t.Fatalf("partial drain: %d %v %s", code, err, out)
+			}
+			continue
+		}
+		// The first was reported already, and amq read dead-lettered the
+		// failing one: nothing is left to report.
+		if err != nil || code != 0 || out != "" {
+			t.Fatalf("second drain: %d %v %q", code, err, out)
+		}
+	}
+	receipts, _ := amq.Receipts(e.Paths.Root(), "claude-02")
+	if !slices.ContainsFunc(receipts, func(r string) bool { return strings.HasPrefix(r, first+"__") }) {
+		t.Fatalf("receipts %v", receipts)
+	}
+	if dlq, _ := amq.IDs(e.Paths.Root(), "claude-02", amq.BoxDLQNew); len(dlq) != 1 {
+		t.Fatalf("the failing message is neither unread nor dead-lettered: %v", dlq)
+	}
+}
+
+// [F2 re-review] amq trace scans the whole root, and its diagnostic text can
+// name another Epic's mail (a parse error for a file in its inbox): a managed
+// trace withholds that text along with the evidence.
+func TestManagedMailTraceWithholdsDiagnosticsAboutOtherMail(t *testing.T) {
+	e, ctx := managedWorld(t)
+	if err := amq.EnsureMailbox(ctx, e.AmqBin, e.Paths.Root(), "codex"); err != nil {
+		t.Fatal(err)
+	}
+	q := sendJSON(t, e, ctx, "codex-01", "--to", "claude-02", "--subject", "q", "--body", "?")
+	if err := os.WriteFile(filepath.Join(amq.Inbox(e.Paths.Root(), "claude-09"), "other-epic-secret-id.md"), []byte("not a message"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var raw bytes.Buffer
+	if _, err := amq.Run(ctx, e.AmqBin, nil, &raw, &raw, "trace", q, "--root", e.Paths.Root(), "--json"); err != nil || !strings.Contains(raw.String(), "other-epic-secret-id") {
+		t.Fatalf("the fault did not take: amq trace does not name the file: %v %s", err, raw.String())
+	}
+	for _, args := range [][]string{{q, "--json"}, {q}, {q, "--follow", "--json"}} {
+		out, code, err := run(t, e, ctx, "codex-01", "trace", args...)
+		if err != nil || code != 0 {
+			t.Fatalf("trace %v: %d %v %s", args, code, err, out)
+		}
+		for _, hidden := range []string{"other-epic-secret-id", "claude-09"} {
+			if strings.Contains(out, hidden) {
+				t.Fatalf("trace %v shows %s: %s", args, hidden, out)
+			}
+		}
+		if args[len(args)-1] == "--json" && !strings.Contains(out, "agents/codex-01/outbox/sent/"+q) {
+			t.Fatalf("trace %v lost scoped evidence: %s", args, out)
+		}
 	}
 }

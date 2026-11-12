@@ -201,11 +201,14 @@ func (m managed) drain(ctx context.Context, args []string) (int, error) {
 		return 1, err
 	}
 	afterAdmit()
+	// A read that fails part way leaves the messages before it drained
+	// (moved to inbox/cur, receipted): they are reported before the error,
+	// as amq drain reports a batch it committed.
 	drained, code, err := m.consume(ctx, kept, limit, withBody)
-	if err != nil {
-		return code, err
+	if perr := m.printDrained(drained, withBody, asJSON); err == nil {
+		err = perr
 	}
-	return 0, m.printDrained(drained, withBody, asJSON)
+	return code, err
 }
 
 // afterAdmit runs between a managed drain's gate and its consumption; tests
@@ -213,7 +216,8 @@ func (m managed) drain(ctx context.Context, args []string) (int, error) {
 var afterAdmit = func() {}
 
 // consume reads the messages ids (up to limit; 0 is no limit) still in the
-// caller's inbox/new, and no other.
+// caller's inbox/new, and no other. On a failure it returns what it drained
+// before it.
 func (m managed) consume(ctx context.Context, ids []string, limit int, withBody bool) ([]map[string]any, int, error) {
 	drained := []map[string]any{}
 	for _, id := range ids {
@@ -228,21 +232,21 @@ func (m managed) consume(ctx context.Context, ids []string, limit int, withBody 
 		var out, errb bytes.Buffer
 		code, err := amq.Run(ctx, m.e.AmqBin, nil, &out, &errb, "read", "--root", m.root, "--me", m.me(), "--id", id, "--json")
 		if err != nil {
-			return nil, 1, err
+			return drained, 1, err
 		}
 		if code == 3 {
 			continue // gone since
 		}
 		if code != 0 {
 			_, _ = m.stderr.Write(errb.Bytes())
-			return nil, code, fmt.Errorf("read %s", id)
+			return drained, code, fmt.Errorf("read %s", id)
 		}
 		var msg struct {
 			Body   string         `json:"body"`
 			Header map[string]any `json:"header"`
 		}
 		if err := json.Unmarshal(out.Bytes(), &msg); err != nil || msg.Header == nil {
-			return nil, 1, fmt.Errorf("decode amq read of %s: %q", id, out.Bytes())
+			return drained, 1, fmt.Errorf("decode amq read of %s: %q", id, out.Bytes())
 		}
 		item := msg.Header
 		delete(item, "schema")
