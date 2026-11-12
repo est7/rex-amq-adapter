@@ -136,7 +136,14 @@ announced. A message id is the file name under
 - Ids no longer in `inbox/new` (drained) are pruned on every ledger write.
 
 Notices contain counts and the drain command only, never message content: the
-agent reads content through `amq drain`, which marks it as message data.
+agent reads content through the adapter's `drain`, which marks it as message
+data. Every notice, doorbell, start brief, guide line, and role prompt names
+the adapter's mail commands (`rex-amq-adapter drain`, `send`, `reply`), never
+bare `amq`: they find the caller's identity themselves, and the gateway's
+drain reads only mail its gate admitted while its send records provenance
+(Gateway, below). The doorbell, hook and start notices, and summon's briefs
+quote the adapter's absolute path; the guide, role prompts, and the mates,
+joined and error notes use the bare name.
 
 ### Interplay with amq wake
 
@@ -150,7 +157,9 @@ the ladder cap (2 min); this is accepted.
 
 ## 4. Identity
 
-**Handle = `<kind>-<NN>`, owned by the agent session.** Panes are
+### Handle = `<kind>-<NN>`, owned by the agent session
+
+Panes are
 disposable; agent sessions are not. Claude Code and Codex keep their session id
 across a resume (executed 2026-10-28: `claude -p --resume` and `codex exec
 resume` returned the id of the session they resumed; a Codex hook's
@@ -180,7 +189,9 @@ agent. Adoption, in order:
 3. **New name.** `<kind>-<NN>`, with the lowest `NN` from `01` that is not
    taken. The kind is always the agent's own.
 
-**Role, owned by the record.** What an agent is for (`reviewer`, `orchestrator`) is
+### Role, owned by the record
+
+What an agent is for (`reviewer`, `orchestrator`) is
 `record.role`, not part of the handle, so an agent can take a role, or
 change it, and keep its handle (`join`, below). A new agent takes the role its
 pane label names (`rex split --label reviewer -- codex --no-daemon` → handle
@@ -200,7 +211,9 @@ else's session or unread messages. A new session in a pane is a new identity:
 it does not inherit the handle of the pane's previous session. The adapter
 then sets the pane label, so it is visible in Rex.
 
-**Pane label.** `<role>(<handle>) | <task>`, or `<handle> | <task>` without a
+### Pane label
+
+`<role>(<handle>) | <task>`, or `<handle> | <task>` without a
 role (`reviewer(codex-01) | fix login`), where the task is what the agent said it
 is doing (`rex-amq-adapter title "<task>"`, which the identity notice names),
 or for a new agent the task its launcher wrote after `|` in the pane label
@@ -235,7 +248,9 @@ taken since does not unbind it. The adapter keeps no compatibility with
 state written by earlier versions: after an upgrade, clear the state
 directory and restart the agents.
 
-**The harness shows the pane label too.** The agent's own title in its TUI is
+### The harness shows the pane label too
+
+The agent's own title in its TUI is
 made to match the pane label, each harness the way it allows. A conversation
 title (Claude Code's and Pi's, which `/resume` lists) also names the Epic:
 when the Rex session's label names one, the title is
@@ -296,7 +311,9 @@ agent in another of its tabs, and on 2026-11-11 a peer's startup renamed an
 Epic session `cross-session-amq` to its own task. `rex skill setup
 --session-naming=false` turns Rex's request off.
 
-**Tab labels.** A tab (Rex window) has one owner, which the tab ledger
+### Tab labels
+
+A tab (Rex window) has one owner, which the tab ledger
 (`tabs/<window>.json`: `window_id`, `session_id`, `mode`, `crew`,
 `last_label`) records:
 
@@ -312,8 +329,12 @@ recorded `auto` under its launch label, `<role> | <task>`, and adoption brings
 it to the agent's pane label. A tab the ledger does not know is a follower only
 while it shows Rex's placeholder, `Window ` and eight lowercase hex digits
 (`Window 4c6fe88d`); it is recorded `auto` when first seen so. A follower is
-renamed only while it holds exactly one block whose agent is live: a tab of
-several agents keeps its label until it holds one again, and the adapter's
+renamed to its agent's pane label only while it holds exactly one block whose
+agent is live. A follower of several blocks that still shows the pane label it
+was last given drops to that label's task (`orchestrator(claude-03) | audit`
+becomes `audit`), since one member's label would read as the whole team's in
+`who`'s TAB column; one showing no task keeps its label until it holds one
+block again. The adapter's
 tabs of other kinds (the watchdog's `overflow`) stay unrecorded and are never
 renamed. A follower whose label is neither the placeholder, the label the
 adapter last gave it, nor its agent's current pane label was renamed by
@@ -323,7 +344,9 @@ exactly the label the adapter would give it, or a rename racing a split, is
 not told apart, and two writers of one entry race without a lock (the last
 write wins). Exact ownership needs Rex to record a window's naming intent.
 
-**Record** (one JSON file per handle, the single source of truth):
+### Record
+
+A record is one JSON file per handle, the single source of truth:
 
 ```json
 {
@@ -358,7 +381,9 @@ parks them. A different pid in the same block is a different agent process: it
 keeps the handle only by resuming the same session, and the record it
 replaces is parked as that session's reservation.
 
-**A hook checks the record before trusting it.** The record is a lease taken
+### A hook checks the record before trusting it
+
+The record is a lease taken
 at adoption, and a harness that announces no change leaves it stale. A hook
 is first-hand evidence of three facts: the kind it was installed for, the
 session in its payload, and the process it descends from. The announcing hooks
@@ -416,7 +441,9 @@ input names the parent. Still not handled: agy's `/resume` of another
 conversation inside the running process keeps the handle of the conversation
 it left.
 
-**Claude Code background sessions.** A session moved to the background
+### Claude Code background sessions
+
+A session moved to the background
 (agent view: `←` on an empty prompt, `/bg`, `claude --bg`) runs under Claude
 Code's supervisor, which the first terminal that needed it started; every
 job it hosts inherits that terminal's environment, so `REX_BLOCK` and
@@ -483,7 +510,9 @@ the terminal binding or announcement ledger, and that interactive startup,
 `/new`, resume, clear, and fork retain normal delivery. An issue closure alone
 is not sufficient evidence.
 
-**Session-mates.** A Rex session holds one task; a tab (window) in it holds
+### Session-mates
+
+A Rex session holds one task; a tab (window) in it holds
 one team, which its label can name as a crew; a pane holds one member, its
 label naming the role. A task outgrows one tab (several teams, or more agents
 than a tab shows), so the session is the awareness boundary, and the tab only
@@ -562,7 +591,9 @@ started into one tab and a Claude control in another, each on this
 implementation; every agent named exactly the mates and joins it was due, the
 control none, and the queue ended empty.
 
-**Crews and roles.** The window is the team, inside the session's task; two
+### Crews and roles
+
+The window is the team, inside the session's task; two
 labels say what kind of
 team it is and what each member does. The tab label names a crew, the pane
 label a role, which the record keeps. From then on the record is the role:
@@ -582,7 +613,12 @@ adoption:
   block's foreground process): `.agents/crews` there or above, then
   `~/.config/rex-amq-adapter/crews`, then the built-in set. The first file
   found wins whole; a crew's own `<role>.md` beats the shared
-  `roles/<role>.md`. Conventions win over a role prompt where they differ.
+  `roles/<role>.md`. Conventions win over a role prompt where they differ. The
+  start notice stays within 9,000 of the 10,000 characters Claude Code takes
+  from a hook (a longer one is replaced by a file path and a 2,000-character
+  preview): identity, mail commands, mates, and who stands for the human stay
+  inline, and a crew or role prompt that does not fit, or is longer than 4,000
+  characters, is named by its file instead (`core.StartNotice`).
 - A tab that names no crew (Rex's default `Window 82b616eb`, a follower
   showing an agent's pane label, any unknown name) gives role prompts only, so a reviewer split into an ordinary tab is
   still briefed. An agent without a role in such a tab hears nothing more.
@@ -622,7 +658,9 @@ adoption:
   the briefing is printed with the members still to start. Later adoptions
   keep the role.
 
-**Orchestrators.** A session normally has the user present: they see an agent
+### Orchestrators
+
+A session normally has the user present: they see an agent
 stop, so the adapter adds nothing. An agent in a pane labelled `orchestrator` changes
 that. It owns a goal and coordinates the session, so it is who to tell: peers
 take to it what they would take to the user, and the watcher wakes it when an
@@ -687,7 +725,61 @@ Rex server and real `amq wake`): an idle orchestrator hears a peer quit, crash, 
 have its pane closed; a peer hears the orchestrator crash; a tab without an
 orchestrator stays silent; the watcher ends with its agent. Real agents: section 11.
 
-**Watchdog.** Each tick the watcher also looks at every live agent of its
+### Summon on send
+
+`rex-amq-adapter summon <handle|role> --subject S --body B [--kind K]
+[--grant FILE | --asked "WORDS"] [--harness H] [--cwd DIR]` (`app.Env.Summon`,
+guards in `core.GuardSummon`) lets an agent address a peer that may not be
+running. The target is resolved in the caller's Rex session:
+
+1. A live agent of that handle or role gets the mail (`deliver`). Several live
+   agents of a role refuse: the caller names one by handle.
+2. Otherwise a departed agent of this session is resumed in a pane beside the
+   caller, in the directory it ran in (its record's `Cwd`, else its
+   transcript's), with a fixed first prompt that makes it drain; its mail is
+   in its mailbox first (`resume`). A kind with no resume command, or no
+   known directory, refuses and leaves the mail waiting.
+3. Otherwise a new agent is started for the role, the message as its brief,
+   in the caller's directory or `--cwd` (`start`); the caller awaits its
+   adoption and then delivers. `--cwd` always means a new agent there: it
+   refuses a handle, and a directory a live agent of the role works in.
+
+Only resume and start pass the guards, in this order, and a refusal says why:
+
+- only a request starts or resumes (`--kind question`, `review_request`,
+  `todo`, `brainstorm`); any other kind delivers or refuses;
+- no cycle: a handle or role already in the caller's summon chain (from the
+  user's agent down to the caller) is refused;
+- depth 2 at most: the user's agents are 0, what they summon 1;
+- 6 live agents per session at most, counting pending launches; a narrator
+  or personal agent takes no place. The count is taken under the lifecycle
+  lock against a layout read under it, so an adoption between the caller's
+  look and its reservation cannot slip past the cap;
+- a start needs the user's own words (`--asked`, an attestation the log
+  keeps) or a grant file (`--grant`, which must exist and be a regular file;
+  the adapter does not read it);
+- an agent whose summon chain cannot be traced to the user (an ancestor's
+  record was collected) delivers but never starts or resumes.
+
+A passing launch reserves its place with a token (`summons/<token>.json`,
+parent, depth, target) that the launched agent carries as `REX_AMQ_SUMMON`.
+Its first hook commits a record with that parent and depth and only then
+deletes the token, so a failed write keeps the lineage for the retry; an
+unadopted token stops holding its place after `store.PendingSummonFor`
+(2 minutes). The harness is the role's default (`reviewer`, `editor`, `qa`:
+Codex; any other role: Claude Code) unless `--harness` names one, and every
+start keeps a brief that starts with a dash a prompt: Claude Code, Codex,
+and Pi take it after `--`, Antigravity as the value of `-i`. Every summon, refusals included, is a JSON
+line in `logs/summon.log` (summoner, parent, depth, target, kind, subject,
+action, handles, block, reason, grant, asked).
+
+The guards hold for `summon` only. An agent started by hand (`rex split`,
+`rex run`, `tab`) has no token: it is recorded at depth 0, as the user's own
+agent would be, and is not counted against the cap before it starts.
+
+### Watchdog
+
+Each tick the watcher also looks at every live agent of its
 session, the orchestrator included, three ways. It never presses a key. A
 finding goes as mail in the stuck agent's name, labelled `rex-amq-adapter`
 (`amq.SystemLabel`), which that agent's undelivered-mail check skips without
@@ -773,10 +865,13 @@ they had been told, the implementer named its role, the crew, its lead, and
 its handoff; the reviewer quoted its role prompt and the conventions and
 stood by.
 
-**How an agent finds its identity.** `rex-amq-adapter env` resolves the
-caller's record (`Caller`) and prints `export AM_ROOT=… AM_ME=…`. Agents run
-`eval "$(rex-amq-adapter env)"` before each `amq` command. No identity files.
-The same resolution places `title`, `who`, `tab`, `join`, and `events`.
+### How an agent finds its identity
+
+Every command resolves the caller's record itself (`Caller`), so an agent runs
+`rex-amq-adapter drain`, `send` or `reply` with no setup. No identity files.
+The same resolution places `title`, `who`, `tab`, `join`, `events` and the
+managed mail verbs. `rex-amq-adapter env` prints `export AM_ROOT=… AM_ME=…`
+from it, for a person or a script that runs raw `amq`.
 
 Each harness sets its session id afresh in its tool shells, overwriting an
 inherited value: `CLAUDE_CODE_SESSION_ID`, `CODEX_THREAD_ID`, `PI_SESSION_ID`
@@ -796,7 +891,9 @@ A record located by session rather than by `REX_BLOCK` comes with
 peer beside it. A failing `env` prints `false`, because `eval ""` succeeds and
 `eval "$(… env)" && …` would carry on.
 
-**Observing: `rex-amq-adapter events --json`.** A read-only stream of one
+### Observing: `rex-amq-adapter events --json`
+
+A read-only stream of one
 scope for a dashboard or another tool: the caller's session by default,
 `--session S`, `--tab` (the caller's tab), or `--all` (every record of the
 server). It takes no adapter lock and writes nothing (no record, ledger,
@@ -1149,6 +1246,7 @@ Overridable with `REX_AMQ_ADAPTER_HOME` (tests use a temporary directory).
 ├── window/<handle>           window notes (joins, departures) queued for the next prompt
 ├── tabs/<window>.json        the tab ledger: who names each tab (auto, crew, narrator, manual) and its last label
 ├── title/<handle>            the title last given each session's harness (Claude Code, Pi)
+├── title-state/<handle>      the title desired for that harness and whether its conversation was offered it
 ├── task-asked/<handle>       the last Claude Code or Pi session asked for a task at its first prompt
 ├── summons/<token>.json      pending summon launches reserving a place in the session's cap
 ├── pending/<block>           a doorbell written and not yet known to be submitted
@@ -1170,7 +1268,9 @@ an Epic its session is linked with (`link`/`unlink`) mail each other, and
 nothing else crosses sessions. The narrator takes no member mail, only the
 adapter's own notices (provenance `system`, never a header label or a sender
 named `system`); its one message into the Epic is a control directive to the
-orchestrator carrying a request id. A handle the adapter never adopted (the
+orchestrator carrying a request id, sent with the managed `send --control
+<request id>` (the only path that records `op: control`, and refused to any
+caller but a narrator; a plain send from a narrator is refused). A handle the adapter never adopted (the
 user, a script) still reaches ordinary members, never a narrator or a Personal
 agent. A move of a handle to another session starts a generation
 (`Record.Generation`), and mail addressed to an earlier one is fenced.
@@ -1195,6 +1295,27 @@ judged by its sender's record now.
 This is a policy on the supported paths, not a sandbox: any process of the same
 UNIX user can read and write the mailbox files, and `amq` run directly with
 another `--me` names any sender. `events` only reads and applies no gate.
+
+### Opening an Epic
+
+`rex-amq-adapter epic <name> -c DIR (--goal FILE | --asked "WORDS")`
+(`app.Env.OpenEpic`) is the whole start, so a personal agent runs one command
+and its user sees no steps. It refuses a caller that is not a live `personal`
+agent, and needs a grant as `summon` does: a goal contract that is a regular
+file, which the orchestrator's brief runs (make-goal's prompt for a contract
+in a file, whole, so the run ends at either of its exits, `/goal`-prefixed for
+Claude Code), or the user's own words, which become the brief. One
+`session.create` makes the Epic's Rex session, labelled with the whole name
+(pane labels shorten it to their task width), with two windows, all or none: a `narrator` tab
+(claimed in the tab ledger) whose agent is told whose personal agent it
+narrates for, and the orchestrator's tab, last and so active, left with Rex's
+placeholder name so it follows its agent. Then the session is linked to the
+caller (before adoption, so the caller can mail the narrator at once), and
+both startups are awaited (`AwaitStartup`). The result (`session_id`, each
+agent's block and startup, `linked`) is printed even when part of it failed;
+nothing started is torn down, and the command exits 0 only when both agents
+are adopted and linked. The Epic's agents start outside any summon chain, as
+the user's own would: the orchestrator is depth 0 in its session.
 
 ### Narrator
 
@@ -1239,7 +1360,7 @@ urgent mail skips the hold.
 ## 9. Module layout
 
 ```
-cmd/rex-amq-adapter/   subcommands: hook, inject, env, title, who, events, await, collect, crews, tab, trust, summon, join, send, reply, read, drain, thread, trace, dlq, list, link, unlink, setup, status, remove, __internal, version
+cmd/rex-amq-adapter/   subcommands: hook, inject, env, title, who, events, await, collect, crews, tab, trust, summon, epic, join, send, reply, read, drain, thread, trace, dlq, list, link, unlink, setup, status, remove, __internal, version
 internal/app/          entry points: observe, ask core, act (adopt, inject, announce, depart, collect, discovery, await, session watcher, narrator view, and watchdog, summon, join, the events stream); who runs a command (Caller); the hook's process ancestry (golang.org/x/sys)
 internal/core/         pure policy: the gateway (CanExchange), handle choice, roles and pane labels, inject decision, announce decision, session-mates, notice text, the observer's projection and diff
 internal/crew/         crew and role prompt lookup across project, user, and built-in layers; crew headers (lead, members); built-in prompts
@@ -1248,6 +1369,8 @@ internal/rex/          rex CLI client: process, program_status, capture, write, 
 internal/amq/          wake check/start/repair/retire, mailbox registration, inbox listing (ported); read-only mailbox, header, and receipt readers
 internal/screen/       input-box classifier (ported from herdr-amq-adapter)
 internal/store/        records, ledger, inject log, window notes, reservations, locks; the gateway's links, provenance, and quarantine
+internal/transcript/   reads the end of an agent's own transcript (Claude Code, Codex, Pi JSONL; Antigravity's SQLite through sqlite3) into rows for the watchdog and turn-error routing, and a departed agent's working directory for a resume
+internal/trust/        derives, for a linked worktree, the Antigravity folder trust the user gave its main checkout (--settings for one session; never writes the store)
 internal/e2e/          scripted agents on a private Rex server and real amq wake
 internal/install/      settings.json / hooks.json merge, stub skills, supervisor and task-tool settings (config.toml through go-toml)
 internal/guide/        embedded agent guide

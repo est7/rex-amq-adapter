@@ -221,6 +221,12 @@ func (e Env) reserve(ctx context.Context, caller store.Record, s Session, kind s
 		return "", err
 	}
 	defer unlock()
+	// Adoption can commit a record and remove its pending token after the
+	// caller's layout snapshot. Count against a layout read under the same lock.
+	s, err = e.loadSession(ctx, s.server, s.id)
+	if err != nil {
+		return "", err
+	}
 	recs, err := e.Store.Records()
 	if err != nil {
 		return "", err
@@ -275,7 +281,7 @@ func (e Env) resume(ctx context.Context, caller store.Record, s Session, r Summo
 		e.summonLog(caller, r, res)
 		return res, nil
 	}
-	bootstrap := fmt.Sprintf("Resumed by %s (summon on send): mail waits for you. Run eval \"$(%s)\" && amq drain --include-body and act on it.", caller.Handle, e.EnvCommand())
+	bootstrap := fmt.Sprintf("Resumed by %s (summon on send): mail waits for you. Run %s drain --include-body and act on it.", caller.Handle, e.SelfBin)
 	cmd, ok := resumeCommand(departed.Kind, departed.AgentSessionID, bootstrap)
 	if !ok {
 		_ = e.Store.DeleteSummon(res.Token)
@@ -306,9 +312,13 @@ func (e Env) start(ctx context.Context, caller store.Record, s Session, r Summon
 	if core.LooksLikeHandle(r.Target) {
 		return refuse(fmt.Sprintf("no agent %s in this session, live or departed; a new agent is started by role, not by handle", r.Target))
 	}
-	if r.Grant != "" && r.Asked == "" {
-		if _, err := os.Stat(r.Grant); err != nil {
+	if r.Grant != "" {
+		info, err := os.Stat(r.Grant)
+		if err != nil {
 			return refuse("the grant file " + r.Grant + " is not readable, so it authorizes nothing: " + err.Error())
+		}
+		if !info.Mode().IsRegular() {
+			return refuse("the grant file " + r.Grant + " is not a regular file, so it authorizes nothing")
 		}
 	}
 	if r.Grant == "" && r.Asked == "" {
@@ -321,7 +331,7 @@ func (e Env) start(ctx context.Context, caller store.Record, s Session, r Summon
 			return refuse(err.Error())
 		}
 	}
-	brief := r.Body + "\n\nYou were started by " + string(caller.Handle) + " (summon on send). Report back with `amq send --to " + string(caller.Handle) + "`; the same request waits in your mailbox once you are adopted, so you can `amq reply` to it."
+	brief := r.Body + "\n\nYou were started by " + string(caller.Handle) + " (summon on send). Report back with `" + e.SelfBin + " send --to " + string(caller.Handle) + " --subject \"…\" --body \"…\"`; the same request waits in your mailbox once you are adopted, so you can `" + e.SelfBin + " reply` to it."
 	label := role + " | " + core.Task(r.Subject)
 	cwd := caller.Cwd
 	if r.Cwd != "" {
@@ -331,7 +341,11 @@ func (e Env) start(ctx context.Context, caller store.Record, s Session, r Summon
 		}
 		cwd = r.Cwd
 	}
-	block, err := e.launch(ctx, caller, s, role, label, cwd, res.Token, startCommand(kind, brief))
+	cmd := startCommand(kind, brief)
+	if len(cmd) == 0 {
+		return refuse(fmt.Sprintf("unsupported harness %q; no agent was started", kind))
+	}
+	block, err := e.launch(ctx, caller, s, role, label, cwd, res.Token, cmd)
 	if err != nil {
 		_ = e.Store.DeleteSummon(res.Token)
 		return res, err
@@ -399,14 +413,16 @@ func (e Env) launchNarrator(ctx context.Context, s Session, label, cwd string, c
 
 func startCommand(kind core.Kind, brief string) []string {
 	switch kind {
+	case core.Claude:
+		return []string{"claude", "--", brief}
 	case core.Codex:
-		return []string{"codex", "--no-daemon", brief}
+		return []string{"codex", "--no-daemon", "--", brief}
 	case core.Agy:
 		return []string{"agy", "--dangerously-skip-permissions", "-i", brief}
 	case core.Pi:
-		return []string{"pi", brief}
+		return []string{"pi", "--", brief}
 	}
-	return []string{"claude", brief}
+	return nil
 }
 
 // resumeCommand resumes session in its harness with a first prompt: every

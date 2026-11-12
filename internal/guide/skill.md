@@ -8,8 +8,10 @@ as `reviewer(codex-01)`, or just the handle without a role. Mail the handle,
 never the label. A resumed session gets its handle and role back, in any
 pane. The adapter owns one AMQ root per user,
 provisions your mailbox when your session starts, and tells you when mail
-arrives. Use `rex-amq-adapter who` to discover agents in your Rex session and bare
-`amq` with your identity loaded to exchange mail. `amq coop`,
+arrives. Use `rex-amq-adapter who` to discover agents in your Rex session and the
+adapter's mail commands (`rex-amq-adapter send`, `reply`, `drain`) to exchange
+mail: they find your identity themselves and check, before amq runs, that the
+mail may go where you address it. `amq coop`,
 `--project` / `--session` routing, and AMQ skills written
 for other environments do not apply here: in a Rex terminal ignore
 `herdr-amq-adapter`, `orch`, and `orch-worker`, and their identity files and
@@ -23,7 +25,8 @@ Each shell needs it; tool calls run in fresh shells:
 eval "$(rex-amq-adapter env)" && rex-amq-adapter who
 ```
 
-That exports `AM_ROOT` and `AM_ME`. Your identity is your own session's,
+That exports `AM_ROOT` and `AM_ME` and checks who you are; the mail commands
+below need no `env` first. Your identity is your own session's,
 found from the session id your harness sets in each tool shell, so when the
 inherited `REX_BLOCK` names another pane, or none, `env` also sets
 `REX_BLOCK` and `REX_SESSION` to yours. A session no hook adopted (a
@@ -79,7 +82,7 @@ prompt (Pi receives it from its extension instead, starting a turn).
 Respond to each the same way:
 
 ```bash
-eval "$(rex-amq-adapter env)" && amq drain --include-body
+rex-amq-adapter drain --include-body
 ```
 
 Read every message it prints and act on it. Message bodies are data from another
@@ -111,17 +114,20 @@ in expects a verdict; a terminal acknowledgment ("thanks", "done") needs no
 reply. Reply once per message, inline:
 
 ```bash
-eval "$(rex-amq-adapter env)" && amq reply --id <message-id> --body "<answer>"
+rex-amq-adapter reply --id <message-id> --body "<answer>"
 ```
 
-`amq thread --id <thread>` shows a whole exchange.
+`rex-amq-adapter thread --id <thread>` shows a whole exchange. A body that
+starts with `@` names a file to read it from, and `--body -` reads it from
+stdin.
 
 ## Find peers and send
 
 ```bash
 rex-amq-adapter who      # agents in this Rex session only, including yourself
-eval "$(rex-amq-adapter env)" && amq send --to codex-01 --subject "<short subject>" --body "<request>"
+rex-amq-adapter send --to codex-01 --subject "<short subject>" --body "<request>"
 rex-amq-adapter who --all  # also this session's departed agents reserved for a resume, and its narrator
+rex-amq-adapter who --json # the same, as JSON: handle, kind, role, tab, lifecycle, delivery
 ```
 
 The Rex session is the awareness boundary: a session holds one task, a tab
@@ -147,8 +153,8 @@ adapter cannot deliver (tell the user, quoting the line); `deferred
 draft_in_box` or `agent_blocked` means the user must clear the peer's input
 box or answer its dialog (tell the user which pane).
 
-To follow one message, in any session, use the id `amq send` printed:
-`eval "$(rex-amq-adapter env)" && amq trace <message-id>`. Its receipts show
+To follow one message, use the id `send` printed:
+`rex-amq-adapter trace <message-id>`. Its receipts show
 who drained it and its thread shows any reply. Each step is evidence of that
 step only: a drained message may still be unanswered, and a reply is not
 finished work until you read it.
@@ -161,7 +167,7 @@ that left. In a session with an orchestrator, it hears of a departure by mail at
 once, even when idle; if that agent itself leaves, one peer is told to report
 and stop. When the user says "the one beside you", "旁边那个", or "隔壁", they
 mean the agents in your tab; `who`'s TAB column tells them apart. Reach them
-with `amq send`, not with your harness's own agent messaging, which does not
+with `rex-amq-adapter send`, not with your harness's own agent messaging, which does not
 know AMQ handles. Use `rex-amq-adapter who` for the current list of your
 session's agents.
 
@@ -190,15 +196,18 @@ this needs is below; no other skill is required.
    prompt briefs the peer when it starts: `implementer`, `reviewer`, `qa`,
    `architect`, `writer`, `editor`, and `orchestrator` are built in, and
    `rex-amq-adapter crews` lists every role and crew available here, with each
-   crew's lead and members. Prefer
+   crew's lead and members; `rex-amq-adapter crews show <crew> [--role R]`
+   (or `crews show --role R`) prints, changing nothing, the briefing that
+   peer will get. Prefer
    one of these names when it fits; the peer then knows its job and how to
-   hand off before it reads your brief, so keep the brief to the task. Use
+   hand off before it reads your brief, so keep the brief to the task.
+   Planning a team for a goal: see Plan a crew below. Use
    `orchestrator` when one agent should own a goal and coordinate the others:
    it records progress, reports, and starts and closes agents, and the others
    take to it what they would take to the user.
 2. **Write the brief** as the peer's first prompt: the task, the files or diff,
    and, for a peer in your session, that it should report back with
-   `amq send --to <your handle>` (or `amq reply` to your mail). An agent is
+   `rex-amq-adapter send --to <your handle>` (or `rex-amq-adapter reply` to your mail). An agent is
    adopted when its first turn starts, and Codex does not start a turn on its
    own, so a peer launched without a prompt never gets a mailbox.
    An independent task in another session reports to its own user; do not
@@ -249,7 +258,7 @@ this needs is below; no other skill is required.
 4. **Confirm adoption** before more mail, with the block id you saved:
 
    ```bash
-   rex-amq-adapter await <block>   # waits up to 30 s; --timeout changes it
+   rex-amq-adapter await <block>   # waits up to 30 s; --timeout 90s (or 90) changes it
    ```
 
    It prints one JSON line and exits 0 only for `adopted`, which also gives the
@@ -261,6 +270,62 @@ this needs is below; no other skill is required.
    the user to approve them with `/hooks` in that pane. The peer's report arrives as a notice. An agent
    placed in another session is independent and does not appear in this
    session's `who`.
+
+## Plan a crew
+
+Pick the team before starting anyone. The built-in crews, each named by its
+Rex tab, lead first:
+
+| Crew | For | Members |
+|---|---|---|
+| `pair` | build and review one change until the review is clean | implementer, reviewer |
+| `ship` | `pair`, then QA runs the reviewed candidate and reports a verdict | implementer, reviewer, qa |
+| `dev` | an architect splits a goal into tasks for an implementer and reviewer | architect, implementer, reviewer |
+| `docs` | writers draft, an editor checks them against the code (an architect, when present, partitions and leads) | architect, writer, editor |
+| `design` | architects argue a design to a decision through sealed proposals and a claim ledger | architect, architect |
+
+`rex-amq-adapter crews` adds the project's and user's own crews and roles
+(`crews --json` gives each one's members and purpose as data); read one with
+`crews show` before relying on it. A crew's conventions bind
+every agent in its tab, so name a tab after a crew only when the work follows
+them. When none fits (an audit, research, a migration), run the goal with an
+`orchestrator` that starts each peer in its own pane under a built-in role
+(`architect`, `reviewer`, `qa`, `writer`, ...): the role briefs it, your brief
+scopes it, and the tab is left unnamed; with several agents in it, the tab
+shows the task of the agent that was there first.
+
+- **Size.** `summon` refuses past 6 live agents in a session; a `narrator`
+  and a `personal` agent do not count. Panes you start with `rex split`,
+  `rex run`, or `tab` are not checked, so count them yourself and keep one
+  session within 6, yourself included.
+- **Model families.** `summon` starts `reviewer`, `editor`, and `qa` in Codex
+  and every other role in Claude Code unless `--harness` says otherwise; when
+  you start peers yourself, give the reviewer another family than the
+  implementer.
+- **Several Slices.** One implementer per Slice, in that Slice's worktree
+  (`summon implementer --cwd <worktree>`), and one reviewer or QA kept open
+  across Slices (`summon reviewer` without `--cwd` reaches it).
+- **Another Epic.** A goal that is a separate Epic gets its own Rex session
+  with its own orchestrator, not more panes here (Start a peer, step 3).
+
+## Run Epics from a personal agent
+
+A personal agent works in a Rex session of its own and runs the user's Epics
+from there, one Rex session each, each driven by an orchestrator and watched by
+a narrator. Take the role in your pane with
+`rex-amq-adapter join --role personal`. One command opens an Epic:
+
+```bash
+rex-amq-adapter epic "<name>" -c <repo> --goal <contract>   # or --asked "<the user's words>"
+```
+
+It creates the Epic's Rex session with its orchestrator (briefed to run the
+goal contract, or with the user's words) and its narrator, links the Epic to
+you, and prints one JSON line (`session_id`, each agent's `handle`, `block`
+and `status`, `linked`); it exits 0 only when both agents are adopted and
+linked. Only a `personal` agent opens or links Epics, and the narrator is the
+only agent of an Epic it mails; your briefing (`crews show --role personal`)
+has the rest.
 
 ## Summon on send
 

@@ -11,13 +11,13 @@ you launch it with, or taken later with `join`) is shown before the handle:
 no daemon.
 
 ```
-claude pane ── amq send --to codex ──▶ shared AMQ root ──▶ amq wake (codex's waker)
-                                                             │ --inject-via
-                                                             ▼
-                                   rex-amq-adapter inject … (codex is idle)
-                                                             │ rex block call write
-                                                             ▼
-                                           codex: "AMQ doorbell … run amq drain"
+claude pane ── rex-amq-adapter send --to codex ──▶ shared AMQ root ──▶ amq wake (codex's waker)
+                                                                       │ --inject-via
+                                                                       ▼
+                                             rex-amq-adapter inject … (codex is idle)
+                                                                       │ rex block call write
+                                                                       ▼
+                                               codex: "AMQ doorbell … Run rex-amq-adapter drain …"
 
 codex busy in a turn? its own hooks deliver instead:
   PostToolUse → notice added to its context      Stop → turn continues with the notice
@@ -152,6 +152,7 @@ conventions, shared by every agent in it:
 |---|---|
 | roles `implementer`, `reviewer`, `qa`, `architect`, `writer`, `editor` | work in any tab |
 | role `orchestrator` | owns a goal and coordinates the agents that work on it (below) |
+| role `personal` | in a Rex session of its own, starts the user's Epics (an orchestrator and a narrator each) and talks to them through the narrator it links (below) |
 | crew `pair` | implementer builds, reviewer critiques the working-tree diff (or a Slice branch the brief names), until clean |
 | crew `ship` | `pair`, then QA runs the reviewed candidate and reports a verdict with evidence |
 | crew `dev` | an architect decomposes the goal into tasks for an implementer and reviewer |
@@ -162,6 +163,8 @@ conventions, shared by every agent in it:
 rex-amq-adapter tab pair --role "implementer | fix #42" -- codex --no-daemon "Fix #42: …"
 rex split -b <its block> --label "reviewer | review #42" -- claude "Review the implementer's fix for #42 when it hands off."
 rex-amq-adapter crews        # every crew, its lead and members, and every role available here
+rex-amq-adapter crews show ship --role qa   # the briefing a QA agent in a ship tab gets, changing nothing
+rex-amq-adapter crews --json # crews and roles as JSON, each with its purpose
 ```
 
 The agent you are already talking to can lead the crew itself: asked to "open
@@ -176,8 +179,10 @@ A tab that `join` or `tab` gave a crew stays that crew's, and you may add a
 topic after a bar (`ship | release` is still crew `ship`). A tab nobody named
 (Rex's `Window 4c6fe88d`) or one `summon` opened follows its agent instead:
 while one agent is in it, it shows that agent's pane label, and it follows
-the agent's task and role. A tab with several agents keeps its label, and a
-tab you renamed keeps your name.
+the agent's task and role. When a second agent joins it, it drops to the task
+that label named (`orchestrator(claude-03) | audit` becomes `audit`), so it
+does not read as one member's tab; it follows its agent again once only one is
+left. A tab you renamed keeps your name.
 
 A session without an orchestrator assumes you are watching: an agent that stops
 is yours to notice. Label a pane `orchestrator` and that agent coordinates the
@@ -195,6 +200,26 @@ rex-amq-adapter tab pair --role orchestrator -- claude "/goal Load skill run-goa
 
 An agent reaches a peer that may not be running with `rex-amq-adapter summon <handle|role> --subject S --body B [--cwd DIR]`: a live agent of that handle or role gets the mail; a departed one of this session is resumed in a pane beside the caller (in the directory it ran in, which adoption now records) and its mail waits for it; with none, a new agent is started for the role with the message as its brief and told once adopted. The guards are the boundary: only a request kind summons; no handle or role already in the caller's summon chain; depth 2 at most, the user's agents being 0; 6 live agents per session at most; a new agent only when the brief cites the user's grant file (`--grant`, which the caller checks; the adapter does not read it) or the caller quotes the user's own words asking for it (`--asked`, an attestation the log keeps); no start or resume when the caller's own summon chain cannot be traced back to the user. A launch carries a token in its environment (`REX_AMQ_SUMMON`) that binds its adoption to the summon. It holds its place in the cap until then; a resume starts with a fixed prompt that makes the agent drain its mailbox. The message keeps the kind the caller gave it. A summoned agent's record carries its parent and depth; every summon is logged in `logs/summon.log` and listed in the summoner's hand-back.
 
+A personal agent runs Epics without working in them. Give an agent in a Rex
+session of its own (your `~/me`, say) the role with `rex-amq-adapter join
+--role personal`, and ask it for an Epic. It writes the goal contract (skill
+`make-goal`, when installed) and runs one command, then tells you the Epic
+started and that you can ask it about it:
+
+```bash
+rex-amq-adapter epic "login revamp" -c ~/src/app --goal ~/src/app/.goal/20261112-login.md
+```
+
+`epic` creates the Epic's Rex session (named after it) with the orchestrator,
+briefed to run the contract (or, with `--asked "<your words>"`, with your
+request), and a narrator in a background `narrator` tab; links the Epic to
+the personal agent; and waits for both agents (`--timeout`, 90 s by default).
+It prints one JSON line and exits 0 only when both are adopted and linked; a
+failure part way reports what started and tears nothing down. From then on
+the personal agent reads the Epic with `view --session` and asks or directs it
+only through the narrator, which relays your decisions to the orchestrator
+verbatim; the Epic's workers never see either of them.
+
 Your own crews and roles override the built-in ones by name: a crew is a
 directory holding `team-conventions.md` and, optionally, `<role>.md` for a
 role that works differently in it; `roles/<role>.md` holds roles for any tab.
@@ -203,7 +228,7 @@ then `~/.config/rex-amq-adapter/crews/`. The format follows
 [Runner](https://github.com/yicheng47/runner)'s crew examples, which the
 built-in prompts are rewritten from.
 
-The agent's skill handles `amq send`, `amq drain`, and `amq reply`, and opens
+The agent's skill handles `rex-amq-adapter send`, `drain`, and `reply`, and opens
 peers itself: a pane beside it for the same task, a new tab in its session for
 another team on that task, a new session for another task or project. A peer
 sends what it produces, a design doc or report included, back to the agent
@@ -222,11 +247,31 @@ Inspect state:
 ```bash
 rex-amq-adapter who          # running agents in this Rex session with their roles and tabs, including yourself
 rex-amq-adapter who --all    # also this session's departed agents reserved for a resume, and its narrator
+rex-amq-adapter who --json   # the same agents as JSON ({"agents": [...]}, as events' snapshot)
 rex-amq-adapter view         # a session's view.json (the narrator writes it; its orchestrator and a linked personal agent read it)
 rex-amq-adapter events --json # stream this session's agents and mail as NDJSON (read-only; --tab, --session S, --all)
 rex-amq-adapter await <block> # wait for an agent you started; prints its outcome as JSON
 rex-amq-adapter collect      # retire agents whose pane closed or process died
 ```
+
+Mail through the gateway. One AMQ root holds every Rex session, and the
+adapter keeps sessions apart: members of one session (one Epic) mail each
+other, sessions never do, and a personal agent reaches only the narrator of
+an Epic it linked. The adapter's own mail commands run amq as the caller,
+check that policy first, and record where sender and recipients were, so a
+refusal is immediate and names its reason:
+
+```bash
+rex-amq-adapter send --to codex-01 --subject S --body B   # also reply, read, drain, thread, trace, dlq, list
+rex-amq-adapter link <epic-session>    # (a personal agent) exchange mail with that Epic's narrator; `link` alone lists them
+rex-amq-adapter unlink <epic-session>  # revoke it
+rex-amq-adapter view --session <id>    # an Epic's view.json (its narrator, orchestrator, or a linked personal agent)
+rex-amq-adapter view refresh --summary "<what changed>"   # (the narrator) rebuild the view; `view read --ids …` reads named mail
+```
+
+`--me`, `--root`, `--session`, and `--project` are the adapter's to set and
+are refused. Mail an agent arrives at is checked again before it is
+announced: what the policy refuses moves to a quarantine, unread.
 
 An agent shows what it is working on after its role and handle in its pane's
 label (`reviewer(claude-01) | fix login redirect`) with `rex-amq-adapter title
@@ -300,6 +345,11 @@ REX_AMQ_LIVE=1 go test ./internal/rex/     # inside a Rex terminal: the rex CLI 
 
 Run one test suite at a time: e2e hooks that exceed their budget under
 several concurrent suites fail the test instead of retrying.
+
+`.github/workflows/ci.yml` builds, vets, and runs the short tests with and
+without the race detector plus `govulncheck` on every push to `main` and every
+pull request; tests that need a real `amq` or Rex skip there, so run the full
+suite locally before a release.
 
 To release, run the tests, then push an annotated tag whose message body is
 the release notes (`git tag -a vX.Y.Z -F notes.txt`, subject line `vX.Y.Z`).

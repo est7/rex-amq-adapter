@@ -24,8 +24,11 @@ import (
 // agentScript is a scripted agent. It adopts itself with a real hook, reports
 // idle, draws an empty box, and for each line typed reports working, appends
 // the line to <name>.got, and reports idle again. Sending it `quit` runs
-// SessionEnd; `crash` exits without running any hook; `join ARGS` runs
-// rex-amq-adapter join ARGS from its shell, its output to <name>.join.
+// SessionEnd; `crash` exits without running any hook; `join ARGS` (or
+// `epic ARGS`) runs rex-amq-adapter join ARGS from its shell, its output to
+// <name>.join. With <name>.obey present, a typed AMQ doorbell is obeyed:
+// the command after its "Run " runs from the agent's shell, its output to
+// <name>.drained.
 const agentScript = `name=$1
 status() { printf '\033]7501;state=%s:app=claude-code\033\\' "$1"; }
 rule() { printf '%s\r\n' '────────────────────────────────────────'; }
@@ -42,7 +45,14 @@ while read -r line; do
 	case "$line" in
 	*quit*) hook session-end; exit 0 ;;
 	*crash*) exit 1 ;;
-	join*) "$ADAPTER" $line >>"$DIR/$name.join" 2>&1; echo "exit=$?" >>"$DIR/$name.join" ;;
+	join*|epic*) "$ADAPTER" $line >>"$DIR/$name.join" 2>&1; echo "exit=$?" >>"$DIR/$name.join" ;;
+	*"AMQ doorbell"*)
+		if [ -e "$DIR/$name.obey" ]; then
+			run=${line#*Run }
+			run=${run%%, then*}
+			eval "$run" >>"$DIR/$name.drained" 2>&1
+			echo "exit=$?" >>"$DIR/$name.drained"
+		fi ;;
 	esac
 	sleep 0.3
 	status idle
@@ -125,14 +135,35 @@ func newWorld(t *testing.T) *world {
 		// tests may be a harness session, whose pid and session id must not
 		// stand for the scripted agents'.
 		switch name {
-		case "HOME", "CODEX_THREAD_ID", "PI_SESSION_ID", "ANTIGRAVITY_CONVERSATION_ID":
+		case "HOME", "SHELL", "XDG_CONFIG_HOME", "CODEX_THREAD_ID", "PI_SESSION_ID", "ANTIGRAVITY_CONVERSATION_ID":
 			continue
+		}
+		if name == "PATH" {
+			// The adapter launches agents by their CLI's name (summon,
+			// epic): bin/claude is a scripted agent, never the real one.
+			kv = "PATH=" + filepath.Join(dir, "bin") + ":" + strings.TrimPrefix(kv, "PATH=")
 		}
 		if !strings.HasPrefix(name, "REX_") && !strings.HasPrefix(name, "AM_") && !strings.HasPrefix(name, "CLAUDE") {
 			w.env = append(w.env, kv)
 		}
 	}
-	w.env = append(w.env, "HOME="+dir, "REX_CONFIG="+config, "REX_AMQ_ADAPTER_HOME="+w.home,
+	// A command the adapter launches (summon, epic) runs through the
+	// account's login shell, which rebuilds PATH from the system profile and
+	// then reads this home's startup files: each puts bin/ first again. The
+	// user's own config directory stays out of the world.
+	bin := filepath.Join(dir, "bin")
+	for _, f := range []struct{ path, text string }{
+		{".profile", "PATH='" + bin + "':$PATH; export PATH\n"},
+		{".bash_profile", ". ~/.profile\n"},
+		{".zprofile", ". ~/.profile\n"},
+		{".config/fish/config.fish", "set -gx PATH '" + bin + "' $PATH\n"},
+	} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, f.path)), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		w.write(filepath.Join(dir, f.path), f.text)
+	}
+	w.env = append(w.env, "HOME="+dir, "XDG_CONFIG_HOME="+filepath.Join(dir, ".config"), "REX_CONFIG="+config, "REX_AMQ_ADAPTER_HOME="+w.home,
 		"REX_AMQ_AMQ="+amqBin, "REX_AMQ_REX="+rexBin, "ADAPTER="+adapterBin, "DIR="+dir, "AMQ_NO_UPDATE_CHECK=1")
 	// A terminal starts from Rex's own environment, so the script carries its own.
 	preamble := "#!/bin/sh\n"
@@ -140,6 +171,12 @@ func newWorld(t *testing.T) *world {
 		preamble += "export '" + kv + "'\n"
 	}
 	w.write(script, preamble+agentScript)
+	// A launched "claude" is a scripted agent named by its brief: an Epic's
+	// narrator is told to narrate, anything else is its orchestrator.
+	if err := os.MkdirAll(filepath.Join(dir, "bin"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	w.write(filepath.Join(dir, "bin", "claude"), "#!/bin/sh\ncase \"$*\" in *Narrate*) n=narrator ;; *) n=orchestrator ;; esac\nexec /bin/sh '"+script+"' \"$n\"\n")
 	w.startServer()
 	return w
 }

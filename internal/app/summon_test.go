@@ -129,7 +129,7 @@ func TestSummonResumesADepartedPeer(t *testing.T) {
 		t.Fatalf("%+v", res)
 	}
 	l := term.launches[0]
-	if l.Dir != "/work/app" || l.Command[0] != "env" || !strings.HasPrefix(l.Command[1], SummonEnv+"=") || strings.Join(launchProgram(l)[:3], " ") != "codex --no-daemon resume" || launchProgram(l)[3] != "thread-2" || !strings.Contains(launchProgram(l)[4], "amq drain") || l.Label != "reviewer(codex-02)" {
+	if l.Dir != "/work/app" || l.Command[0] != "env" || !strings.HasPrefix(l.Command[1], SummonEnv+"=") || strings.Join(launchProgram(l)[:3], " ") != "codex --no-daemon resume" || launchProgram(l)[3] != "thread-2" || !strings.Contains(launchProgram(l)[4], e.SelfBin+" drain --include-body") || l.Label != "reviewer(codex-02)" {
 		t.Fatalf("launch: %+v", l)
 	}
 	// Adopted, it is the same agent, lineage included.
@@ -168,7 +168,7 @@ func TestSummonStartsARoleOnceAuthorized(t *testing.T) {
 		t.Fatalf("%+v", res)
 	}
 	l := term.launches[0]
-	if l.Dir != "/work/app" || l.Label != "reviewer | look at #42" || l.Command[0] != "env" || launchProgram(l)[0] != "codex" || !strings.Contains(l.Command[len(l.Command)-1], "please review #42") || !strings.Contains(l.Command[len(l.Command)-1], "amq send --to claude-01") {
+	if l.Dir != "/work/app" || l.Label != "reviewer | look at #42" || l.Command[0] != "env" || launchProgram(l)[0] != "codex" || !strings.Contains(l.Command[len(l.Command)-1], "please review #42") || !strings.Contains(l.Command[len(l.Command)-1], e.SelfBin+" send --to claude-01") {
 		t.Fatalf("launch: %+v", l)
 	}
 	if n, _ := e.Store.PendingSummons("session:s", e.Now()); n != 1 {

@@ -35,6 +35,9 @@ type Terminal interface {
 	Title(ctx context.Context, block string) (string, error)
 	ListSessions(ctx context.Context) ([]string, error)
 	NewSplit(ctx context.Context, session, anchor, label, dir string, command []string) (block string, err error)
+	// NewSession creates a session with one window per pane, all or none
+	// (Epics, internal/app/epic.go).
+	NewSession(ctx context.Context, label string, panes []rex.Pane) (session string, windows, blocks []string, err error)
 	// The orchestrator watchdog's layout calls (internal/app/watchdog.go).
 	Size(ctx context.Context, block string) (rex.Size, error)
 	DetachBlock(ctx context.Context, session, block string) error
@@ -129,9 +132,6 @@ func userHome() string {
 	h, _ := os.UserHomeDir()
 	return h
 }
-
-// EnvCommand is what agents run to load their identity.
-func (e Env) EnvCommand() string { return e.SelfBin + " env" }
 
 // HookInput is the part of a hook payload the adapter reads. Claude Code and
 // Codex use the snake_case names; Antigravity uses camelCase and different

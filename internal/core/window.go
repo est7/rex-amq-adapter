@@ -54,12 +54,12 @@ func MatesNotice(mates []Peer) string {
 		names[i] = m.named()
 	}
 	return "Agents beside you in this Rex session: " + strings.Join(names, ", ") +
-		". Reach them with `amq send --to <handle>`."
+		". Reach them with `rex-amq-adapter send --to <handle>`."
 }
 
 // JoinedNotice tells a session-mate that p started beside it.
 func JoinedNotice(p Peer) string {
-	return fmt.Sprintf("AMQ: %s joined your Rex session. Reach it with `amq send --to %s`.", p.named(), p.Handle)
+	return fmt.Sprintf("AMQ: %s joined your Rex session. Reach it with `rex-amq-adapter send --to %s`.", p.named(), p.Handle)
 }
 
 // OrchestratorNotice tells an agent that an orchestrator among mates
@@ -177,20 +177,75 @@ const MaxInline = 4000
 
 // BriefNotice is the part of a start notice that carries the briefing; ""
 // when there is none.
-func BriefNotice(b Briefing) string {
+func BriefNotice(b Briefing) string { return briefNotice(b, false, false) }
+
+// briefNotice is BriefNotice, naming the conventions or the role prompt by
+// its file instead of inlining it when asked and the prompt has a file.
+func briefNotice(b Briefing, nameConventions, nameRole bool) string {
 	var parts []string
 	if b.Conventions != "" {
-		parts = append(parts, prompt(fmt.Sprintf("Team conventions of crew %q, shared by the agents in this Rex tab; where they differ from your role prompt, they win", b.Crew), b.Conventions, b.ConventionsPath))
+		parts = append(parts, prompt(fmt.Sprintf("Team conventions of crew %q, shared by the agents in this Rex tab; where they differ from your role prompt, they win", b.Crew), b.Conventions, b.ConventionsPath, nameConventions))
 	}
 	if b.RolePrompt != "" {
-		parts = append(parts, prompt("Your role here is "+b.Role, b.RolePrompt, b.RolePath))
+		parts = append(parts, prompt("Your role here is "+b.Role, b.RolePrompt, b.RolePath, nameRole))
 	}
 	return strings.Join(parts, "\n\n")
 }
 
-func prompt(title, text, path string) string {
-	if len(text) > MaxInline && path != "" {
+func prompt(title, text, path string, name bool) string {
+	if (name || len(text) > MaxInline) && path != "" {
 		return title + ": read " + path + " before you start."
 	}
 	return title + ":\n" + text
+}
+
+// ContextCap is the most a hook may give Claude Code as context: a longer
+// value is replaced by a file path and a 2,000-character preview, and what
+// follows the preview never reaches the model. Lengths count UTF-16 code
+// units (ContextLen), as Claude Code's JavaScript does.
+const ContextCap = 10000
+
+// StartBudget is what a start notice may take of ContextCap, leaving the rest
+// for the join notes and mail line the same hook reply can carry.
+const StartBudget = ContextCap - 1000
+
+// ContextLen is the length of s as a harness written in JavaScript counts
+// it: UTF-16 code units.
+func ContextLen(s string) int {
+	n := 0
+	for _, r := range s {
+		n++
+		if r > 0xFFFF {
+			n++
+		}
+	}
+	return n
+}
+
+// StartNotice composes a start notice: head (identity, mail, mates, task),
+// the briefing, and tail (who stands for the human), within StartBudget.
+// head and tail always stay inline, since an agent cannot do without them;
+// a prompt that does not fit is named by its file, the longer one first. A
+// briefing whose prompts have no file (the built-in ones, which tests keep
+// short) is inlined whatever its length.
+func StartNotice(head string, b Briefing, tail string) string {
+	compose := func(nameConventions, nameRole bool) string {
+		s := head
+		if brief := briefNotice(b, nameConventions, nameRole); brief != "" {
+			s += "\n\n" + brief
+		}
+		if tail != "" {
+			s += "\n\n" + tail
+		}
+		return s
+	}
+	conventionsFirst := ContextLen(b.Conventions) >= ContextLen(b.RolePrompt)
+	steps := [][2]bool{{false, false}, {conventionsFirst, !conventionsFirst}, {true, true}}
+	var s string
+	for _, st := range steps {
+		if s = compose(st[0], st[1]); ContextLen(s) <= StartBudget {
+			break
+		}
+	}
+	return s
 }

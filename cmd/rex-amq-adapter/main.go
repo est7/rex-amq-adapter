@@ -35,8 +35,8 @@ Agent and user commands:
                             Rex pane when REX_BLOCK names another (eval it)
   title [TASK...]           show TASK after your role and handle in this pane's
                             label ("<role>(<handle>) | <task>"); no TASK clears it
-  who [--all]               list agents in this Rex session only, with their roles
-                            and tabs;
+  who [--all] [--json]      list agents in this Rex session only, with their roles
+                            and tabs (--json: {"agents": [...]}, as events' snapshot);
                             --all adds this session's departed agents reserved for a resume
                             and the narrator and personal agents ordinary views leave out
   events --json [--session S | --tab | --all]
@@ -46,7 +46,8 @@ Agent and user commands:
                             every agent of the server
   await <block> [--timeout D]
                             wait for the agent started in a block, then print
-                            its outcome as JSON; exits 0 only when adopted
+                            its outcome as JSON; exits 0 only when adopted.
+                            D is a duration (90s, 2m) or seconds (60)
   collect                   reconcile records with Rex now
   join [CREW] [--role R]    take role R in crew CREW where you stand: name this
                             tab after CREW (while no other agent is in it),
@@ -55,9 +56,14 @@ Agent and user commands:
   tab <crew> [--role R] [-c DIR] [-s SESSION] -- COMMAND...
                             open a Rex tab for a crew, its first pane labelled
                             with role R, running COMMAND (an agent and its brief)
-  crews [dir]               list the crews (named by a Rex tab), their lead and
+  crews [--json] [dir]      list the crews (named by a Rex tab), their lead and
                             members, and the roles (named by a pane label) that
-                            brief agents working in dir
+                            brief agents working in dir; --json adds each one's
+                            purpose
+  crews show [CREW] [--role R] [-c DIR]
+                            print, changing nothing, the briefing an agent taking
+                            role R in crew CREW gets: the crew's conventions and
+                            the role's prompt; without --role, the crew's lead
   summon <handle|role> --subject S --body B [--kind K] [--grant FILE | --asked "WORDS"] [--harness H] [--cwd DIR]
                             send to a peer by handle or role: a live one gets the
                             mail; a departed one of this session is resumed in a
@@ -72,11 +78,19 @@ Agent and user commands:
                             mail each other, a narrator takes no member mail,
                             and mail addressed to you before you moved to
                             another session stays fenced. --me, --root,
-                            --session, and --project are the adapter's to set
+                            --session, and --project are the adapter's to set.
+                            send --control ID: (a narrator) relay a user-control
+                            directive to its orchestrator under request id ID
   link [EPIC_SESSION]       (a personal agent) let this session and the
                             narrator of Epic session EPIC_SESSION exchange
                             mail; without one, list your links
   unlink EPIC_SESSION       revoke such a link; both take effect at once
+  epic <name> [-c DIR] (--goal FILE | --asked "WORDS") [--harness H] [--timeout D]
+                            (a personal agent) open an Epic: a Rex session named
+                            <name> with its orchestrator (briefed with the goal
+                            contract, or the user's words) and its narrator,
+                            linked to you; prints one JSON line and exits 0
+                            only when both are adopted and linked
   view [--session S]        print a session's view (view.json): its members, open
                             obligations, recent mail, and what it could not cover;
                             the narrator's, orchestrator's, or a linked personal
@@ -101,7 +115,7 @@ Internal (run by installed hooks and by amq wake):
   hook <event> --agent K    session-start | user-prompt-submit | post-tool-use | pre-invocation | stop | stop-failure | session-end | mail | settle
   inject <server> <block> <handle> <root> <payload>
   __internal skill          print the agent guide
-  version
+  version, --version
 `
 
 func main() {
@@ -143,6 +157,8 @@ func run(args []string) int {
 		return runManaged(cmd, rest)
 	case "link", "unlink":
 		return runLink(cmd == "link", rest)
+	case "epic":
+		return runEpic(rest)
 	case "view":
 		return runView(rest)
 	case "join":
@@ -151,7 +167,7 @@ func run(args []string) int {
 		return runInstall(cmd, rest)
 	case "__internal":
 		return runInternal(rest)
-	case "version":
+	case "version", "--version":
 		fmt.Println(version())
 		return 0
 	case "help", "-h", "--help":
@@ -359,7 +375,21 @@ func runEnv() int {
 	return 0
 }
 
+const titleUsage = "usage: rex-amq-adapter title [TASK...]   (no TASK clears it; `--` before a task that starts with a dash)"
+
 func runTitle(args []string) int {
+	if len(args) > 0 {
+		switch a := args[0]; {
+		case a == "-h" || a == "--help":
+			fmt.Println(titleUsage)
+			return 0
+		case a == "--":
+			args = args[1:]
+		case strings.HasPrefix(a, "-"):
+			fmt.Fprintln(os.Stderr, titleUsage)
+			return 2
+		}
+	}
 	env, loc, err := caller()
 	if err != nil {
 		return fail(err)
@@ -377,7 +407,12 @@ func runTitle(args []string) int {
 func runWho(args []string) int {
 	fs := flag.NewFlagSet("who", flag.ContinueOnError)
 	all := fs.Bool("all", false, "also list this session's departed agents still reserved for a resume, and its narrator and personal agents")
+	asJSON := fs.Bool("json", false, `print {"agents": [...]}, each agent as in events' snapshot`)
 	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintln(os.Stderr, "usage: rex-amq-adapter who [--all] [--json]")
 		return 2
 	}
 	env, loc, err := caller()
@@ -401,6 +436,12 @@ func runWho(args []string) int {
 	agents, err := env.SessionAgents(session, *all)
 	if err != nil {
 		return fail(err)
+	}
+	if *asJSON {
+		if agents == nil {
+			agents = []core.Agent{}
+		}
+		return printJSON(map[string]any{"agents": agents})
 	}
 	now := env.Now()
 	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
@@ -493,7 +534,8 @@ func runWatch(server, session string) int {
 
 func runAwait(args []string) int {
 	fs := flag.NewFlagSet("await", flag.ContinueOnError)
-	timeout := fs.Duration("timeout", 30*time.Second, "how long to wait")
+	timeout := timeoutFlag(30 * time.Second)
+	fs.Var(&timeout, "timeout", "how long to wait: a duration (90s, 2m) or seconds (60)")
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
 		fmt.Fprintln(os.Stderr, "usage: rex-amq-adapter await <block> [--timeout D]")
 		return 2
@@ -505,7 +547,7 @@ func runAwait(args []string) int {
 	if err != nil {
 		return fail(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout))
 	defer cancel()
 	s, err := env.AwaitStartup(ctx, args[0])
 	if err != nil {
@@ -724,7 +766,24 @@ func runJoin(args []string) int {
 	return 0
 }
 
+const crewsUsage = "usage: rex-amq-adapter crews [--json] [DIR]\n       rex-amq-adapter crews show [CREW] [--role R] [-c DIR]"
+
 func runCrews(args []string) int {
+	if len(args) > 0 && args[0] == "show" {
+		return runCrewsShow(args[1:])
+	}
+	asJSON := false
+	if len(args) > 0 && args[0] == "--json" {
+		asJSON, args = true, args[1:]
+	}
+	if len(args) > 1 || len(args) == 1 && strings.HasPrefix(args[0], "-") {
+		if len(args) == 1 && (args[0] == "-h" || args[0] == "--help") {
+			fmt.Println(crewsUsage)
+			return 0
+		}
+		fmt.Fprintln(os.Stderr, crewsUsage)
+		return 2
+	}
 	dir, err := os.Getwd()
 	if len(args) > 0 {
 		dir, err = args[0], nil
@@ -732,9 +791,13 @@ func runCrews(args []string) int {
 	if err != nil {
 		return fail(err)
 	}
-	entries, err := crew.Load(dir).List()
+	lib := crew.Load(dir)
+	entries, err := lib.List()
 	if err != nil {
 		return fail(err)
+	}
+	if asJSON {
+		return printCrewsJSON(lib, entries)
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "CREW\tCONVENTIONS\tLEAD\tROLES\tFROM")
@@ -868,6 +931,218 @@ func runLink(link bool, args []string) int {
 		fmt.Printf("unlinked %s from %s\n", l.Personal.SessionID, l.Epic.SessionID)
 	default:
 		fmt.Printf("%s was not linked with %s\n", l.Personal.SessionID, l.Epic.SessionID)
+	}
+	return 0
+}
+
+// runCrewsShow prints, without changing anything, the briefing an agent
+// would get taking role R in crew CREW where it works (dir): the crew's
+// team conventions and the role's prompt. Without --role it shows the
+// crew's lead, as join does; without CREW, the role in a tab of no crew.
+func runCrewsShow(args []string) int {
+	name := ""
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		name, args = args[0], args[1:]
+	}
+	fs := flag.NewFlagSet("crews show", flag.ContinueOnError)
+	role := fs.String("role", "", "the role (default: the crew's lead)")
+	dir := fs.String("c", "", "the directory whose crews apply (default: the current one)")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() > 0 || name == "" && *role == "" {
+		fmt.Fprintln(os.Stderr, crewsUsage)
+		return 2
+	}
+	if *dir == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return fail(err)
+		}
+		*dir = wd
+	}
+	lib := crew.Load(*dir)
+	r := crew.Name(*role)
+	if name != "" {
+		c, ok, err := lib.Crew(name)
+		if err != nil {
+			return fail(err)
+		}
+		if !ok {
+			return fail(fmt.Errorf("no crew %q: `rex-amq-adapter crews` lists them", name))
+		}
+		if r == "" {
+			if r = c.Lead; r == "" {
+				return fail(fmt.Errorf("crew %s names no lead: pass --role", name))
+			}
+		}
+		fmt.Printf("crew %s (%s): lead %s; members %s\n", name, from(c.Conventions), orDash(c.Lead), orDash(strings.Join(c.Members, ", ")))
+		fmt.Printf("\n## Team conventions of crew %s\n\n%s\n", name, c.Conventions.Text)
+	}
+	p, ok, err := lib.Role(name, r)
+	if err != nil {
+		return fail(err)
+	}
+	if !ok {
+		if name == "" {
+			return fail(fmt.Errorf("no prompt for role %q: `rex-amq-adapter crews` lists the roles", r))
+		}
+		fmt.Printf("\n## Role %s\n\nno prompt: an agent in this role works from the conventions and its brief\n", r)
+		return 0
+	}
+	fmt.Printf("\n## Role %s (%s)\n\n%s\n", r, from(p), p.Text)
+	return 0
+}
+
+func from(p crew.Prompt) string {
+	if p.Path == "" {
+		return "built-in"
+	}
+	return p.Path
+}
+
+func orDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
+// timeoutFlag is a positive duration flag that also takes bare seconds
+// ("60"), the form briefs and the guide write.
+type timeoutFlag time.Duration
+
+func (d *timeoutFlag) Set(s string) error {
+	v, err := time.ParseDuration(s)
+	if err != nil {
+		secs, perr := strconv.ParseFloat(s, 64)
+		if perr != nil {
+			return fmt.Errorf("%q is neither a duration (90s, 2m) nor seconds", s)
+		}
+		v = time.Duration(secs * float64(time.Second))
+	}
+	if v <= 0 {
+		return fmt.Errorf("%q: the timeout must be positive", s)
+	}
+	*d = timeoutFlag(v)
+	return nil
+}
+
+func (d *timeoutFlag) String() string { return time.Duration(*d).String() }
+
+func printJSON(v any) int {
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return fail(err)
+	}
+	fmt.Println(string(b))
+	return 0
+}
+
+// printCrewsJSON prints the crews and the roles of a tab of no crew, each
+// with the first sentence of its prompt as its purpose.
+func printCrewsJSON(lib crew.Library, entries []crew.Entry) int {
+	type crewOut struct {
+		Name        string   `json:"name"`
+		Lead        string   `json:"lead"`
+		Members     []string `json:"members"`
+		Roles       []string `json:"roles"` // role prompts of the crew's own
+		Layer       string   `json:"layer"`
+		Conventions bool     `json:"conventions"`
+		Purpose     string   `json:"purpose"`
+	}
+	type roleOut struct {
+		Name    string `json:"name"`
+		Layer   string `json:"layer"`
+		Purpose string `json:"purpose"`
+	}
+	out := struct {
+		Crews []crewOut `json:"crews"`
+		Roles []roleOut `json:"roles"`
+	}{Crews: []crewOut{}, Roles: []roleOut{}}
+	for _, e := range entries {
+		if e.Crew == "" {
+			for _, r := range e.Roles {
+				p, _, err := lib.Role("", r)
+				if err != nil {
+					return fail(err)
+				}
+				out.Roles = append(out.Roles, roleOut{Name: r, Layer: e.Layer, Purpose: crew.Purpose(p.Text)})
+			}
+			continue
+		}
+		c := crewOut{Name: e.Crew, Lead: e.Lead, Members: e.Members, Roles: e.Roles, Layer: e.Layer, Conventions: e.Conventions}
+		if c.Members == nil {
+			c.Members = []string{}
+		}
+		if c.Roles == nil {
+			c.Roles = []string{}
+		}
+		if e.Conventions {
+			conv, _, err := lib.Conventions(e.Crew)
+			if err != nil {
+				return fail(err)
+			}
+			c.Purpose = crew.Purpose(conv.Text)
+		}
+		out.Crews = append(out.Crews, c)
+	}
+	return printJSON(out)
+}
+
+const epicUsage = `usage: rex-amq-adapter epic <name> [-c DIR] (--goal FILE | --asked "WORDS") [--harness H] [--timeout D]`
+
+// runEpic opens an Epic for the personal agent running it (app.OpenEpic)
+// and prints what was started, even when part of it failed.
+func runEpic(args []string) int {
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		fmt.Fprintln(os.Stderr, epicUsage)
+		return 2
+	}
+	name := args[0]
+	fs := flag.NewFlagSet("epic", flag.ContinueOnError)
+	dir := fs.String("c", "", "the repository the Epic's agents work in (default: the current directory)")
+	goal := fs.String("goal", "", "the goal contract the orchestrator runs: its grant")
+	asked := fs.String("asked", "", "the user's own words asking for the Epic, its brief when there is no contract")
+	harness := fs.String("harness", "", "the orchestrator's CLI: claude (default), codex, agy, or pi")
+	timeout := timeoutFlag(90 * time.Second)
+	fs.Var(&timeout, "timeout", "how long to wait for both agents: a duration (2m) or seconds (120)")
+	if err := fs.Parse(args[1:]); err != nil {
+		return 2
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintln(os.Stderr, epicUsage)
+		return 2
+	}
+	if *dir == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return fail(err)
+		}
+		*dir = wd
+	}
+	env, loc, err := caller()
+	if err != nil {
+		return fail(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout))
+	defer cancel()
+	res, err := env.OpenEpic(ctx, loc, app.EpicRequest{Name: name, Dir: *dir, Goal: *goal, Asked: *asked, Harness: *harness})
+	if res.SessionID != "" {
+		out, merr := json.Marshal(res)
+		if merr != nil {
+			return fail(merr)
+		}
+		fmt.Println(string(out))
+	}
+	switch {
+	case errors.Is(err, app.ErrUsage):
+		fmt.Fprintf(os.Stderr, "rex-amq-adapter: %v\n", err)
+		return 2
+	case err != nil:
+		return fail(err)
+	case !res.Ready():
+		return 1
 	}
 	return 0
 }
