@@ -200,7 +200,8 @@ Make the changes in this order; each step has tests before the next.
    than launch another harness. Verify the installed CLI parser before choosing
    prompt arguments: Claude/Codex/Pi accept `--` before a positional brief;
    Antigravity takes its brief as the value of `-i`. Test a dash-leading brief
-   through `Summon` and the native resume form before marking the kind supported.
+   through `Summon` before marking the kind supported. `resumeCommand` passes no
+   `--`: its prompt is the adapter's fixed "Resumed by ..." text, never a brief.
 9. **Docs** — `docs/design.md` §2 (primitives with evidence), §6 (lifecycle
    notes for the kind), §11 (end-to-end rows); `README.md` (supported agents,
    tested version, install notes such as approvals).
