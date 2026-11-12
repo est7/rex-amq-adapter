@@ -1207,6 +1207,27 @@ This is a policy on the supported paths, not a sandbox: any process of the same
 UNIX user can read and write the mailbox files, and `amq` run directly with
 another `--me` names any sender. `events` only reads and applies no gate.
 
+### Opening an Epic
+
+`rex-amq-adapter epic <name> -c DIR (--goal FILE | --asked "WORDS")`
+(`app.Env.OpenEpic`) is the whole start, so a personal agent runs one command
+and its user sees no steps. It refuses a caller that is not a live `personal`
+agent, and needs a grant as `summon` does: a goal contract that is a regular
+file, which the orchestrator's brief runs (make-goal's prompt for a contract
+in a file, whole, so the run ends at either of its exits, `/goal`-prefixed for
+Claude Code), or the user's own words, which become the brief. One
+`session.create` makes the Epic's Rex session, labelled with the whole name
+(pane labels shorten it to their task width), with two windows, all or none: a `narrator` tab
+(claimed in the tab ledger) whose agent is told whose personal agent it
+narrates for, and the orchestrator's tab, last and so active, left with Rex's
+placeholder name so it follows its agent. Then the session is linked to the
+caller (before adoption, so the caller can mail the narrator at once), and
+both startups are awaited (`AwaitStartup`). The result (`session_id`, each
+agent's block and startup, `linked`) is printed even when part of it failed;
+nothing started is torn down, and the command exits 0 only when both agents
+are adopted and linked. The Epic's agents start outside any summon chain, as
+the user's own would: the orchestrator is depth 0 in its session.
+
 ### Narrator
 
 A `narrator` (`core.Stealth`, like a `personal` agent) observes its Epic
@@ -1250,7 +1271,7 @@ urgent mail skips the hold.
 ## 9. Module layout
 
 ```
-cmd/rex-amq-adapter/   subcommands: hook, inject, env, title, who, events, await, collect, crews, tab, trust, summon, join, send, reply, read, drain, thread, trace, dlq, list, link, unlink, setup, status, remove, __internal, version
+cmd/rex-amq-adapter/   subcommands: hook, inject, env, title, who, events, await, collect, crews, tab, trust, summon, epic, join, send, reply, read, drain, thread, trace, dlq, list, link, unlink, setup, status, remove, __internal, version
 internal/app/          entry points: observe, ask core, act (adopt, inject, announce, depart, collect, discovery, await, session watcher, narrator view, and watchdog, summon, join, the events stream); who runs a command (Caller); the hook's process ancestry (golang.org/x/sys)
 internal/core/         pure policy: the gateway (CanExchange), handle choice, roles and pane labels, inject decision, announce decision, session-mates, notice text, the observer's projection and diff
 internal/crew/         crew and role prompt lookup across project, user, and built-in layers; crew headers (lead, members); built-in prompts

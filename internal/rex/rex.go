@@ -314,6 +314,69 @@ func (c Client) NewWindow(ctx context.Context, session, tab, label, dir string, 
 	return res.WindowID, res.BlockIDs[0], nil
 }
 
+// Pane is a block to open running Command, in a window of its own labelled
+// Tab ("" leaves Rex's placeholder name), with the block labelled Label.
+type Pane struct {
+	Tab, Label, Dir string
+	Command         []string
+}
+
+// NewSession creates a session labelled label holding one window per pane,
+// all or none (session.create: a window that fails closes the session), and
+// returns its id and each pane's window and block, in order. It focuses
+// nothing: the call does not attach the caller's client to the session.
+func (c Client) NewSession(ctx context.Context, label string, panes []Pane) (session string, windows, blocks []string, err error) {
+	type block struct {
+		Flavor  string         `json:"flavor"`
+		Label   string         `json:"label,omitempty"`
+		Options map[string]any `json:"options"`
+	}
+	type window struct {
+		Label  string `json:"window_label,omitempty"`
+		Layout struct {
+			Block block `json:"block"`
+		} `json:"layout"`
+	}
+	in := struct {
+		Label   string   `json:"label"`
+		Windows []window `json:"initial_windows"`
+	}{Label: label}
+	for _, p := range panes {
+		var w window
+		w.Label = p.Tab
+		w.Layout.Block = block{Flavor: "com.superlogical.terminal.shell", Label: p.Label, Options: map[string]any{"cwd": p.Dir, "command": p.Command}}
+		in.Windows = append(in.Windows, w)
+	}
+	args, err := json.Marshal(in)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	out, err := c.run(ctx, nil, "api", "call", "session.create", string(args))
+	if err != nil {
+		return "", nil, nil, err
+	}
+	var res struct {
+		Session string `json:"session_id"`
+		Windows []struct {
+			WindowID string   `json:"window_id"`
+			BlockIDs []string `json:"block_ids"`
+		} `json:"initial_windows"`
+	}
+	if err := json.Unmarshal(out, &res); err != nil {
+		return "", nil, nil, fmt.Errorf("decode new session: %w", err)
+	}
+	if res.Session == "" || len(res.Windows) != len(panes) {
+		return "", nil, nil, fmt.Errorf("new session returned %s", out)
+	}
+	for _, w := range res.Windows {
+		if w.WindowID == "" || len(w.BlockIDs) != 1 {
+			return res.Session, nil, nil, fmt.Errorf("new session returned %s", out)
+		}
+		windows, blocks = append(windows, w.WindowID), append(blocks, w.BlockIDs[0])
+	}
+	return res.Session, windows, blocks, nil
+}
+
 // Session is a session's label and its windows (tabs).
 type Session struct {
 	ID      string   `json:"session_id"`

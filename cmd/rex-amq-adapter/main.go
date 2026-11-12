@@ -85,6 +85,12 @@ Agent and user commands:
                             narrator of Epic session EPIC_SESSION exchange
                             mail; without one, list your links
   unlink EPIC_SESSION       revoke such a link; both take effect at once
+  epic <name> [-c DIR] (--goal FILE | --asked "WORDS") [--harness H] [--timeout D]
+                            (a personal agent) open an Epic: a Rex session named
+                            <name> with its orchestrator (briefed with the goal
+                            contract, or the user's words) and its narrator,
+                            linked to you; prints one JSON line and exits 0
+                            only when both are adopted and linked
   view [--session S]        print a session's view (view.json): its members, open
                             obligations, recent mail, and what it could not cover;
                             the narrator's, orchestrator's, or a linked personal
@@ -151,6 +157,8 @@ func run(args []string) int {
 		return runManaged(cmd, rest)
 	case "link", "unlink":
 		return runLink(cmd == "link", rest)
+	case "epic":
+		return runEpic(rest)
 	case "view":
 		return runView(rest)
 	case "join":
@@ -1080,4 +1088,61 @@ func printCrewsJSON(lib crew.Library, entries []crew.Entry) int {
 		out.Crews = append(out.Crews, c)
 	}
 	return printJSON(out)
+}
+
+const epicUsage = `usage: rex-amq-adapter epic <name> [-c DIR] (--goal FILE | --asked "WORDS") [--harness H] [--timeout D]`
+
+// runEpic opens an Epic for the personal agent running it (app.OpenEpic)
+// and prints what was started, even when part of it failed.
+func runEpic(args []string) int {
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		fmt.Fprintln(os.Stderr, epicUsage)
+		return 2
+	}
+	name := args[0]
+	fs := flag.NewFlagSet("epic", flag.ContinueOnError)
+	dir := fs.String("c", "", "the repository the Epic's agents work in (default: the current directory)")
+	goal := fs.String("goal", "", "the goal contract the orchestrator runs: its grant")
+	asked := fs.String("asked", "", "the user's own words asking for the Epic, its brief when there is no contract")
+	harness := fs.String("harness", "", "the orchestrator's CLI: claude (default), codex, agy, or pi")
+	timeout := timeoutFlag(90 * time.Second)
+	fs.Var(&timeout, "timeout", "how long to wait for both agents: a duration (2m) or seconds (120)")
+	if err := fs.Parse(args[1:]); err != nil {
+		return 2
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintln(os.Stderr, epicUsage)
+		return 2
+	}
+	if *dir == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return fail(err)
+		}
+		*dir = wd
+	}
+	env, loc, err := caller()
+	if err != nil {
+		return fail(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout))
+	defer cancel()
+	res, err := env.OpenEpic(ctx, loc, app.EpicRequest{Name: name, Dir: *dir, Goal: *goal, Asked: *asked, Harness: *harness})
+	if res.SessionID != "" {
+		out, merr := json.Marshal(res)
+		if merr != nil {
+			return fail(merr)
+		}
+		fmt.Println(string(out))
+	}
+	switch {
+	case errors.Is(err, app.ErrUsage):
+		fmt.Fprintf(os.Stderr, "rex-amq-adapter: %v\n", err)
+		return 2
+	case err != nil:
+		return fail(err)
+	case !res.Ready():
+		return 1
+	}
+	return 0
 }
