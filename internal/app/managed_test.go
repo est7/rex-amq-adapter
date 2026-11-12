@@ -210,3 +210,49 @@ func TestManagedMailTakeFlag(t *testing.T) {
 		}
 	}
 }
+
+// A narrator's one write into its Epic is a user-control directive to the
+// orchestrator, sent with --control <request id> (core.OpControl). Without
+// it, or to anyone else, the gateway refuses, and what arrives through the
+// managed send passes the orchestrator's arrival gate.
+func TestManagedMailNarratorControlReachesOnlyTheOrchestrator(t *testing.T) {
+	e, ctx := managedWorld(t)
+	put(t, e,
+		store.Record{Handle: "claude-05", Role: core.NarratorRole, SessionID: "session:a"},
+		store.Record{Handle: "claude-03", Role: core.OrchestratorRole, SessionID: "session:a"},
+	)
+	for _, h := range []string{"claude-05", "claude-03"} {
+		if err := amq.EnsureMailbox(ctx, e.AmqBin, e.Paths.Root(), h); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err := run(t, e, ctx, "claude-05", "send", "--to", "claude-03", "--subject", "s", "--body", "b"); !errors.Is(err, ErrRefused) {
+		t.Fatalf("a narrator's plain send to the orchestrator: %v", err)
+	}
+	if _, code, err := run(t, e, ctx, "claude-05", "send", "--to", "claude-03", "--control", "", "--body", "b"); !errors.Is(err, ErrUsage) || code != 2 {
+		t.Fatalf("--control without a request id: %d %v", code, err)
+	}
+	if _, _, err := run(t, e, ctx, "claude-05", "send", "--to", "claude-02", "--control", "req-7", "--body", "b"); !errors.Is(err, ErrRefused) {
+		t.Fatalf("a narrator's control to a worker: %v", err)
+	}
+	if _, _, err := run(t, e, ctx, "claude-02", "send", "--to", "claude-03", "--control", "req-8", "--body", "b"); !errors.Is(err, ErrRefused) {
+		t.Fatalf("a worker sending a control directive: %v", err)
+	}
+	out, code, err := run(t, e, ctx, "claude-05", "send", "--to", "claude-03", "--control", "req-7", "--subject", "directive", "--body", "the user: ship it", "--json")
+	if err != nil || code != 0 {
+		t.Fatalf("control: %d %v %s", code, err, out)
+	}
+	var sent amq.Sent
+	if err := json.Unmarshal([]byte(out), &sent); err != nil || sent.ID == "" {
+		t.Fatalf("output %q", out)
+	}
+	p, ok, err := e.Store.ProvenanceOf(sent.ID, "", "", nil)
+	if err != nil || !ok || p.Op != core.OpControl || p.ControlRequestID != "req-7" {
+		t.Fatalf("provenance %+v %v %v", p, ok, err)
+	}
+	orch, _, _ := e.Store.Record("block:claude-03")
+	kept, err := e.admit(orch)
+	if err != nil || len(kept) != 1 || kept[0] != sent.ID {
+		t.Fatalf("the orchestrator's gate kept %v (%v), want %s", kept, err, sent.ID)
+	}
+}

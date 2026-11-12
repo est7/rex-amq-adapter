@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -436,5 +437,49 @@ func TestWhoListsThisSessionWhenTheLifecycleLockCannotBeTaken(t *testing.T) {
 	}
 	if !strings.Contains(errout, "lifecycle.lock") {
 		t.Fatalf("the failure was not reported: stderr=%q", errout)
+	}
+}
+
+// who --json lists the same agents as the table, as core.Agent objects (the
+// shape events' snapshot uses), so an agent reads roles and tabs without
+// parsing columns.
+func TestWhoJSONListsTheSameAgentsAsTheTable(t *testing.T) {
+	for _, all := range []bool{false, true} {
+		t.Run(fmt.Sprintf("all=%v", all), func(t *testing.T) {
+			whoFixture(t)
+			args := []string{"--json"}
+			if all {
+				args = append(args, "--all")
+			}
+			code, out, errout := captureWho(t, args...)
+			if code != 0 {
+				t.Fatalf("who --json: %d %s", code, errout)
+			}
+			var got struct {
+				Agents []core.Agent `json:"agents"`
+			}
+			if err := json.Unmarshal([]byte(out), &got); err != nil {
+				t.Fatalf("not JSON: %v\n%s", err, out)
+			}
+			byHandle := map[core.Handle]core.Agent{}
+			for _, a := range got.Agents {
+				byHandle[a.Handle] = a
+			}
+			want := []core.Handle{"pi-self", "pi-mate", "pi-moved-in", "pi-other", "pi-moved-out"}
+			if all {
+				want = append(want, "pi-departed-1", "pi-departed-2")
+			}
+			if len(got.Agents) != len(want) {
+				t.Errorf("%d agents, want %d: %+v", len(got.Agents), len(want), got.Agents)
+			}
+			for _, h := range want {
+				if _, ok := byHandle[h]; !ok {
+					t.Errorf("missing %s", h)
+				}
+			}
+			if m := byHandle["pi-mate"]; m.Role != "reviewer" || m.Tab != "Work" || m.Lifecycle.State != core.LifeLive {
+				t.Errorf("pi-mate: %+v", m)
+			}
+		})
 	}
 }

@@ -349,19 +349,15 @@ func (e Env) identityNotice(ctx context.Context, a Adoption, unread int) string 
 		// linked narrator: neither is told to reach its session's agents.
 		mates = ""
 	}
-	notice := joinNotices(core.SessionNotice(a.Record.Handle, e.EnvCommand(), unread), mates) +
+	head := joinNotices(core.SessionNotice(a.Record.Handle, a.Record.Role, e.EnvCommand(), unread), mates) +
 		"\n" + core.TaskNotice(a.Record.Handle, a.Record.Role, e.SelfBin+" title", a.Record.Task)
-	if brief := core.BriefNotice(e.briefing(ctx, a)); brief != "" {
-		notice += "\n\n" + brief
-	}
 	// After the briefing, so it reads as the word on whom "the human" means;
 	// an orchestrator hears this from its own role prompt.
+	tail := ""
 	if a.Record.Role != core.OrchestratorRole && !core.Stealth(a.Record.Role) {
-		if orch := core.OrchestratorNotice(a.Mates); orch != "" {
-			notice += "\n\n" + orch
-		}
+		tail = core.OrchestratorNotice(a.Mates)
 	}
-	return notice
+	return core.StartNotice(head, e.briefing(ctx, a), tail)
 }
 
 // briefing finds the agent's crew (named by its Rex tab) and its role

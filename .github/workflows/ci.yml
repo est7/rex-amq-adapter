@@ -1,0 +1,32 @@
+# Verifies every push to main and every pull request: build, vet, the
+# short test suite with and without the race detector, and a scan for known
+# vulnerabilities. Tests that need a real amq or Rex binary skip on this
+# runner (see release.yml); run them locally before tagging a release.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: build
+        run: go build ./...
+      - name: vet
+        run: go vet ./...
+      - name: test
+        run: REX_AMQ_ADAPTER_HOME="$(mktemp -d)" go test -short ./...
+      - name: race
+        run: REX_AMQ_ADAPTER_HOME="$(mktemp -d)" go test -short -race ./...
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...

@@ -49,6 +49,16 @@ func AdapterLabel(label string) bool {
 	return ok
 }
 
+// labelTask is the task of a pane label the adapter wrote for an agent
+// ("<role>(<handle>) | <task>"); "" for any other label or one with no task.
+func labelTask(label string) string {
+	head, tail, ok := strings.Cut(label, "|")
+	if _, _, adapter := adapterHead(head); !ok || !adapter {
+		return ""
+	}
+	return Task(tail)
+}
+
 // TabState is a tab's entry in the adapter's tab ledger: its mode, and the
 // label the adapter last gave it. The zero TabState is a tab the ledger does
 // not know.
@@ -57,35 +67,50 @@ type TabState struct {
 	Last string
 }
 
-// FollowTab decides whether a tab shows want, the pane label of the agent
-// in it. t is the tab's ledger entry, label what the tab shows now, and
-// blocks how many blocks it holds. It returns the entry to record and
-// whether to rename the tab to want.
+// FollowTab decides what a tab shows: want, the pane label of the agent in
+// it, while it holds one block. t is the tab's ledger entry, label what the
+// tab shows now, blocks how many blocks it holds, and agents how many of
+// them run a live agent. It returns the entry to record and the label to
+// rename the tab to, "" for none.
 //
 // Only a follower tab follows: one the ledger records as auto, or one it
 // does not know that still shows Rex's placeholder, which it then records
 // as auto. A follower whose label is neither the placeholder, the label the
 // adapter last gave it, nor want was renamed by someone else: it becomes
-// manual and keeps its name. A crew, narrator, or manual tab, an unknown
-// tab with a name, and a tab of several blocks (whose agents would contend
-// for it) are never renamed.
-func FollowTab(t TabState, label string, blocks int, want string) (TabState, bool) {
+// manual and keeps its name. A follower of several agents, which would
+// contend for it, drops the agent's label it shows to that label's task; a
+// pane without an agent beside one (a preview, a shell) changes nothing. A crew, narrator, or manual tab and an unknown tab with a name are
+// never renamed.
+func FollowTab(t TabState, label string, blocks, agents int, want string) (TabState, string) {
 	switch t.Mode {
 	case "":
 		if !PlaceholderTab(label) {
-			return t, false
+			return t, ""
 		}
 		t = TabState{Mode: WindowAuto, Last: label}
 	case WindowAuto:
 		if label != t.Last && label != want && !PlaceholderTab(label) {
-			return TabState{Mode: WindowManual, Last: t.Last}, false
+			return TabState{Mode: WindowManual, Last: t.Last}, ""
 		}
 	default:
-		return t, false
+		return t, ""
+	}
+	if agents > 1 {
+		// Several agents share the tab, so one agent's label would read as
+		// everyone's (who's TAB column): keep only the task it names, the
+		// team's work, and nothing when it names none.
+		if task := labelTask(label); task != "" {
+			t.Last = task
+			return t, task
+		}
+		return t, ""
 	}
 	if blocks != 1 || want == "" {
-		return t, false
+		return t, ""
 	}
 	t.Last = want
-	return t, label != want
+	if label == want {
+		return t, ""
+	}
+	return t, want
 }

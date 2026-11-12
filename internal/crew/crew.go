@@ -281,3 +281,23 @@ func isDir(p string) bool {
 	fi, err := os.Stat(p)
 	return err == nil && fi.IsDir()
 }
+
+// Purpose is what a crew or role is for, as a listing shows it: the opening
+// sentences of its prompt's first paragraph, on one line, until they say more
+// than who it is ("You are QA." alone says nothing of the job).
+func Purpose(text string) string {
+	para, _, _ := strings.Cut(strings.TrimSpace(text), "\n\n")
+	para = strings.Join(strings.Fields(para), " ")
+	end := 0
+	for end < len(para) && end < minPurpose {
+		i := strings.Index(para[end:], ". ")
+		if i < 0 {
+			return para
+		}
+		end += i + 1
+	}
+	return para[:end]
+}
+
+// minPurpose is how long a purpose runs before it may end at a sentence.
+const minPurpose = 40
