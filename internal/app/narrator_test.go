@@ -44,12 +44,12 @@ func handlesOf(agents []core.Agent) []core.Handle {
 func TestNarratorStealthInTheSession(t *testing.T) {
 	term := &fakeTerm{state: "idle", windows: map[string]string{"block:a": "window:1", "block:n": "window:2", "block:b": "window:1"}}
 	e := realAmqEnv(t, term)
-	worker, _ := startPi(t, e, "block:a", "s1")
+	startPi(t, e, "block:a", "s1")
 	narr, n := startPiAs(t, e, term, "block:n", "sn", "narrator")
 	if rec := recordOf(t, e, narr); rec.Role != core.NarratorRole {
 		t.Fatalf("role %q", rec.Role)
 	}
-	if !strings.Contains(n, string(worker)+" (pi)") || strings.Contains(n, "An orchestrator coordinates") {
+	if strings.Contains(n, "beside you") || strings.Contains(n, "An orchestrator coordinates") {
 		t.Fatalf("the narrator's own start notice: %q", n)
 	}
 	if s := notice(t, e, EventPrompt, core.Pi, "block:a", "s1"); strings.Contains(s, string(narr)) {

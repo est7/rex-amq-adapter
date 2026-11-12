@@ -343,7 +343,13 @@ func (e Env) withWindowNotes(h core.Handle, window bool, identity, mail string) 
 // identityNotice tells a newly adopted agent who it is, who is beside it,
 // and what its crew and role ask of it.
 func (e Env) identityNotice(ctx context.Context, a Adoption, unread int) string {
-	notice := joinNotices(core.SessionNotice(a.Record.Handle, e.EnvCommand(), unread), core.MatesNotice(a.Mates)) +
+	mates := core.MatesNotice(a.Mates)
+	if core.Stealth(a.Record.Role) {
+		// A narrator never mails a worker, and a personal agent only a
+		// linked narrator: neither is told to reach its session's agents.
+		mates = ""
+	}
+	notice := joinNotices(core.SessionNotice(a.Record.Handle, e.EnvCommand(), unread), mates) +
 		"\n" + core.TaskNotice(a.Record.Handle, a.Record.Role, e.SelfBin+" title", a.Record.Task)
 	if brief := core.BriefNotice(e.briefing(ctx, a)); brief != "" {
 		notice += "\n\n" + brief
