@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/core"
@@ -21,10 +22,6 @@ import (
 // first. Their flags are amq's, without the ones that name an identity or a
 // root: the adapter supplies those from the caller's record.
 var ManagedVerbs = []string{"send", "reply", "read", "drain", "thread", "trace", "dlq", "list"}
-
-// routingFlags name who the caller is or which queue it uses; a managed
-// command takes them from the caller's record and refuses them in args.
-var routingFlags = []string{"me", "root", "session", "project", "from-session", "ignore-session-pin"}
 
 // ErrUsage is a managed command given flags it does not take.
 var ErrUsage = errors.New("usage")
@@ -38,11 +35,6 @@ func (e Env) ManagedMail(ctx context.Context, loc Location, verb string, args []
 	}
 	if !ok || !rec.Live() {
 		return 1, errors.New("no AMQ identity for this pane")
-	}
-	for _, f := range routingFlags {
-		if _, _, found := takeFlag(args, f, false); found {
-			return 2, fmt.Errorf("%w: --%s is the adapter's to set", ErrUsage, f)
-		}
 	}
 	m := managed{e: e, rec: rec, root: e.Paths.Root(), stdin: stdin, stdout: stdout, stderr: stderr}
 	switch verb {
@@ -89,23 +81,46 @@ func (m managed) run(ctx context.Context, verb string, args ...any) (int, error)
 }
 
 func (m managed) post(ctx context.Context, verb string, args []string) (int, error) {
+	fs := newMailFlags(verb, m.stdout)
+	var to, replyTo, control string
+	if verb == "send" {
+		fs.StringVar(&to, "to", "", "Receiver handles, comma-separated")
+		fs.StringVar(&control, "control", "", "Narrator user-control request ID")
+		fs.Bool("allow-self", false, "Allow an intentional send to yourself")
+		fs.String("thread", "", "Thread ID")
+		fs.String("refs", "", "Related message IDs, comma-separated")
+	} else {
+		fs.StringVar(&replyTo, "id", "", "Message ID to reply to")
+	}
+	body := fs.String("body", "", "Body string, @file, or - to read stdin")
+	ctxObj := fs.String("context", "", "User JSON context object or @file")
+	asJSON := fs.Bool("json", false, "Emit JSON output")
+	fs.String("subject", "", "Message subject")
+	fs.String("kind", "", "Message kind")
+	fs.String("priority", "", "Message priority")
+	fs.String("labels", "", "Labels, comma-separated")
+	fs.Bool("allow-empty", false, "Allow a blank body")
+	fs.Bool("strict", false, "Error on unknown handles")
+	fs.String("wait-for", "", "Wait for a receipt stage")
+	fs.Duration("wait-timeout", 2*time.Minute, "Receipt wait timeout")
+	if help, err := parseMailFlags(fs, args); help || err != nil {
+		if help {
+			return 0, nil
+		}
+		return 2, err
+	}
 	o := Outgoing{From: m.rec.Handle, Check: true, Op: core.Operation{Kind: core.OpSend}}
-	var to, ctxObj string
-	var asJSON, found bool
 	if verb == "reply" {
 		o.Op.Kind = core.OpReply
-		if o.ReplyTo, args, found = takeFlag(args, "id", true); !found || o.ReplyTo == "" {
+		if replyTo == "" {
 			return 2, fmt.Errorf("%w: reply needs --id", ErrUsage)
 		}
+		o.ReplyTo = replyTo
 	} else {
-		if to, args, found = takeFlag(args, "to", true); !found || to == "" {
+		if to == "" {
 			return 2, fmt.Errorf("%w: send needs --to", ErrUsage)
 		}
-		// A narrator relays a user-control directive to its orchestrator
-		// under the request id the personal agent gave it: the only mail
-		// the gateway lets it send into its Epic (core.OpControl).
-		var control string
-		if control, args, found = takeFlag(args, "control", true); found {
+		if mailFlagPresent(fs, "control") {
 			if control == "" {
 				return 2, fmt.Errorf("%w: --control needs the directive's request id", ErrUsage)
 			}
@@ -120,29 +135,32 @@ func (m managed) post(ctx context.Context, verb string, args []string) (int, err
 			}
 		}
 	}
-	if ctxObj, args, found = takeFlag(args, "context", true); found {
-		if path, ok := strings.CutPrefix(ctxObj, "@"); ok {
+	if mailFlagPresent(fs, "context") {
+		if path, ok := strings.CutPrefix(*ctxObj, "@"); ok {
 			b, err := os.ReadFile(path)
 			if err != nil {
 				return 1, err
 			}
-			ctxObj = string(b)
+			*ctxObj = string(b)
 		}
-		o.Context = json.RawMessage(ctxObj)
+		o.Context = json.RawMessage(*ctxObj)
 	}
-	_, args, asJSON = takeFlag(args, "json", false)
-	// The body amq would read from stdin is read here: amq runs without it.
-	if body, rest, found := takeFlag(args, "body", true); !found || body == "-" || body == "" {
+	bodySet := mailFlagPresent(fs, "body")
+	if !bodySet && terminalInput(m.stdin) {
+		return 2, fmt.Errorf("%w: %s needs --body on a terminal; use --body - to read stdin explicitly", ErrUsage, verb)
+	}
+	if !bodySet || *body == "-" || *body == "" {
 		var b []byte
 		if m.stdin != nil {
 			var err error
-			if b, err = io.ReadAll(m.stdin); err != nil {
+			b, err = io.ReadAll(m.stdin)
+			if err != nil {
 				return 1, err
 			}
 		}
-		args = append(rest, "--body", string(b))
+		*body = string(b)
 	}
-	o.Args = args
+	o.Args = append(mailFlagArgs(fs, "subject", "kind", "priority", "labels", "allow-empty", "allow-self", "strict", "thread", "refs", "wait-for", "wait-timeout"), "--body="+*body)
 	sent, out, err := m.e.post(ctx, o)
 	if err != nil {
 		if len(out) > 0 {
@@ -150,7 +168,7 @@ func (m managed) post(ctx context.Context, verb string, args []string) (int, err
 		}
 		return 1, err
 	}
-	if asJSON {
+	if *asJSON {
 		_, err = m.stdout.Write(out)
 		return 0, err
 	}
@@ -176,14 +194,23 @@ func (m managed) readable(id string) (located, error) {
 }
 
 func (m managed) read(ctx context.Context, args []string) (int, error) {
-	id, rest, found := takeFlag(args, "id", true)
-	if !found || id == "" {
+	fs := newMailFlags("read", m.stdout)
+	id := fs.String("id", "", "Message ID")
+	fs.Bool("json", false, "Emit JSON output")
+	fs.Bool("strict", false, "Error on unknown handles")
+	if help, err := parseMailFlags(fs, args); help || err != nil {
+		if help {
+			return 0, nil
+		}
+		return 2, err
+	}
+	if *id == "" {
 		return 2, fmt.Errorf("%w: read needs --id", ErrUsage)
 	}
-	if _, err := m.readable(id); err != nil {
+	if _, err := m.readable(*id); err != nil {
 		return 1, err
 	}
-	return m.run(ctx, "read", "--me", m.me(), "--id", id, rest)
+	return m.run(ctx, "read", "--me", m.me(), "--id", *id, mailFlagArgs(fs, "json", "strict"))
 }
 
 // drain takes the caller's unread mail the arrival gate admitted, and only
@@ -192,17 +219,18 @@ func (m managed) read(ctx context.Context, args []string) (int, error) {
 // gate waits for the next check instead of being drained unjudged. Managed
 // drains of one agent take turns (LockConsume). The output is amq drain's.
 func (m managed) drain(ctx context.Context, args []string) (int, error) {
-	limit := 20
-	lim, rest, found := takeFlag(args, "limit", true)
-	if found {
-		if _, err := fmt.Sscan(lim, &limit); err != nil || limit < 0 {
-			return 2, fmt.Errorf("%w: --limit %q", ErrUsage, lim)
+	fs := newMailFlags("drain", m.stdout)
+	limit := fs.Int("limit", 20, "Max messages; 0 means no limit")
+	withBody := fs.Bool("include-body", false, "Include message bodies")
+	asJSON := fs.Bool("json", false, "Emit JSON output")
+	if help, err := parseMailFlags(fs, args); help || err != nil {
+		if help {
+			return 0, nil
 		}
+		return 2, err
 	}
-	_, rest, withBody := takeFlag(rest, "include-body", false)
-	_, rest, asJSON := takeFlag(rest, "json", false)
-	if len(rest) > 0 {
-		return 2, fmt.Errorf("%w: a managed drain takes --limit, --include-body, and --json; not %q", ErrUsage, rest)
+	if *limit < 0 {
+		return 2, fmt.Errorf("%w: --limit must not be negative", ErrUsage)
 	}
 	unlock, err := m.e.Store.LockConsume(ctx, m.rec.Handle)
 	if err != nil {
@@ -217,8 +245,8 @@ func (m managed) drain(ctx context.Context, args []string) (int, error) {
 	// A read that fails part way leaves the messages before it drained
 	// (moved to inbox/cur, receipted): they are reported before the error,
 	// as amq drain reports a batch it committed.
-	drained, code, err := m.consume(ctx, kept, limit, withBody)
-	if perr := m.printDrained(drained, withBody, asJSON); err == nil {
+	drained, code, err := m.consume(ctx, kept, *limit, *withBody)
+	if perr := m.printDrained(drained, *withBody, *asJSON); err == nil {
 		err = perr
 	}
 	return code, err
@@ -307,17 +335,29 @@ func (m managed) printDrained(drained []map[string]any, withBody, asJSON bool) e
 // only the evidence the gateway scopes to it (traceScope). amq trace takes
 // the id before its flags.
 func (m managed) trace(ctx context.Context, args []string) (int, error) {
-	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+	fs := newMailFlags("trace <message-id>", m.stdout)
+	var id string
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		id, args = args[0], args[1:]
+	}
+	asJSON := fs.Bool("json", false, "Emit JSON output")
+	fs.Bool("follow", false, "Follow recipient delivery evidence")
+	fs.String("from", "", "Sender whose outbox to inspect with --follow")
+	if help, err := parseMailFlags(fs, args); help || err != nil {
+		if help {
+			return 0, nil
+		}
+		return 2, err
+	}
+	if id == "" {
 		return 2, fmt.Errorf("%w: trace needs a message id first", ErrUsage)
 	}
-	id := args[0]
-	_, rest, asJSON := takeFlag(args[1:], "json", false)
 	msg, err := m.readable(id)
 	if err != nil {
 		return 1, err
 	}
 	var out, errb bytes.Buffer
-	code, err := amq.Run(ctx, m.e.AmqBin, nil, &out, &errb, append([]string{"trace", id, "--root", m.root, "--json"}, rest...)...)
+	code, err := amq.Run(ctx, m.e.AmqBin, nil, &out, &errb, append([]string{"trace", id, "--root", m.root, "--json"}, mailFlagArgs(fs, "follow", "from")...)...)
 	if err != nil || code != 0 {
 		_, _ = m.stderr.Write(errb.Bytes())
 		return code, err
@@ -327,7 +367,7 @@ func (m managed) trace(ctx context.Context, args []string) (int, error) {
 		return 1, fmt.Errorf("decode amq trace: %w", err)
 	}
 	doc = traceScope{m: m, traced: msg}.filter(doc)
-	if asJSON {
+	if *asJSON {
 		b, err := json.MarshalIndent(doc, "", "  ")
 		if err != nil {
 			return 1, err
@@ -341,16 +381,28 @@ func (m managed) trace(ctx context.Context, args []string) (int, error) {
 // thread shows the messages of a thread in the caller's own mailbox that
 // the gateway lets it see, read by exact id.
 func (m managed) thread(ctx context.Context, args []string) (int, error) {
-	thread, rest, found := takeFlag(args, "id", true)
-	if !found || thread == "" {
+	fs := newMailFlags("thread", m.stdout)
+	thread := fs.String("id", "", "Thread ID")
+	only := fs.String("message-ids", "", "Exact message IDs, comma-separated")
+	limit := fs.Int("limit", 0, "Max messages; 0 means no limit")
+	fs.Bool("include-body", false, "Include message bodies")
+	fs.Bool("json", false, "Emit JSON output")
+	fs.Bool("strict", false, "Error on unknown handles")
+	if help, err := parseMailFlags(fs, args); help || err != nil {
+		if help {
+			return 0, nil
+		}
+		return 2, err
+	}
+	if *thread == "" {
 		return 2, fmt.Errorf("%w: thread needs --id", ErrUsage)
 	}
-	if _, _, found := takeFlag(rest, "agents", true); found {
-		return 2, fmt.Errorf("%w: a managed thread reads your own mailbox; --agents is the adapter's to set", ErrUsage)
+	if *limit < 0 {
+		return 2, fmt.Errorf("%w: --limit must not be negative", ErrUsage)
 	}
-	only, rest, restricted := takeFlag(rest, "message-ids", true)
+	restricted := mailFlagPresent(fs, "message-ids")
 	want := map[string]bool{}
-	for _, id := range strings.Split(only, ",") {
+	for _, id := range strings.Split(*only, ",") {
 		want[strings.TrimSpace(id)] = true
 	}
 	if _, err := m.e.admit(m.rec); err != nil {
@@ -367,7 +419,7 @@ func (m managed) thread(ctx context.Context, args []string) (int, error) {
 				continue
 			}
 			h, err := amq.ReadHeader(m.root, m.me(), box, id)
-			if err != nil || h.Thread != thread {
+			if err != nil || h.Thread != *thread {
 				continue
 			}
 			if m.e.exposed(m.rec.Handle, located{id: id, box: box, header: h}) == nil && !slices.Contains(ids, id) {
@@ -376,9 +428,9 @@ func (m managed) thread(ctx context.Context, args []string) (int, error) {
 		}
 	}
 	if len(ids) == 0 {
-		return 3, fmt.Errorf("no message of thread %s that %s may read", thread, m.me())
+		return 3, fmt.Errorf("no message of thread %s that %s may read", *thread, m.me())
 	}
-	return m.run(ctx, "thread", "--me", m.me(), "--id", thread, "--agents", m.me(), "--message-ids", strings.Join(ids, ","), rest)
+	return m.run(ctx, "thread", "--me", m.me(), "--id", *thread, "--agents", m.me(), "--message-ids", strings.Join(ids, ","), mailFlagArgs(fs, "limit", "include-body", "json", "strict"))
 }
 
 // dlq lets list, retry, and purge through: the list holds no sender or
@@ -389,10 +441,43 @@ func (m managed) dlq(ctx context.Context, args []string) (int, error) {
 	if len(args) == 0 {
 		return 2, fmt.Errorf("%w: dlq needs a subcommand (list, read, retry, purge)", ErrUsage)
 	}
-	sub, rest := args[0], args[1:]
+	if args[0] == "-h" || args[0] == "--help" {
+		_, err := parseMailFlags(newMailFlags("dlq <list|read|retry|purge>", m.stdout), args)
+		if err != nil {
+			return 2, err
+		}
+		return 0, nil
+	}
+	sub, args := args[0], args[1:]
+	fs := newMailFlags("dlq "+sub, m.stdout)
+	var id string
+	switch sub {
+	case "list":
+		fs.Bool("new", false, "List unread dead letters")
+		fs.Bool("cur", false, "List inspected dead letters")
+	case "read", "retry":
+		fs.StringVar(&id, "id", "", "Dead letter ID")
+		if sub == "retry" {
+			fs.Bool("all", false, "Retry all dead letters")
+			fs.Bool("force", false, "Retry beyond max retries")
+		}
+	case "purge":
+		fs.String("older-than", "", "Only purge dead letters older than this duration")
+		fs.Bool("dry-run", false, "Show what would be removed")
+		fs.Bool("yes", false, "Skip confirmation")
+	default:
+		return 2, fmt.Errorf("%w: unknown dlq subcommand %q", ErrUsage, sub)
+	}
+	fs.Bool("json", false, "Emit JSON output")
+	fs.Bool("strict", false, "Error on unknown handles")
+	if help, err := parseMailFlags(fs, args); help || err != nil {
+		if help {
+			return 0, nil
+		}
+		return 2, err
+	}
 	if sub == "read" {
-		id, _, found := takeFlag(rest, "id", true)
-		if !found || id == "" {
+		if id == "" {
 			return 2, fmt.Errorf("%w: dlq read needs --id", ErrUsage)
 		}
 		var hdr amq.Header
@@ -409,18 +494,40 @@ func (m managed) dlq(ctx context.Context, args []string) (int, error) {
 			return 1, err
 		}
 	}
-	return amq.Run(ctx, m.e.AmqBin, m.stdin, m.stdout, m.stderr, append([]string{"dlq", sub, "--root", m.root, "--me", m.me()}, rest...)...)
+	child := append([]string{"dlq", sub, "--root", m.root, "--me", m.me()}, mailFlagArgs(fs, "id", "new", "cur", "all", "force", "older-than", "dry-run", "yes", "json", "strict")...)
+	return amq.Run(ctx, m.e.AmqBin, m.stdin, m.stdout, m.stderr, child...)
 }
 
 // list lists the caller's inbox as JSON, without the messages the gateway
 // would not let it read.
 func (m managed) list(ctx context.Context, args []string) (int, error) {
-	_, rest, _ := takeFlag(args, "json", false)
+	fs := newMailFlags("list", m.stdout)
+	fs.Bool("json", false, "Emit JSON output")
+	fs.Bool("new", false, "List unread messages")
+	fs.Bool("cur", false, "List drained messages")
+	fs.Bool("strict", false, "Error on unknown handles")
+	fs.String("from", "", "Filter by sender")
+	fs.String("kind", "", "Filter by kind")
+	fs.String("priority", "", "Filter by priority")
+	fs.Int("limit", 0, "Max messages; 0 means no limit")
+	fs.Int("offset", 0, "Offset into sorted results")
+	var labels []string
+	fs.Func("label", "Filter by label; repeatable", func(label string) error { labels = append(labels, label); return nil })
+	if help, err := parseMailFlags(fs, args); help || err != nil {
+		if help {
+			return 0, nil
+		}
+		return 2, err
+	}
+	forwarded := mailFlagArgs(fs, "new", "cur", "strict", "from", "kind", "priority", "limit", "offset")
+	for _, label := range labels {
+		forwarded = append(forwarded, "--label="+label)
+	}
 	if _, err := m.e.admit(m.rec); err != nil {
 		return 1, err
 	}
 	var out, errb bytes.Buffer
-	code, err := amq.Run(ctx, m.e.AmqBin, nil, &out, &errb, append([]string{"list", "--root", m.root, "--me", m.me(), "--json"}, rest...)...)
+	code, err := amq.Run(ctx, m.e.AmqBin, nil, &out, &errb, append([]string{"list", "--root", m.root, "--me", m.me(), "--json"}, forwarded...)...)
 	if err != nil || code != 0 {
 		_, _ = m.stderr.Write(errb.Bytes())
 		return code, err
@@ -448,31 +555,4 @@ func (m managed) list(ctx context.Context, args []string) (int, error) {
 	}
 	_, err = fmt.Fprintf(m.stdout, "%s\n", b)
 	return 0, err
-}
-
-// takeFlag removes flag name (-name or --name, its value after "=" or as
-// the next argument when valued) from args.
-func takeFlag(args []string, name string, valued bool) (value string, rest []string, found bool) {
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		if a == "--" {
-			return value, append(rest, args[i:]...), found
-		}
-		f, v, hasV := strings.Cut(strings.TrimLeft(a, "-"), "=")
-		if !strings.HasPrefix(a, "-") || f != name {
-			rest = append(rest, a)
-			continue
-		}
-		found = true
-		switch {
-		case hasV:
-			value = v
-		case valued && i+1 < len(args):
-			value = args[i+1]
-			i++
-		case !valued:
-			value = "true"
-		}
-	}
-	return value, rest, found
 }
