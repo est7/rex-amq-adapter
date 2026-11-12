@@ -281,7 +281,7 @@ func (e Env) resume(ctx context.Context, caller store.Record, s Session, r Summo
 		e.summonLog(caller, r, res)
 		return res, nil
 	}
-	bootstrap := fmt.Sprintf("Resumed by %s (summon on send): mail waits for you. Run eval \"$(%s)\" && amq drain --include-body and act on it.", caller.Handle, e.EnvCommand())
+	bootstrap := fmt.Sprintf("Resumed by %s (summon on send): mail waits for you. Run %s drain --include-body and act on it.", caller.Handle, e.SelfBin)
 	cmd, ok := resumeCommand(departed.Kind, departed.AgentSessionID, bootstrap)
 	if !ok {
 		_ = e.Store.DeleteSummon(res.Token)
@@ -331,7 +331,7 @@ func (e Env) start(ctx context.Context, caller store.Record, s Session, r Summon
 			return refuse(err.Error())
 		}
 	}
-	brief := r.Body + "\n\nYou were started by " + string(caller.Handle) + " (summon on send). Report back with `amq send --to " + string(caller.Handle) + "`; the same request waits in your mailbox once you are adopted, so you can `amq reply` to it."
+	brief := r.Body + "\n\nYou were started by " + string(caller.Handle) + " (summon on send). Report back with `" + e.SelfBin + " send --to " + string(caller.Handle) + " --subject \"…\" --body \"…\"`; the same request waits in your mailbox once you are adopted, so you can `" + e.SelfBin + " reply` to it."
 	label := role + " | " + core.Task(r.Subject)
 	cwd := caller.Cwd
 	if r.Cwd != "" {

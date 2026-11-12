@@ -11,13 +11,13 @@ you launch it with, or taken later with `join`) is shown before the handle:
 no daemon.
 
 ```
-claude pane ── amq send --to codex ──▶ shared AMQ root ──▶ amq wake (codex's waker)
-                                                             │ --inject-via
-                                                             ▼
-                                   rex-amq-adapter inject … (codex is idle)
-                                                             │ rex block call write
-                                                             ▼
-                                           codex: "AMQ doorbell … run amq drain"
+claude pane ── rex-amq-adapter send --to codex ──▶ shared AMQ root ──▶ amq wake (codex's waker)
+                                                                       │ --inject-via
+                                                                       ▼
+                                             rex-amq-adapter inject … (codex is idle)
+                                                                       │ rex block call write
+                                                                       ▼
+                                               codex: "AMQ doorbell … Run rex-amq-adapter drain …"
 
 codex busy in a turn? its own hooks deliver instead:
   PostToolUse → notice added to its context      Stop → turn continues with the notice
@@ -228,7 +228,7 @@ then `~/.config/rex-amq-adapter/crews/`. The format follows
 [Runner](https://github.com/yicheng47/runner)'s crew examples, which the
 built-in prompts are rewritten from.
 
-The agent's skill handles `amq send`, `amq drain`, and `amq reply`, and opens
+The agent's skill handles `rex-amq-adapter send`, `drain`, and `reply`, and opens
 peers itself: a pane beside it for the same task, a new tab in its session for
 another team on that task, a new session for another task or project. A peer
 sends what it produces, a design doc or report included, back to the agent

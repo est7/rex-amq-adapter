@@ -185,6 +185,8 @@ func DecideConfirm(c Confirmation) (Outcome, Cleanup) {
 // unread count alone: amq's notification payload previews the sender's
 // subject, and text another agent controls must never be typed into a
 // prompt as if the user wrote it.
-func Doorbell(unread int, h Handle, envCmd string) string {
-	return fmt.Sprintf("AMQ doorbell: %d unread message(s) for %s (you are %s in Rex; skill: rex-amq-adapter). Run eval \"$(%s)\" && amq drain --include-body, then act on each message.", unread, h, h, envCmd)
+// bin is the adapter's absolute path: its drain finds the agent's identity
+// itself and reads only mail the gateway admitted.
+func Doorbell(unread int, h Handle, bin string) string {
+	return fmt.Sprintf("AMQ doorbell: %d unread message(s) for %s (you are %s in Rex; skill: rex-amq-adapter). Run %s drain --include-body, then act on each message.", unread, h, h, bin)
 }

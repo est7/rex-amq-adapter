@@ -136,7 +136,13 @@ announced. A message id is the file name under
 - Ids no longer in `inbox/new` (drained) are pruned on every ledger write.
 
 Notices contain counts and the drain command only, never message content: the
-agent reads content through `amq drain`, which marks it as message data.
+agent reads content through the adapter's `drain`, which marks it as message
+data. Every notice, doorbell, start brief, guide line, and role prompt names
+the adapter's mail commands (`rex-amq-adapter drain`, `send`, `reply`), never
+bare `amq`: they find the caller's identity themselves, and the gateway's
+drain reads only mail its gate admitted while its send records provenance
+(Gateway, below). Text the adapter writes quotes its absolute path; the guide
+and prompts use the bare name.
 
 ### Interplay with amq wake
 
