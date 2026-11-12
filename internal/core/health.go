@@ -93,12 +93,15 @@ const (
 // isFlagged reports whether a candidate is itself flagged and unable to act.
 func ErrorRecipient(rec Peer, peers []Peer, crewLead, code string, isFlagged func(Handle) bool) (to Peer, why string, ok bool) {
 	flagged := func(h Handle) bool { return isFlagged != nil && isFlagged(h) }
+	// The first skipped owner names the reason; every skipped owner's model
+	// family is kept out of the fallback, since its siblings share the outage.
 	var skippedFlagged Handle
-	var skippedKind Kind
+	skippedKinds := map[Kind]bool{}
 	noteSkipped := func(p Peer) {
 		if skippedFlagged == "" {
-			skippedFlagged, skippedKind = p.Handle, p.Kind
+			skippedFlagged = p.Handle
 		}
+		skippedKinds[p.Kind] = true
 	}
 
 	// 1. Parent (summoner), if live in the session.
@@ -162,7 +165,7 @@ func ErrorRecipient(rec Peer, peers []Peer, crewLead, code string, isFlagged fun
 	// orchestrator in steps 1–4 was flagged and the error is not a per-turn limit.
 	if code != NoticeTurnLimit && skippedFlagged != "" {
 		for _, p := range peers {
-			if p.Handle != rec.Handle && p.Kind != rec.Kind && p.Kind != skippedKind && !flagged(p.Handle) {
+			if p.Handle != rec.Handle && p.Kind != rec.Kind && !skippedKinds[p.Kind] && !flagged(p.Handle) {
 				return p, fmt.Sprintf("another model family because %s is flagged", skippedFlagged), true
 			}
 		}
