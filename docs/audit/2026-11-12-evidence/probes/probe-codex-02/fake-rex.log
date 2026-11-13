@@ -1,0 +1,2 @@
+--autostart=false -S unix:///tmp/rex-audit-20261112/not-a-server.sock block rename block:qa-probe qa(codex-qa-probe) | --help
+--autostart=false -S unix:///tmp/rex-audit-20261112/not-a-server.sock block inspect block:qa-probe --json

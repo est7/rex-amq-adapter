@@ -1,0 +1,58 @@
+{
+  "passed_test_events": 24,
+  "passed_top_level_tests": 20,
+  "failed": [],
+  "skipped": [],
+  "cached": false,
+  "doorbell_receipts": [
+    {
+      "path": "/tmp/rex-audit-20261112/probe-codex-02/e2e-surface/rae41544160/rev.got",
+      "text": "\u001b[200~AMQ doorbell: 1 unread message(s) for claude-02 (you are claude-02 in Rex; skill: rex-amq-adapter). Run eval \"$(/private/var/folders/9d/v0hc7gys17n5__8fd2h4m97c0000gn/T/rae-adapter-64277 env)\" && amq drain --include-body, then act on each message.\u001b[201~\n"
+    },
+    {
+      "path": "/tmp/rex-audit-20261112/probe-codex-02/e2e-surface/rae459922478/lead.got",
+      "text": "\u001b[200~AMQ doorbell: 1 unread message(s) for claude-01 (you are claude-01 in Rex; skill: rex-amq-adapter). Run eval \"$(/private/var/folders/9d/v0hc7gys17n5__8fd2h4m97c0000gn/T/rae-adapter-64277 env)\" && amq drain --include-body, then act on each message.\u001b[201~\n"
+    },
+    {
+      "path": "/tmp/rex-audit-20261112/probe-codex-02/e2e-surface/rae2435188596/lead.got",
+      "text": "\u001b[200~AMQ doorbell: 1 unread message(s) for claude-01 (you are claude-01 in Rex; skill: rex-amq-adapter). Run eval \"$(/private/var/folders/9d/v0hc7gys17n5__8fd2h4m97c0000gn/T/rae-adapter-64277 env)\" && amq drain --include-body, then act on each message.\u001b[201~\n"
+    },
+    {
+      "path": "/tmp/rex-audit-20261112/probe-codex-02/e2e-surface/rae3737554023/rev.got",
+      "text": "\u001b[200~AMQ doorbell: 1 unread message(s) for claude-02 (you are claude-02 in Rex; skill: rex-amq-adapter). Run eval \"$(/private/var/folders/9d/v0hc7gys17n5__8fd2h4m97c0000gn/T/rae-adapter-64277 env)\" && amq drain --include-body, then act on each message.\u001b[201~\nquit\n"
+    },
+    {
+      "path": "/tmp/rex-audit-20261112/probe-codex-02/e2e-surface/rae3925127117/lead.got",
+      "text": "\u001b[200~AMQ doorbell: 1 unread message(s) for claude-01 (you are claude-01 in Rex; skill: rex-amq-adapter). Run eval \"$(/private/var/folders/9d/v0hc7gys17n5__8fd2h4m97c0000gn/T/rae-adapter-64277 env)\" && amq drain --include-body, then act on each message.\u001b[201~\n"
+    },
+    {
+      "path": "/tmp/rex-audit-20261112/probe-codex-02/e2e-surface/rae2105619096/lead.got",
+      "text": "\u001b[200~AMQ doorbell: 1 unread message(s) for claude-01 (you are claude-01 in Rex; skill: rex-amq-adapter). Run eval \"$(/private/var/folders/9d/v0hc7gys17n5__8fd2h4m97c0000gn/T/rae-adapter-64277 env)\" && amq drain --include-body, then act on each message.\u001b[201~\n"
+    },
+    {
+      "path": "/tmp/rex-audit-20261112/probe-codex-02/e2e-surface/rae1428024127/alice.got",
+      "text": "\u001b[200~AMQ doorbell: 1 unread message(s) for claude-01 (you are claude-01 in Rex; skill: rex-amq-adapter). Run eval \"$(/private/var/folders/9d/v0hc7gys17n5__8fd2h4m97c0000gn/T/rae-adapter-64277 env)\" && amq drain --include-body, then act on each message.\u001b[201~\n"
+    },
+    {
+      "path": "/tmp/rex-audit-20261112/probe-codex-02/e2e-surface/rae125381151/lead.got",
+      "text": "\u001b[200~AMQ doorbell: 1 unread message(s) for claude-01 (you are claude-01 in Rex; skill: rex-amq-adapter). Run eval \"$(/private/var/folders/9d/v0hc7gys17n5__8fd2h4m97c0000gn/T/rae-adapter-64277 env)\" && amq drain --include-body, then act on each message.\u001b[201~\n"
+    },
+    {
+      "path": "/tmp/rex-audit-20261112/probe-codex-02/e2e-surface/rae3258444571/lead.got",
+      "text": "\u001b[200~AMQ doorbell: 1 unread message(s) for claude-01 (you are claude-01 in Rex; skill: rex-amq-adapter). Run eval \"$(/private/var/folders/9d/v0hc7gys17n5__8fd2h4m97c0000gn/T/rae-adapter-64277 env)\" && amq drain --include-body, then act on each message.\u001b[201~\n"
+    },
+    {
+      "path": "/tmp/rex-audit-20261112/probe-codex-02/e2e-surface/rae2447133463/rev.got",
+      "text": "\u001b[200~AMQ doorbell: 1 unread message(s) for claude-02 (you are claude-02 in Rex; skill: rex-amq-adapter). Run eval \"$(/private/var/folders/9d/v0hc7gys17n5__8fd2h4m97c0000gn/T/rae-adapter-64277 env)\" && amq drain --include-body, then act on each message.\u001b[201~\nquit\n"
+    },
+    {
+      "path": "/tmp/rex-audit-20261112/probe-codex-02/e2e-surface/rae3767418147/rev.got",
+      "text": "\u001b[200~AMQ doorbell: 1 unread message(s) for claude-02 (you are claude-02 in Rex; skill: rex-amq-adapter). Run eval \"$(/private/var/folders/9d/v0hc7gys17n5__8fd2h4m97c0000gn/T/rae-adapter-64277 env)\" && amq drain --include-body, then act on each message.\u001b[201~\n"
+    },
+    {
+      "path": "/tmp/rex-audit-20261112/probe-codex-02/e2e-surface/rae75442751/lead.got",
+      "text": "\u001b[200~AMQ doorbell: 1 unread message(s) for claude-01 (you are claude-01 in Rex; skill: rex-amq-adapter). Run eval \"$(/private/var/folders/9d/v0hc7gys17n5__8fd2h4m97c0000gn/T/rae-adapter-64277 env)\" && amq drain --include-body, then act on each message.\u001b[201~\n"
+    }
+  ],
+  "captured_servers": 20
+}

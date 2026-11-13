@@ -1,0 +1,38 @@
+{
+  "raw_same_epic": {
+    "provenance_exists": false,
+    "activity": 1,
+    "control_plane": 0,
+    "bodies_read": 0,
+    "read_gaps": [
+      {
+        "kind": "unverified_provenance",
+        "refs": [
+          "2026-11-12T10-30-19.985Z_pid7759_20b8d5e9"
+        ],
+        "note": "sent without the adapter, so it is not read"
+      }
+    ]
+  },
+  "managed_positive_control": {
+    "provenance_exists": true,
+    "activity": 2,
+    "control_plane": 1,
+    "bodies_read": 1,
+    "read_gaps": []
+  },
+  "cross_epic": {
+    "reason": "cross_epic",
+    "sender_notice": "",
+    "cursor_advanced": true
+  },
+  "narrator": {
+    "managed_exit": 1,
+    "managed_error": "refused by the gateway: narr to orch (narrator_sends_orchestrator_control_only)",
+    "raw_quarantine": "narrator_sends_orchestrator_control_only",
+    "policy_positive": {
+      "allow": true,
+      "reason": "narrator_control"
+    }
+  }
+}

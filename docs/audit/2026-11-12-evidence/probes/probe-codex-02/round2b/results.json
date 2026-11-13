@@ -1,0 +1,314 @@
+{
+  "managed_positive_control": {
+    "exit": 0,
+    "id": "2026-11-12T10-30-20.548Z_pid7790_cdae9315",
+    "provenance_exists": true,
+    "read": {
+      "messages": [
+        {
+          "ref": "2026-11-12T10-30-20.548Z_pid7790_cdae9315",
+          "from": "orch",
+          "to": [
+            "worker"
+          ],
+          "thread": "p2p/orch__worker",
+          "subject": "managed control-plane question",
+          "created": "2026-11-12T10:30:20.548403Z",
+          "kind": "question",
+          "priority": "normal",
+          "body": "managed body\n"
+        }
+      ],
+      "coverage_gaps": []
+    },
+    "view": {
+      "schema": 1,
+      "as_of": {
+        "at": "2026-11-12T10:30:20.599062Z",
+        "last_message": "2026-11-12T10-30-20.548Z_pid7790_cdae9315",
+        "pulse": "12624bae11635f581ef924feee643e995cca947ff16301cbab6ae609bac3e6b2"
+      },
+      "session": {
+        "server": "unix:///tmp/rex-audit-20261112/never-connect.sock",
+        "session_id": "session:a",
+        "epic": "audit-probe"
+      },
+      "narrator": "narr",
+      "members": [
+        {
+          "handle": "orch",
+          "kind": "pi",
+          "role": "orchestrator",
+          "live": true
+        },
+        {
+          "handle": "worker",
+          "kind": "pi",
+          "role": "implementer",
+          "live": true
+        }
+      ],
+      "obligations": [
+        {
+          "ref": "2026-11-12T10-30-19.985Z_pid7759_20b8d5e9",
+          "thread": "p2p/orch__worker",
+          "kind": "question",
+          "subject": "raw control-plane question",
+          "owed_by": "worker",
+          "owed_to": "orch",
+          "state": "pending",
+          "age_seconds": 0,
+          "provenance": "unverified"
+        },
+        {
+          "ref": "2026-11-12T10-30-20.548Z_pid7790_cdae9315",
+          "thread": "p2p/orch__worker",
+          "kind": "question",
+          "subject": "managed control-plane question",
+          "owed_by": "worker",
+          "owed_to": "orch",
+          "state": "pending",
+          "age_seconds": 0,
+          "provenance": "adapter"
+        }
+      ],
+      "activity": [
+        {
+          "ref": "2026-11-12T10-30-20.548Z_pid7790_cdae9315",
+          "from": "orch",
+          "to": [
+            "worker"
+          ],
+          "thread": "p2p/orch__worker",
+          "subject": "managed control-plane question",
+          "created": "2026-11-12T10:30:20.548403Z",
+          "kind": "question",
+          "priority": "normal"
+        },
+        {
+          "ref": "2026-11-12T10-30-19.985Z_pid7759_20b8d5e9",
+          "from": "orch",
+          "to": [
+            "worker"
+          ],
+          "thread": "p2p/orch__worker",
+          "subject": "raw control-plane question",
+          "created": "2026-11-12T10:30:19.985457Z",
+          "kind": "question",
+          "priority": "normal"
+        }
+      ],
+      "control_plane": [
+        {
+          "ref": "2026-11-12T10-30-20.548Z_pid7790_cdae9315",
+          "from": "orch",
+          "to": [
+            "worker"
+          ],
+          "thread": "p2p/orch__worker",
+          "subject": "managed control-plane question",
+          "created": "2026-11-12T10:30:20.548403Z",
+          "kind": "question",
+          "priority": "normal",
+          "body": "managed body\n"
+        }
+      ],
+      "coverage_gaps": [
+        {
+          "kind": "unverified_provenance",
+          "refs": [
+            "2026-11-12T10-30-19.985Z_pid7759_20b8d5e9",
+            "2026-11-12T10-30-19.985Z_pid7759_20b8d5e9"
+          ],
+          "note": "sent without the adapter, so where it was sent from is not known"
+        }
+      ],
+      "limits": {
+        "recent_messages": 30,
+        "messages_omitted": 0,
+        "excerpt_chars": 1200,
+        "obligations_omitted": 0,
+        "obligation_max_age_seconds": 1209600
+      },
+      "sources": [
+        "adapter records",
+        "mailbox envelopes",
+        "amq thread open",
+        "amq thread --message-ids"
+      ]
+    }
+  },
+  "narrator_managed": {
+    "error": "refused by the gateway: narr to orch (narrator_sends_orchestrator_control_only)",
+    "exit": 1,
+    "missing_id_policy": {
+      "allow": false,
+      "reason": "narrator_sends_orchestrator_control_only"
+    },
+    "stdout": "",
+    "valid_pure_policy": {
+      "allow": true,
+      "reason": "narrator_control"
+    }
+  },
+  "narrator_raw": {
+    "id": "2026-11-12T10-30-20.764Z_pid7817_0711c834",
+    "quarantine": {
+      "id": "2026-11-12T10-30-20.764Z_pid7817_0711c834",
+      "handle": "orch",
+      "from": {
+        "handle": "narr",
+        "role": "narrator",
+        "server": "unix:///tmp/rex-audit-20261112/never-connect.sock",
+        "session_id": "session:a"
+      },
+      "to": {
+        "handle": "orch",
+        "role": "orchestrator",
+        "server": "unix:///tmp/rex-audit-20261112/never-connect.sock",
+        "session_id": "session:a"
+      },
+      "decision": {
+        "allow": false,
+        "reason": "narrator_sends_orchestrator_control_only"
+      },
+      "at": "2026-11-12T10:30:20.819873Z"
+    },
+    "send_success": true
+  },
+  "plan": [
+    "raw same-Epic send must leave provenance absent and narrator body reads unverified",
+    "managed same-Epic positive control must produce provenance and populate view",
+    "raw cross-Epic send must succeed then quarantine; live sender hook must not bounce",
+    "narrator control must pass pure policy only with operation/id but fail exposed managed/raw paths"
+  ],
+  "raw_cross_epic": {
+    "drain_exit": 0,
+    "drain_output": "{\n  \"count\": 0,\n  \"drained\": []\n}\n",
+    "id": "2026-11-12T10-30-20.701Z_pid7810_09f912ce",
+    "quarantine": {
+      "id": "2026-11-12T10-30-20.701Z_pid7810_09f912ce",
+      "handle": "other",
+      "from": {
+        "handle": "worker",
+        "role": "implementer",
+        "server": "unix:///tmp/rex-audit-20261112/never-connect.sock",
+        "session_id": "session:a"
+      },
+      "to": {
+        "handle": "other",
+        "role": "reviewer",
+        "server": "unix:///tmp/rex-audit-20261112/never-connect.sock",
+        "session_id": "session:b"
+      },
+      "decision": {
+        "allow": false,
+        "reason": "cross_epic"
+      },
+      "at": "2026-11-12T10:30:20.735716Z"
+    },
+    "send_success": true,
+    "sender_cursor": "2026-11-12T10-30-20.701Z_pid7810_09f912ce",
+    "sender_hook": {
+      "Notice": "",
+      "Inbox": "",
+      "Title": "implementer(worker) | [audit-probe]"
+    }
+  },
+  "raw_same_epic": {
+    "id": "2026-11-12T10-30-19.985Z_pid7759_20b8d5e9",
+    "provenance_exists": false,
+    "read": {
+      "messages": null,
+      "coverage_gaps": [
+        {
+          "kind": "unverified_provenance",
+          "refs": [
+            "2026-11-12T10-30-19.985Z_pid7759_20b8d5e9"
+          ],
+          "note": "sent without the adapter, so it is not read"
+        }
+      ]
+    },
+    "view": {
+      "schema": 1,
+      "as_of": {
+        "at": "2026-11-12T10:30:20.022257Z",
+        "last_message": "2026-11-12T10-30-19.985Z_pid7759_20b8d5e9",
+        "pulse": "7ec89af4b2672954e119a85fb3ade659f3a00ea81183252c4bf486959bd6d24a"
+      },
+      "session": {
+        "server": "unix:///tmp/rex-audit-20261112/never-connect.sock",
+        "session_id": "session:a",
+        "epic": "audit-probe"
+      },
+      "narrator": "narr",
+      "members": [
+        {
+          "handle": "orch",
+          "kind": "pi",
+          "role": "orchestrator",
+          "live": true
+        },
+        {
+          "handle": "worker",
+          "kind": "pi",
+          "role": "implementer",
+          "live": true
+        }
+      ],
+      "obligations": [
+        {
+          "ref": "2026-11-12T10-30-19.985Z_pid7759_20b8d5e9",
+          "thread": "p2p/orch__worker",
+          "kind": "question",
+          "subject": "raw control-plane question",
+          "owed_by": "worker",
+          "owed_to": "orch",
+          "state": "pending",
+          "age_seconds": 0,
+          "provenance": "unverified"
+        }
+      ],
+      "activity": [
+        {
+          "ref": "2026-11-12T10-30-19.985Z_pid7759_20b8d5e9",
+          "from": "orch",
+          "to": [
+            "worker"
+          ],
+          "thread": "p2p/orch__worker",
+          "subject": "raw control-plane question",
+          "created": "2026-11-12T10:30:19.985457Z",
+          "kind": "question",
+          "priority": "normal"
+        }
+      ],
+      "control_plane": null,
+      "coverage_gaps": [
+        {
+          "kind": "unverified_provenance",
+          "refs": [
+            "2026-11-12T10-30-19.985Z_pid7759_20b8d5e9",
+            "2026-11-12T10-30-19.985Z_pid7759_20b8d5e9"
+          ],
+          "note": "sent without the adapter, so where it was sent from is not known"
+        }
+      ],
+      "limits": {
+        "recent_messages": 30,
+        "messages_omitted": 0,
+        "excerpt_chars": 1200,
+        "obligations_omitted": 0,
+        "obligation_max_age_seconds": 1209600
+      },
+      "sources": [
+        "adapter records",
+        "mailbox envelopes",
+        "amq thread open",
+        "amq thread --message-ids"
+      ]
+    }
+  },
+  "state": "/tmp/rex-audit-20261112/probe-codex-02/round2b/state-2122093788"
+}
