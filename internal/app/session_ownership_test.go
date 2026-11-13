@@ -300,7 +300,12 @@ func TestRunsUnder(t *testing.T) {
 		{"codex shared daemon under a launcher", core.Codex, []proc{{self, "rex-amq-adapter"}, {sh, "sh"}, {mid, "codex"}, {14, "codex"}, {agent, "node"}}, ErrSharedHarness},
 		{"codex native under its launcher", core.Codex, []proc{{self, "rex-amq-adapter"}, {sh, "sh"}, {mid, "codex"}, {agent, "node"}}, nil},
 		{"codex daemon reparented", core.Codex, []proc{{self, "rex-amq-adapter"}, {sh, "zsh"}, {mid, "codex"}, {1, "launchd"}}, errNotUnder},
-		{"agy through anything", core.Agy, []proc{{self, "rex-amq-adapter"}, {mid, "agy"}, {agent, "agy"}}, nil},
+		{"agy under its shell", core.Agy, []proc{{self, "rex-amq-adapter"}, {sh, "sh"}, {agent, "agy"}}, nil},
+		{"agy -p started directly by the pane's program", core.Agy, []proc{{self, "rex-amq-adapter"}, {sh, "sh"}, {mid, "agy"}, {agent, "python3"}}, ErrStartedInPane},
+		{"agy -p exec'd by sh -c under the pane's claude", core.Agy, []proc{{self, "rex-amq-adapter"}, {sh, "sh"}, {mid, "agy"}, {14, "timeout"}, {agent, "claude"}}, ErrStartedInPane},
+		{"agy -p run by the pane's agy", core.Agy, []proc{{self, "rex-amq-adapter"}, {sh, "sh"}, {mid, "agy"}, {14, "bash"}, {agent, "agy"}}, ErrStartedInPane},
+		{"agy -p run by the pane's agy without a shell", core.Agy, []proc{{self, "rex-amq-adapter"}, {mid, "agy"}, {agent, "agy"}}, ErrStartedInPane},
+		{"agy -p run by the pane's claude", core.Agy, []proc{{self, "rex-amq-adapter"}, {sh, "sh"}, {mid, "agy"}, {14, "timeout"}, {15, "bash"}, {agent, "claude"}}, ErrStartedInPane},
 		{"agy elsewhere", core.Agy, []proc{{self, "rex-amq-adapter"}, {mid, "agy"}}, errNotUnder},
 	} {
 		t.Run(c.name, func(t *testing.T) {
