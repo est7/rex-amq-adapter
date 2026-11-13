@@ -69,13 +69,23 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 		// inherited: a shared daemon runs other panes' threads under the first
 		// pane's location. Taking the foreground on trust would hand that
 		// pane's handle and mail to another thread (claim matches it by pid).
-		if kind == core.Codex && localServer(serverOf(srv, loc)) {
+		// An agy hook reports no pid either, and a headless `agy -p` that a
+		// command in the pane runs fires the user's hooks with the pane's
+		// location: its foreground is the agent that ran the command.
+		if (kind == core.Codex || kind == core.Agy) && localServer(serverOf(srv, loc)) {
 			ancestors, err := e.ancestors()
-			if err != nil {
+			switch {
+			case err != nil && kind == core.Agy:
+				// An agy hook that cannot place itself adopts the foreground,
+				// as before this check: an unreadable ancestry must not leave
+				// the pane's agy without mail (descendsFrom).
+				fmt.Fprintf(Diagnostics, "read this hook's process ancestry: %v\n", err)
+			case err != nil:
 				return Adoption{}, fmt.Errorf("read this hook's process ancestry: %w", err)
-			}
-			if err := runsUnder(kind, ancestors, agentPID); err != nil {
-				return Adoption{}, fmt.Errorf("block %s: its foreground (pid %d) is not this hook's agent: %w", loc.Block, agentPID, err)
+			default:
+				if err := runsUnder(kind, ancestors, agentPID); err != nil {
+					return Adoption{}, fmt.Errorf("block %s: its foreground (pid %d) is not this hook's agent: %w", loc.Block, agentPID, err)
+				}
 			}
 		}
 	}

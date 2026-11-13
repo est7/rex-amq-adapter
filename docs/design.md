@@ -420,9 +420,24 @@ further up, the foreground included, means a second Codex: adoption fails
 and the lease is not trusted, with "restart Codex with codex --no-daemon" in
 `hooks.log`. A launcher of another name (`node` running a native `codex`)
 passes. With `--no-daemon` the chain is `rex-amq-adapter ← zsh ← codex`, the
-foreground (executed with Codex 0.166.0, 2026-11-05). Other kinds keep plain
-descent: agy and Pi run their own children (agy's subagents, Pi's extension)
-whose chains were not probed for intermediates.
+foreground (executed with Codex 0.166.0, 2026-11-05).
+
+An agy hook must run in its pane's agent itself, checked the same way at
+adoption and on every lease: above the hook's shells the first process must
+be the foreground (adoption) or the recorded pid (lease). agy runs the user's
+hooks for a headless `agy -p` too, which inherits `REX_BLOCK` from whatever ran
+it and so descends from the pane's agent without being it: on 2026-11-12 a
+Claude pane's `agy -p` runs took that pane as `agy-08`..`agy-10` with Claude's
+pid, and an agy's own `agy -p` wrote its conversation into the agy's record,
+leaving its tool shell with no identity. The chains are `rex-amq-adapter ← sh
+← agy` for the pane's agy and `rex-amq-adapter ← sh ← agy -p ← timeout ← bash
+← claude` for a print run (executed with agy 1.5.7, 2026-11-12). No launcher is
+allowed: one that spawns agy without a shell (a program's subprocess, `sh -c`
+exec'ing its only command) looks the same as the pane's agent running
+`agy -p`, and agy is a native binary the pane runs directly. A refused print
+run says so in `hooks.log` and does not make the pane's agent back off its
+own adoption; an ancestry that cannot be read adopts the foreground, as
+above. Pi keeps plain descent: its hooks run in its extension, with its pid.
 
 Another session from the record's own process is trusted, not taken as a
 switch. agy runs each subagent as a conversation of its own inside the
@@ -884,7 +899,7 @@ names whichever pane started the process hosting the session. So:
 |---|---|
 | no harness session id | the live record of `REX_BLOCK`; no `REX_BLOCK` is not Rex |
 | harness session ids, each with a live record of its kind | that record, wherever `REX_BLOCK` points or whether it is set; with several (an agent another agent started), the one whose agent pid is the nearest ancestor of the command, an error when none is |
-| any harness session id without one | none, even with `REX_BLOCK` set: a `claude -p` an adopted Codex runs, an Antigravity subagent (its own conversation id), a Codex thread its hooks refused |
+| any harness session id without one | none, even with `REX_BLOCK` set: a `claude -p` an adopted Codex runs, an `agy -p` any agent runs, an Antigravity subagent (its own conversation id), a Codex thread its hooks refused |
 
 A record located by session rather than by `REX_BLOCK` comes with
 `export REX_BLOCK=… REX_SESSION=…` for its own pane, so `rex split` places a
@@ -1048,8 +1063,8 @@ are `turn_limit`, any other but `NO_TOOL_CALL` is `turn_error`); Pi's settle
 `outcome: error`; Codex a `Stop` whose rollout's last row is the turn's own
 error, so a stream error it recovered from is not reported. A cancelled turn
 (`USER_CANCELED`, Pi's `aborted`) reports nothing. Only the pane's own agent
-reports (`recordFit`, as for announcing): a hook from a nested `claude -p` or a
-shared Codex daemon's thread that cannot be adopted here says nothing in its
+reports (`recordFit`, as for announcing): a hook from a nested `claude -p` or
+`agy -p`, or a shared Codex daemon's thread that cannot be adopted here says nothing in its
 name. `core.ErrorRecipient` picks one recipient from stored records only (no
 Rex call inside the hook budget): the agent that summoned it, its crew lead in
 the same tab, the earliest agent in its tab, the session's orchestrator, and,
@@ -1490,6 +1505,7 @@ and Claude Code 2.1.316, adapter state isolated by `REX_AMQ_ADAPTER_HOME`:
 | A new agent inherits stale mail | New names skip mailboxes with undrained mail and reserved handles |
 | A hook trusts a record that is no longer its agent's: an agy conversation resumed in a new process (collection then parked the live agent), another kind in the pane before its SessionStart, a reused pid | Each announcing hook compares the record's kind and, for a local record with a pid, its process with its own, and adopts again on a mismatch; while that adoption fails, a record found to be another agent's is not read (executed in `lease_test.go`, each check ablated). Remote records are not checked |
 | A Claude Code background job is adopted into the pane of the terminal that started the supervisor, takes its handle, has doorbells typed into another conversation, and opens peers beside the wrong pane (incident 2026-11-05, `claude-73`) | A job is placed by the title of the pane showing it, never by `REX_BLOCK`; a terminal session in agent view departs; a nested `claude -p` is not its pane's agent (executed in `claudejob_test.go`, each mechanism ablated) |
+| A headless `agy -p` takes the pane of the agent that ran it, or writes its conversation into that agy's record (incident 2026-11-12, `claude-14` → `agy-08`..`agy-10`, `agy-04`) | An agy hook adopts or keeps a lease only when the first process above its shells is the pane's agent; a refused print run leaves no adoption backoff (executed in `agy_print_test.go` and `TestRunsUnder`, each seen failing before its fix; reproduced against real agy 1.5.7 with an isolated state home) |
 | An agy subagent takes its parent's identity, reads its mail, or is kept from stopping | A hook whose conversation agy lists as a subagent does nothing (executed in `agy_subagent_test.go`); a subagent not yet listed is kept off the pane's handle by the same-process claim (`resume_test.go`) |
 | A resumed agent loses its handle, and its peer writes to nobody | The handle belongs to the agent session, not the pane; collection runs before adoption so the closed pane's record is parked and claimable; reservations last 7 days (executed in `resume_test.go`) |
 | A handle names the wrong harness (`codex-…` running Claude) | The kind is never read from a label; a pane that changes kind keeps only its role |

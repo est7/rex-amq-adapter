@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -480,7 +481,11 @@ func (e Env) adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	}
 	a, err := e.Adopt(ctx, loc, kind, in)
 	if err != nil {
-		_ = e.Store.SetAdoptFailed(loc.Block, e.Now())
+		// An agy that a command in the pane started was refused, not the
+		// pane's agent: its refusal must not make the pane's agent back off.
+		if !errors.Is(err, ErrStartedInPane) {
+			_ = e.Store.SetAdoptFailed(loc.Block, e.Now())
+		}
 		return Adoption{}, err
 	}
 	_ = e.Store.ClearAdoptFailed(loc.Block)

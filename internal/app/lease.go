@@ -106,9 +106,22 @@ type proc struct {
 // them is the harness; a process of the harness's own name further up, the
 // agent included, means the harness is a second Codex. A launcher of another
 // name (node running a native codex) is the agent itself.
+//
+// An agy hook must run in agent itself, the first process above its shells
+// (observed: hook ← sh ← agy). agy's user hooks fire for a headless `agy -p`
+// too, which inherits REX_BLOCK from whatever ran it and so descends from the
+// pane's agent without being it (observed: hook ← sh ← agy -p ← timeout ←
+// bash ← claude). agy is a native binary the pane runs directly, so no
+// launcher is allowed: one that spawns agy without a shell (a program's
+// subprocess, `sh -c` exec'ing its only command) looks the same as the
+// pane's agent running `agy -p`.
 func runsUnder(kind core.Kind, ancestors []proc, agent int) error {
+	under := slices.ContainsFunc(ancestors, func(p proc) bool { return p.PID == agent })
+	if kind == core.Agy && under {
+		return agyRunsIn(ancestors, agent)
+	}
 	if kind != core.Codex {
-		if slices.ContainsFunc(ancestors, func(p proc) bool { return p.PID == agent }) {
+		if under {
 			return nil
 		}
 		return errNotUnder
@@ -131,6 +144,25 @@ func runsUnder(kind core.Kind, ancestors []proc, agent int) error {
 	}
 	return errNotUnder
 }
+
+// agyRunsIn reports whether the first process above the hook's shells is
+// agent, for an ancestry that holds agent.
+func agyRunsIn(ancestors []proc, agent int) error {
+	for i, p := range ancestors {
+		if p.PID != agent && (i == 0 || isShell(p.Name)) {
+			continue
+		}
+		if p.PID == agent {
+			return nil
+		}
+		return fmt.Errorf("%w (%s pid %d runs the hook; the pane's agent is pid %d)", ErrStartedInPane, p.Name, p.PID, agent)
+	}
+	return errNotUnder
+}
+
+// ErrStartedInPane: an agy hook comes from an agy that a command in the pane
+// started (a headless `agy -p`), not from the pane's agent.
+var ErrStartedInPane = errors.New("this agy hook comes from an agy started by a command in the pane (agy -p?), not from the pane's agent")
 
 var errNotUnder = errors.New("this hook does not descend from the agent")
 

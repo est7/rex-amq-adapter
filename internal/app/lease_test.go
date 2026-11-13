@@ -27,9 +27,11 @@ func TestHookRebindsWhenTheRecordedPIDIsAliveButNotItsAncestor(t *testing.T) {
 	e := realAmqEnv(t, term)
 	ctx := context.Background()
 	loc := Location{Block: block}
+	e.Ancestors = agyAt(other.Process.Pid)
 	if _, err := e.Hook(ctx, EventSessionStart, core.Agy, loc, HookInput{ConversationID: "c1"}); err != nil {
 		t.Fatal(err)
 	}
+	e.Ancestors = nil
 	t.Cleanup(func() { _ = e.Depart(ctx, loc, HookInput{}) })
 	before, _, _ := e.Store.Record(block)
 	if before.AgentPID != other.Process.Pid {
@@ -63,9 +65,11 @@ func TestAnotherKindInTheBlockIsAdoptedByItsFirstHook(t *testing.T) {
 	e := realAmqEnv(t, term)
 	ctx := context.Background()
 	loc := Location{Block: block}
+	e.Ancestors = agyAt(exitedAgyPID)
 	if _, err := e.Hook(ctx, EventSessionStart, core.Agy, loc, HookInput{ConversationID: "c1"}); err != nil {
 		t.Fatal(err)
 	}
+	e.Ancestors = nil
 	t.Cleanup(func() { _ = e.Depart(ctx, loc, HookInput{}) })
 	agy, _, _ := e.Store.Record(block)
 	term.mu.Lock()
