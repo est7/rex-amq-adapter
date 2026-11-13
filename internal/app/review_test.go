@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -36,6 +37,7 @@ func sendJSON(t *testing.T, e Env, ctx context.Context, as core.Handle, args ...
 // message that arrives after the gate stays unread, with no receipt.
 func TestManagedMailDrainTakesOnlyAdmittedMail(t *testing.T) {
 	e, ctx := managedWorld(t)
+	needsAmq(t, e, "amq's read verb")
 	first := sendJSON(t, e, ctx, "codex-01", "--to", "claude-02", "--subject", "s", "--body", "admitted")
 	rec, _, _ := e.Store.RecordOf("claude-02")
 	kept, err := e.admit(rec)
@@ -43,7 +45,7 @@ func TestManagedMailDrainTakesOnlyAdmittedMail(t *testing.T) {
 		t.Fatalf("admit %v %v", kept, err)
 	}
 	// Arrives between the gate and the consumption.
-	if err := amq.Send(ctx, e.AmqBin, e.Paths.Root(), "claude-09", "claude-02", "late", "cross-Epic, after the gate"); err != nil {
+	if err := amq.Send(ctx, e.AMQ, e.Paths.Root(), "claude-09", "claude-02", "late", "cross-Epic, after the gate"); err != nil {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
@@ -63,7 +65,7 @@ func TestManagedMailDrainTakesOnlyAdmittedMail(t *testing.T) {
 	// Through the command: mail arriving between its gate and its reads
 	// stays unread.
 	afterAdmit = func() {
-		if err := amq.Send(ctx, e.AmqBin, e.Paths.Root(), "claude-09", "claude-02", "later", "cross-Epic, inside the drain"); err != nil {
+		if err := amq.Send(ctx, e.AMQ, e.Paths.Root(), "claude-09", "claude-02", "later", "cross-Epic, inside the drain"); err != nil {
 			t.Error(err)
 		}
 	}
@@ -94,6 +96,7 @@ func TestManagedMailDrainTakesOnlyAdmittedMail(t *testing.T) {
 // --limit bounds each.
 func TestManagedMailConcurrentDrainsReportEachMessageOnce(t *testing.T) {
 	e, ctx := managedWorld(t)
+	needsAmq(t, e, "amq's read verb")
 	const n = 6
 	for i := 0; i < n; i++ {
 		sendJSON(t, e, ctx, "codex-01", "--to", "claude-02", "--subject", "s", "--body", "b", "--kind", "todo", "--priority", "urgent")
@@ -157,7 +160,7 @@ func TestManagedMailConcurrentDrainsReportEachMessageOnce(t *testing.T) {
 func TestQuarantineReadsLongHeadersAndFailsClosed(t *testing.T) {
 	e, ctx := managedWorld(t)
 	pad, _ := json.Marshal(map[string]string{"pad": strings.Repeat("x", 70<<10)})
-	if _, _, err := amq.Post(ctx, e.AmqBin, e.Paths.Root(), "send", "--me", "claude-09", "--to", "claude-02", "--subject", "big", "--body", "b", "--context", string(pad)); err != nil {
+	if _, _, err := e.AMQ.Post(ctx, e.Paths.Root(), "send", "--me", "claude-09", "--to", "claude-02", "--subject", "big", "--body", "b", "--context", string(pad)); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(amq.Inbox(e.Paths.Root(), "claude-02"), "corrupt.md"), []byte("---json\n{\"schema\":1,\"id\"\n---\nbody\n"), 0o600); err != nil {
@@ -210,31 +213,12 @@ func TestQuarantineKeepsProvenanceOfASendThatTimedOut(t *testing.T) {
 // still vouch for the delivered copy.
 func TestQuarantineKeepsPendingProvenanceWhenDeliveryIsUnknown(t *testing.T) {
 	e, ctx := managedWorld(t)
-	fake := filepath.Join(t.TempDir(), "amq")
-	script := `#!/bin/sh
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --to) to=$2; shift ;;
-    --me) me=$2; shift ;;
-    --context) ctx=$2; shift ;;
-    --root) root=$2; shift ;;
-  esac
-  shift
-done
-mkdir -p "$root/agents/$to/inbox/new"
-printf -- '---json\n{"schema":1,"id":"fault-1","from":"%s","to":["%s"],"thread":"t","subject":"s","created":"2026-11-12T00:00:00Z","context":%s}\n---\nbody\n' "$me" "$to" "$ctx" > "$root/agents/$to/inbox/new/fault-1.md"
-echo "killed after delivery" >&2
-exit 1
-`
-	if err := os.WriteFile(fake, []byte(script), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	real := e.AmqBin
-	e.AmqBin = fake
+	orig := e.AMQ
+	e.AMQ = deliveredThenKilled{orig}
 	if err := e.mailAs(ctx, "codex-01", "claude-02", "todo", "s", "b"); err == nil {
-		t.Fatal("the fake amq did not fail")
+		t.Fatal("the send did not fail")
 	}
-	e.AmqBin = real
+	e.AMQ = orig
 	hdr, err := amq.ReadHeader(e.Paths.Root(), "claude-02", amq.BoxUnread, "fault-1")
 	if err != nil {
 		t.Fatal(err)
@@ -256,8 +240,9 @@ exit 1
 // with provenance or without; what it sends after the move is its own.
 func TestManagedMailFencesSentMailAfterAMove(t *testing.T) {
 	e, ctx := managedWorld(t)
+	needsAmq(t, e, "amq's thread verb")
 	before := sendJSON(t, e, ctx, "claude-02", "--to", "codex-01", "--subject", "s", "--body", "sent in Epic a", "--thread", "t/a")
-	raw, _, err := amq.Post(ctx, e.AmqBin, e.Paths.Root(), "send", "--me", "claude-02", "--to", "codex-01", "--subject", "raw", "--body", "raw in Epic a", "--thread", "t/a")
+	raw, _, err := e.AMQ.Post(ctx, e.Paths.Root(), "send", "--me", "claude-02", "--to", "codex-01", "--subject", "raw", "--body", "raw in Epic a", "--thread", "t/a")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +259,7 @@ func TestManagedMailFencesSentMailAfterAMove(t *testing.T) {
 		t.Fatalf("thread after the move: %d %v", code, err)
 	}
 	put(t, e, store.Record{Handle: "pi-04", SessionID: "session:b"})
-	if err := amq.EnsureMailbox(ctx, e.AmqBin, e.Paths.Root(), "pi-04"); err != nil {
+	if err := e.AMQ.EnsureMailbox(ctx, e.Paths.Root(), "pi-04"); err != nil {
 		t.Fatal(err)
 	}
 	after := sendJSON(t, e, ctx, "claude-02", "--to", "pi-04", "--subject", "s", "--body", "sent in Epic b", "--thread", "t/b")
@@ -289,17 +274,18 @@ func TestManagedMailFencesSentMailAfterAMove(t *testing.T) {
 // one in a peer's mailbox that the caller cannot read.
 func TestManagedMailTraceShowsOnlyScopedEvidence(t *testing.T) {
 	e, ctx := managedWorld(t)
+	needsAmq(t, e, "amq's trace verb")
 	put(t, e, store.Record{Handle: "pi-03", SessionID: "session:a"})
 	// The fixture's codex mailbox is partial; amq trace scans every one.
 	for _, h := range []string{"pi-03", "codex"} {
-		if err := amq.EnsureMailbox(ctx, e.AmqBin, e.Paths.Root(), h); err != nil {
+		if err := e.AMQ.EnsureMailbox(ctx, e.Paths.Root(), h); err != nil {
 			t.Fatal(err)
 		}
 	}
 	q := sendJSON(t, e, ctx, "codex-01", "--to", "claude-02", "--subject", "q", "--body", "?", "--kind", "question")
 	mine := sendJSON(t, e, ctx, "claude-02", "--to", "codex-01", "--subject", "r1", "--body", "to you", "--refs", q)
 	peer := sendJSON(t, e, ctx, "claude-02", "--to", "pi-03", "--subject", "r2", "--body", "to a peer", "--refs", q)
-	other, _, err := amq.Post(ctx, e.AmqBin, e.Paths.Root(), "send", "--me", "claude-09", "--to", "claude-02", "--subject", "r3", "--body", "from Epic b", "--refs", q)
+	other, _, err := e.AMQ.Post(ctx, e.Paths.Root(), "send", "--me", "claude-09", "--to", "claude-02", "--subject", "r3", "--body", "from Epic b", "--refs", q)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,9 +330,10 @@ func TestManagedMailRefusesANonObjectContext(t *testing.T) {
 // reported twice.
 func TestManagedMailDrainSkipsWhatARawDrainTook(t *testing.T) {
 	e, ctx := managedWorld(t)
+	needsAmq(t, e, "amq's drain verb")
 	id := sendJSON(t, e, ctx, "codex-01", "--to", "claude-02", "--subject", "s", "--body", "b")
 	afterAdmit = func() {
-		if _, err := amq.Run(ctx, e.AmqBin, nil, &bytes.Buffer{}, &bytes.Buffer{}, "drain", "--root", e.Paths.Root(), "--me", "claude-02"); err != nil {
+		if _, err := e.AMQ.Run(ctx, nil, &bytes.Buffer{}, &bytes.Buffer{}, "drain", "--root", e.Paths.Root(), "--me", "claude-02"); err != nil {
 			t.Error(err)
 		}
 	}
@@ -361,6 +348,7 @@ func TestManagedMailDrainSkipsWhatARawDrainTook(t *testing.T) {
 // none is lost to the agent.
 func TestManagedMailDrainReportsThePrefixBeforeAFailure(t *testing.T) {
 	e, ctx := managedWorld(t)
+	needsAmq(t, e, "amq's read verb")
 	first := sendJSON(t, e, ctx, "codex-01", "--to", "claude-02", "--subject", "s", "--body", "first")
 	// A header the gate can judge (a same-Epic sender) that amq read refuses:
 	// it has no thread.
@@ -404,7 +392,8 @@ body
 // trace withholds that text along with the evidence.
 func TestManagedMailTraceWithholdsDiagnosticsAboutOtherMail(t *testing.T) {
 	e, ctx := managedWorld(t)
-	if err := amq.EnsureMailbox(ctx, e.AmqBin, e.Paths.Root(), "codex"); err != nil {
+	needsAmq(t, e, "amq's trace verb")
+	if err := e.AMQ.EnsureMailbox(ctx, e.Paths.Root(), "codex"); err != nil {
 		t.Fatal(err)
 	}
 	q := sendJSON(t, e, ctx, "codex-01", "--to", "claude-02", "--subject", "q", "--body", "?")
@@ -412,7 +401,7 @@ func TestManagedMailTraceWithholdsDiagnosticsAboutOtherMail(t *testing.T) {
 		t.Fatal(err)
 	}
 	var raw bytes.Buffer
-	if _, err := amq.Run(ctx, e.AmqBin, nil, &raw, &raw, "trace", q, "--root", e.Paths.Root(), "--json"); err != nil || !strings.Contains(raw.String(), "other-epic-secret-id") {
+	if _, err := e.AMQ.Run(ctx, nil, &raw, &raw, "trace", q, "--root", e.Paths.Root(), "--json"); err != nil || !strings.Contains(raw.String(), "other-epic-secret-id") {
 		t.Fatalf("the fault did not take: amq trace does not name the file: %v %s", err, raw.String())
 	}
 	for _, args := range [][]string{{q, "--json"}, {q}, {q, "--follow", "--json"}} {
@@ -429,4 +418,34 @@ func TestManagedMailTraceWithholdsDiagnosticsAboutOtherMail(t *testing.T) {
 			t.Fatalf("trace %v lost scoped evidence: %s", args, out)
 		}
 	}
+}
+
+// deliveredThenKilled is a Queue whose send is killed after it delivered the
+// message (fault-1) and before it wrote the outbox copy or reported the id.
+type deliveredThenKilled struct{ Queue }
+
+func (q deliveredThenKilled) Post(_ context.Context, root, verb string, args ...string) (amq.Sent, []byte, error) {
+	flag := map[string]string{}
+	for i := 0; i+1 < len(args); i++ {
+		if strings.HasPrefix(args[i], "--") {
+			flag[args[i]] = args[i+1]
+		}
+	}
+	to, me, ctxJSON := flag["--to"], flag["--me"], flag["--context"]
+	if ctxJSON == "" {
+		ctxJSON = "{}"
+	}
+	file := `---json
+{"schema":1,"id":"fault-1","from":"` + me + `","to":["` + to + `"],"thread":"t","subject":"s","created":"2026-11-12T00:00:00Z","context":` + ctxJSON + `}
+---
+body
+`
+	dir := filepath.Join(root, "agents", to, "inbox", "new")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return amq.Sent{}, nil, err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "fault-1.md"), []byte(file), 0o600); err != nil {
+		return amq.Sent{}, nil, err
+	}
+	return amq.Sent{}, []byte("killed after delivery"), fmt.Errorf("amq %s: killed after delivery", verb)
 }

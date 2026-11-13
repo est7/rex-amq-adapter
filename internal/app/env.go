@@ -47,6 +47,20 @@ type Terminal interface {
 	CloseBlock(ctx context.Context, block string) error
 }
 
+// Queue is the part of amq the adapter drives as a subprocess; amq.CLI
+// implements it. It is to amq what Terminal is to Rex: the seam tests fake.
+type Queue interface {
+	EnsureMailbox(ctx context.Context, root, handle string) error
+	Ensure(ctx context.Context, w amq.Waker, logDir string) (amq.WakeState, amq.WakeDecision, error)
+	RetireFor(ctx context.Context, root, handle, block string) (bool, error)
+	RetireHandle(ctx context.Context, root, handle string) (bool, error)
+	ConfigureHolds(ctx context.Context, root, handle string, normal, low time.Duration) error
+	Post(ctx context.Context, root, verb string, args ...string) (amq.Sent, []byte, error)
+	ThreadOpen(ctx context.Context, root, me string, handles []string) (amq.OpenObligations, error)
+	ThreadRead(ctx context.Context, root, me, thread string, agents, ids []string) ([]amq.ThreadMessage, error)
+	Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args ...string) (int, error)
+}
+
 // Env is everything an entry point needs.
 type Env struct {
 	Paths store.Paths
@@ -56,8 +70,10 @@ type Env struct {
 	RexOn func(server string) Terminal
 	// Crews finds crew and role prompts for an agent working in a
 	// directory; nil finds none.
-	Crews   func(dir string) crew.Library
-	AmqBin  string
+	Crews func(dir string) crew.Library
+	// AMQ runs the amq commands that change mail or wakers; reading the
+	// mailbox files under Paths.Root() needs no Queue.
+	AMQ     Queue
 	SelfBin string // SelfPath(): absolute, stable across Homebrew upgrades
 	Now     func() time.Time
 	// TranscriptHome is the home directory the harnesses write their
@@ -118,7 +134,7 @@ func NewEnvAt(server string, paths store.Paths) (Env, error) {
 		Rex:            rex.Client{Bin: rexBin, Server: server},
 		RexOn:          func(s string) Terminal { return rex.Client{Bin: rexBin, Server: s} },
 		Crews:          crew.Load,
-		AmqBin:         amqBin,
+		AMQ:            amq.CLI{Bin: amqBin},
 		SelfBin:        self,
 		Now:            time.Now,
 		TranscriptHome: home,

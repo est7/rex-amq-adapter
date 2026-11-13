@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -26,7 +25,7 @@ func sameWindow(blocks ...string) *fakeTerm {
 
 func sendMail(t *testing.T, e Env, from, to core.Handle) {
 	t.Helper()
-	if err := amq.Send(context.Background(), e.AmqBin, e.Paths.Root(), string(from), string(to), "subject", "body"); err != nil {
+	if err := amq.Send(context.Background(), e.AMQ, e.Paths.Root(), string(from), string(to), "subject", "body"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -437,8 +436,7 @@ func TestMailToItselfIsNotChecked(t *testing.T) {
 	e := realAmqEnv(t, sameWindow("block:a"))
 	self := adoptIn(t, e, "block:a", "s-self", exitedPID)
 
-	out, err := exec.Command(e.AmqBin, "--no-update-check", "send", "--root", e.Paths.Root(), "--me", string(self.Handle), "--to", string(self.Handle), "--allow-self", "--body", "note").CombinedOutput()
-	if err != nil {
+	if _, out, err := e.AMQ.Post(context.Background(), e.Paths.Root(), "send", "--me", string(self.Handle), "--to", string(self.Handle), "--allow-self", "--body", "note"); err != nil {
 		t.Fatalf("%v: %s", err, out)
 	}
 	if r := afterTool(t, e, self); strings.Contains(r.Notice, "mail to") {
@@ -459,8 +457,7 @@ func TestEachDepartedRecipientIsNamedOnce(t *testing.T) {
 	depart(t, e, "block:c", "s-two")
 
 	to := string(one.Handle) + "," + string(two.Handle) + "," + string(live.Handle)
-	out, err := exec.Command(e.AmqBin, "--no-update-check", "send", "--root", e.Paths.Root(), "--me", string(sender.Handle), "--to", to, "--thread", "team", "--body", "all").CombinedOutput()
-	if err != nil {
+	if _, out, err := e.AMQ.Post(context.Background(), e.Paths.Root(), "send", "--me", string(sender.Handle), "--to", to, "--thread", "team", "--body", "all"); err != nil {
 		t.Fatalf("%v: %s", err, out)
 	}
 	sendMail(t, e, sender.Handle, one.Handle)

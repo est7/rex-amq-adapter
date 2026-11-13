@@ -13,14 +13,12 @@ import (
 	"github.com/est7/rex-amq-adapter/internal/core"
 )
 
-// realAmqEnv is fixture plus the real amq binary and an injector script, for
-// the lifecycle paths that start and retire wakers.
+// realAmqEnv is fixture plus an amq Queue and an injector script, for the
+// paths that send mail and start and retire wakers. The Queue is amq.Fake, so
+// these tests run where amq is not installed (CI); REX_AMQ_REAL=1 runs them
+// against amq itself, the oracle the fake is held to.
 func realAmqEnv(t *testing.T, term *fakeTerm) Env {
 	t.Helper()
-	amqBin, err := amq.ResolveBin()
-	if err != nil {
-		t.Skip(err)
-	}
 	e := fixture(t, term)
 	if err := e.Store.DeleteRecord("codex"); err != nil {
 		t.Fatal(err)
@@ -29,15 +27,24 @@ func realAmqEnv(t *testing.T, term *fakeTerm) Env {
 	if err := os.WriteFile(injector, []byte("#!/bin/sh\necho AMQ_INJECT_PROGRESS=deferred >&2\nexit 1\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	e.AmqBin, e.SelfBin = amqBin, injector
+	e.SelfBin = injector
+	if os.Getenv("REX_AMQ_REAL") != "1" {
+		e.AMQ = &amq.Fake{}
+		return e
+	}
+	amqBin, err := amq.ResolveBin()
+	if err != nil {
+		t.Fatalf("REX_AMQ_REAL=1 but %v", err)
+	}
+	e.AMQ = amq.CLI{Bin: amqBin}
 	// Wakers a test started under its root are stopped with it, so test runs
 	// leave no amq wake processes behind.
 	t.Cleanup(func() {
 		_ = e.prepareInjector()
 		entries, _ := os.ReadDir(filepath.Join(e.Paths.Root(), "agents"))
 		for _, entry := range entries {
-			_, _ = amq.RetireHandle(context.Background(), e.AmqBin, e.Paths.Root(), entry.Name())
-			if st, err := amq.WakeCheck(context.Background(), e.AmqBin, e.Paths.Root(), entry.Name()); err == nil && st.PID > 0 {
+			_, _ = e.AMQ.RetireHandle(context.Background(), e.Paths.Root(), entry.Name())
+			if st, err := amq.WakeCheck(context.Background(), amqBin, e.Paths.Root(), entry.Name()); err == nil && st.PID > 0 {
 				_ = syscall.Kill(st.PID, syscall.SIGKILL)
 			}
 		}
@@ -47,11 +54,26 @@ func realAmqEnv(t *testing.T, term *fakeTerm) Env {
 
 func wakeState(t *testing.T, e Env, h string) amq.WakeState {
 	t.Helper()
-	st, err := amq.WakeCheck(context.Background(), e.AmqBin, e.Paths.Root(), h)
+	if f, ok := e.AMQ.(*amq.Fake); ok {
+		return f.Waker(e.Paths.Root(), h)
+	}
+	st, err := amq.WakeCheck(context.Background(), realBin(t, e), e.Paths.Root(), h)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return st
+}
+
+// killWaker kills h's waker as a crash would, leaving its lock stale.
+func killWaker(t *testing.T, e Env, h string) {
+	t.Helper()
+	if f, ok := e.AMQ.(*amq.Fake); ok {
+		f.Kill(e.Paths.Root(), h)
+		return
+	}
+	if err := syscall.Kill(wakeState(t, e, h).PID, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func wakerLive(t *testing.T, e Env, h string) bool { return wakeState(t, e, h).Live }
@@ -64,7 +86,7 @@ func TestAdoptThenDepartRetiresTheWaker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = amq.RetireFor(context.Background(), e.AmqBin, e.Paths.Root(), "codex-01", block) })
+	t.Cleanup(func() { _, _ = e.AMQ.RetireFor(context.Background(), e.Paths.Root(), "codex-01", block) })
 	first := wakeState(t, e, "codex-01")
 	if a.Record.Handle != "codex-01" || !first.Live || first.Generation == "" {
 		t.Fatalf("adoption: %+v waker %+v", a.Record, first)
@@ -117,7 +139,7 @@ func TestCollectParksOnlyProvablyGoneAgents(t *testing.T) {
 	if _, err := e.Adopt(ctx, Location{Block: block}, core.Codex, HookInput{}); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = amq.RetireFor(context.Background(), e.AmqBin, e.Paths.Root(), "codex-01", block) })
+	t.Cleanup(func() { _, _ = e.AMQ.RetireFor(context.Background(), e.Paths.Root(), "codex-01", block) })
 
 	term.fgPID = 1 // an editor in front of a live agent
 	if err := e.Collect(ctx); err != nil {
@@ -154,7 +176,7 @@ func TestPiAdoptionHasNoWaker(t *testing.T) {
 	if _, err := e.Adopt(ctx, Location{Block: block}, core.Codex, HookInput{}); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = amq.RetireFor(context.Background(), e.AmqBin, e.Paths.Root(), "codex-01", block) })
+	t.Cleanup(func() { _, _ = e.AMQ.RetireFor(context.Background(), e.Paths.Root(), "codex-01", block) })
 	if !wakerLive(t, e, "codex-01") {
 		t.Fatal("setup: codex waker not live")
 	}
@@ -179,11 +201,9 @@ func TestStopRevivesADeadWaker(t *testing.T) {
 	if _, err := e.Adopt(ctx, Location{Block: block}, core.Codex, HookInput{}); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = amq.RetireFor(context.Background(), e.AmqBin, e.Paths.Root(), "codex-01", block) })
+	t.Cleanup(func() { _, _ = e.AMQ.RetireFor(context.Background(), e.Paths.Root(), "codex-01", block) })
 	dead := wakeState(t, e, "codex-01")
-	if err := syscall.Kill(dead.PID, syscall.SIGKILL); err != nil {
-		t.Fatal(err)
-	}
+	killWaker(t, e, "codex-01")
 	for i := 0; i < 50 && wakerLive(t, e, "codex-01"); i++ {
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -210,7 +230,7 @@ func TestStopStartsNoWakerForPi(t *testing.T) {
 		t.Fatal(err)
 	}
 	if wakerLive(t, e, "pi-01") {
-		_, _ = amq.RetireFor(context.Background(), e.AmqBin, e.Paths.Root(), "pi-01", block)
+		_, _ = e.AMQ.RetireFor(context.Background(), e.Paths.Root(), "pi-01", block)
 		t.Fatal("a waker was started for Pi")
 	}
 }
@@ -241,7 +261,7 @@ func TestWakerStartsWhenTheBinaryLivesInAGroupWritableDir(t *testing.T) {
 	if _, err := e.Adopt(ctx, Location{Block: block}, core.Codex, HookInput{}); err != nil {
 		t.Fatalf("adoption with the binary under a group-writable dir: %v", err)
 	}
-	t.Cleanup(func() { _, _ = amq.RetireFor(context.Background(), e.AmqBin, e.Paths.Root(), "codex-01", block) })
+	t.Cleanup(func() { _, _ = e.AMQ.RetireFor(context.Background(), e.Paths.Root(), "codex-01", block) })
 	st := wakeState(t, e, "codex-01")
 	if !st.Live {
 		t.Fatalf("waker not live: %+v", st)
@@ -263,4 +283,33 @@ func TestWakerStartsWhenTheBinaryLivesInAGroupWritableDir(t *testing.T) {
 	if err != nil || !strings.Contains(string(w), moved) {
 		t.Fatalf("the wrapper does not run the moved binary: %q %v", w, err)
 	}
+}
+
+// needsAmq skips a test that exercises what only amq does (why), not the
+// adapter's use of the Queue, unless it runs against amq (REX_AMQ_REAL=1).
+func needsAmq(t *testing.T, e Env, why string) {
+	t.Helper()
+	if _, ok := e.AMQ.(*amq.Fake); ok {
+		t.Skip("needs " + why + ", which amq.Fake does not emulate: run with REX_AMQ_REAL=1")
+	}
+}
+
+// noOpenObligations states, for amq.Fake, that the test's world has no open
+// obligations (the fake cannot compute them); amq itself computes them.
+func noOpenObligations(e Env) {
+	if f, ok := e.AMQ.(*amq.Fake); ok {
+		f.OpenObligations = &amq.OpenObligations{}
+	}
+}
+
+// realBin is the amq binary e runs, for a test that calls amq itself or wraps
+// it in a fault-injecting script; under the fake such a test is skipped and
+// runs with REX_AMQ_REAL=1.
+func realBin(t *testing.T, e Env) string {
+	t.Helper()
+	c, ok := e.AMQ.(amq.CLI)
+	if !ok {
+		t.Skip("needs amq itself (it runs or wraps the binary): run with REX_AMQ_REAL=1")
+	}
+	return c.Bin
 }

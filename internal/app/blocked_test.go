@@ -69,7 +69,7 @@ func TestABlockedOrchestratorIsToldToAnotherFamily(t *testing.T) {
 	if err := e.Store.PutRecord(store.Record{Handle: "agy-03", Kind: core.Agy, Server: "unix:///fake.sock", BlockID: "block:c", SessionID: "session:s", WindowID: "window:1", AgentPID: 7, AdoptedAt: e.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	if err := amq.EnsureMailbox(context.Background(), e.AmqBin, e.Paths.Root(), "agy-03"); err != nil {
+	if err := e.AMQ.EnsureMailbox(context.Background(), e.Paths.Root(), "agy-03"); err != nil {
 		t.Fatal(err)
 	}
 	term.windows["block:c"] = "window:1"
@@ -93,7 +93,7 @@ func TestABlockedOrchestratorIsToldToAnotherFamily(t *testing.T) {
 func TestABlockedPeerWithMailIsReportedOnce(t *testing.T) {
 	e, term, orch, s, now, _ := healthWorld(t)
 	term.states = map[string]rex.Status{block: {State: "blocked", Kind: "permission"}}
-	if err := amq.Send(context.Background(), e.AmqBin, e.Paths.Root(), "orch-01", "codex", "task", "do it"); err != nil {
+	if err := amq.Send(context.Background(), e.AMQ, e.Paths.Root(), "orch-01", "codex", "task", "do it"); err != nil {
 		t.Fatal(err)
 	}
 	inject(e) // the injector records agent_blocked
@@ -115,7 +115,7 @@ func TestABlockedPeerWithMailIsReportedOnce(t *testing.T) {
 func TestTheOrchestratorBlockedWithMailReachesTheDesktop(t *testing.T) {
 	e, term, orch, s, now, desktop := healthWorld(t)
 	term.states = map[string]rex.Status{"block:g": {State: "blocked", Kind: "question"}}
-	if err := amq.Send(context.Background(), e.AmqBin, e.Paths.Root(), "codex", "orch-01", "report", "done"); err != nil {
+	if err := amq.Send(context.Background(), e.AMQ, e.Paths.Root(), "codex", "orch-01", "report", "done"); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.Store.RecordInject("orch-01", core.Outcome{Progress: core.Deferred, Code: "agent_blocked"}, e.Now()); err != nil {
@@ -140,7 +140,7 @@ func TestMailDoesNotResetABlock(t *testing.T) {
 	e.watchdog(context.Background(), orch, s)
 	*now = now.Add(core.StuckFor + time.Second)
 	e.watchdog(context.Background(), orch, s)
-	if err := amq.Send(context.Background(), e.AmqBin, e.Paths.Root(), "codex", "orch-01", "report", "done"); err != nil {
+	if err := amq.Send(context.Background(), e.AMQ, e.Paths.Root(), "codex", "orch-01", "report", "done"); err != nil {
 		t.Fatal(err)
 	}
 	e.watchdog(context.Background(), orch, s)

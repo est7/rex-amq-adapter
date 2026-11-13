@@ -20,7 +20,7 @@ func TestManagedMailExitCodes(t *testing.T) {
 		t.Skip(err)
 	}
 	paths := store.Paths{Home: t.TempDir()}
-	env := app.Env{Paths: paths, Store: store.Store{P: paths}, AmqBin: bin, Now: time.Now}
+	env := app.Env{Paths: paths, Store: store.Store{P: paths}, AMQ: amq.CLI{Bin: bin}, Now: time.Now}
 	for _, r := range []store.Record{
 		{Handle: "codex-01", Server: "unix:///t.sock", BlockID: "block:a", SessionID: "session:a"},
 		{Handle: "claude-02", Server: "unix:///t.sock", BlockID: "block:b", SessionID: "session:a"},

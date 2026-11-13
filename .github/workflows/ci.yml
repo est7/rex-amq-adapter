@@ -1,7 +1,8 @@
 # Verifies every push to main and every pull request: build, vet, the
 # short test suite with and without the race detector, and a scan for known
-# vulnerabilities. Tests that need a real amq or Rex binary skip on this
-# runner (see release.yml); run them locally before tagging a release.
+# vulnerabilities. The app tests drive amq.Fake here; the few that need amq
+# itself, and the Rex end-to-end tests, skip on this runner. Run
+# `REX_AMQ_REAL=1 go test ./...` locally before tagging a release.
 name: ci
 
 on:

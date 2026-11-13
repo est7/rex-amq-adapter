@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/est7/rex-amq-adapter/internal/amq"
 	"os"
 	"path/filepath"
 	"slices"
@@ -229,6 +230,7 @@ func fixture(t *testing.T, term *fakeTerm, unread ...string) Env {
 	e := Env{
 		Paths: paths, Store: store.Store{P: paths},
 		Rex: term, RexOn: func(string) Terminal { return term },
+		AMQ:     amq.CLI{}, // no binary: an amq call fails as it did with an empty AmqBin
 		SelfBin: "/x/rex-amq-adapter", Now: time.Now,
 	}
 	if term.fgPID == 0 {
@@ -499,7 +501,7 @@ func TestFailedAdoptionBacksOff(t *testing.T) {
 	if err := e.Store.SetAdoptFailed(block, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	// Adopting would need amq (AmqBin is empty here); within the back-off the
+	// Adopting would need amq (AMQ is nil here); within the back-off the
 	// hook must not try.
 	r, err := e.Hook(context.Background(), EventPostTool, core.Codex, Location{Block: block}, HookInput{})
 	if err != nil || r.Notice != "" {

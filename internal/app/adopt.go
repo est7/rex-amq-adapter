@@ -138,7 +138,7 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	if moved && !together(own, shownAt) {
 		e.leaveSession(ctx, own)
 	}
-	if err := amq.EnsureMailbox(ctx, e.AmqBin, e.Paths.Root(), string(handle)); err != nil {
+	if err := e.AMQ.EnsureMailbox(ctx, e.Paths.Root(), string(handle)); err != nil {
 		return Adoption{}, err
 	}
 	if !hasOwn {
@@ -234,14 +234,14 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	if kind.InProcess() {
 		// The agent's own extension delivers. A waker left from an earlier
 		// agent in this block would type doorbells into it: remove it.
-		if _, err := amq.RetireFor(ctx, e.AmqBin, e.Paths.Root(), string(handle), loc.Block); err != nil {
+		if _, err := e.AMQ.RetireFor(ctx, e.Paths.Root(), string(handle), loc.Block); err != nil {
 			return Adoption{}, err
 		}
 	} else {
 		if err := e.prepareInjector(); err != nil {
 			return Adoption{}, err
 		}
-		if _, decision, err = amq.Ensure(ctx, e.AmqBin, e.waker(rec), e.Paths.Logs()); err != nil {
+		if _, decision, err = e.AMQ.Ensure(ctx, e.waker(rec), e.Paths.Logs()); err != nil {
 			return Adoption{}, err
 		}
 	}

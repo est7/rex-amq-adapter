@@ -188,7 +188,7 @@ func (e Env) post(ctx context.Context, o Outgoing) (amq.Sent, []byte, error) {
 	if err := e.Store.PendProvenance(p); err != nil {
 		return amq.Sent{}, nil, err
 	}
-	sent, out, err := amq.Post(ctx, e.AmqBin, e.Paths.Root(), verb, append(append(args, "--context", string(ctxJSON)), o.Args...)...)
+	sent, out, err := e.AMQ.Post(ctx, e.Paths.Root(), verb, append(append(args, "--context", string(ctxJSON)), o.Args...)...)
 	if err != nil && sent.ID == "" {
 		// amq may have failed after delivering (it delivers before it
 		// writes the outbox copy): the copy carries the token if it exists.

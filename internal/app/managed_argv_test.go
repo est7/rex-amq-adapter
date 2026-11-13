@@ -18,13 +18,13 @@ func TestManagedMailRejectsHiddenRoutingOverrides(t *testing.T) {
 		t.Run(verb, func(t *testing.T) {
 			e, ctx := managedWorld(t)
 			put(t, e, store.Record{Handle: "claude-10", SessionID: "session:b"})
-			if err := amq.EnsureMailbox(ctx, e.AmqBin, e.Paths.Root(), "claude-10"); err != nil {
+			if err := e.AMQ.EnsureMailbox(ctx, e.Paths.Root(), "claude-10"); err != nil {
 				t.Fatal(err)
 			}
 			args := []string{"--to", "codex-01"}
 			if verb == "reply" {
 				for _, pair := range [][2]string{{"codex-01", "claude-02"}, {"claude-09", "claude-10"}} {
-					if err := amq.Send(ctx, e.AmqBin, e.Paths.Root(), pair[0], pair[1], "request", "body"); err != nil {
+					if err := amq.Send(ctx, e.AMQ, e.Paths.Root(), pair[0], pair[1], "request", "body"); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -113,7 +113,7 @@ func TestManagedMailHelpNeverReadsStdin(t *testing.T) {
 func TestManagedMailImplicitTerminalBodyIsUsageError(t *testing.T) {
 	e, ctx := managedWorld(t)
 	terminal := managedTerminal(t)
-	if err := amq.Send(ctx, e.AmqBin, e.Paths.Root(), "codex-01", "claude-02", "request", "body"); err != nil {
+	if err := amq.Send(ctx, e.AMQ, e.Paths.Root(), "codex-01", "claude-02", "request", "body"); err != nil {
 		t.Fatal(err)
 	}
 	ids, err := amq.Unread(e.Paths.Root(), "claude-02")
@@ -179,6 +179,7 @@ func TestManagedMailRejectsRoutingFlagsAndOperands(t *testing.T) {
 
 func TestManagedMailFlagValuesRemainLiteral(t *testing.T) {
 	e, ctx := managedWorld(t)
+	needsAmq(t, e, "amq's read verb")
 	out, code, err := run(t, e, ctx, "claude-02", "send", "--to", "codex-01", "--subject", "--", "--body", "--me=claude-09", "--json=false", "--context", `{"note":"--root=/foreign"}`)
 	if code != 0 || err != nil || !strings.HasPrefix(out, "Sent ") {
 		t.Fatalf("literal values: %d %v %q", code, err, out)
@@ -196,7 +197,7 @@ func TestManagedMailFlagValuesRemainLiteral(t *testing.T) {
 		t.Fatalf("context changed: %v", h.Context)
 	}
 	var read bytes.Buffer
-	code, err = amq.Run(ctx, e.AmqBin, nil, &read, &read, "read", "--root", e.Paths.Root(), "--me", "codex-01", "--id", ids[0], "--json")
+	code, err = e.AMQ.Run(ctx, nil, &read, &read, "read", "--root", e.Paths.Root(), "--me", "codex-01", "--id", ids[0], "--json")
 	if code != 0 || err != nil || !strings.Contains(read.String(), "--me=claude-09") {
 		t.Fatalf("body changed: %d %v %s", code, err, read.String())
 	}
