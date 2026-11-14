@@ -88,7 +88,7 @@ const (
 
 // ErrorRecipient chooses which live agent in a Rex session hears that rec's
 // turn ended in an error or hit a turn limit. peers are the live agents in
-// rec's session; crewLead is the lead role of rec's crew tab ("" when none);
+// rec's session; crewLead is the lead role of its session's crew ("" when none);
 // code is NoticeTurnError or NoticeTurnLimit;
 // isFlagged reports whether a candidate is itself flagged and unable to act.
 func ErrorRecipient(rec Peer, peers []Peer, crewLead, code string, isFlagged func(Handle) bool) (to Peer, why string, ok bool) {
@@ -117,10 +117,11 @@ func ErrorRecipient(rec Peer, peers []Peer, crewLead, code string, isFlagged fun
 		}
 	}
 
-	// 2. Crew lead in the same tab (Window), if rec is in a crew and not its lead.
-	if crewLead != "" && rec.Role != crewLead && rec.Window != "" {
+	// 2. Crew lead of the session, in any of its tabs, if rec is in a crew
+	// and not its lead.
+	if crewLead != "" && rec.Role != crewLead {
 		for _, p := range peers {
-			if p.Handle != rec.Handle && p.Window == rec.Window && p.Role == crewLead {
+			if p.Handle != rec.Handle && p.Role == crewLead {
 				if !flagged(p.Handle) {
 					return p, "its crew lead", true
 				}

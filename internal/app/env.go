@@ -35,6 +35,9 @@ type Terminal interface {
 	Title(ctx context.Context, block string) (string, error)
 	ListSessions(ctx context.Context) ([]string, error)
 	NewSplit(ctx context.Context, session, anchor, label, dir string, command []string) (block string, err error)
+	// NewWindow opens a tab labelled tab holding one block labelled label
+	// that runs command, without making it active: a launched agent's tab.
+	NewWindow(ctx context.Context, session, tab, label, dir string, command []string) (window, block string, err error)
 	// NewSession creates a session with one window per pane, all or none
 	// (Epics, internal/app/epic.go).
 	NewSession(ctx context.Context, label string, panes []rex.Pane) (session string, windows, blocks []string, err error)
@@ -45,6 +48,9 @@ type Terminal interface {
 	NewTab(ctx context.Context, session, label string) (window, block string, err error)
 	MoveBlock(ctx context.Context, session, block, anchor string) error
 	CloseBlock(ctx context.Context, block string) error
+	// KillSession ends a session and its processes (an Epic's close,
+	// internal/app/close.go).
+	KillSession(ctx context.Context, session string) error
 }
 
 // Queue is the part of amq the adapter drives as a subprocess; amq.CLI

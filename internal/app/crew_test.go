@@ -6,6 +6,7 @@ import (
 	"testing/fstest"
 
 	"github.com/est7/rex-amq-adapter/internal/crew"
+	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 // briefed builds an Env whose single agent starts in block:a, in a tab
@@ -27,10 +28,13 @@ func briefed(t *testing.T, tab, label string) (Env, *string) {
 }
 
 // A start notice carries, after the identity, the conventions of the crew
-// the tab is named after and the prompt of the role the pane label names,
+// its Rex session works as and the prompt of the role the pane label names,
 // looked up from the agent's own directory.
 func TestStartNoticeCarriesCrewAndRole(t *testing.T) {
-	e, dir := briefed(t, "Pair", "reviewer")
+	e, dir := briefed(t, "Window 82b616eb", "reviewer")
+	if err := e.Store.PutSessionCrew("session:s", store.SessionCrew{Crew: "pair"}); err != nil {
+		t.Fatal(err)
+	}
 	_, n := startPi(t, e, "block:a", "s1")
 	id, conv, role := strings.Index(n, "you are pi-01"), strings.Index(n, `crew "pair"`), strings.Index(n, "Project pair reviewer prompt.")
 	if id < 0 || conv < id || role < conv || !strings.Contains(n, "implementer builds, the reviewer critiques") {
@@ -41,9 +45,10 @@ func TestStartNoticeCarriesCrewAndRole(t *testing.T) {
 	}
 }
 
-// A tab that names no crew still gives a labelled agent its role prompt.
+// A session without a crew still gives a labelled agent its role prompt,
+// whatever its tab is called.
 func TestUnnamedTabGivesTheRoleOnly(t *testing.T) {
-	e, _ := briefed(t, "Window 82b616eb", "implementer")
+	e, _ := briefed(t, "Pair", "implementer")
 	_, n := startPi(t, e, "block:a", "s1")
 	if !strings.Contains(n, "Your role here is implementer:\nYou are the implementer.") || strings.Contains(n, "Team conventions") {
 		t.Fatalf("start notice:\n%s", n)

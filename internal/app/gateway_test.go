@@ -307,3 +307,38 @@ func TestLinkTakesEffectAtOnce(t *testing.T) {
 		t.Fatalf("a narrator linked: %v", err)
 	}
 }
+
+// A linked narrator may tell its personal agent unasked, by a plain managed
+// send, that the Epic's hand-back is ready: the first phase of closing an
+// Epic rests on it.
+func TestLinkedNarratorSendsToItsPersonalAgentUnasked(t *testing.T) {
+	term := &fakeTerm{}
+	e := realAmqEnv(t, term)
+	ctx := context.Background()
+	me := store.Record{Handle: "claude-01", Role: core.PersonalRole, BlockID: "block:p", SessionID: "session:p"}
+	narr := store.Record{Handle: "agy-02", Role: core.NarratorRole, BlockID: "block:n", SessionID: "session:a"}
+	put(t, e, me, narr)
+	me, _, _ = e.Store.RecordOf("claude-01")
+	for _, h := range []string{"claude-01", "agy-02"} {
+		if err := e.AMQ.EnsureMailbox(ctx, e.Paths.Root(), h); err != nil {
+			t.Fatal(err)
+		}
+	}
+	send := func() error {
+		var out bytes.Buffer
+		_, err := e.ManagedMail(ctx, Location{Block: "block:n"}, "send", []string{"--to", "claude-01", "--kind", "status", "--subject", "hand-back ready", "--body", "the orchestrator handed back"}, nil, &out, &out)
+		return err
+	}
+	if err := send(); !errors.Is(err, ErrRefused) {
+		t.Fatalf("an unlinked narrator's send: %v", err)
+	}
+	if _, _, err := e.Link(ctx, Location{Block: "block:p"}, "session:a", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := send(); err != nil {
+		t.Fatalf("a linked narrator's send: %v", err)
+	}
+	if kept, err := e.admit(me); err != nil || len(kept) != 1 {
+		t.Fatalf("the personal agent admitted %v %v", kept, err)
+	}
+}

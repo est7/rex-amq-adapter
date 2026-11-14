@@ -12,6 +12,7 @@ import (
 
 	"github.com/est7/rex-amq-adapter/internal/core"
 	"github.com/est7/rex-amq-adapter/internal/crew"
+	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 // joinWorld has a Pi agent adopted in block:a of window:1; mates puts more
@@ -34,8 +35,11 @@ func joinWorld(t *testing.T, tab string, mates ...string) (Env, *fakeTerm) {
 	return e, term
 }
 
-func TestJoiningACrewAloneNamesTheTabAndTakesTheLead(t *testing.T) {
-	e, term := joinWorld(t, "Window 1a2b")
+// Joining a crew claims it for the Rex session, not the tab: the tab keeps
+// following its one agent, and an agent in another tab of the session is
+// briefed with the crew's conventions.
+func TestJoiningACrewClaimsTheSessionAndTakesTheLead(t *testing.T) {
+	e, term := joinWorld(t, "Window 1a2b3c4d")
 	j, err := e.Join(context.Background(), Location{Block: "block:a"}, "Pair", "")
 	if err != nil {
 		t.Fatal(err)
@@ -43,18 +47,20 @@ func TestJoiningACrewAloneNamesTheTabAndTakesTheLead(t *testing.T) {
 	if j.Record.Role != "implementer" || j.Label != "implementer(pi-01)" || term.renamed["block:a"] != j.Label {
 		t.Errorf("joined as %q, label %q, pane %q", j.Record.Role, j.Label, term.renamed["block:a"])
 	}
-	if !slices.Equal(term.renamedTabs, []string{"window:1=pair"}) {
-		t.Errorf("tabs renamed: %v", term.renamedTabs)
+	if slices.Contains(term.renamedTabs, "window:1=pair") || term.tabs["window:1"] != "implementer(pi-01)" {
+		t.Errorf("the tab should follow its agent, not name the crew: renamed %v, now %q", term.renamedTabs, term.tabs["window:1"])
 	}
-	for _, want := range []string{`crew "pair"`, "the implementer builds, the reviewer critiques", "Your role here is implementer", "still needs reviewer"} {
+	if c, ok, err := e.Store.SessionCrew("session:s"); err != nil || !ok || c.Crew != "pair" || c.ClaimedBy != "pi-01" {
+		t.Errorf("session crew = %+v, %v, %v; want pair claimed by pi-01", c, ok, err)
+	}
+	for _, want := range []string{`crew "pair"`, "shared by the agents in this Rex session", "the implementer builds, the reviewer critiques", "Your role here is implementer", "still needs reviewer", "in a new tab of this session"} {
 		if !strings.Contains(j.Briefing, want) {
 			t.Errorf("briefing lacks %q:\n%s", want, j.Briefing)
 		}
 	}
-	if strings.Contains(j.Briefing, "lead:") {
-		t.Errorf("the crew's header reached the briefing:\n%s", j.Briefing)
+	if strings.Contains(j.Briefing, "lead:") || strings.Contains(j.Briefing, "rex split") {
+		t.Errorf("the briefing carries the crew header or a split:\n%s", j.Briefing)
 	}
-	// The role is the record's: the next hooks keep it, whatever the label says.
 	if r := recordOf(t, e, j.Record.Handle); r.Role != "implementer" {
 		t.Errorf("record role %q", r.Role)
 	}
@@ -62,39 +68,86 @@ func TestJoiningACrewAloneNamesTheTabAndTakesTheLead(t *testing.T) {
 	if r := recordOf(t, e, j.Record.Handle); r.Role != "implementer" {
 		t.Errorf("a repeated adoption dropped the role: %q", r.Role)
 	}
+	// block:z is in window:2 of the same session.
+	if _, n := startPi(t, e, "block:z", "z1"); !strings.Contains(n, `crew "pair"`) {
+		t.Errorf("an agent in another tab of the session was not briefed with the crew:\n%s", n)
+	}
 }
 
-func TestJoiningACrewDoesNotRenameATabOthersAreIn(t *testing.T) {
-	e, term := joinWorld(t, "Window 1a2b", "block:b")
-	_, err := e.Join(context.Background(), Location{Block: "block:a"}, "pair", "")
-	if !errors.Is(err, ErrTabTaken) || !strings.Contains(err.Error(), "pi-02") || !strings.Contains(err.Error(), "rex-amq-adapter tab pair") {
-		t.Fatalf("err = %v, want ErrTabTaken naming the agent and the way out", err)
+// A session that works as one crew refuses another while other agents are in
+// it, whose conventions would change under them.
+func TestJoiningAnotherCrewRefusesWhileOthersAreInTheSession(t *testing.T) {
+	e, term := joinWorld(t, "Window 1a2b3c4d", "block:b")
+	ctx := context.Background()
+	if _, err := e.Join(ctx, Location{Block: "block:a"}, "pair", ""); err != nil {
+		t.Fatal(err)
 	}
-	if len(term.renamedTabs) != 0 {
-		t.Errorf("the tab was renamed: %v", term.renamedTabs)
+	_, err := e.Join(ctx, Location{Block: "block:b"}, "ship", "")
+	if !errors.Is(err, ErrCrewTaken) || !strings.Contains(err.Error(), "pair") || !strings.Contains(err.Error(), "pi-01") {
+		t.Fatalf("err = %v, want ErrCrewTaken naming the crew and its agents", err)
 	}
-	if r, _, _ := e.Store.Record("block:a"); r.Role != "" {
+	if c, _, _ := e.Store.SessionCrew("session:s"); c.Crew != "pair" {
+		t.Errorf("a refused join changed the session crew to %q", c.Crew)
+	}
+	if r, _, _ := e.Store.Record("block:b"); r.Role != "" {
 		t.Errorf("a refused join took the role %q", r.Role)
 	}
+	if len(term.renamedTabs) > 0 && slices.Contains(term.renamedTabs, "window:1=ship") {
+		t.Errorf("a tab was named after the crew: %v", term.renamedTabs)
+	}
 }
 
-// A tab named after the crew already is joined as it stands, others in it or
-// not, and a role is taken without a crew in any tab.
-func TestJoiningTheTabsOwnCrewOrARole(t *testing.T) {
-	e, term := joinWorld(t, "Ship", "block:b")
+// The session's own crew is joined as it stands, others in it or not, and a
+// role is taken without a crew; it is still briefed with the session's crew.
+func TestJoiningTheSessionsOwnCrewOrARole(t *testing.T) {
+	e, _ := joinWorld(t, "Window 1a2b3c4d", "block:b")
+	if err := e.Store.PutSessionCrew("session:s", store.SessionCrew{Crew: "ship"}); err != nil {
+		t.Fatal(err)
+	}
 	j, err := e.Join(context.Background(), Location{Block: "block:b"}, "ship", "qa")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if j.Record.Role != "qa" || len(term.renamedTabs) != 0 || !strings.Contains(j.Briefing, "still needs implementer, reviewer") {
-		t.Errorf("joined %+v, tabs %v, briefing:\n%s", j.Record, term.renamedTabs, j.Briefing)
+	if j.Record.Role != "qa" || !strings.Contains(j.Briefing, "still needs implementer, reviewer") {
+		t.Errorf("joined %+v, briefing:\n%s", j.Record, j.Briefing)
 	}
 	j, err = e.Join(context.Background(), Location{Block: "block:a"}, "", "Reviewer")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if j.Record.Role != "reviewer" || j.Crew.Name != "" || !strings.Contains(j.Briefing, `crew "ship"`) || strings.Contains(j.Briefing, "still needs") {
-		t.Errorf("a role in a crew's tab: %+v\n%s", j.Record, j.Briefing)
+		t.Errorf("a role in a crew's session: %+v\n%s", j.Record, j.Briefing)
+	}
+}
+
+// A narrator or personal agent never joins a crew, and is never briefed with
+// its session's crew.
+func TestStealthAgentsTakeNoCrew(t *testing.T) {
+	e, _ := joinWorld(t, "Window 1a2b3c4d", "block:b")
+	ctx := context.Background()
+	for _, role := range []string{core.NarratorRole, core.PersonalRole} {
+		if _, err := e.Join(ctx, Location{Block: "block:a"}, "pair", role); !errors.Is(err, ErrRefused) {
+			t.Errorf("join pair --role %s: %v, want ErrRefused", role, err)
+		}
+	}
+	if _, ok, _ := e.Store.SessionCrew("session:s"); ok {
+		t.Error("a refused stealth join claimed the crew")
+	}
+	if _, err := e.Join(ctx, Location{Block: "block:b"}, "pair", ""); err != nil {
+		t.Fatal(err)
+	}
+	j, err := e.Join(ctx, Location{Block: "block:a"}, "", core.NarratorRole)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(j.Briefing, "Team conventions") || !strings.Contains(j.Briefing, "narrator") {
+		t.Errorf("a narrator in a crew's session was briefed with the crew:\n%s", j.Briefing)
+	}
+	if _, err := e.Join(ctx, Location{Block: "block:a"}, "pair", "implementer"); !errors.Is(err, ErrRefused) {
+		t.Errorf("a narrator joining a crew: %v, want ErrRefused", err)
+	}
+	if _, n := startPi(t, e, "block:a", "s1"); strings.Contains(n, "Team conventions") {
+		t.Errorf("a narrator's start notice carried the crew:\n%s", n)
 	}
 }
 

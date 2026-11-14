@@ -10,7 +10,9 @@ import (
 	"unicode/utf8"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
+	"github.com/est7/rex-amq-adapter/internal/crew"
 	"github.com/est7/rex-amq-adapter/internal/rex"
+	"github.com/est7/rex-amq-adapter/internal/store"
 	"github.com/est7/rex-amq-adapter/internal/trust"
 )
 
@@ -28,6 +30,8 @@ type EpicRequest struct {
 	// contract; starting agents needs one of them, as summon does.
 	Goal, Asked string
 	Harness     string // the orchestrator's CLI; "" is the role's default
+	// Crew is the crew the Epic's session works as (Env.Join); "" for none.
+	Crew string
 }
 
 // EpicAgent is where one of the Epic's agents was started and how its
@@ -53,9 +57,8 @@ func (r EpicResult) Ready() bool {
 }
 
 // OpenEpic starts an Epic for the personal agent in loc: a session labelled
-// r.Name whose first tab holds the orchestrator, briefed with the goal
-// contract or the user's words, and a claimed narrator tab whose agent is
-// told whom it narrates for; then it links the session to the caller and
+// r.Name with a tab for its orchestrator, briefed with the goal contract or
+// the user's words, and one for its narrator, told whom it narrates for; then it links the session to the caller and
 // waits, until ctx ends, for both agents to be adopted.
 func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicResult, error) {
 	caller, ok, err := e.Store.Record(loc.Block)
@@ -95,22 +98,33 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 	if err != nil {
 		return EpicResult{}, err
 	}
+	crewName := crew.Name(r.Crew)
+	if crewName != "" {
+		if e.Crews == nil {
+			return EpicResult{}, fmt.Errorf("%w: no crews are available", ErrUsage)
+		}
+		if _, found, err := e.Crews(dir).Crew(crewName); err != nil {
+			return EpicResult{}, err
+		} else if !found {
+			return EpicResult{}, fmt.Errorf("%w: no crew %q in %s: `rex-amq-adapter crews` lists them", ErrUsage, crewName, dir)
+		}
+	}
 	narrate := fmt.Sprintf("Narrate the Epic %q for the personal agent %s.", name, caller.Handle)
 	// The narrator's tab first and the orchestrator's last, which Rex makes
-	// the session's active tab; the orchestrator's keeps Rex's placeholder
-	// name, so it follows its agent (core.FollowTab).
+	// the session's active tab; both keep Rex's placeholder name, so each
+	// follows its agent (core.FollowTab).
 	panes := []rex.Pane{
-		{Tab: core.NarratorTab, Label: core.NarratorRole + core.PaneSeparator + task, Dir: dir, Command: e.withTrust(dir, startCommand(core.DefaultHarness(core.NarratorRole), narrate))},
+		{Label: core.NarratorRole + core.PaneSeparator + task, Dir: dir, Command: e.withTrust(dir, startCommand(core.DefaultHarness(core.NarratorRole), narrate))},
 		{Label: core.OrchestratorRole + core.PaneSeparator + task, Dir: dir, Command: e.withTrust(dir, startCommand(kind, brief))},
 	}
-	session, windows, blocks, err := e.Rex.NewSession(ctx, name, panes)
+	session, blocks, crewErr, err := e.newEpicSession(ctx, name, panes, crewName, caller.Handle)
 	if err != nil {
 		return EpicResult{}, fmt.Errorf("create the Epic's session: %w", err)
 	}
 	res := EpicResult{SessionID: session, Narrator: EpicAgent{Block: blocks[0]}, Orchestrator: EpicAgent{Block: blocks[1]}}
 	var errs []error
-	if err := ClaimTab(e.Store, session, windows[0], core.NarratorTab); err != nil {
-		errs = append(errs, fmt.Errorf("claim the narrator tab: %w", err))
+	if crewErr != nil {
+		errs = append(errs, fmt.Errorf("record the crew: %w", crewErr))
 	}
 	// Linked before the narrator is adopted, so the caller can mail it the
 	// moment it is.
@@ -128,6 +142,26 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 		a.Startup = s
 	}
 	return res, errors.Join(errs...)
+}
+
+// newEpicSession creates the Epic's session and, with crewName, records it
+// as the session's crew. The panes' agents start as the session is created,
+// so with a crew both steps run under the lifecycle lock that adoption
+// takes: neither agent is adopted, and briefed, before the crew is recorded.
+// crewErr is a crew that could not be recorded; the session stands.
+func (e Env) newEpicSession(ctx context.Context, name string, panes []rex.Pane, crewName string, by core.Handle) (session string, blocks []string, crewErr, err error) {
+	if crewName != "" {
+		unlock, err := e.Store.LockLifecycle(ctx)
+		if err != nil {
+			return "", nil, nil, err
+		}
+		defer unlock()
+	}
+	session, _, blocks, err = e.Rex.NewSession(ctx, name, panes)
+	if err != nil || crewName == "" {
+		return session, blocks, nil, err
+	}
+	return session, blocks, e.Store.PutSessionCrew(session, store.SessionCrew{Crew: crewName, ClaimedBy: by, ClaimedAt: e.Now().UTC()}), nil
 }
 
 // maxSessionLabel is the longest session label Rex takes (session.create).

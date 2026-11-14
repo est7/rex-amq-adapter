@@ -136,10 +136,6 @@ func (e Env) followMoves(ctx context.Context, s Session) error {
 			continue
 		}
 		r = r.Placed(r.Server, s.id, placed, e.Now())
-		if l := s.tabs[placed]; l != "" {
-			cwd := r.Cwd
-			r.Crew = e.crewOfTab(placed, l, func() string { return cwd })
-		}
 		if err := e.Store.PutRecord(r); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", r.Handle, err))
 		}

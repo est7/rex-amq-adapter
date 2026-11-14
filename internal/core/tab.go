@@ -6,48 +6,23 @@ import (
 )
 
 // WindowMode says who names a Rex tab (window), as the adapter's tab ledger
-// records it. A tab the ledger does not know has the zero mode.
+// records it. A tab the ledger does not know has the zero mode. A tab names
+// no crew: a crew is its Rex session's.
 type WindowMode string
 
 const (
-	// WindowAuto is a follower tab: the adapter named it, and while it holds
-	// one block it shows the pane label of the agent in that block.
+	// WindowAuto is a follower tab: the adapter named it, and while one
+	// agent is in it the tab shows that agent's pane label.
 	WindowAuto WindowMode = "auto"
-	// WindowCrew is a tab claimed for a crew (join, tab): its label names
-	// the crew, optionally "<crew> | <topic>".
-	WindowCrew WindowMode = "crew"
-	// WindowNarrator is reserved for a session's narrator tab.
-	WindowNarrator WindowMode = "narrator"
 	// WindowManual is a tab the user renamed: the adapter leaves it alone.
 	WindowManual WindowMode = "manual"
 )
-
-// NarratorTab is the label, and crew-tab name, of a narrator tab.
-const NarratorTab = "narrator"
-
-// ClaimedTabMode is the mode of a tab claimed under name, a crew-tab name
-// (crew.TabName): a narrator tab, else a crew's.
-func ClaimedTabMode(name string) WindowMode {
-	if name == NarratorTab {
-		return WindowNarrator
-	}
-	return WindowCrew
-}
 
 var placeholderTab = regexp.MustCompile(`^Window [0-9a-f]{8}$`)
 
 // PlaceholderTab reports whether label is the name Rex gives a window
 // nobody named: "Window " and eight lowercase hex digits ("Window 4c6fe88d").
 func PlaceholderTab(label string) bool { return placeholderTab.MatchString(label) }
-
-// AdapterLabel reports whether label is a pane label the adapter writes for
-// an agent ("<handle>" or "<role>(<handle>)", with or without " | <task>"),
-// which names an agent, never a crew.
-func AdapterLabel(label string) bool {
-	head, _, _ := strings.Cut(label, "|")
-	_, _, ok := adapterHead(head)
-	return ok
-}
 
 // labelTask is the task of a pane label the adapter wrote for an agent
 // ("<role>(<handle>) | <task>"); "" for any other label or one with no task.
@@ -68,20 +43,20 @@ type TabState struct {
 }
 
 // FollowTab decides what a tab shows: want, the pane label of the agent in
-// it, while it holds one block. t is the tab's ledger entry, label what the
-// tab shows now, blocks how many blocks it holds, and agents how many of
-// them run a live agent. It returns the entry to record and the label to
-// rename the tab to, "" for none.
+// it, while one agent is in it. t is the tab's ledger entry, label what the
+// tab shows now, and agents how many of its blocks run a live agent; panes
+// without one beside it (a preview, a shell) do not count. It returns the
+// entry to record and the label to rename the tab to, "" for none.
 //
 // Only a follower tab follows: one the ledger records as auto, or one it
 // does not know that still shows Rex's placeholder, which it then records
 // as auto. A follower whose label is neither the placeholder, the label the
 // adapter last gave it, nor want was renamed by someone else: it becomes
 // manual and keeps its name. A follower of several agents, which would
-// contend for it, drops the agent's label it shows to that label's task; a
-// pane without an agent beside one (a preview, a shell) changes nothing. A crew, narrator, or manual tab and an unknown tab with a name are
-// never renamed.
-func FollowTab(t TabState, label string, blocks, agents int, want string) (TabState, string) {
+// contend for it, drops the agent's label it shows to that label's task;
+// one with no agent changes nothing. A manual tab and an unknown tab with a
+// name are never renamed.
+func FollowTab(t TabState, label string, agents int, want string) (TabState, string) {
 	switch t.Mode {
 	case "":
 		if !PlaceholderTab(label) {
@@ -105,7 +80,7 @@ func FollowTab(t TabState, label string, blocks, agents int, want string) (TabSt
 		}
 		return t, ""
 	}
-	if blocks != 1 || want == "" {
+	if agents != 1 || want == "" {
 		return t, ""
 	}
 	t.Last = want

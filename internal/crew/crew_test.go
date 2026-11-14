@@ -165,7 +165,7 @@ func TestCrewHeaderDeclaresItsShape(t *testing.T) {
 		if err != nil || !ok || c.Lead != want.lead || !slices.Equal(c.Members, want.members) {
 			t.Errorf("%s: %+v %v %v, want %v", name, c, ok, err, want)
 		}
-		if strings.Contains(c.Conventions.Text, "lead:") || strings.HasPrefix(c.Conventions.Text, "---") || !strings.HasPrefix(c.Conventions.Text, "This tab") {
+		if strings.Contains(c.Conventions.Text, "lead:") || strings.HasPrefix(c.Conventions.Text, "---") || !strings.HasPrefix(c.Conventions.Text, "This crew") {
 			t.Errorf("%s: the header reached the conventions: %q", name, c.Conventions.Text[:40])
 		}
 		if p, _, _ := l.Conventions(name); p.Text != c.Conventions.Text {
@@ -211,24 +211,11 @@ func TestCrewHeaders(t *testing.T) {
 	}
 }
 
-// A crew tab's label may carry a topic after "|"; the crew is the part
-// before it, and a hyphenated crew name is read whole, as Name reads it.
-func TestCrewTabName(t *testing.T) {
-	if Name("ship-topic") != "ship-topic" || TabName("ship-topic") != "ship-topic" {
-		t.Errorf("hyphenated crew: Name %q, TabName %q", Name("ship-topic"), TabName("ship-topic"))
-	}
-	for label, want := range map[string]string{
-		"ship | login":        "ship",
-		"Ship|login":          "ship",
-		"ship-topic | fix it": "ship-topic",
-		"Pair":                "pair",
-		"narrator":            "narrator",
-		" | topic":            "",
-		"":                    "",
-	} {
-		if got := TabName(label); got != want {
-			t.Errorf("TabName(%q) = %q, want %q", label, got, want)
-		}
+// A crew name is read whole, a hyphenated one included, and other
+// characters fold to "-".
+func TestCrewName(t *testing.T) {
+	if Name("ship-topic") != "ship-topic" || Name("Pair") != "pair" {
+		t.Errorf("Name: %q, %q", Name("ship-topic"), Name("Pair"))
 	}
 	if Name("ship | login") != "ship-login" {
 		t.Errorf("Name changed: %q", Name("ship | login"))

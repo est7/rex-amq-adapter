@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
+	"github.com/est7/rex-amq-adapter/internal/crew"
 	"github.com/est7/rex-amq-adapter/internal/rex"
 	"github.com/est7/rex-amq-adapter/internal/store"
 )
@@ -42,7 +43,7 @@ func adoptPane(t *testing.T, e Env, block string, h core.Handle, role string) {
 
 // One command opens the Epic: a session named for it holding the
 // orchestrator (with the goal contract as its brief) and the narrator (in
-// its own claimed tab, told whom it narrates for), links it to the caller,
+// a tab of its own, told whom it narrates for), links it to the caller,
 // and reports both agents adopted.
 func TestOpenEpicStartsOrchestratorAndNarratorAndLinks(t *testing.T) {
 	e, term, loc, goal := openEpicWorld(t)
@@ -66,7 +67,7 @@ func TestOpenEpicStartsOrchestratorAndNarratorAndLinks(t *testing.T) {
 		t.Fatalf("session %+v", s)
 	}
 	narr, orch := s.panes[0], s.panes[1]
-	if narr.Tab != core.NarratorTab || narr.Label != "narrator | login revamp" || narr.Dir != dir || !strings.Contains(strings.Join(narr.Command, " "), "claude-01") {
+	if narr.Tab != "" || narr.Label != "narrator | login revamp" || narr.Dir != dir || !strings.Contains(strings.Join(narr.Command, " "), "claude-01") {
 		t.Errorf("narrator pane %+v", narr)
 	}
 	if orch.Tab != "" || orch.Label != "orchestrator | login revamp" || orch.Command[0] != "claude" || !strings.Contains(orch.Command[len(orch.Command)-1], goal) {
@@ -81,8 +82,10 @@ func TestOpenEpicStartsOrchestratorAndNarratorAndLinks(t *testing.T) {
 			t.Errorf("orchestrator brief lacks %q:\n%s", want, brief)
 		}
 	}
-	if tab, ok, err := e.Store.Tab("window:epic-1-1"); err != nil || !ok || tab.Mode != core.WindowNarrator {
-		t.Errorf("narrator tab not claimed: %+v %v %v", tab, ok, err)
+	// Both tabs keep Rex's placeholder name and so follow their agents; the
+	// narrator's is claimed by nobody.
+	if tab, ok, err := e.Store.Tab("window:epic-1-1"); err != nil || ok && tab.Mode != core.WindowAuto {
+		t.Errorf("narrator tab recorded as %+v %v %v, want a follower or unrecorded", tab, ok, err)
 	}
 	links, err := e.Store.Links()
 	if err != nil || len(links) != 1 || links[0].Personal.SessionID != "session:me" || links[0].Epic.SessionID != "session:epic-1" {
@@ -167,5 +170,73 @@ func TestOpenEpicKeepsTheWholeNameForTheSession(t *testing.T) {
 	}
 	if l := s.panes[1].Label; l != "orchestrator | "+core.Task(name) || l == "orchestrator | "+name {
 		t.Errorf("orchestrator pane label %q", l)
+	}
+}
+
+// epic --crew records the crew for the Epic's session before its agents are
+// adopted, so each is briefed with it; a crew that does not exist creates
+// nothing.
+func TestOpenEpicRecordsItsCrew(t *testing.T) {
+	e, term, loc, goal := openEpicWorld(t)
+	e.Crews = func(string) crew.Library { return crew.Load("") }
+	dir := filepath.Dir(goal)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := e.OpenEpic(ctx, loc, EpicRequest{Name: "x", Dir: dir, Goal: goal, Crew: "nosuch"}); !errors.Is(err, ErrUsage) {
+		t.Fatalf("an unknown crew: %v, want ErrUsage", err)
+	}
+	if len(term.sessions_) != 0 {
+		t.Fatalf("an unknown crew created sessions: %+v", term.sessions_)
+	}
+	adoptPane(t, e, "block:epic-1-1", "claude-02", core.NarratorRole)
+	adoptPane(t, e, "block:epic-1-2", "claude-03", core.OrchestratorRole)
+	if _, err := e.OpenEpic(ctx, loc, EpicRequest{Name: "x", Dir: dir, Goal: goal, Crew: "Pair"}); err != nil {
+		t.Fatal(err)
+	}
+	c, ok, err := e.Store.SessionCrew("session:epic-1")
+	if err != nil || !ok || c.Crew != "pair" || c.ClaimedBy != "claude-01" {
+		t.Fatalf("session crew %+v %v %v, want pair claimed by claude-01", c, ok, err)
+	}
+	if got := e.sessionCrew("session:epic-1", core.NarratorRole); got != "" {
+		t.Errorf("the Epic's narrator takes crew %q", got)
+	}
+}
+
+// An Epic's agent whose first hook runs while the Epic is being opened is
+// briefed with the Epic's crew: the crew is recorded before any of its
+// agents can be adopted.
+func TestOpenEpicBriefsAnAgentAdoptedAtOnceWithItsCrew(t *testing.T) {
+	term := &fakeTerm{state: "idle", windows: map[string]string{"block:me": "window:me"}, tabs: map[string]string{"window:me": "me"}}
+	e := realAmqEnv(t, term)
+	e.TranscriptHome = t.TempDir()
+	e.Crews = func(string) crew.Library { return crew.Load("") }
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	put(t, e, store.Record{Handle: "claude-01", Kind: core.Claude, Role: core.PersonalRole, BlockID: "block:me", SessionID: "session:me", WindowID: "window:me", AdoptedAt: time.Now()})
+	adoptPane(t, e, "block:epic-1-1", "claude-02", core.NarratorRole)
+	type adopted struct {
+		notice string
+		err    error
+	}
+	done := make(chan adopted, 1)
+	term.sessionStarted = func(_ string, blocks []string) {
+		go func() {
+			r, err := e.Hook(context.Background(), EventSessionStart, core.Pi, Location{Block: blocks[1]}, HookInput{SessionID: "orch-1", AgentPID: os.Getpid()})
+			done <- adopted{r.Notice, err}
+		}()
+		// Give the hook every chance to win the race it would win unguarded.
+		select {
+		case a := <-done:
+			done <- a
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := e.OpenEpic(ctx, Location{Block: "block:me"}, EpicRequest{Name: "x", Dir: t.TempDir(), Asked: "open it", Crew: "pair"}); err != nil {
+		t.Fatal(err)
+	}
+	a := <-done
+	if a.err != nil || !strings.Contains(a.notice, `crew "pair"`) {
+		t.Fatalf("the orchestrator adopted while the Epic opened was briefed without its crew (%v):\n%s", a.err, a.notice)
 	}
 }

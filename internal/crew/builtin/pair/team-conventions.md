@@ -2,7 +2,7 @@
 lead: implementer
 members: implementer, reviewer
 ---
-This tab is a two-agent loop: the implementer builds, the reviewer critiques. The human gives the brief to the implementer, who leads and reports back.
+This crew is a two-agent loop: the implementer builds, the reviewer critiques. The human gives the brief to the implementer, who leads and reports back.
 
 1. The implementer checks the repository status, works on a Slice or feature branch, implements, and runs the relevant checks.
 2. The implementer hands off to the reviewer over AMQ: branch, summary, changed files, checks run. Nothing is committed yet; review reads the working-tree diff.

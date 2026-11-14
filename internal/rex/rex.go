@@ -493,6 +493,13 @@ func (c Client) MoveBlock(ctx context.Context, session, block, anchor string) er
 	return c.api(ctx, session, "session.move_block", args, nil)
 }
 
+// KillSession ends session and every process in it, without asking: what
+// its terminals showed is gone. A session that is not there is ErrNotFound.
+func (c Client) KillSession(ctx context.Context, session string) error {
+	_, err := c.run(ctx, nil, "session", "kill", session)
+	return err
+}
+
 // CloseBlock closes block.
 func (c Client) CloseBlock(ctx context.Context, block string) error {
 	_, err := c.run(ctx, nil, "block", "close", block)
@@ -513,8 +520,8 @@ func (c Client) ResizeBlock(ctx context.Context, block string, columns, rows int
 }
 
 // NewSplit opens a block labelled label beside anchor, running command in
-// dir, without taking focus. It is the launch primitive for peers: the
-// user reads related agents side by side.
+// dir, without taking focus: a peer launched beside its summoner when the
+// user asked for a split (NewWindow is the default).
 func (c Client) NewSplit(ctx context.Context, session, anchor, label, dir string, command []string) (block string, err error) {
 	opts := map[string]any{"cwd": dir}
 	if len(command) > 0 {

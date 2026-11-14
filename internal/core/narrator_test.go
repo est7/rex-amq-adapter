@@ -65,6 +65,16 @@ func TestSessionWatcherPulse(t *testing.T) {
 	if c := ComparePulse(p, SessionPulse{Members: []PulseMember{task, b}}); c.Priority != PriorityNormal {
 		t.Fatalf("task: %+v", c)
 	}
+	handback := a
+	handback.Task = "hand-back: login ships"
+	if c := ComparePulse(p, SessionPulse{Members: []PulseMember{handback, b}}); c.Priority != PriorityUrgent || len(c.Lines) != 1 || c.Lines[0] != "claude-01 handed back: hand-back: login ships" {
+		t.Fatalf("an orchestrator's hand-back: %+v", c)
+	}
+	notOrch := b
+	notOrch.Task = "hand-back: my part"
+	if c := ComparePulse(p, SessionPulse{Members: []PulseMember{a, notOrch}}); c.Priority != PriorityNormal {
+		t.Fatalf("a worker's hand-back task is routine: %+v", c)
+	}
 	gone := a
 	gone.Live = false
 	if c := ComparePulse(p, SessionPulse{Members: []PulseMember{gone, b}}); c.Priority != PriorityUrgent {

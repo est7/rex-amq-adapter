@@ -19,6 +19,8 @@ import (
 //     writes and its linked personal agent reads (written whole, atomically).
 //   - sessions/<session_id>/pulse.json: the pulse the session's watcher last
 //     told the narrator about, and the notice that told it (PulseCursor).
+//   - sessions/<session_id>/crew.json: the crew the session works as
+//     (SessionCrew), claimed by join CREW or epic --crew.
 
 // SessionDir is the extension directory of Rex session id.
 func (p Paths) SessionDir(id string) string {
@@ -58,6 +60,43 @@ func (s Store) Pulse(id string) (PulseCursor, bool, error) {
 // PutPulse records session id's pulse cursor.
 func (s Store) PutPulse(id string, c PulseCursor) error {
 	return writeJSON(s.P.pulsePath(id), c)
+}
+
+func (p Paths) crewPath(id string) string { return filepath.Join(p.SessionDir(id), "crew.json") }
+
+// SessionCrew is the crew a Rex session (an Epic) works as. A session has at
+// most one: its conventions brief every agent of the session that is not
+// Stealth, in whichever tab it runs. ClaimedBy is the agent whose join or epic
+// claimed it.
+type SessionCrew struct {
+	Crew      string      `json:"crew"`
+	ClaimedBy core.Handle `json:"claimed_by,omitempty"`
+	ClaimedAt time.Time   `json:"claimed_at"`
+}
+
+// SessionCrew reads session id's crew; ok is false when none was claimed.
+func (s Store) SessionCrew(id string) (SessionCrew, bool, error) {
+	var c SessionCrew
+	b, err := os.ReadFile(s.P.crewPath(id))
+	if errors.Is(err, fs.ErrNotExist) {
+		return c, false, nil
+	}
+	if err != nil {
+		return c, false, err
+	}
+	if err := json.Unmarshal(b, &c); err != nil {
+		return c, false, fmt.Errorf("decode the crew of %s: %w", id, err)
+	}
+	return c, c.Crew != "", nil
+}
+
+// PutSessionCrew records session id's crew. Callers hold the lifecycle lock,
+// which makes a check of the current crew and the write one step.
+func (s Store) PutSessionCrew(id string, c SessionCrew) error {
+	if id == "" || c.Crew == "" {
+		return errors.New("a session crew needs its session and its crew")
+	}
+	return writeJSON(s.P.crewPath(id), c)
 }
 
 // PutView writes session id's view whole: a reader sees the old view or the

@@ -30,6 +30,7 @@ func TestCanExchangeMatrix(t *testing.T) {
 	}{
 		{"personal to linked narrator", me, narrA, send, linkA, true, ReasonLinked},
 		{"linked narrator replies to personal", narrA, me, Operation{Kind: OpReply}, linkA, true, ReasonLinked},
+		{"linked narrator tells personal unasked (hand-back ready)", narrA, me, send, linkA, true, ReasonLinked},
 		{"personal to unlinked narrator", me, narrB, send, linkA, false, ReasonNotLinked},
 		{"personal to narrator with no links", me, narrA, send, nil, false, ReasonNotLinked},
 		{"personal to linked epic's orchestrator", me, orchA, send, linkA, false, ReasonPersonalOnly},

@@ -58,9 +58,14 @@ type fakeTerm struct {
 	closed         []string
 	newTabs        []string
 	launches       []launch
-	states         map[string]rex.Status // block -> program status, overriding state
-	sessions_      []fakeSession         // NewSession calls that created one
-	newSessionErr  error                 // NewSession fails
+	states         map[string]rex.Status                 // block -> program status, overriding state
+	sessions_      []fakeSession                         // NewSession calls that created one
+	newSessionErr  error                                 // NewSession fails
+	killed         []string                              // sessions KillSession ended, in order
+	killErr        error                                 // KillSession fails
+	statusGone     bool                                  // ProgramStatus of a block not in windows is ErrNotFound, as Rex's
+	started        func(launch)                          // runs as NewWindow returns: the launched agent's first hook racing its caller
+	sessionStarted func(session string, blocks []string) // runs as NewSession returns: its agents' first hooks racing the caller
 }
 
 func (f *fakeTerm) Whoami(context.Context) (rex.Server, error) {
@@ -84,6 +89,9 @@ func (f *fakeTerm) ProgramStatus(_ context.Context, block string) (rex.Status, b
 	defer f.mu.Unlock()
 	if st, ok := f.states[block]; ok {
 		return st, true, nil
+	}
+	if _, placed := f.windows[block]; f.statusGone && !placed {
+		return rex.Status{}, false, rex.ErrNotFound
 	}
 	if f.statusErr && len(f.writes) > 0 {
 		return rex.Status{}, false, errors.New("rex timed out")
@@ -673,6 +681,30 @@ func (f *fakeTerm) CloseBlock(_ context.Context, block string) error {
 	return nil
 }
 
+// KillSession ends session: its blocks are gone. A second kill finds
+// nothing.
+func (f *fakeTerm) KillSession(_ context.Context, session string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.killErr != nil {
+		return f.killErr
+	}
+	if slices.Contains(f.killed, session) {
+		return rex.ErrNotFound
+	}
+	f.killed = append(f.killed, session)
+	for b, w := range f.windows {
+		in, ok := f.sessions[w]
+		if !ok {
+			in = "session:s"
+		}
+		if in == session {
+			delete(f.windows, b)
+		}
+	}
+	return nil
+}
+
 // NewSplit records the launch and places a block beside the anchor; the
 // test adopts it with startAs when the scenario needs a live agent.
 func (f *fakeTerm) NewSplit(_ context.Context, session, anchor, label, dir string, command []string) (string, error) {
@@ -684,8 +716,35 @@ func (f *fakeTerm) NewSplit(_ context.Context, session, anchor, label, dir strin
 	}
 	id := fmt.Sprintf("block:launch-%d", len(f.launches)+1)
 	f.windows[id] = w
-	f.launches = append(f.launches, launch{Block: id, Label: label, Dir: dir, Command: command})
+	f.launches = append(f.launches, launch{Block: id, Window: w, Label: label, Dir: dir, Command: command})
 	return id, nil
+}
+
+// NewWindow records the launch in a new tab of session, labelled tab:
+// window:launch-<n> holding block:launch-<n>.
+func (f *fakeTerm) NewWindow(_ context.Context, session, tab, label, dir string, command []string) (string, string, error) {
+	f.mu.Lock()
+	n := len(f.launches) + 1
+	w, id := fmt.Sprintf("window:launch-%d", n), fmt.Sprintf("block:launch-%d", n)
+	if f.windows == nil {
+		f.windows = map[string]string{}
+	}
+	if f.tabs == nil {
+		f.tabs = map[string]string{}
+	}
+	if f.sessions == nil {
+		f.sessions = map[string]string{}
+	}
+	f.windows[id], f.tabs[w], f.sessions[w] = w, tab, session
+	f.newTabs = append(f.newTabs, w)
+	l := launch{Block: id, Window: w, Label: label, Dir: dir, Command: command}
+	f.launches = append(f.launches, l)
+	started := f.started
+	f.mu.Unlock()
+	if started != nil {
+		started(l)
+	}
+	return w, id, nil
 }
 
 // NewSession creates session:epic-<n>; pane i of it is block:epic-<n>-<i>
@@ -714,10 +773,16 @@ func (f *fakeTerm) NewSession(_ context.Context, label string, panes []rex.Pane)
 		f.windows[b], f.tabs[w], f.sessions[w] = w, p.Tab, session
 		windows, blocks = append(windows, w), append(blocks, b)
 	}
+	if f.sessionStarted != nil {
+		started := f.sessionStarted
+		f.mu.Unlock()
+		defer f.mu.Lock()
+		started(session, blocks)
+	}
 	return session, windows, blocks, nil
 }
 
 type launch struct {
-	Block, Label, Dir string
-	Command           []string
+	Block, Window, Label, Dir string
+	Command                   []string
 }

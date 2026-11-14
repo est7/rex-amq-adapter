@@ -23,16 +23,18 @@ type Joined struct {
 	Briefing string
 }
 
-// ErrTabTaken: the tab holds another agent, whose crew would change under it.
-var ErrTabTaken = errors.New("another agent is already in this tab")
+// ErrCrewTaken: the session works as another crew, and other agents in it
+// were briefed with that crew's conventions.
+var ErrCrewTaken = errors.New("this Rex session already works as another crew")
 
-// Join makes the agent in loc take role, and with crewName names its tab
-// after that crew. An agent the user is already talking to becomes the
+// Join makes the agent in loc take role, and with crewName claims that crew
+// for its Rex session: an agent the user is already talking to becomes the
 // crew's lead where it stands, instead of starting a crew elsewhere and
-// handing over what it knows. Without a role it takes the crew's lead. The
-// tab is renamed only while no other live agent is in it: their crew would
-// change under them; a crew of its own then goes in a new tab
-// (`rex-amq-adapter tab`).
+// handing over what it knows. Without a role it takes the crew's lead. A
+// session works as one crew, which briefs every agent in it, in any tab; a
+// session already working as another crew with other agents in it refuses,
+// since their conventions would change under them. A narrator or personal
+// agent (core.Stealth) never joins a crew.
 func (e Env) Join(ctx context.Context, loc Location, crewName, role string) (Joined, error) {
 	rec, ok, err := e.Store.Record(loc.Block)
 	if err != nil {
@@ -64,7 +66,10 @@ func (e Env) Join(ctx context.Context, loc Location, crewName, role string) (Joi
 		if role == "" {
 			return Joined{}, fmt.Errorf("crew %s names no lead: pass --role", name)
 		}
-		if err := e.nameTab(ctx, rec, blk.SessionID, blk.WindowID, name); err != nil {
+		if core.Stealth(role) || core.Stealth(rec.Role) {
+			return Joined{}, fmt.Errorf("%w: a %s or %s agent never joins a crew", ErrRefused, core.NarratorRole, core.PersonalRole)
+		}
+		if err := e.claimSessionCrew(ctx, rec.Handle, blk.SessionID, name); err != nil {
 			return Joined{}, err
 		}
 	}
@@ -72,7 +77,7 @@ func (e Env) Join(ctx context.Context, loc Location, crewName, role string) (Joi
 		return Joined{}, errors.New("name a crew, a role (--role), or both")
 	}
 	was := rec.Role
-	if rec, err = e.takeRole(ctx, loc, rec.Handle, role, c.Name); err != nil {
+	if rec, err = e.takeRole(ctx, loc, rec.Handle, role); err != nil {
 		return Joined{}, err
 	}
 	var mates []core.Peer
@@ -89,76 +94,75 @@ func (e Env) Join(ctx context.Context, loc Location, crewName, role string) (Joi
 		fmt.Fprintf(Diagnostics, "%v\n", err)
 	}
 	out := Joined{Record: rec, Label: core.PaneLabel(rec.Handle, rec.Role, rec.Task), Crew: c}
-	name := c.Name
-	if name == "" {
-		name = e.tabCrew(ctx, rec, blk.SessionID, blk.WindowID)
-	}
-	out.Briefing = joinNotices(core.BriefNotice(e.briefingIn(ctx, rec, rec.Role, name)))
+	out.Briefing = joinNotices(core.BriefNotice(e.briefingIn(ctx, rec, rec.Role, e.sessionCrew(blk.SessionID, rec.Role))))
 	if rec.Role != core.OrchestratorRole && !core.Stealth(rec.Role) {
 		if orch := core.OrchestratorNotice(mates); orch != "" {
 			out.Briefing = strings.TrimSpace(out.Briefing + "\n\n" + orch)
 		}
 	}
 	if rest := othersNeeded(c.Members, rec.Role); len(rest) > 0 {
-		out.Briefing += fmt.Sprintf("\n\nCrew %s is %s; it still needs %s. Start each in a pane of this tab: `rex split -s \"$REX_SESSION\" -b \"$REX_BLOCK\" --label \"<role> | <task>\" … -- <agent> \"<brief>\"`, then `rex-amq-adapter await <block>`.",
+		out.Briefing += fmt.Sprintf("\n\nCrew %s is %s; it still needs %s. Start each in a new tab of this session: `rex-amq-adapter summon <role> --subject \"<task>\" --body \"<brief>\" --kind todo --asked \"<the user's words>\"` (or `--grant <file>`), or `rex run -s \"$REX_SESSION\" --label \"<role> | <task>\" --focus=false -c \"$PWD\" -- <agent> \"<brief>\"` then `rex-amq-adapter await <block>`.",
 			c.Name, strings.Join(c.Members, ", "), strings.Join(rest, ", "))
 	}
 	return out, nil
 }
 
-// nameTab names the window after the crew, unless it already is, and
-// records it in the tab ledger as the crew's. Another live agent in the
-// window refuses it.
-func (e Env) nameTab(ctx context.Context, rec store.Record, session, window, name string) error {
-	if session == "" || window == "" {
-		return errors.New("cannot determine this Rex tab")
+// claimSessionCrew records name as session's crew, claimed by h. A session
+// that already works as name is joined as it stands; one that works as
+// another crew is claimed only while no other live agent outside the Stealth
+// ones is in it.
+func (e Env) claimSessionCrew(ctx context.Context, h core.Handle, session, name string) error {
+	if session == "" {
+		return errors.New("cannot determine this Rex session")
 	}
-	if e.tabCrew(ctx, rec, session, window) == name {
-		return ClaimTab(e.Store, session, window, name)
-	}
-	blocks, err := e.Rex.ListBlocks(ctx, session)
+	unlock, err := e.Store.LockLifecycle(ctx)
 	if err != nil {
 		return err
 	}
-	recs, err := e.Store.Records()
+	defer unlock()
+	cur, ok, err := e.Store.SessionCrew(session)
 	if err != nil {
 		return err
 	}
-	for _, b := range blocks {
-		if b.WindowID != window || b.ID == rec.BlockID {
-			continue
+	if ok && cur.Crew == name {
+		return nil
+	}
+	if ok {
+		recs, err := e.Store.Records()
+		if err != nil {
+			return err
 		}
+		var others []string
 		for _, r := range recs {
-			if r.Live() && r.BlockID == b.ID && r.Handle != rec.Handle {
-				return fmt.Errorf("%w (%s); start crew %s in a new tab with `rex-amq-adapter tab %s --role \"<role> | <task>\" -- <agent> \"<brief>\"`", ErrTabTaken, r.Handle, name, name)
+			if r.Live() && r.Handle != h && r.SessionID == session && !core.Stealth(r.Role) {
+				others = append(others, string(r.Handle))
 			}
 		}
-	}
-	if err := e.Rex.RenameWindow(ctx, window, name); err != nil {
-		return err
-	}
-	return ClaimTab(e.Store, session, window, name)
-}
-
-// tabCrew is the crew window names (crewOfTab) for rec's agent, "" when Rex
-// cannot say.
-func (e Env) tabCrew(ctx context.Context, rec store.Record, session, window string) string {
-	s, err := e.Rex.InspectSession(ctx, session)
-	if err != nil {
-		fmt.Fprintf(Diagnostics, "read the tab %s: %v\n", window, err)
-		return ""
-	}
-	for _, w := range s.Windows {
-		if w.ID == window {
-			return e.crewOfTab(window, w.Label, func() string { return e.agentDir(ctx, rec) })
+		if len(others) > 0 {
+			return fmt.Errorf("%w (%s, with %s in it); a goal for crew %s is another Epic, in a Rex session of its own", ErrCrewTaken, cur.Crew, strings.Join(others, ", "), name)
 		}
 	}
-	return ""
+	return e.Store.PutSessionCrew(session, store.SessionCrew{Crew: name, ClaimedBy: h, ClaimedAt: e.Now().UTC()})
 }
 
-// takeRole records role (and crewName, when non-empty) for the agent h in loc
-// and shows it in the pane.
-func (e Env) takeRole(ctx context.Context, loc Location, h core.Handle, role, crewName string) (store.Record, error) {
+// sessionCrew is the crew session works as, for an agent of role: none for a
+// Stealth agent (core.Stealth), which observes or talks to the user and
+// takes no part in the crew's work. Like a briefing it is advice: a ledger
+// that cannot be read is reported and names none.
+func (e Env) sessionCrew(session, role string) string {
+	if session == "" || core.Stealth(role) {
+		return ""
+	}
+	c, _, err := e.Store.SessionCrew(session)
+	if err != nil {
+		fmt.Fprintf(Diagnostics, "read the crew of %s: %v\n", session, err)
+	}
+	return c.Crew
+}
+
+// takeRole records role for the agent h in loc and shows it in the pane and
+// in a tab that follows it.
+func (e Env) takeRole(ctx context.Context, loc Location, h core.Handle, role string) (store.Record, error) {
 	unlock, err := e.Store.LockLifecycle(ctx)
 	if err != nil {
 		return store.Record{}, err
@@ -172,9 +176,6 @@ func (e Env) takeRole(ctx context.Context, loc Location, h core.Handle, role, cr
 		return store.Record{}, fmt.Errorf("the agent in %s changed while joining", loc.Block)
 	}
 	rec.Role = role
-	if crewName != "" {
-		rec.Crew = crewName
-	}
 	if err := e.Store.PutRecord(rec); err != nil {
 		return store.Record{}, err
 	}

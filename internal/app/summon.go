@@ -21,7 +21,7 @@ import (
 
 // Summon on send (core/summon.go for the guards): an agent addresses a peer
 // by handle or role; the adapter delivers to a live one, resumes a departed
-// one of this session in a pane beside the caller, or starts one, then
+// one of this session in a tab of its own, or starts one, then
 // delivers. Mail goes out first in every case that has a mailbox, so a
 // failed resume or start leaves it waiting. A launch carries a token in its
 // environment (SummonEnv); the adoption that sees it takes the lineage, and
@@ -44,6 +44,9 @@ type SummonRequest struct {
 	// Cwd is the working directory of a started agent (a Slice worktree);
 	// empty means the caller's. A resume keeps the departed agent's own.
 	Cwd string
+	// Split opens a launched agent in a pane beside the caller, which the
+	// human asked for, instead of the default, a tab of its own.
+	Split bool
 }
 
 // SummonResult is what happened. Block is set when an agent was launched
@@ -101,6 +104,11 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 		}
 	}
 	res := SummonResult{Parent: caller.Handle, Depth: caller.Depth + 1}
+	if r.Split && stealthTarget(recs, target, isHandle) {
+		res.Action, res.Reason = "refused", "a narrator or personal agent never shares a worker's tab: it runs in a tab of its own, so summon it without --split"
+		e.summonLog(caller, r, res)
+		return res, nil
+	}
 	if r.Cwd != "" {
 		// --cwd always means a new agent in that directory: a live one would get
 		// the mail in its own directory and a departed one would resume in its
@@ -178,6 +186,20 @@ func (e Env) refused(caller store.Record, r SummonRequest, res SummonResult, dep
 	}
 	e.summonLog(caller, r, res)
 	return res, nil
+}
+
+// stealthTarget reports whether target names a Stealth agent (core.Stealth):
+// a Stealth role, or a handle whose record, live or departed, has one.
+func stealthTarget(recs []store.Record, target string, isHandle bool) bool {
+	if !isHandle {
+		return core.Stealth(target)
+	}
+	for _, rec := range recs {
+		if string(rec.Handle) == target && core.Stealth(rec.Role) {
+			return true
+		}
+	}
+	return false
 }
 
 // matches reports whether rec is addressed by target: its handle, or its
@@ -265,8 +287,8 @@ func newToken() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-// resume starts the departed agent's native session again in a pane beside
-// the caller, in the directory it ran in, with a fixed first prompt that
+// resume starts the departed agent's native session again in a tab of its
+// own (launch), in the directory it ran in, with a fixed first prompt that
 // makes it read its mailbox: a resumed session runs no start hook, so the
 // prompt is what re-adopts it and delivers the waiting mail. Its record
 // keeps its handle, lineage and mail.
@@ -290,7 +312,7 @@ func (e Env) resume(ctx context.Context, caller store.Record, s Session, r Summo
 		return res, nil
 	}
 	label := core.PaneLabel(departed.Handle, departed.Role, departed.Task)
-	block, err := e.launch(ctx, caller, s, departed.Role, label, cwd, res.Token, cmd)
+	block, err := e.launch(ctx, caller, s, r.Split, label, cwd, res.Token, cmd)
 	if err != nil {
 		_ = e.Store.DeleteSummon(res.Token)
 		return res, err
@@ -300,7 +322,7 @@ func (e Env) resume(ctx context.Context, caller store.Record, s Session, r Summo
 	return res, nil
 }
 
-// start launches a new agent for a role beside the caller, with the message
+// start launches a new agent for a role (launch), with the message
 // as its brief. A handle that names no agent cannot be started.
 func (e Env) start(ctx context.Context, caller store.Record, s Session, r SummonRequest, role string, res SummonResult) (SummonResult, error) {
 	refuse := func(reason string) (SummonResult, error) {
@@ -345,7 +367,7 @@ func (e Env) start(ctx context.Context, caller store.Record, s Session, r Summon
 	if len(cmd) == 0 {
 		return refuse(fmt.Sprintf("unsupported harness %q; no agent was started", kind))
 	}
-	block, err := e.launch(ctx, caller, s, role, label, cwd, res.Token, cmd)
+	block, err := e.launch(ctx, caller, s, r.Split, label, cwd, res.Token, cmd)
 	if err != nil {
 		_ = e.Store.DeleteSummon(res.Token)
 		return res, err
@@ -355,10 +377,12 @@ func (e Env) start(ctx context.Context, caller store.Record, s Session, r Summon
 	return res, nil
 }
 
-// launch opens the pane beside the caller, or in a new tab when the
-// caller's pane is too small to split, running cmd with the token in its
-// environment. A narrator (role) gets a tab of its own instead.
-func (e Env) launch(ctx context.Context, caller store.Record, s Session, role, label, cwd, token string, cmd []string) (string, error) {
+// launch opens a tab of its own, which follows the agent's pane label from
+// its adoption on (core.FollowTab), running cmd with the token in its
+// environment; with split, the human's choice, a pane beside the caller
+// instead. A new tab is opened in the background, so the human's view stays
+// where it is.
+func (e Env) launch(ctx context.Context, caller store.Record, s Session, split bool, label, cwd, token string, cmd []string) (string, error) {
 	if cwd == "" {
 		cwd, _ = os.Getwd()
 	}
@@ -368,46 +392,20 @@ func (e Env) launch(ctx context.Context, caller store.Record, s Session, role, l
 		cmd = trust.Args(cmd, t.Settings)
 	}
 	cmd = append([]string{"env", SummonEnv + "=" + token}, cmd...)
-	if role == core.NarratorRole {
-		return e.launchNarrator(ctx, s, label, cwd, cmd)
+	if split {
+		return e.Rex.NewSplit(ctx, s.id, caller.BlockID, label, cwd, cmd)
 	}
-	if size, err := e.Rex.Size(ctx, caller.BlockID); err == nil && size.Rows > 0 && size.Rows < 2*core.TinyRows {
-		window, shell, err := e.Rex.NewTab(ctx, s.id, label)
-		if err != nil {
-			return "", err
-		}
-		// A follower tab: adoption brings it to the agent's pane label.
-		if err := e.Store.PutTab(store.Tab{WindowID: window, SessionID: s.id, Mode: core.WindowAuto, LastLabel: label}); err != nil {
-			fmt.Fprintf(Diagnostics, "record the tab %s: %v\n", window, err)
-		}
-		block, err := e.Rex.NewSplit(ctx, s.id, shell, label, cwd, cmd)
-		if err != nil {
-			return "", err
-		}
-		_ = e.Rex.CloseBlock(ctx, shell)
-		return block, nil
-	}
-	return e.Rex.NewSplit(ctx, s.id, caller.BlockID, label, cwd, cmd)
-}
-
-// launchNarrator opens a session's narrator in a background tab of its own,
-// named and claimed as the narrator tab (core.WindowNarrator): Rex does not
-// focus it, it never splits a worker's tab, and no follower rule renames it.
-// It is a tab rather than a detached pane: closing a detached last pane
-// takes its window along, and a detached pane has no size to wait on.
-func (e Env) launchNarrator(ctx context.Context, s Session, label, cwd string, cmd []string) (string, error) {
-	window, shell, err := e.Rex.NewTab(ctx, s.id, core.NarratorTab)
+	window, block, err := e.Rex.NewWindow(ctx, s.id, label, label, cwd, cmd)
 	if err != nil {
 		return "", err
 	}
-	if err := ClaimTab(e.Store, s.id, window, core.NarratorTab); err != nil {
-		fmt.Fprintf(Diagnostics, "record the narrator tab %s: %v\n", window, err)
+	if err := e.Store.PutTab(store.Tab{WindowID: window, SessionID: s.id, Mode: core.WindowAuto, LastLabel: label}); err != nil {
+		fmt.Fprintf(Diagnostics, "record the tab %s: %v\n", window, err)
 	}
-	block, err := e.Rex.NewSplit(ctx, s.id, shell, label, cwd, cmd)
-	if err != nil {
-		return "", err
-	}
-	_ = e.Rex.CloseBlock(ctx, shell)
+	// The agent runs from the moment the tab opens: an adoption that
+	// followed the tab before it was recorded found a named tab it does not
+	// own and left it, so follow it once more now that it is.
+	e.followTab(ctx, s.id, window)
 	return block, nil
 }
 

@@ -23,7 +23,6 @@ import (
 	"github.com/est7/rex-amq-adapter/internal/core"
 	"github.com/est7/rex-amq-adapter/internal/crew"
 	"github.com/est7/rex-amq-adapter/internal/install"
-	"github.com/est7/rex-amq-adapter/internal/rex"
 	"github.com/est7/rex-amq-adapter/internal/store"
 	"github.com/est7/rex-amq-adapter/internal/trust"
 )
@@ -49,14 +48,12 @@ Agent and user commands:
                             its outcome as JSON; exits 0 only when adopted.
                             D is a duration (90s, 2m) or seconds (60)
   collect                   reconcile records with Rex now
-  join [CREW] [--role R]    take role R in crew CREW where you stand: name this
-                            tab after CREW (while no other agent is in it),
-                            relabel your pane, and print the briefing; without
-                            --role, take the crew's lead
-  tab <crew> [--role R] [-c DIR] [-s SESSION] -- COMMAND...
-                            open a Rex tab for a crew, its first pane labelled
-                            with role R, running COMMAND (an agent and its brief)
-  crews [--json] [dir]      list the crews (named by a Rex tab), their lead and
+  join [CREW] [--role R]    take role R where you stand, relabel your pane, and
+                            print the briefing; with CREW, claim it for this Rex
+                            session (refused when the session is another crew's
+                            and other agents are in it) and, without --role, take
+                            the crew's lead
+  crews [--json] [dir]      list the crews (claimed by a Rex session), their lead and
                             members, and the roles (named by a pane label) that
                             brief agents working in dir; --json adds each one's
                             purpose
@@ -64,12 +61,13 @@ Agent and user commands:
                             print, changing nothing, the briefing an agent taking
                             role R in crew CREW gets: the crew's conventions and
                             the role's prompt; without --role, the crew's lead
-  summon <handle|role> --subject S --body B [--kind K] [--grant FILE | --asked "WORDS"] [--harness H] [--cwd DIR]
+  summon <handle|role> --subject S --body B [--kind K] [--grant FILE | --asked "WORDS"] [--harness H] [--cwd DIR] [--split]
                             send to a peer by handle or role: a live one gets the
                             mail; a departed one of this session is resumed in a
-                            pane beside you, then gets it; none starts one for the
+                            tab of its own, then gets it; none starts one for the
                             role (its brief is the message), awaits its adoption,
-                            then delivers. Guards: a request kind only, no cycle,
+                            then delivers. --split opens it in a pane beside you
+                            instead, when the human asked (never a narrator). Guards: a request kind only, no cycle,
                             depth 2 at most, 6 live agents per session at most, and
                             a new agent only with the user's words or grant file
   send|reply|read|drain|thread|trace|dlq|list [AMQ FLAGS...]
@@ -85,12 +83,19 @@ Agent and user commands:
                             narrator of Epic session EPIC_SESSION exchange
                             mail; without one, list your links
   unlink EPIC_SESSION       revoke such a link; both take effect at once
-  epic <name> [-c DIR] (--goal FILE | --asked "WORDS") [--harness H] [--timeout D]
+  epic <name> [-c DIR] (--goal FILE | --asked "WORDS") [--crew C] [--harness H] [--timeout D]
                             (a personal agent) open an Epic: a Rex session named
                             <name> with its orchestrator (briefed with the goal
                             contract, or the user's words) and its narrator,
-                            linked to you; prints one JSON line and exits 0
-                            only when both are adopted and linked
+                            linked to you, working as crew C when given; prints
+                            one JSON line and exits 0 only when both are adopted
+                            and linked
+  epic close <session_id> --asked "WORDS" [--force]
+                            (a personal agent, on the user's words) close a linked
+                            Epic: kill its Rex session, park its agents (their
+                            handles stay reserved for a resume), and unlink it;
+                            refused while one of its agents is not at rest or
+                            holds unread mail, unless --force
   view [--session S]        print a session's view (view.json): its members, open
                             obligations, recent mail, and what it could not cover;
                             the narrator's, orchestrator's, or a linked personal
@@ -147,8 +152,6 @@ func run(args []string) int {
 		return runCollect()
 	case "crews":
 		return runCrews(rest)
-	case "tab":
-		return runTab(rest)
 	case "trust":
 		return runTrust(rest)
 	case "summon":
@@ -564,81 +567,6 @@ func runAwait(args []string) int {
 	return 0
 }
 
-func runTab(args []string) int {
-	fs := flag.NewFlagSet("tab", flag.ContinueOnError)
-	role := fs.String("role", "", "the role of the first pane's agent")
-	dir := fs.String("c", "", "the working directory (default: the current one)")
-	session := fs.String("s", "", "the Rex session (default: the caller's)")
-	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		fmt.Fprintln(os.Stderr, "usage: rex-amq-adapter tab <crew> [--role R] [-c DIR] [-s SESSION] -- COMMAND...")
-		return 2
-	}
-	tabName := args[0]
-	if err := fs.Parse(args[1:]); err != nil {
-		return 2
-	}
-	if *session == "" {
-		// The caller's own session: REX_SESSION is inherited, and in a Claude
-		// Code background session it names another terminal's.
-		env, loc, err := caller()
-		if err != nil {
-			return fail(fmt.Errorf("no Rex session (pass -s): %w", err))
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		b, err := env.Rex.InspectBlock(ctx, loc.Block)
-		cancel()
-		if err != nil {
-			return fail(err)
-		}
-		*session = b.SessionID
-	}
-	if *dir == "" {
-		wd, err := os.Getwd()
-		if err != nil {
-			return fail(err)
-		}
-		*dir = wd
-	}
-	bin, err := rex.ResolveBin()
-	if err != nil {
-		return fail(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	c := rex.Client{Bin: bin, Server: os.Getenv("REX_SERVER")}
-	w, b, err := c.NewWindow(ctx, *session, tabName, *role, *dir, trust.Args(fs.Args(), deriveTrust(*dir).Settings))
-	if err != nil {
-		return fail(err)
-	}
-	// The tab is open either way; unrecorded, it names its crew only while
-	// its label leads with one that exists.
-	if paths, err := store.DefaultPaths(); err != nil {
-		fmt.Fprintf(os.Stderr, "rex-amq-adapter: record the tab %s: %v\n", w, err)
-	} else if err := app.ClaimTab(store.Store{P: paths}, *session, w, tabName); err != nil {
-		fmt.Fprintf(os.Stderr, "rex-amq-adapter: record the tab %s: %v\n", w, err)
-	}
-	fmt.Printf("{\"window_id\":%q,\"block_ids\":[%q]}\n", w, b)
-	return 0
-}
-
-// deriveTrust extends, for one session, the user's Antigravity trust of a
-// repository to the linked worktree a peer is about to start in. A failure is
-// reported and does not stop the launch: the peer then meets the dialog.
-func deriveTrust(dir string) trust.Result {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "rex-amq-adapter: trust: %v\n", err)
-		return trust.Result{}
-	}
-	r, err := trust.Derive(home, dir)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "rex-amq-adapter: trust: %v\n", err)
-	} else if r.Settings != "" {
-		fmt.Fprintf(os.Stderr, "rex-amq-adapter: %s: %s\n", r.Harness, r.Note)
-	}
-	return r
-}
-
 func runSummon(args []string) int {
 	fs := flag.NewFlagSet("summon", flag.ContinueOnError)
 	subject := fs.String("subject", "", "the message's subject (a started peer's task label)")
@@ -648,9 +576,10 @@ func runSummon(args []string) int {
 	asked := fs.String("asked", "", "the user's own words asking for a new agent, quoted (allows a start)")
 	harness := fs.String("harness", "", "claude, codex, agy, or pi for a start (default: by role)")
 	cwd := fs.String("cwd", "", "the working directory of a started agent, such as its Slice worktree (default: yours)")
+	split := fs.Bool("split", false, "open a launched agent in a pane beside yours, when the human asked for one (default: a tab of its own)")
 	timeout := fs.Duration("timeout", 45*time.Second, "how long to wait for a launched agent's adoption")
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		fmt.Fprintln(os.Stderr, "usage: rex-amq-adapter summon <handle|role> --subject S --body B [--kind K] [--grant FILE | --asked WORDS] [--harness H] [--cwd DIR]")
+		fmt.Fprintln(os.Stderr, "usage: rex-amq-adapter summon <handle|role> --subject S --body B [--kind K] [--grant FILE | --asked WORDS] [--harness H] [--cwd DIR] [--split]")
 		return 2
 	}
 	target := args[0]
@@ -672,7 +601,7 @@ func runSummon(args []string) int {
 		return fail(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	res, err := env.Summon(ctx, loc, app.SummonRequest{Target: target, Kind: *kind, Subject: *subject, Body: *body, Grant: *grant, Asked: *asked, Harness: *harness, Cwd: *cwd})
+	res, err := env.Summon(ctx, loc, app.SummonRequest{Target: target, Kind: *kind, Subject: *subject, Body: *body, Grant: *grant, Asked: *asked, Harness: *harness, Cwd: *cwd, Split: *split})
 	cancel()
 	if err != nil {
 		return fail(err)
@@ -756,7 +685,7 @@ func runJoin(args []string) int {
 	}
 	fmt.Printf("Your pane shows %s", j.Label)
 	if j.Crew.Name != "" {
-		fmt.Printf("; this tab is crew %s", j.Crew.Name)
+		fmt.Printf("; this Rex session is crew %s", j.Crew.Name)
 	}
 	fmt.Println(".")
 	if j.Briefing != "" {
@@ -804,7 +733,7 @@ func runCrews(args []string) int {
 	for _, e := range entries {
 		name, conv, lead := e.Crew, "-", e.Lead
 		if name == "" {
-			name = "(any tab)"
+			name = "(any session)"
 		}
 		if e.Conventions {
 			conv = "yes"
@@ -938,7 +867,7 @@ func runLink(link bool, args []string) int {
 // runCrewsShow prints, without changing anything, the briefing an agent
 // would get taking role R in crew CREW where it works (dir): the crew's
 // team conventions and the role's prompt. Without --role it shows the
-// crew's lead, as join does; without CREW, the role in a tab of no crew.
+// crew's lead, as join does; without CREW, the role in a session of no crew.
 func runCrewsShow(args []string) int {
 	name := ""
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
@@ -1039,7 +968,7 @@ func printJSON(v any) int {
 	return 0
 }
 
-// printCrewsJSON prints the crews and the roles of a tab of no crew, each
+// printCrewsJSON prints the crews and the roles of a session of no crew, each
 // with the first sentence of its prompt as its purpose.
 func printCrewsJSON(lib crew.Library, entries []crew.Entry) int {
 	type crewOut struct {
@@ -1090,7 +1019,8 @@ func printCrewsJSON(lib crew.Library, entries []crew.Entry) int {
 	return printJSON(out)
 }
 
-const epicUsage = `usage: rex-amq-adapter epic <name> [-c DIR] (--goal FILE | --asked "WORDS") [--harness H] [--timeout D]`
+const epicUsage = `usage: rex-amq-adapter epic <name> [-c DIR] (--goal FILE | --asked "WORDS") [--crew C] [--harness H] [--timeout D]
+       rex-amq-adapter epic close <session_id> --asked "WORDS" [--force]`
 
 // runEpic opens an Epic for the personal agent running it (app.OpenEpic)
 // and prints what was started, even when part of it failed.
@@ -1099,12 +1029,16 @@ func runEpic(args []string) int {
 		fmt.Fprintln(os.Stderr, epicUsage)
 		return 2
 	}
+	if args[0] == "close" {
+		return runEpicClose(args[1:])
+	}
 	name := args[0]
 	fs := flag.NewFlagSet("epic", flag.ContinueOnError)
 	dir := fs.String("c", "", "the repository the Epic's agents work in (default: the current directory)")
 	goal := fs.String("goal", "", "the goal contract the orchestrator runs: its grant")
 	asked := fs.String("asked", "", "the user's own words asking for the Epic, its brief when there is no contract")
 	harness := fs.String("harness", "", "the orchestrator's CLI: claude (default), codex, agy, or pi")
+	crewName := fs.String("crew", "", "the crew the Epic's session works as (rex-amq-adapter crews lists them)")
 	timeout := timeoutFlag(90 * time.Second)
 	fs.Var(&timeout, "timeout", "how long to wait for both agents: a duration (2m) or seconds (120)")
 	if err := fs.Parse(args[1:]); err != nil {
@@ -1127,7 +1061,7 @@ func runEpic(args []string) int {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout))
 	defer cancel()
-	res, err := env.OpenEpic(ctx, loc, app.EpicRequest{Name: name, Dir: *dir, Goal: *goal, Asked: *asked, Harness: *harness})
+	res, err := env.OpenEpic(ctx, loc, app.EpicRequest{Name: name, Dir: *dir, Goal: *goal, Asked: *asked, Harness: *harness, Crew: *crewName})
 	if res.SessionID != "" {
 		out, merr := json.Marshal(res)
 		if merr != nil {
@@ -1144,5 +1078,45 @@ func runEpic(args []string) int {
 	case !res.Ready():
 		return 1
 	}
+	return 0
+}
+
+// runEpicClose closes a linked Epic for the personal agent running it
+// (app.CloseEpic) and prints what was closed.
+func runEpicClose(args []string) int {
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		fmt.Fprintln(os.Stderr, epicUsage)
+		return 2
+	}
+	session := args[0]
+	fs := flag.NewFlagSet("epic close", flag.ContinueOnError)
+	asked := fs.String("asked", "", "the user's own words asking to close the Epic: its grant")
+	force := fs.Bool("force", false, "close even while an agent of the Epic is not at rest or holds unread mail")
+	if err := fs.Parse(args[1:]); err != nil {
+		return 2
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintln(os.Stderr, epicUsage)
+		return 2
+	}
+	env, loc, err := caller()
+	if err != nil {
+		return fail(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	res, err := env.CloseEpic(ctx, loc, app.CloseRequest{Session: session, Asked: *asked, Force: *force})
+	if errors.Is(err, app.ErrUsage) {
+		fmt.Fprintf(os.Stderr, "rex-amq-adapter: %v\n", err)
+		return 2
+	}
+	if err != nil {
+		return fail(err)
+	}
+	out, err := json.Marshal(res)
+	if err != nil {
+		return fail(err)
+	}
+	fmt.Println(string(out))
 	return 0
 }
