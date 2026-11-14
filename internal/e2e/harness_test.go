@@ -25,8 +25,8 @@ import (
 // idle, draws an empty box, and for each line typed reports working, appends
 // the line to <name>.got, and reports idle again. Sending it `quit` runs
 // SessionEnd; `crash` exits without running any hook; `join ARGS` (or
-// `epic ARGS`) runs rex-amq-adapter join ARGS from its shell, its output to
-// <name>.join. With <name>.obey present, a typed AMQ doorbell is obeyed:
+// `epic ARGS`, `summon ARGS`) runs rex-amq-adapter join ARGS from its shell,
+// its output to <name>.join. With <name>.obey present, a typed AMQ doorbell is obeyed:
 // the command after its "Run " runs from the agent's shell, its output to
 // <name>.drained.
 const agentScript = `name=$1
@@ -45,7 +45,7 @@ while read -r line; do
 	case "$line" in
 	*quit*) hook session-end; exit 0 ;;
 	*crash*) exit 1 ;;
-	join*|epic*) "$ADAPTER" $line >>"$DIR/$name.join" 2>&1; echo "exit=$?" >>"$DIR/$name.join" ;;
+	join*|epic*|summon*) "$ADAPTER" $line >>"$DIR/$name.join" 2>&1; echo "exit=$?" >>"$DIR/$name.join" ;;
 	*"AMQ doorbell"*)
 		if [ -e "$DIR/$name.obey" ]; then
 			run=${line#*Run }

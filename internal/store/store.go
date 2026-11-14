@@ -96,7 +96,6 @@ type Record struct {
 	Task           string    `json:"task,omitempty"`
 	AdoptedAt      time.Time `json:"adopted_at"`
 	FirstAdoptedAt time.Time `json:"first_adopted_at,omitempty"`
-	Crew           string    `json:"crew,omitempty"`
 	// Cwd is the directory the agent runs in, from its foreground process at
 	// adoption; a resume starts there.
 	Cwd string `json:"cwd,omitempty"`
@@ -110,7 +109,7 @@ type Record struct {
 	// handle reserved for its agent session (a resume, in any block) until
 	// collected.
 	DepartedAt *time.Time `json:"departed_at,omitempty"`
-	// DepartReason says why: DepartSessionEnd, DepartReplaced, or the binding
+	// DepartReason says why: DepartSessionEnd, DepartReplaced, DepartEpicClosed, or the binding
 	// check's code when collection found the agent gone (block_gone,
 	// agent_gone, agent_left_pane). Shown to observers; nothing decides on it.
 	DepartReason string `json:"depart_reason,omitempty"`
@@ -132,6 +131,7 @@ const (
 const (
 	DepartSessionEnd = "session_end" // the harness ended the session
 	DepartReplaced   = "replaced"    // another agent or session took the block
+	DepartEpicClosed = "epic_closed" // the personal agent closed its Epic's session
 )
 
 // Live reports whether the record describes a running agent.
@@ -614,16 +614,23 @@ func (s Store) taskAskedPath(h core.Handle) string {
 }
 
 // Tab is a Rex tab (window) in the adapter's tab ledger: who names it
-// (core.WindowMode), the crew a crew tab was claimed for, and the label the
-// adapter last gave it. It is not window/<handle>, which queues an agent's
-// notes.
+// (core.WindowMode) and the label the adapter last gave it. It is not
+// window/<handle>, which queues an agent's notes.
 type Tab struct {
 	WindowID  string          `json:"window_id"`
 	SessionID string          `json:"session_id,omitempty"`
 	Mode      core.WindowMode `json:"mode"`
-	Crew      string          `json:"crew,omitempty"`
 	LastLabel string          `json:"last_label,omitempty"`
 }
+
+// Modes earlier versions recorded for a tab claimed for a crew or a
+// narrator. Tabs no longer name crews (a crew is its session's,
+// SessionCrew), so Tab reads either as a follower: its label is the one the
+// adapter last gave it, and its agent's pane label replaces it.
+const (
+	legacyCrewTab     core.WindowMode = "crew"
+	legacyNarratorTab core.WindowMode = "narrator"
+)
 
 // State is the part of t the follow policy reads (core.FollowTab).
 func (t Tab) State() core.TabState { return core.TabState{Mode: t.Mode, Last: t.LastLabel} }
@@ -644,6 +651,9 @@ func (s Store) Tab(window string) (Tab, bool, error) {
 	var t Tab
 	if err := json.Unmarshal(b, &t); err != nil {
 		return Tab{}, false, fmt.Errorf("%s: %w", s.tabPath(window), err)
+	}
+	if t.Mode == legacyCrewTab || t.Mode == legacyNarratorTab {
+		t.Mode = core.WindowAuto
 	}
 	return t, true, nil
 }

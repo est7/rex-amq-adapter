@@ -184,7 +184,7 @@ func BriefNotice(b Briefing) string { return briefNotice(b, false, false) }
 func briefNotice(b Briefing, nameConventions, nameRole bool) string {
 	var parts []string
 	if b.Conventions != "" {
-		parts = append(parts, prompt(fmt.Sprintf("Team conventions of crew %q, shared by the agents in this Rex tab; where they differ from your role prompt, they win", b.Crew), b.Conventions, b.ConventionsPath, nameConventions))
+		parts = append(parts, prompt(fmt.Sprintf("Team conventions of crew %q, shared by the agents in this Rex session; where they differ from your role prompt, they win", b.Crew), b.Conventions, b.ConventionsPath, nameConventions))
 	}
 	if b.RolePrompt != "" {
 		parts = append(parts, prompt("Your role here is "+b.Role, b.RolePrompt, b.RolePath, nameRole))

@@ -24,7 +24,7 @@ type Adoption struct {
 	// Mates are the live agents in the same Rex session.
 	Mates []core.Peer
 	// Role is what the pane label said the agent is for; Window and
-	// Session are where its block is. The role and the window's crew choose
+	// Session are where its block is. The role and the session's crew choose
 	// its briefing.
 	Role, Window, Session string
 	// LabelErr is set when the handle could not be shown as the block
@@ -190,9 +190,6 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 		here := own.Placed(server, blk.SessionID, blk.WindowID, now)
 		rec.Generation, rec.PlacedAt = here.Generation, here.PlacedAt
 		rec.FirstAdoptedAt = own.InitialAdoptedAt()
-		if own.WindowID == "" || own.WindowID == blk.WindowID {
-			rec.Crew = own.Crew
-		}
 		rec.Task, rec.Role = own.Task, own.Role
 		if rec.Role == "" && core.LauncherLabel(blk.Label) {
 			rec.Role = core.Role(blk.Label)

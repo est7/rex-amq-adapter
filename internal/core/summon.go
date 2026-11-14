@@ -13,7 +13,7 @@ import (
 const (
 	// SummonCap is how many live agents one Rex session may hold before a
 	// summon refuses to resume or start another: a session is one task, and
-	// six panes is what one person can still follow.
+	// six agents is what one person can still follow.
 	SummonCap = 6
 	// MaxDepth is how many summons may lie between the user and an agent:
 	// the user's agents are 0, what they summon 1, and 2 is the end.

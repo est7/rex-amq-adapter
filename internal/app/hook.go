@@ -361,40 +361,11 @@ func (e Env) identityNotice(ctx context.Context, a Adoption, unread int) string 
 	return core.StartNotice(head, e.briefing(ctx, a), tail)
 }
 
-// briefing finds the agent's crew (named by its Rex tab) and its role
-// prompt. Like session-mates it is advice: what cannot be read is reported
-// and left out, and the agent keeps its handle.
+// briefing finds the agent's crew (its Rex session's, sessionCrew) and its
+// role prompt. Like session-mates it is advice: what cannot be read is
+// reported and left out, and the agent keeps its handle.
 func (e Env) briefing(ctx context.Context, a Adoption) core.Briefing {
-	name := ""
-	if e.Crews != nil && a.Session != "" && a.Window != "" {
-		s, err := e.Rex.InspectSession(ctx, a.Session)
-		if err != nil {
-			fmt.Fprintf(Diagnostics, "read the tab of %s: %v\n", a.Record.Handle, err)
-		}
-		for _, w := range s.Windows {
-			if w.ID == a.Window {
-				name = e.crewOfTab(a.Window, w.Label, func() string { return e.agentDir(ctx, a.Record) })
-			}
-		}
-	}
-	if name != "" && name != a.Record.Crew {
-		e.recordCrew(ctx, a.Record.BlockID, a.Record.Handle, name)
-	}
-	return e.briefingIn(ctx, a.Record, a.Role, name)
-}
-
-func (e Env) recordCrew(ctx context.Context, block string, h core.Handle, crewName string) {
-	unlock, err := e.Store.LockLifecycle(ctx)
-	if err != nil {
-		return
-	}
-	defer unlock()
-	rec, ok, err := e.Store.Record(block)
-	if err != nil || !ok || !rec.Live() || rec.Handle != h || rec.Crew == crewName {
-		return
-	}
-	rec.Crew = crewName
-	_ = e.Store.PutRecord(rec)
+	return e.briefingIn(ctx, a.Record, a.Role, e.sessionCrew(a.Session, a.Role))
 }
 
 // briefingIn is rec's briefing as role in the crew named name ("" for none).

@@ -251,7 +251,7 @@ func (e Env) markTurnError(rec store.Record) error {
 
 // sessionPeersForError reads only stored records (no Rex IPC inside the stop
 // hook budget): peers in rec's session via together(), and rec's crew lead from
-// rec.Crew and rec.Cwd. A Stealth agent (core.Stealth) is never told of
+// its session's crew (sessionCrew) and rec.Cwd. A Stealth agent (core.Stealth) is never told of
 // another's error, and its own goes to the desktop: no worker hears of it.
 func (e Env) sessionPeersForError(rec store.Record) ([]core.Peer, map[core.Handle]store.Record, string) {
 	if core.Stealth(rec.Role) {
@@ -271,8 +271,8 @@ func (e Env) sessionPeersForError(rec store.Record) ([]core.Peer, map[core.Handl
 		peers = append(peers, peerOf(r))
 	}
 	crewLead := ""
-	if rec.Crew != "" && e.Crews != nil {
-		if c, ok, err := e.Crews(rec.Cwd).Crew(rec.Crew); err == nil && ok {
+	if name := e.sessionCrew(rec.SessionID, rec.Role); name != "" && e.Crews != nil {
+		if c, ok, err := e.Crews(rec.Cwd).Crew(name); err == nil && ok {
 			crewLead = c.Lead
 		}
 	}

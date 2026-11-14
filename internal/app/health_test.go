@@ -763,11 +763,14 @@ func TestTurnErrorRoutingThroughTheHook(t *testing.T) {
 	e2, _, _, _, _, _ := healthWorld(t)
 	e2.Crews = func(string) crew.Library { return crew.Load("") }
 	member := claude04(t, e2)
-	member.Role, member.Crew = "reviewer", "pair"
+	member.Role = "reviewer"
 	if err := e2.Store.PutRecord(member); err != nil {
 		t.Fatal(err)
 	}
-	lead := store.Record{Handle: "agy-07", Kind: core.Agy, Server: "unix:///fake.sock", BlockID: "block:l", SessionID: "session:s", WindowID: "window:1", AgentPID: 7, Role: "implementer", Crew: "pair", AdoptedAt: e2.Now(), FirstAdoptedAt: e2.Now()}
+	if err := e2.Store.PutSessionCrew(member.SessionID, store.SessionCrew{Crew: "pair"}); err != nil {
+		t.Fatal(err)
+	}
+	lead := store.Record{Handle: "agy-07", Kind: core.Agy, Server: "unix:///fake.sock", BlockID: "block:l", SessionID: "session:s", WindowID: "window:2", AgentPID: 7, Role: "implementer", AdoptedAt: e2.Now(), FirstAdoptedAt: e2.Now()}
 	if err := e2.Store.PutRecord(lead); err != nil {
 		t.Fatal(err)
 	}

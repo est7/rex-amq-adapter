@@ -265,7 +265,7 @@ func TestWindowLedgerStore(t *testing.T) {
 	if _, ok, err := s.Tab("window:1"); ok || err != nil {
 		t.Fatalf("unknown window: ok=%v err=%v", ok, err)
 	}
-	want := Tab{WindowID: "window:1", SessionID: "session:s", Mode: core.WindowCrew, Crew: "ship-topic", LastLabel: "ship-topic | fix"}
+	want := Tab{WindowID: "window:1", SessionID: "session:s", Mode: core.WindowAuto, LastLabel: "implementer(pi-01) | fix"}
 	if err := s.PutTab(want); err != nil {
 		t.Fatal(err)
 	}
@@ -276,10 +276,10 @@ func TestWindowLedgerStore(t *testing.T) {
 	if err != nil || !ok || got != want {
 		t.Fatalf("got %+v ok=%v err=%v, want %+v", got, ok, err, want)
 	}
-	if st := got.State(); st.Mode != core.WindowCrew || st.Last != "ship-topic | fix" {
+	if st := got.State(); st.Mode != core.WindowAuto || st.Last != "implementer(pi-01) | fix" {
 		t.Fatalf("state %+v", st)
 	}
-	for _, m := range []core.WindowMode{core.WindowAuto, core.WindowNarrator, core.WindowManual} {
+	for _, m := range []core.WindowMode{core.WindowAuto, core.WindowManual} {
 		want.Mode = m
 		if err := s.PutTab(want); err != nil {
 			t.Fatal(err)
@@ -290,5 +290,48 @@ func TestWindowLedgerStore(t *testing.T) {
 	}
 	if err := s.PutTab(Tab{Mode: core.WindowAuto}); err == nil {
 		t.Error("an entry without a window was recorded")
+	}
+}
+
+// A tab an earlier version claimed for a crew or a narrator reads as a
+// follower, keeping the label it was given, so its agent's pane label
+// replaces it; its crew is dropped (a crew is its session's).
+func TestWindowLedgerReadsALegacyClaimedTabAsAFollower(t *testing.T) {
+	s := Store{P: Paths{Home: t.TempDir()}}
+	for mode, label := range map[string]string{"crew": "ship | release", "narrator": "narrator"} {
+		raw := `{"window_id":"window:1","session_id":"session:s","mode":"` + mode + `","crew":"ship","last_label":"` + label + `"}` + "\n"
+		if err := os.MkdirAll(filepath.Dir(s.tabPath("window:1")), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(s.tabPath("window:1"), []byte(raw), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		got, ok, err := s.Tab("window:1")
+		want := Tab{WindowID: "window:1", SessionID: "session:s", Mode: core.WindowAuto, LastLabel: label}
+		if err != nil || !ok || got != want {
+			t.Errorf("legacy %s tab read as %+v (ok=%v err=%v), want %+v", mode, got, ok, err, want)
+		}
+	}
+}
+
+// A session's crew reads back as written, and a session without one reads
+// as none.
+func TestSessionCrewStore(t *testing.T) {
+	s := Store{P: Paths{Home: t.TempDir()}}
+	if _, ok, err := s.SessionCrew("session:s"); ok || err != nil {
+		t.Fatalf("no crew yet: ok=%v err=%v", ok, err)
+	}
+	if err := s.PutSessionCrew("session:s", SessionCrew{}); err == nil {
+		t.Error("a session crew without a crew was recorded")
+	}
+	want := SessionCrew{Crew: "pair", ClaimedBy: "pi-01", ClaimedAt: time.Date(2026, 11, 14, 0, 0, 0, 0, time.UTC)}
+	if err := s.PutSessionCrew("session:s", want); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok, err := s.SessionCrew("session:s"); err != nil || !ok || got != want {
+		t.Fatalf("got %+v ok=%v err=%v, want %+v", got, ok, err, want)
+	}
+	if _, ok, _ := s.SessionCrew("session:t"); ok {
+		t.Error("another session took the crew")
 	}
 }

@@ -236,13 +236,64 @@ func TestSummonGuards(t *testing.T) {
 	}
 }
 
-// A caller whose pane is too small to split gets the peer in a new tab.
-func TestSummonOpensATabWhenThePaneIsSmall(t *testing.T) {
+// A started or resumed peer gets a tab of its own, recorded as a follower,
+// whatever the size of the caller's pane; the caller's tab is left alone.
+func TestSummonOpensATabOfItsOwn(t *testing.T) {
+	for _, rows := range []int{9, 40} {
+		e, term, loc := summonWorld(t)
+		term.rows[block] = rows
+		res := summon(t, e, loc, "reviewer", func(r *SummonRequest) { r.Asked = "go" })
+		if res.Action != "start" || len(term.newTabs) != 1 || term.windows[res.Block] != term.newTabs[0] {
+			t.Fatalf("rows %d: %+v tabs %v window %q", rows, res, term.newTabs, term.windows[res.Block])
+		}
+		w := term.newTabs[0]
+		if term.tabs[w] != "reviewer | look at #42" || term.tabs["window:1"] != "Work" {
+			t.Errorf("rows %d: new tab %q, caller's tab %q", rows, term.tabs[w], term.tabs["window:1"])
+		}
+		if tab, ok, err := e.Store.Tab(w); err != nil || !ok || tab.Mode != core.WindowAuto || tab.LastLabel != "reviewer | look at #42" {
+			t.Errorf("rows %d: tab ledger %+v %v %v", rows, tab, ok, err)
+		}
+		// Adoption brings the tab to the agent's pane label.
+		rec := adoptLaunch(t, e, term, term.launches[0], core.Codex, "tab-own")
+		if got := tabOf(term, w); got != core.PaneLabel(rec.Handle, rec.Role, rec.Task) {
+			t.Errorf("rows %d: after adoption the tab shows %q", rows, got)
+		}
+	}
+}
+
+// An agent whose first hook runs before summon records its tab still gets
+// the tab to follow it: the launch follows the tab once it is recorded.
+func TestSummonTabFollowsAnAgentAdoptedBeforeItsTabWasRecorded(t *testing.T) {
 	e, term, loc := summonWorld(t)
-	term.rows[block] = 9
+	var rec store.Record
+	term.started = func(l launch) { rec = adoptLaunch(t, e, term, l, core.Codex, "early") }
 	res := summon(t, e, loc, "reviewer", func(r *SummonRequest) { r.Asked = "go" })
-	if res.Action != "start" || len(term.newTabs) != 1 || term.windows[res.Block] != term.newTabs[0] {
+	if res.Action != "start" || rec.Handle == "" {
+		t.Fatalf("%+v, adopted %+v", res, rec)
+	}
+	if got, want := tabOf(term, term.newTabs[0]), core.PaneLabel(rec.Handle, rec.Role, rec.Task); got != want {
+		t.Errorf("the tab shows %q, want %q", got, want)
+	}
+}
+
+// --split, the human's request, opens the peer beside the caller instead; a
+// narrator or personal agent is never split into a worker's tab.
+func TestSummonSplitsOnlyWhenAskedAndNeverAStealthAgent(t *testing.T) {
+	e, term, loc := summonWorld(t)
+	split := func(r *SummonRequest) { r.Asked, r.Split = "split one beside you", true }
+	res := summon(t, e, loc, "reviewer", split)
+	if res.Action != "start" || len(term.newTabs) != 0 || term.windows[res.Block] != "window:1" {
 		t.Fatalf("%+v tabs %v window %q", res, term.newTabs, term.windows[res.Block])
+	}
+	add(t, e, departed(store.Record{Handle: "pi-05", Kind: core.Pi, Server: "unix:///fake.sock", BlockID: "block:gone", SessionID: "session:s", Role: core.NarratorRole, AgentPID: 9, AdoptedAt: e.Now(), Cwd: "/work/app"}, e.Now()))
+	for _, target := range []string{core.NarratorRole, core.PersonalRole, "pi-05"} {
+		res := summon(t, e, loc, target, split)
+		if res.Action != "refused" || !strings.Contains(res.Reason, "never shares a worker's tab") {
+			t.Errorf("--split %s: %+v", target, res)
+		}
+	}
+	if len(term.launches) != 1 || len(unread(t, e, "pi-05")) != 0 {
+		t.Errorf("a refused split launched %d or mailed the narrator %v", len(term.launches)-1, unread(t, e, "pi-05"))
 	}
 }
 

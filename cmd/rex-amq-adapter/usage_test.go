@@ -55,6 +55,16 @@ func TestCrewsRejectsUnknownFlags(t *testing.T) {
 	}
 }
 
+// The crews table lists the roles that brief agents in a session of no crew
+// under "(any session)", since a tab names no crew.
+func TestCrewsTableNamesRolesOfAnySession(t *testing.T) {
+	isolate(t)
+	code, out := capture(t, runCrews)
+	if code != 0 || !strings.Contains(out, "(any session)") || strings.Contains(out, "(any tab)") {
+		t.Fatalf("crews: exit %d\n%s", code, out)
+	}
+}
+
 // await's timeout is a duration; a bare number is seconds, as the guide's
 // "--timeout 60" reads.
 func TestAwaitTimeoutTakesSecondsOrADuration(t *testing.T) {
@@ -122,7 +132,7 @@ func TestCrewsJSONListsCrewsAndRolesWithTheirPurpose(t *testing.T) {
 	if !ok || len(got.Crews) != 5 {
 		t.Fatalf("crews: %+v", got.Crews)
 	}
-	if c := got.Crews[pair]; c.Lead != "implementer" || strings.Join(c.Members, ",") != "implementer,reviewer" || c.Layer != "built-in" || !strings.HasPrefix(c.Purpose, "This tab is a two-agent loop") || strings.Contains(c.Purpose, "\n") {
+	if c := got.Crews[pair]; c.Lead != "implementer" || strings.Join(c.Members, ",") != "implementer,reviewer" || c.Layer != "built-in" || !strings.HasPrefix(c.Purpose, "This crew is a two-agent loop") || strings.Contains(c.Purpose, "\n") {
 		t.Errorf("pair: %+v", c)
 	}
 	roles := map[string]string{}
@@ -143,11 +153,12 @@ func TestVersionFlagIsTheVersionCommand(t *testing.T) {
 	}
 }
 
-// epic needs a name and takes only its own flags; usage errors exit 2 before
-// anything is resolved or started.
+// epic needs a name and takes only its own flags, as epic close needs its
+// session; usage errors exit 2 before anything is resolved or started.
 func TestEpicRejectsBadUsage(t *testing.T) {
 	isolate(t)
-	for _, args := range [][]string{nil, {"--goal", "g.md"}, {"x", "--nope"}, {"x", "extra"}, {"x", "--timeout", "soon"}} {
+	for _, args := range [][]string{nil, {"--goal", "g.md"}, {"x", "--nope"}, {"x", "extra"}, {"x", "--timeout", "soon"},
+		{"close"}, {"close", "--asked", "x"}, {"close", "s", "--nope"}, {"close", "s", "extra"}} {
 		if code := runEpic(args); code != 2 {
 			t.Errorf("epic %v: exit %d, want 2", args, code)
 		}

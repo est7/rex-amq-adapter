@@ -62,7 +62,8 @@ const (
 
 // PulseChange is what changed from prev to now, and how soon the narrator
 // must hear it: urgent for attention (an agent left, a new error, stall, or
-// wait on the human), which skips the narrator's doorbell hold; normal for a
+// wait on the human, an orchestrator's hand-back), which skips the
+// narrator's doorbell hold; normal for a
 // change of members or tasks; low for mail alone. Priority is "" when
 // nothing changed.
 type PulseChange struct {
@@ -106,7 +107,12 @@ func ComparePulse(prev, now SessionPulse) PulseChange {
 				raise(PriorityUrgent, fmt.Sprintf("%s: %s", m.Handle, strings.ReplaceAll(what, "_", " ")))
 			}
 		}
-		if had && b.Task != m.Task && m.Live {
+		switch {
+		case had && b.Task != m.Task && m.Live && m.Role == OrchestratorRole && HandBack(m.Task):
+			// The run ended and waits on the user: urgent, so it neither waits
+			// behind a routine notice nor sits out the narrator's hold.
+			raise(PriorityUrgent, fmt.Sprintf("%s handed back: %s", m.Handle, m.Task))
+		case had && b.Task != m.Task && m.Live:
 			raise(PriorityNormal, fmt.Sprintf("%s is on: %s", m.Handle, m.Task))
 		}
 		if had && b.Role != m.Role {
@@ -126,6 +132,12 @@ func ComparePulse(prev, now SessionPulse) PulseChange {
 		raise(PriorityLow, "the session changed")
 	}
 	return c
+}
+
+// HandBack reports whether task is an orchestrator's hand-back, which its
+// role prompt sets with `title "hand-back: <line>"` when its run ends.
+func HandBack(task string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(task)), "hand-back")
 }
 
 func (m PulseMember) named() string {

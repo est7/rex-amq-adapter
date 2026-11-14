@@ -11,7 +11,7 @@
 //	members: implementer, reviewer
 //	--- roles/<role>.md holds the role prompts used
 //
-// in any tab. Directories are searched in order, the first file found wins
+// in any session. Directories are searched in order, the first file found wins
 // whole: the project's .agents/crews (from the agent's directory upwards),
 // the user's ~/.config/rex-amq-adapter/crews, then the prompts built in.
 package crew
@@ -240,14 +240,6 @@ func Name(label string) string {
 	return strings.Join(strings.FieldsFunc(strings.ToLower(label), func(r rune) bool {
 		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9')
 	}), "-")
-}
-
-// TabName reads the crew a crew tab's label names: the part before any
-// "|" ("ship | login" names ship), read as Name reads it, so a hyphenated
-// crew ("ship-topic") keeps its name.
-func TabName(label string) string {
-	head, _, _ := strings.Cut(label, "|")
-	return Name(head)
 }
 
 // projectDir is the nearest .agents/crews at or above dir.

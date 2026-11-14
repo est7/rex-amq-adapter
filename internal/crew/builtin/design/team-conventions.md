@@ -2,7 +2,7 @@
 lead: architect
 members: architect, architect
 ---
-This tab argues a design to a decision. Two or more agents, usually architects, work the same question; the human decides. The agent the human briefed leads: it runs the rounds, keeps the claim ledger, and writes the report. Members send only to the lead, who relays, so every round starts from the same inputs.
+This crew argues a design to a decision. Two or more agents, usually architects, work the same question; the human decides. The agent the human briefed leads: it runs the rounds, keeps the claim ledger, and writes the report. Members send only to the lead, who relays, so every round starts from the same inputs.
 
 1. Seal. Before forwarding the question, the lead writes its own proposal and holds it unsent, then sends the question to every member.
 2. Proposals. Each agent studies the question and the code and sends the lead its proposal: the recommendation, the alternatives it rejected and why, and at most seven numbered claims. A claim is one falsifiable statement (a decision, risk, trade-off, or assumption) with its file:line or executed probe evidence and what would change your mind.

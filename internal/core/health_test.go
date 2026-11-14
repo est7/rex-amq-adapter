@@ -107,3 +107,14 @@ func TestErrorRecipientPrecedence(t *testing.T) {
 		flagged = append(flagged, s.want)
 	}
 }
+
+// A session works as one crew across its tabs, so the crew lead hears of an
+// error from a member in another tab.
+func TestErrorRecipientFindsTheCrewLeadInAnotherTab(t *testing.T) {
+	rec := Peer{Handle: "codex-05", Kind: Codex, Role: "reviewer", Window: "w1"}
+	lead := Peer{Handle: "claude-02", Kind: Claude, Role: "implementer", Window: "w2"}
+	to, why, ok := ErrorRecipient(rec, []Peer{rec, lead}, "implementer", NoticeTurnError, nil)
+	if !ok || to.Handle != "claude-02" || why != "its crew lead" {
+		t.Fatalf("got %q (%q) ok=%v, want the crew lead in w2", to.Handle, why, ok)
+	}
+}

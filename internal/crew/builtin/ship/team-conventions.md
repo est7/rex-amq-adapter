@@ -2,7 +2,7 @@
 lead: implementer
 members: implementer, reviewer, qa
 ---
-This tab is a three-agent pipeline for changes that must be seen working, not only tested: the implementer builds, the reviewer critiques the diff, QA runs the reviewed candidate the way a user would. The implementer leads and reports to the human.
+This crew is a three-agent pipeline for changes that must be seen working, not only tested: the implementer builds, the reviewer critiques the diff, QA runs the reviewed candidate the way a user would. The implementer leads and reports to the human.
 
 1. The implementer works on a Slice or feature branch, implements, runs the checks, and hands the working-tree diff, untracked files included, to the reviewer over AMQ. Implementer and reviewer repeat until the review is clean. When the implementer's brief says to skip this loop and hand the branch back (an orchestrator running a goal does), the implementer does that instead, and whoever briefed it owns the review and every must-fix. The orchestrator then hands the Slice branch to QA (step 2) and QA reports to it.
 2. The implementer freezes the source and hands the candidate to QA: branch, worktree path, `git rev-parse HEAD`, the SHA-256 of `git diff HEAD` plus the untracked files (`git ls-files --others --exclude-standard`, each with its content), what changed, and which checks apply. Nobody edits or rebuilds the tree while QA holds it.

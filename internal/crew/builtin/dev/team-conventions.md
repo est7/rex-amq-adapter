@@ -2,7 +2,7 @@
 lead: architect
 members: architect, implementer, reviewer
 ---
-This tab ships a feature end to end: the architect decomposes, the implementer builds, the reviewer audits. The human gives the goal to the architect, who leads and reports back.
+This crew ships a feature end to end: the architect decomposes, the implementer builds, the reviewer audits. The human gives the goal to the architect, who leads and reports back.
 
 1. The architect reads the goal and the code, asks the human one question if a load-bearing detail is ambiguous, then sends the implementer one task at a time over AMQ: what to change, where, and acceptance criteria someone can check.
 2. The implementer builds the task on a Slice branch, runs the checks, and hands the working-tree diff to the reviewer. The two repeat until the review is clean, then the implementer tells the architect the task is done, with the checks and review outcome. When the implementer's brief says to skip this loop and hand the branch back (an orchestrator running a goal does), the implementer does that instead, and whoever briefed it owns the review and every must-fix.

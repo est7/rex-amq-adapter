@@ -109,7 +109,7 @@ func TestNarratorStealthInErrorRouting(t *testing.T) {
 
 // The narrator and a personal agent take no place a worker would: with five
 // workers and both of them live, a sixth worker still starts. A narrator
-// starts in a background tab of its own, claimed as the narrator tab.
+// starts in a background tab of its own, which follows it like any agent's.
 func TestNarratorSummonCapacityAndTab(t *testing.T) {
 	e, term, loc := summonWorld(t)
 	for i, h := range []core.Handle{"codex-02", "codex-03", "codex-04", "codex-05"} {
@@ -131,16 +131,16 @@ func TestNarratorSummonCapacityAndTab(t *testing.T) {
 	if res.Action != "start" {
 		t.Fatalf("%+v", res)
 	}
-	if !slices.Contains(term2.newTabs, "window:"+core.NarratorTab) {
-		t.Fatalf("the narrator did not get a tab of its own: %v", term2.newTabs)
-	}
 	l := term2.launches[len(term2.launches)-1]
-	if term2.windows[l.Block] != "window:"+core.NarratorTab || term2.windows[l.Block] == term2.windows[block] {
-		t.Fatalf("the narrator was placed in %s", term2.windows[l.Block])
+	if !slices.Contains(term2.newTabs, l.Window) || term2.windows[l.Block] == term2.windows[block] {
+		t.Fatalf("the narrator did not get a tab of its own: tabs %v, placed in %s", term2.newTabs, term2.windows[l.Block])
 	}
-	tab, ok, err := e2.Store.Tab("window:" + core.NarratorTab)
-	if err != nil || !ok || tab.Mode != core.WindowNarrator {
-		t.Fatalf("narrator tab ledger: %+v %v %v", tab, ok, err)
+	if got := term2.tabs[l.Window]; got != l.Label {
+		t.Errorf("the narrator's tab is labelled %q, want its launch label %q", got, l.Label)
+	}
+	tab, ok, err := e2.Store.Tab(l.Window)
+	if err != nil || !ok || tab.Mode != core.WindowAuto {
+		t.Fatalf("narrator tab ledger: %+v %v %v, want a follower", tab, ok, err)
 	}
 	_ = term
 }
@@ -307,6 +307,40 @@ func TestSessionWatcherTellsTheNarrator(t *testing.T) {
 	}
 	noReceipts(t, e, "codex-01")
 	noReceipts(t, e, "codex-03")
+}
+
+// An orchestrator's hand-back reaches the narrator at once, as an urgent
+// notice of its own, even while a routine notice waits unread for its hold.
+func TestSessionWatcherTellsTheNarratorOfAHandBackAtOnce(t *testing.T) {
+	e, _, key := watcherWorld(t)
+	ctx := context.Background()
+	keepers := []store.Record{recordOf(t, e, "codex-01"), recordOf(t, e, "codex-02")}
+	look := func() {
+		t.Helper()
+		if err := e.watchOnce(ctx, key, keepers); err != nil {
+			t.Fatal(err)
+		}
+	}
+	look()
+	if err := amq.Send(ctx, e.AMQ, e.Paths.Root(), "codex-03", "codex-01", "done", "implemented"); err != nil {
+		t.Fatal(err)
+	}
+	look()
+	if n := narratorInbox(t, e); len(n) != 1 || n[0].Priority != core.PriorityLow {
+		t.Fatalf("the routine notice: %+v", n)
+	}
+	if _, err := e.SetTask(ctx, Location{Block: "block:o"}, "hand-back: login ships"); err != nil {
+		t.Fatal(err)
+	}
+	look()
+	n := narratorInbox(t, e)
+	if len(n) != 2 || n[1].Priority != core.PriorityUrgent {
+		t.Fatalf("the hand-back waited behind the routine notice: %+v", n)
+	}
+	b, err := os.ReadFile(filepath.Join(amq.Inbox(e.Paths.Root(), "codex-02"), n[1].ID+".md"))
+	if err != nil || !strings.Contains(string(b), "codex-01 handed back: hand-back: login ships") {
+		t.Fatalf("the hand-back notice: %s %v", b, err)
+	}
 }
 
 // selfNotice puts a system notice of priority into h's inbox, as the

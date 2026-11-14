@@ -65,7 +65,8 @@ task to 32 columns. A peer you start gets its task from its launch label
 shows it again. Do not rename your pane with `rex block rename`: the next
 adoption would write the adapter's label back. To take a role yourself, run
 `rex-amq-adapter join --role <role>` (or `join <crew>`, see Start a peer); it
-relabels the pane and prints your briefing.
+relabels the pane and prints your briefing. A tab holding one agent shows that
+agent's pane label too, and follows it.
 
 The Rex session's label is not yours: one Rex session is one Epic, and its
 label names the human's Epic. Never run `rex session rename` for your own
@@ -130,9 +131,10 @@ rex-amq-adapter who --all  # also this session's departed agents reserved for a 
 rex-amq-adapter who --json # the same, as JSON: handle, kind, role, tab, lifecycle, delivery
 ```
 
-The Rex session is the awareness boundary: a session holds one task, a tab
-in it one team (its label can name a crew), and a pane one member. Agents in
-other blocks of your session, in any of its tabs, are your peers; `who`
+The Rex session is the awareness boundary: a session holds one task (an
+Epic) and at most one crew, and each agent in it has a tab of its own unless
+the user asked for a split. Agents in other blocks of your session, in any of
+its tabs, are your peers; `who`
 shows each one's tab. Agents in another session are not discovered or
 announced. If `who` lists only you, report that this session has no peers.
 Never use `amq who` for discovery: its shared mailbox directory spans
@@ -166,7 +168,7 @@ session", "… left your Rex session"). Stop waiting for a reply from an agent
 that left. In a session with an orchestrator, it hears of a departure by mail at
 once, even when idle; if that agent itself leaves, one peer is told to report
 and stop. When the user says "the one beside you", "旁边那个", or "隔壁", they
-mean the agents in your tab; `who`'s TAB column tells them apart. Reach them
+mean the agents of your session; `who`'s TAB column tells them apart. Reach them
 with `rex-amq-adapter send`, not with your harness's own agent messaging, which does not
 know AMQ handles. Use `rex-amq-adapter who` for the current list of your
 session's agents.
@@ -212,8 +214,9 @@ this needs is below; no other skill is required.
    own, so a peer launched without a prompt never gets a mailbox.
    An independent task in another session reports to its own user; do not
    pass it the handles from your session.
-3. **Place it** by how the work relates to yours. The user reads related
-   agents side by side, so placement is part of the request. Run the
+3. **Place it** by how the work relates to yours. Each agent gets a tab of
+   its own, which shows its pane label; split a pane beside yours only when
+   the user asks for one. Run the
    command in the same shell right after `eval "$(rex-amq-adapter env)"`: in a
    Claude Code background session (agent view), the inherited `REX_SESSION`
    and `REX_BLOCK` name the pane of whichever terminal started Claude's
@@ -221,31 +224,30 @@ this needs is below; no other skill is required.
 
    | The peer works on | Place it | Command |
    |---|---|---|
-   | the same task (review, tests, second opinion) | a pane in your window | `rex split -s "$REX_SESSION" -b "$REX_BLOCK" --split=right --focus=false --label "<label>" -c "$PWD" --json -- codex --no-daemon "<brief>"` |
-   | another peer on the same task | a pane in the same window, below the last peer | the same, with `-b <last peer's block> --split=below` |
-   | more collaborators, or another team, on the same task when your tab is full | a new tab in your session | `rex run -s "$REX_SESSION" --label "<label>" -c "$PWD" --focus=false --json -- codex --no-daemon "<brief>"` |
+   | the same task (review, tests, second opinion), or another member of your crew | a new tab in your session | `rex-amq-adapter summon <role> --subject "<task>" --body "<brief>" --kind todo --asked "<the user's words>"` (it starts the peer in a tab of its own and awaits it), or `rex run -s "$REX_SESSION" --label "<label>" -c "$PWD" --focus=false --json -- codex --no-daemon "<brief>"` |
+   | the same, when the user asked to see it beside you ("split 一下", "放旁边") | a pane in your tab | `summon … --split`, or `rex split -s "$REX_SESSION" -b "$REX_BLOCK" --split=right --focus=false --label "<label>" -c "$PWD" --json -- codex --no-daemon "<brief>"` |
    | another task in the same project | a new session | `rex new <task> -c "$PWD" --json`, then `rex run -s <its .session_id> --label "<label>" -c "$PWD" --focus=false --json -- codex --no-daemon "<brief>"` |
-   | a team the user asked for by crew ("开个 pair 组", "a ship crew for this fix"), when no other agent is in your tab | your own tab, with you as the crew's lead | `rex-amq-adapter join <crew>` (it names the tab, takes the crew's lead role, or `--role R`, and prints your briefing and the members still to start), then `rex split -s "$REX_SESSION" -b "$REX_BLOCK" --label "<label>" …` for each other member |
-   | the same, when other agents already share your tab (`join` refuses) | a new tab named after the crew, then the other members as panes in it | `rex-amq-adapter tab <crew> --role "<label>" -c "$PWD" -- codex --no-daemon "<brief>"` for the first, then `rex split -b <its block> --label "<label>" …` for each other member |
+   | a team the user asked for by crew ("开个 pair 组", "a ship crew for this fix") | this session, with you as the crew's lead | `rex-amq-adapter join <crew>` (it claims the crew for this Rex session, takes the crew's lead role, or `--role R`, and prints your briefing and the members still to start), then a new tab for each other member, as in the first row |
    | another project (other repository or directory) | a new session | `rex new <project> -c <dir> --json`, then `rex run -s <its .session_id> --label "<label>" -c <dir> --focus=false --json -- codex --no-daemon "<brief>"` |
 
-   A tab named after a crew (`pair`, `ship`, `dev`, `docs`, `design` are
-   built in) gives every agent in it the crew's team conventions: who leads,
-   the order of handoffs, when to stop. Brief the crew's lead, which the
-   conventions name; the others wait for its handoff, so give them a short
-   brief naming the task. Label the pane and name the tab when you create
-   them, never by hand afterwards: the agent takes its role and crew when its
-   first hook runs, which can be before a later rename. Your own role and
-   crew change only with `rex-amq-adapter join`. The program after `--` takes the brief as its first
+   A session's crew (`pair`, `ship`, `dev`, `docs`, `design` are built in)
+   gives every agent in the session, in any tab, the crew's team conventions:
+   who leads, the order of handoffs, when to stop. A session works as one
+   crew: `join` refuses another while other agents are in it, so another
+   crew's goal is another Epic. Brief the crew's lead, which the conventions
+   name; the others wait for its handoff, so give them a short brief naming
+   the task. Label the pane when you create it, never by hand afterwards:
+   the agent takes its role when its first hook runs, and its tab follows
+   its pane label. Your own role changes only with `rex-amq-adapter join`. The program after `--` takes the brief as its first
    prompt: `codex --no-daemon "<brief>"`, `claude "<brief>"`, `pi "<brief>"`, or
    `agy --dangerously-skip-permissions -i "<brief>"` (Antigravity needs `-i`,
    and without the skip flag it stops to ask before every `amq` command it
    runs). Pass `--no-daemon` explicitly
    for Codex: Rex launches the binary without expanding fish abbreviations.
    This mode cannot be combined with `--remote` or `codex agents`. Never take
-   focus. When your own pane has fewer than 10 rows (`rex block call -b
-   "$REX_BLOCK" size`), a split would leave the peer unable to draw its input
-   box: open it in a new tab (`rex run`) instead. For an Antigravity peer you start by hand in a linked
+   focus. A split the user asked for into a pane under 10 rows (`rex block
+   call -b "$REX_BLOCK" size`) would leave the peer unable to draw its input
+   box: say so and open a tab instead. For an Antigravity peer you start by hand in a linked
    worktree, take its trust for that session:
    `if s=$(rex-amq-adapter trust <dir>); then set -- --settings "$s"; fi`, then
    start `agy "$@" …`. It extends the trust you already gave that repository to
@@ -273,8 +275,8 @@ this needs is below; no other skill is required.
 
 ## Plan a crew
 
-Pick the team before starting anyone. The built-in crews, each named by its
-Rex tab, lead first:
+Pick the team before starting anyone. The built-in crews, each claimed by a
+Rex session, lead first:
 
 | Crew | For | Members |
 |---|---|---|
@@ -287,17 +289,16 @@ Rex tab, lead first:
 `rex-amq-adapter crews` adds the project's and user's own crews and roles
 (`crews --json` gives each one's members and purpose as data); read one with
 `crews show` before relying on it. A crew's conventions bind
-every agent in its tab, so name a tab after a crew only when the work follows
-them. When none fits (an audit, research, a migration), run the goal with an
-`orchestrator` that starts each peer in its own pane under a built-in role
-(`architect`, `reviewer`, `qa`, `writer`, ...): the role briefs it, your brief
-scopes it, and the tab is left unnamed; with several agents in it, the tab
-shows the task of the agent that was there first.
+every agent in its session, so claim a crew (`join <crew>`, or `epic --crew`)
+only when the work follows them. When none fits (an audit, research, a
+migration), run the goal with an `orchestrator` that starts each peer in a tab
+of its own under a built-in role (`architect`, `reviewer`, `qa`, `writer`,
+...): the role briefs it and your brief scopes it.
 
 - **Size.** `summon` refuses past 6 live agents in a session; a `narrator`
-  and a `personal` agent do not count. Panes you start with `rex split`,
-  `rex run`, or `tab` are not checked, so count them yourself and keep one
-  session within 6, yourself included.
+  and a `personal` agent do not count. Agents you start with `rex split` or
+  `rex run` are not checked, so count them yourself and keep one session
+  within 6, yourself included.
 - **Model families.** `summon` starts `reviewer`, `editor`, and `qa` in Codex
   and every other role in Claude Code unless `--harness` says otherwise; when
   you start peers yourself, give the reviewer another family than the
@@ -316,16 +317,21 @@ a narrator. Take the role in your pane with
 `rex-amq-adapter join --role personal`. One command opens an Epic:
 
 ```bash
-rex-amq-adapter epic "<name>" -c <repo> --goal <contract>   # or --asked "<the user's words>"
+rex-amq-adapter epic "<name>" -c <repo> --goal <contract>   # or --asked "<the user's words>"; --crew <crew> to work as one
+rex-amq-adapter epic close <session_id> --asked "<the user's words>"   # only once the user says so
 ```
 
 It creates the Epic's Rex session with its orchestrator (briefed to run the
 goal contract, or with the user's words) and its narrator, links the Epic to
 you, and prints one JSON line (`session_id`, each agent's `handle`, `block`
 and `status`, `linked`); it exits 0 only when both agents are adopted and
-linked. Only a `personal` agent opens or links Epics, and the narrator is the
-only agent of an Epic it mails; your briefing (`crews show --role personal`)
-has the rest.
+linked. Closing is two-phase: the narrator reports the hand-back ready, you
+ask the user, and only on their words `epic close` kills the Epic's Rex
+session, parks its agents (their handles stay reserved for a resume), and
+unlinks it; it refuses while an agent of the Epic is working or holds unread
+mail, unless `--force`. Only a `personal` agent opens, links, or closes Epics,
+and the narrator is the only agent of an Epic it mails; your briefing (`crews
+show --role personal`) has the rest.
 
 ## Summon on send
 
@@ -337,7 +343,7 @@ eval "$(rex-amq-adapter env)" && rex-amq-adapter summon reviewer --subject "revi
 ```
 
 A live agent of that handle or role in your session gets the mail; when
-several agents of a role are live, summon refuses: name one by handle. A departed one of this session is resumed in a pane beside you,
+several agents of a role are live, summon refuses: name one by handle. A departed one of this session is resumed in a tab of its own (`--split`: beside you, when the user asked; never a narrator or personal agent),
 in the directory it ran in, and its mail waits for it. With none, a new agent
 is started for the role (`--harness` picks the CLI; reviewer, editor and qa
 default to Codex, every other built-in or custom role, a custom `explorer`

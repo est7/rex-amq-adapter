@@ -314,35 +314,41 @@ Epic session `cross-session-amq` to its own task. `rex skill setup
 ### Tab labels
 
 A tab (Rex window) has one owner, which the tab ledger
-(`tabs/<window>.json`: `window_id`, `session_id`, `mode`, `crew`,
-`last_label`) records:
+(`tabs/<window>.json`: `window_id`, `session_id`, `mode`, `last_label`)
+records. A tab names no crew: a crew is its Rex session's (see **Crews and
+roles**).
 
 | Mode | Label | Who writes it |
 |---|---|---|
 | `auto` (follower) | the pane label of the one agent in it | the adapter, at adoption, `title`, `join --role`, a departure (`park`), and every reconciliation of the session (`who`, the session's watcher) |
-| `crew` | `<crew>` or `<crew> \| <topic>` | `join CREW` and `tab <crew>` claim it; the user may add a topic |
-| `narrator` | `narrator` | `summon narrator` opens it in the background (never focused) and claims it; `tab narrator` claims one too |
 | `manual` | whatever the user typed | the user; the adapter never writes it again |
 
-A tab `summon` opens (when the caller's pane is too small to split) is
-recorded `auto` under its launch label, `<role> | <task>`, and adoption brings
-it to the agent's pane label. A tab the ledger does not know is a follower only
-while it shows Rex's placeholder, `Window ` and eight lowercase hex digits
-(`Window 4c6fe88d`); it is recorded `auto` when first seen so. A follower is
-renamed to its agent's pane label only while it holds exactly one block whose
-agent is live. A follower of several blocks that still shows the pane label it
-was last given drops to that label's task (`orchestrator(claude-03) | audit`
-becomes `audit`), since one member's label would read as the whole team's in
-`who`'s TAB column; one showing no task keeps its label until it holds one
-block again. The adapter's
-tabs of other kinds (the watchdog's `overflow`) stay unrecorded and are never
-renamed. A follower whose label is neither the placeholder, the label the
-adapter last gave it, nor its agent's current pane label was renamed by
-someone else: it turns `manual` and keeps that name. The ledger is best
-effort. Rex keeps no record of who named a window, so a user renaming a tab to
-exactly the label the adapter would give it, or a rename racing a split, is
-not told apart, and two writers of one entry race without a lock (the last
-write wins). Exact ownership needs Rex to record a window's naming intent.
+Each agent gets a tab of its own by default: `summon` opens one in the
+background (`session.new_window`, one call that labels the tab and the block)
+and records it `auto` under its launch label, `<role> | <task>`; adoption
+brings it to the agent's pane label. An Epic's orchestrator and narrator tabs
+keep Rex's placeholder name and so follow their agents too. A pane beside the
+caller (`summon --split`, `rex split`) is the user's explicit choice. A tab
+the ledger does not know is a follower only while it shows Rex's placeholder,
+`Window ` and eight lowercase hex digits (`Window 4c6fe88d`); it is recorded
+`auto` when first seen so. A follower is renamed to its agent's pane label
+while exactly one live agent is in it, beside any number of blocks without
+one (a preview, a shell). A follower of several agents that still shows the
+pane label it was last given drops to that label's task
+(`orchestrator(claude-03) | audit` becomes `audit`), since one member's label
+would read as the whole team's in `who`'s TAB column; one showing no task
+keeps its label until one agent is left. The adapter's tabs of other kinds
+(the watchdog's `overflow`) stay unrecorded and are never renamed. A follower
+whose label is neither the placeholder, the label the adapter last gave it,
+nor its agent's current pane label was renamed by someone else: it turns
+`manual` and keeps that name. Earlier versions recorded tabs claimed for a
+crew or a narrator as modes `crew` and `narrator`; the ledger reads either as
+`auto`, so its agent's pane label replaces the crew's name. The ledger is
+best effort. Rex keeps no record of who named a window, so a user renaming a
+tab to exactly the label the adapter would give it, or a rename racing a
+split, is not told apart, and two writers of one entry race without a lock
+(the last write wins). Exact ownership needs Rex to record a window's naming
+intent.
 
 ### Record
 
@@ -527,11 +533,10 @@ is not sufficient evidence.
 
 ### Session-mates
 
-A Rex session holds one task; a tab (window) in it holds
-one team, which its label can name as a crew; a pane holds one member, its
-label naming the role. A task outgrows one tab (several teams, or more agents
-than a tab shows), so the session is the awareness boundary, and the tab only
-says which team an agent is on (crew briefing, `who`'s TAB column). Discovery
+A Rex session holds one task (an Epic) and at most one crew; each agent in
+it has a tab of its own unless the user asked for a split, and a pane label
+names the agent's role. The session is the awareness boundary, and the tab
+only tells agents apart (`who`'s TAB column). Discovery
 through `who` lists only agents in the caller's current session, including
 itself, each with the label of its tab (the window id when unlabelled). It
 resolves the server and the block's current session through Rex, then filters
@@ -608,20 +613,17 @@ control none, and the queue ended empty.
 
 ### Crews and roles
 
-The window is the team, inside the session's task; two
-labels say what kind of
-team it is and what each member does. The tab label names a crew, the pane
-label a role, which the record keeps. From then on the record is the role:
-the label is overwritten, a resumed agent may land in any pane, and briefing and
-orchestrator behaviour both read it. A tab names a crew only when the tab
-ledger (see **Tab labels**) records it as claimed for one, by `join` or `tab`:
-its crew is the part of the label before any `|` (`ship | release` is crew
-`ship`, `ship-topic` stays `ship-topic`). A follower, narrator, or manual tab
-names none, whatever its label reads as. A tab named before the ledger existed
-names a crew only when its label leads with one an agent there can find, and
-never when it is Rex's placeholder or an agent's pane label
-(`reviewer(claude-01)`). An agent learns both with its identity, at
-adoption:
+The Rex session is the team, and its task the Epic; two facts say what kind
+of team it is and what each member does. The session's crew
+(`sessions/<session>/crew.json`, `store.SessionCrew`: crew, who claimed it,
+when) names the crew, and the pane label a role, which the record keeps. From
+then on the record is the role: the label is overwritten, a resumed agent may
+land in any pane, and briefing and orchestrator behaviour both read it. A
+session works as at most one crew, claimed by `join CREW` or `epic --crew`;
+its conventions brief every agent of the session in any tab, except a
+narrator or personal agent (`core.Stealth`), which takes no part in the
+crew's work. A tab's label names no crew, whatever it reads as. An agent
+learns both with its identity, at adoption:
 
 - The crew's `team-conventions.md` (who leads, the order of handoffs, when to
   stop) and the role's prompt are looked up from the agent's directory (the
@@ -634,9 +636,9 @@ adoption:
   preview): identity, mail commands, mates, and who stands for the human stay
   inline, and a crew or role prompt that does not fit, or is longer than 4,000
   characters, is named by its file instead (`core.StartNotice`).
-- A tab that names no crew (Rex's default `Window 82b616eb`, a follower
-  showing an agent's pane label, any unknown name) gives role prompts only, so a reviewer split into an ordinary tab is
-  still briefed. An agent without a role in such a tab hears nothing more.
+- A session without a crew gives role prompts only, so a reviewer started
+  anywhere is still briefed. An agent without a role in such a session hears
+  nothing more.
 - Briefings are advice, like mates: a lookup that fails is logged and left
   out. A prompt over 4 000 bytes is named by path instead of inlined.
   `SessionStart` always briefs, so an agent keeps its briefing across a
@@ -657,21 +659,19 @@ adoption:
   architect, architect), docs (architect; architect, writer, editor).
   `crews` lists each crew's lead and members (its role files when it
   declares none).
-- `rex window new` cannot label the block and `rex run` cannot label the
-  tab, so `rex-amq-adapter tab <crew> --role R -- CMD` opens both in one
-  `session.new_window` call and claims the tab for the crew in the tab
-  ledger (`tab narrator` claims a narrator tab); `crews` lists what an agent
-  in a directory would find.
 - `rex-amq-adapter join [CREW] [--role R]` makes the calling agent take a
   role where it stands: the agent the user is talking to becomes the crew's
-  lead instead of briefing a new one in another tab. With CREW it names the
-  tab after the crew, unless another live agent is in the tab (that agent's
-  crew would change under it: the error says to open a new tab with `tab`),
-  and takes R or the crew's lead; the tab is claimed for the crew in the tab
-  ledger whether it was renamed or already named so. The role goes into the record under the
-  lifecycle lock, the pane is relabelled, an orchestrator's watcher starts, and
-  the briefing is printed with the members still to start. Later adoptions
-  keep the role.
+  lead instead of briefing a new one in another tab. With CREW it claims the
+  crew for its Rex session, under the lifecycle lock, and takes R or the
+  crew's lead; a session that already works as another crew refuses while
+  another live agent (Stealth ones aside) is in it, since that agent's
+  conventions would change under it, and the error says another crew's goal
+  is another Epic. A narrator or personal agent never joins a crew. The tab
+  is never renamed for a crew: the pane is relabelled, and a tab that
+  follows it shows the new pane label. The role goes into the record under
+  the lifecycle lock, an orchestrator's watcher starts, and the briefing is
+  printed with the members still to start, each in a new tab
+  (`summon <role>` or `rex run --label`). Later adoptions keep the role.
 
 ### Orchestrators
 
@@ -743,14 +743,14 @@ orchestrator stays silent; the watcher ends with its agent. Real agents: section
 ### Summon on send
 
 `rex-amq-adapter summon <handle|role> --subject S --body B [--kind K]
-[--grant FILE | --asked "WORDS"] [--harness H] [--cwd DIR]` (`app.Env.Summon`,
+[--grant FILE | --asked "WORDS"] [--harness H] [--cwd DIR] [--split]` (`app.Env.Summon`,
 guards in `core.GuardSummon`) lets an agent address a peer that may not be
 running. The target is resolved in the caller's Rex session:
 
 1. A live agent of that handle or role gets the mail (`deliver`). Several live
    agents of a role refuse: the caller names one by handle.
-2. Otherwise a departed agent of this session is resumed in a pane beside the
-   caller, in the directory it ran in (its record's `Cwd`, else its
+2. Otherwise a departed agent of this session is resumed in a tab of its
+   own, in the directory it ran in (its record's `Cwd`, else its
    transcript's), with a fixed first prompt that makes it drain; its mail is
    in its mailbox first (`resume`). A kind with no resume command, or no
    known directory, refuses and leaves the mail waiting.
@@ -758,6 +758,13 @@ running. The target is resolved in the caller's Rex session:
    in the caller's directory or `--cwd` (`start`); the caller awaits its
    adoption and then delivers. `--cwd` always means a new agent there: it
    refuses a handle, and a directory a live agent of the role works in.
+
+A resumed or started agent gets a tab of its own, opened in the background
+and recorded as a follower (see **Tab labels**), whatever the size of the
+caller's pane. `--split`, which the user asked for, opens it in a pane beside
+the caller instead; a split of a narrator or personal agent, by role or by a
+handle whose record has that role, is refused before anything is mailed or
+reserved, since it never shares a worker's tab.
 
 Only resume and start pass the guards, in this order, and a refusal says why:
 
@@ -789,7 +796,7 @@ line in `logs/summon.log` (summoner, parent, depth, target, kind, subject,
 action, handles, block, reason, grant, asked).
 
 The guards hold for `summon` only. An agent started by hand (`rex split`,
-`rex run`, `tab`) has no token: it is recorded at depth 0, as the user's own
+`rex run`) has no token: it is recorded at depth 0, as the user's own
 agent would be, and is not counted against the cap before it starts.
 
 ### Watchdog
@@ -1066,8 +1073,8 @@ error, so a stream error it recovered from is not reported. A cancelled turn
 reports (`recordFit`, as for announcing): a hook from a nested `claude -p` or
 `agy -p`, or a shared Codex daemon's thread that cannot be adopted here says nothing in its
 name. `core.ErrorRecipient` picks one recipient from stored records only (no
-Rex call inside the hook budget): the agent that summoned it, its crew lead in
-the same tab, the earliest agent in its tab, the session's orchestrator, and,
+Rex call inside the hook budget): the agent that summoned it, its session's crew
+lead in any tab, the earliest agent in its tab, the session's orchestrator, and,
 when one of those is itself flagged and the code is not `turn_limit`, a live
 agent of another model family. With none, or when the send fails, the desktop
 hears. A `turn_error` flags the agent (`store.TurnError` `At` / `By` at
@@ -1248,7 +1255,8 @@ Overridable with `REX_AMQ_ADAPTER_HOME` (tests use a temporary directory).
 │       ├── provenance/pending/<token>.json the same before amq returned the id
 │       ├── quarantine/<handle>/<msg_id>.md (+ .json reason)  mail the gateway took out of an inbox
 │       ├── sessions/<session_id>/view.json  the session's view, written whole by its narrator
-│       └── sessions/<session_id>/pulse.json what the session's watcher last told the narrator
+│       ├── sessions/<session_id>/pulse.json what the session's watcher last told the narrator
+│       └── sessions/<session_id>/crew.json  the crew the session works as (join CREW, epic --crew)
 ├── bin/inject                the wrapper amq wake runs as --inject-via
 ├── records/<handle>.json     one record per handle
 ├── ledger/<handle>.json      announced message ids
@@ -1259,7 +1267,7 @@ Overridable with `REX_AMQ_ADAPTER_HOME` (tests use a temporary directory).
 ├── logs/hooks.log            hook failures
 ├── logs/summon.log           summon launches and self-attested grants
 ├── window/<handle>           window notes (joins, departures) queued for the next prompt
-├── tabs/<window>.json        the tab ledger: who names each tab (auto, crew, narrator, manual) and its last label
+├── tabs/<window>.json        the tab ledger: who names each tab (auto, manual) and its last label
 ├── title/<handle>            the title last given each session's harness (Claude Code, Pi)
 ├── title-state/<handle>      the title desired for that harness and whether its conversation was offered it
 ├── task-asked/<handle>       the last Claude Code or Pi session asked for a task at its first prompt
@@ -1313,7 +1321,7 @@ another `--me` names any sender. `events` only reads and applies no gate.
 
 ### Opening an Epic
 
-`rex-amq-adapter epic <name> -c DIR (--goal FILE | --asked "WORDS")`
+`rex-amq-adapter epic <name> -c DIR (--goal FILE | --asked "WORDS") [--crew C]`
 (`app.Env.OpenEpic`) is the whole start, so a personal agent runs one command
 and its user sees no steps. It refuses a caller that is not a live `personal`
 agent, and needs a grant as `summon` does: a goal contract that is a regular
@@ -1321,10 +1329,15 @@ file, which the orchestrator's brief runs (make-goal's prompt for a contract
 in a file, whole, so the run ends at either of its exits, `/goal`-prefixed for
 Claude Code), or the user's own words, which become the brief. One
 `session.create` makes the Epic's Rex session, labelled with the whole name
-(pane labels shorten it to their task width), with two windows, all or none: a `narrator` tab
-(claimed in the tab ledger) whose agent is told whose personal agent it
-narrates for, and the orchestrator's tab, last and so active, left with Rex's
-placeholder name so it follows its agent. Then the session is linked to the
+(pane labels shorten it to their task width), with two windows, all or none: the narrator's tab,
+whose agent is told whose personal agent it narrates for, and the
+orchestrator's tab, last and so active, both left with Rex's placeholder name
+so each follows its agent. With `--crew`, the crew is checked against the
+crews found from DIR before anything is created and recorded as the session's
+before either agent is adopted, so both are briefed with it (the narrator, a
+Stealth agent, takes none): creating the session and recording its crew run
+under the lifecycle lock that adoption takes, since the panes' agents start
+as the session is created. Then the session is linked to the
 caller (before adoption, so the caller can mail the narrator at once), and
 both startups are awaited (`AwaitStartup`). The result (`session_id`, each
 agent's block and startup, `linked`) is printed even when part of it failed;
@@ -1332,13 +1345,50 @@ nothing started is torn down, and the command exits 0 only when both agents
 are adopted and linked. The Epic's agents start outside any summon chain, as
 the user's own would: the orchestrator is depth 0 in its session.
 
+### Closing an Epic
+
+Nothing closes an Epic on its own: a hand-back can leave items only the user
+can act on, and a killed session's screens are gone for good. The end has two
+phases. The orchestrator's final report sets its task to `hand-back: …`
+(`title`), which the session's pulse counts as urgent (`core.HandBack`), so it
+neither waits behind an unread routine notice nor sits out the narrator's
+hold; the narrator tells the linked personal agent, unasked, and the
+personal agent asks the user. On the user's
+words it runs `rex-amq-adapter epic close <session_id> --asked "WORDS"
+[--force]` (`app.Env.CloseEpic`):
+
+1. Guards, before any effect: the caller is a live `personal` agent, the
+   user's words are given, and a link from the caller's session to the
+   named one exists (a session the caller did not open or link is the user's
+   to close). Unless `--force`, every live agent of the Epic other than a
+   Stealth one must be at rest (its program status `idle`, `done`, or
+   `error`) and hold no unread mail; one working, blocked on a dialog, or
+   reporting no state (which cannot be told from working) is named in the
+   refusal. An agent whose block Rex no longer has is not in the way.
+2. Under the lifecycle lock, `rex session kill` ends the session first, so a
+   kill that fails leaves every agent live with its waker; a session already
+   gone is not an error. The lock keeps the session's watcher and the dying
+   agents' `SessionEnd` hooks from parking them first under another reason.
+3. Each live record of the session is parked: its waker retired, its window
+   notes cleared, `DepartReason` `epic_closed`. No departure notes or mail
+   are sent: everyone they would reach was in the session just killed. The
+   records stay reserved (`ReserveFor`, 7 days), so a resume in a new Epic
+   gets its handle back, and `sessions/<id>/view.json` stays.
+4. The link is removed last, so a close that failed part way is finished by
+   running it again: its guards pass on the same link, and the agents left
+   live are parked then.
+
+The session's watcher, with no orchestrator or narrator live, exits on its
+own. A direct session the user started is never an Epic to close.
+
 ### Narrator
 
 A `narrator` (`core.Stealth`, like a `personal` agent) observes its Epic
 without taking part. It is nobody's mate: `who` (but not `who --all`), start
 notices, join and leave notes, departure mail, error routing, the watchdog,
 the cross-family takeover, and the summon cap all leave it out. `summon
-narrator` opens it in a background `narrator` tab of its own.
+narrator` opens it in a background tab of its own, which follows it like
+any agent's.
 
 It observes in two tiers, neither of which moves a message, writes a receipt,
 or reads a mailbox as its owner (`view refresh`):
@@ -1365,7 +1415,8 @@ The narrator takes no member mail. The session's watcher compares a
 deterministic pulse of the session (members, tasks, newest mail id, attention
 from health marks) and mails the narrator adapter system mail from itself:
 `urgent` for a departure or new attention (a turn error, a wait on the human, a
-stall), `normal` for members or tasks, `low` for mail alone. A routine change
+stall) and for an orchestrator whose task turns to `hand-back: …`, `normal`
+for members or tasks, `low` for mail alone. A routine change
 while the last notice is unread rides along with it. A narrator's
 `.wake.settings` get `--hold-normal 2m --hold-low 10m` (`amq wake config`)
 when it is adopted, and `announceMail` applies amq's hold rule to mail not yet
