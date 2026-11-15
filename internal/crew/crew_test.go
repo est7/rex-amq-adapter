@@ -245,9 +245,14 @@ func TestNarratorPromptForbidsUnsolicitedMailToPersonal(t *testing.T) {
 		t.Fatalf("built-in narrator role: %v %v", ok, err)
 	}
 	for _, want := range []string{
-		"Your first turn and every wake do only this",
-		"never send unsolicited mail to the personal agent",
-		"end your turn",
+		"Your first turn and every routine wake do only that, then end your turn",
+		"Never send unsolicited mail to the personal agent",
+		// The cases that still mail it, each with its command.
+		"rex-amq-adapter reply",
+		"or the orchestrator departs, tell the linked personal agent",
+		`--subject "hand-back ready"`,
+		"`waiting_on_the_human`",
+		`--subject "waits on the user"`,
 	} {
 		if !strings.Contains(p.Text, want) {
 			t.Errorf("narrator prompt lacks %q:\n%s", want, p.Text)

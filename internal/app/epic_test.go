@@ -258,7 +258,7 @@ func TestNarratorLaunchBriefForbidsUnsolicitedMail(t *testing.T) {
 	}
 	narr := term.sessions_[0].panes[0]
 	narrate := narr.Command[len(narr.Command)-1]
-	for _, want := range []string{"refresh the view with --summary and end your turn", "do not mail claude-01 now"} {
+	for _, want := range []string{"refresh the view, add your reading with --summary, and end your turn", "do not mail claude-01 now", "a hand-back or orchestrator departure"} {
 		if !strings.Contains(narrate, want) {
 			t.Errorf("narrator launch brief lacks %q: %s", want, narrate)
 		}

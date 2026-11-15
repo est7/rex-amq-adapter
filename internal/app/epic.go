@@ -118,7 +118,7 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 		}
 		return EpicResult{}, fmt.Errorf("folder trust: %w", err)
 	}
-	narrate := fmt.Sprintf("Narrate the Epic %q for the personal agent %s. On this first turn, refresh the view with --summary and end your turn: do not mail %s now. Mail it only when your role prompt says so (its question, a hand-back, a wait on the human).", name, caller.Handle, caller.Handle)
+	narrate := fmt.Sprintf("Narrate the Epic %q for the personal agent %s. On this first turn, refresh the view, add your reading with --summary, and end your turn: do not mail %s now. Mail it only when your role prompt says so (its question, a hand-back or orchestrator departure, a wait on the human).", name, caller.Handle, caller.Handle)
 	// The narrator's tab first and the orchestrator's last, which Rex makes
 	// the session's active tab; both keep Rex's placeholder name, so each
 	// follows its agent (core.FollowTab).
