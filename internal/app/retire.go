@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
 	"github.com/est7/rex-amq-adapter/internal/rex"
@@ -25,6 +26,17 @@ const (
 	RetireAlreadyDeparted = "already_departed"
 )
 
+// What a retire did with the agent's pane.
+const (
+	PaneClosed   = "closed"
+	PaneGone     = "gone"      // Rex no longer had the block
+	PaneLeftOpen = "left_open" // it shows something else now, or did not close
+)
+
+// retireRexFor bounds each Rex call a retire makes under the lifecycle lock,
+// which every adoption and departure on the host waits for.
+const retireRexFor = 2 * time.Second
+
 // RetireRequest is what the caller asks.
 type RetireRequest struct {
 	Handle core.Handle
@@ -39,6 +51,10 @@ type RetireResult struct {
 	Block        string      `json:"block"`
 	Action       string      `json:"action"`
 	DepartReason string      `json:"depart_reason"`
+	// Pane is PaneClosed, PaneGone, or PaneLeftOpen, with PaneNote saying
+	// why it was left open; both are empty when nothing was retired.
+	Pane     string `json:"pane,omitempty"`
+	PaneNote string `json:"pane_note,omitempty"`
 }
 
 // Retire retires r.Handle for the agent in loc: it marks the record departed
@@ -47,72 +63,130 @@ type RetireResult struct {
 // agent, a target outside the caller's Rex session, the caller itself, and a
 // narrator, personal, or orchestrator target; unless forced, also a target
 // that is not at rest. A target already departed is a no-op
-// (RetireAlreadyDeparted). When the block does not close, the departure
-// stands and the error names the block to close by hand.
+// (RetireAlreadyDeparted). A block that no longer shows the agent (it left
+// the pane, its process exited, its background job is not shown there) is
+// left open, since closing it would close someone else's pane. When the
+// block does not close, the departure stands and the error names the block
+// to close by hand.
 func (e Env) Retire(ctx context.Context, loc Location, r RetireRequest) (RetireResult, error) {
 	res := RetireResult{Handle: r.Handle}
 	if r.Handle == "" {
 		return res, fmt.Errorf("%w: name the agent to retire", ErrUsage)
 	}
-	caller, ok, err := e.Store.Record(loc.Block)
-	if err != nil {
+	target, on, err := e.retireLocked(ctx, loc, r, &res)
+	if err != nil || (res.Pane != PaneClosed && res.Pane != PaneGone) {
 		return res, err
 	}
-	if !ok || !caller.Adopted() {
-		return res, errors.New("no AMQ identity for this pane, so nothing can retire an agent")
-	}
-	target, err := e.retireTarget(caller, r.Handle)
-	if err != nil {
-		return res, err
-	}
-	res.Block = target.BlockID
-	on := e.Rex
-	if e.RexOn != nil && target.Server != "" {
-		on = e.RexOn(target.Server)
-	}
-	if target.Live() && !r.Force {
-		why, err := e.unrest(ctx, on, target)
-		if err != nil {
-			return res, err
-		}
-		if why != "" {
-			return res, fmt.Errorf("%w: not at rest (%s); wait for it, or pass --force to retire it anyway", ErrRefused, why)
-		}
-	}
-	unlock, err := e.Store.LockLifecycle(ctx)
-	if err != nil {
-		return res, err
-	}
-	// The lock is held through the close, as an Epic's close holds it through
-	// the kill: the target's own hooks, its SessionEnd included, wait and
-	// then find a departed record.
-	defer unlock()
-	target, ok, err = e.recordByHandle(target.Handle)
-	if err != nil {
-		return res, err
-	}
-	if ok {
-		res.Block = target.BlockID
-	}
-	if !ok || !target.Live() {
-		res.Action = RetireAlreadyDeparted
-		res.DepartReason = target.DepartReason
-		return res, nil
-	}
-	if err := e.departQuietly(ctx, target, store.DepartRetired); err != nil {
-		return res, fmt.Errorf("retire %s: %w", r.Handle, err)
-	}
-	res.Action, res.DepartReason = RetireRetired, store.DepartRetired
-	if err := on.CloseBlock(ctx, target.BlockID); err != nil && !errors.Is(err, rex.ErrNotFound) {
-		// The agent still runs, and its next turn takes its handle back
-		// (a resume): then a raw close would read as a crash again.
-		return res, fmt.Errorf("%s is retired, but its pane did not close (%w); close it with `rex block close %s`, or, once `rex-amq-adapter who` lists it again, retire it again", r.Handle, err, target.BlockID)
-	}
+	// Unlocked: the block is gone, so no hook of the agent can adopt it again.
 	// A tab it shared may now hold one agent, whose label it then follows.
 	tabs := e
 	tabs.Rex = on
 	tabs.followTab(ctx, target.SessionID, target.WindowID)
 	return res, nil
+}
+
+// retireLocked does a retire's work under the lifecycle lock, filling in
+// res: every guard reads the records as they are under it, so a resume,
+// a move, a role change, or mail arriving before it was taken is seen. The
+// agent's own hooks, its SessionEnd included, wait for the close and then
+// find a departed record. It returns the target and the terminal of its
+// server.
+func (e Env) retireLocked(ctx context.Context, loc Location, r RetireRequest, res *RetireResult) (store.Record, Terminal, error) {
+	unlock, err := e.Store.LockLifecycle(ctx)
+	if err != nil {
+		return store.Record{}, nil, err
+	}
+	defer unlock()
+	caller, ok, err := e.Store.Record(loc.Block)
+	if err != nil {
+		return store.Record{}, nil, err
+	}
+	if !ok || !caller.Adopted() {
+		return store.Record{}, nil, errors.New("no AMQ identity for this pane, so nothing can retire an agent")
+	}
+	target, err := e.retireTarget(caller, r.Handle)
+	if err != nil {
+		return store.Record{}, nil, err
+	}
+	res.Block = target.BlockID
+	if !target.Live() {
+		res.Action, res.DepartReason = RetireAlreadyDeparted, target.DepartReason
+		return target, nil, nil
+	}
+	on := e.Rex
+	if e.RexOn != nil && target.Server != "" {
+		on = e.RexOn(target.Server)
+	}
+	if !r.Force {
+		rctx, cancel := context.WithTimeout(ctx, retireRexFor)
+		why, err := e.unrest(rctx, on, target)
+		cancel()
+		if err != nil {
+			return target, on, err
+		}
+		if why != "" {
+			return target, on, fmt.Errorf("%w: not at rest (%s); wait for it, or pass --force to retire it anyway", ErrRefused, why)
+		}
+	}
+	if err := e.departQuietly(ctx, target, store.DepartRetired); err != nil {
+		return target, on, fmt.Errorf("retire %s: %w", r.Handle, err)
+	}
+	res.Action, res.DepartReason = RetireRetired, store.DepartRetired
+	pane, note, err := e.paneOfRetired(ctx, on, target)
+	if err != nil {
+		res.Pane, res.PaneNote = PaneLeftOpen, fmt.Sprintf("what it shows could not be read: %v", err)
+		return target, on, fmt.Errorf("%s is retired, but its pane was not closed: what it shows could not be read (%w); look at it, then close it with `rex block close %s` if it still shows the agent", r.Handle, err, target.BlockID)
+	}
+	if pane != "" {
+		res.Pane, res.PaneNote = pane, note
+		return target, on, nil
+	}
+	cctx, cancel := context.WithTimeout(ctx, retireRexFor)
+	err = on.CloseBlock(cctx, target.BlockID)
+	cancel()
+	switch {
+	case errors.Is(err, rex.ErrNotFound):
+		res.Pane = PaneGone
+	case err != nil:
+		res.Pane, res.PaneNote = PaneLeftOpen, fmt.Sprintf("the close failed: %v", err)
+		// The agent still runs, and its next turn takes its handle back
+		// (a resume): then a raw close would read as a crash again.
+		return target, on, fmt.Errorf("%s is retired, but its pane did not close (%w); close it with `rex block close %s`, or, once `rex-amq-adapter who` lists it again, retire it again", r.Handle, err, target.BlockID)
+	default:
+		res.Pane = PaneClosed
+	}
+	return target, on, nil
+}
+
+// paneOfRetired says what to do with rec's block, read on its server: ""
+// when it still shows rec's agent, to be closed; PaneGone when Rex no longer
+// has it; PaneLeftOpen, with why, when it shows something else.
+func (e Env) paneOfRetired(ctx context.Context, on Terminal, rec store.Record) (pane, note string, err error) {
+	ctx, cancel := context.WithTimeout(ctx, retireRexFor)
+	defer cancel()
+	probe := e
+	probe.Rex = on
+	b, err := probe.observeBinding(ctx, rec)
+	if err != nil {
+		return "", "", err
+	}
+	isJob := false
+	if localServer(rec.Server) {
+		if _, _, isJob, err = e.jobStatus(rec); err != nil {
+			return "", "", err
+		}
+	}
+	switch {
+	case b.BlockGone:
+		return PaneGone, "", nil
+	case b.LeftPane:
+		return PaneLeftOpen, "its conversation moved to the background; the pane shows something else", nil
+	case b.AgentGone && b.ForegroundPID != 0:
+		return PaneLeftOpen, "its process exited; another program holds the pane", nil
+	case isJob && !b.JobShown:
+		return PaneLeftOpen, "the pane no longer shows its background session", nil
+	}
+	return "", "", nil
 }
 
 // retireTarget is the record caller may retire as h, refused per Retire. A
