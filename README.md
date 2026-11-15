@@ -214,7 +214,9 @@ rex-amq-adapter epic "login revamp" -c ~/src/app --goal ~/src/app/.goal/20261112
 `epic` creates the Epic's Rex session (named after it) with the orchestrator,
 briefed to run the contract (or, with `--asked "<your words>"`, with your
 request), and a narrator in a background tab of its own, each tab following
-its agent's pane label; with `--crew C` the session works as crew C. It links
+its agent's pane label. The narrator only reads mail and rewrites the view, so
+it runs on its CLI's cheap tier (`claude --model haiku`, `agy --model
+gemini-4-hydrogen-low`), on a resume too; with `--crew C` the session works as crew C. It links
 the Epic to the personal agent and waits for both agents (`--timeout`, 90 s
 by default).
 It prints one JSON line and exits 0 only when both are adopted and linked; a

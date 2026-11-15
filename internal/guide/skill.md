@@ -322,7 +322,8 @@ rex-amq-adapter epic close <session_id> --asked "<the user's words>"   # only on
 ```
 
 It creates the Epic's Rex session with its orchestrator (briefed to run the
-goal contract, or with the user's words) and its narrator, links the Epic to
+goal contract, or with the user's words) and its narrator (on its CLI's
+cheap model, `haiku` for Claude), links the Epic to
 you, and prints one JSON line (`session_id`, each agent's `handle`, `block`
 and `status`, `linked`); it exits 0 only when both agents are adopted and
 linked. Closing is two-phase: the narrator reports the hand-back ready, you

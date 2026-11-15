@@ -34,6 +34,22 @@ func DefaultHarness(role string) Kind {
 	return Claude
 }
 
+// RoleModel is the model a role's agent runs on in kind's CLI, "" for the
+// CLI's own default. A narrator only reads mail and rewrites the view, so it
+// runs on the cheap tier of its CLI (the user's choice, 2026-11-15).
+func RoleModel(role string, kind Kind) string {
+	if role != NarratorRole {
+		return ""
+	}
+	switch kind {
+	case Claude:
+		return "haiku"
+	case Agy:
+		return "gemini-4-hydrogen-low"
+	}
+	return ""
+}
+
 // SummonCheck is what the guards decide for a resume or start. A refusal
 // is also an error, so a caller can carry it up.
 type SummonCheck struct {
