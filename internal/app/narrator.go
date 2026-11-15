@@ -146,7 +146,7 @@ func (e Env) tellNarrator(ctx context.Context, key core.SessionKey, narr store.R
 	if c.Priority == core.PriorityUrgent {
 		subject = "Your Rex session needs attention"
 	}
-	body := strings.Join(c.Lines, "\n") + "\n\nRefresh your view with `" + e.SelfBin + " view refresh`, then say what changed in `--summary`."
+	body := strings.Join(c.Lines, "\n") + "\n\nRefresh your view with `" + e.SelfBin + " view refresh`, then say what changed in `--summary`. Mail the personal agent only when your role prompt names the case (its question, a hand-back or orchestrator departure, a wait on the human); otherwise end your turn without mailing anyone."
 	sent, _, err := e.post(ctx, Outgoing{
 		Op: core.Operation{Kind: core.OpSend, System: true}, From: narr.Handle, To: []core.Handle{narr.Handle},
 		Args: []string{"--allow-self", "--kind", "status", "--priority", c.Priority, "--labels", amq.SystemLabel, "--subject", subject, "--body", body},
