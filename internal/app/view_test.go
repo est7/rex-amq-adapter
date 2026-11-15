@@ -258,13 +258,22 @@ func TestHandBackInTheViewWhole(t *testing.T) {
 	noOpenObligations(e)
 	ctx := context.Background()
 	body := "## Review queue\n- https://github.com/est7/rex-amq-adapter/pull/18\n## Blocked on me\n- merge #18\n" + strings.Repeat("Found: 一行说明。", viewExcerpt)
+	if _, err := e.RefreshSessionView(ctx, Location{Block: "block:pi-04"}, "before"); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := e.RecordHandBack(ctx, Location{Block: "block:claude-01"}, body); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.RefreshSessionView(ctx, Location{Block: "block:pi-04"}, ""); err != nil {
-		t.Fatal(err)
-	}
-	for _, who := range []string{"pi-05", "pi-04", "claude-01"} {
+	written, _, _ := e.Store.ReadView("session:a")
+	// Read at once, before the narrator refreshes, then after.
+	for i, who := range []string{"pi-05", "pi-04", "claude-01", "pi-05"} {
+		if i == 3 {
+			if _, err := e.RefreshSessionView(ctx, Location{Block: "block:pi-04"}, ""); err != nil {
+				t.Fatal(err)
+			}
+		} else if after, _, _ := e.Store.ReadView("session:a"); string(after) != string(written) {
+			t.Fatal("reading the view wrote it")
+		}
 		b, err := e.ReadSessionView(ctx, Location{Block: "block:" + who}, "")
 		if err != nil {
 			t.Fatal(err)

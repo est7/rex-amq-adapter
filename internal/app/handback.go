@@ -14,7 +14,8 @@ import (
 // `rex-amq-adapter hand-back`: the whole text (review queue, PR links,
 // Blocked on me, Decided for you, Changed, Found) goes into
 // sessions/<id>/hand-back.json, the view carries it whole (hand_back), and
-// the session's pulse marks the orchestrator with the hand-back's time, so
+// the session's pulse marks the orchestrator with the hand-back's time and
+// body digest, so
 // the watcher wakes the narrator once the report is on disk, never before.
 
 // handBackMax bounds a hand-back: the view holds it whole, so one too large

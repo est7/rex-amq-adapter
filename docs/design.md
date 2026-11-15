@@ -1355,11 +1355,14 @@ phases. The orchestrator records its final report, whole, with
 orchestrator placed in a session only, a non-empty body of at most 256 KiB,
 refused rather than cut). It is written atomically to
 `sessions/<id>/hand-back.json` (`store.HandBack`: `by`, `at`, `body`),
-replacing the one before, and the view carries it uncut as `hand_back`.
-The session's pulse marks its author with the hand-back's time
-(`core.PulseMember.HandBack`), which the watcher reads from that file, so the
-narrator is woken only once the report is on disk, and once for each new
-one; the change is urgent, so it neither waits behind an unread routine
+replacing the one before, and the view carries it uncut as `hand_back`:
+the narrator's refresh writes it into `view.json`, and every `view` read puts
+the stored one in place in memory, so it is whole the moment it is recorded.
+The session's pulse marks its author with the hand-back's time and a digest
+of its body (`core.PulseMember.HandBack`), which the watcher reads from that
+file, so the narrator is woken only once the report is on disk, and once for
+each new one, also when its author joined since the last look or the
+watcher's first look finds one already stored; the change is urgent, so it neither waits behind an unread routine
 notice nor sits out the narrator's hold. The orchestrator's task (its pane
 label) signals nothing. The narrator tells the linked personal agent,
 unasked, from `hand_back`, and the personal agent asks the user. On the user's

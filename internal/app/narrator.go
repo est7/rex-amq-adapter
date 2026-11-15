@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"slices"
 	"strings"
@@ -37,7 +39,8 @@ func (e Env) sessionPulse(key core.SessionKey) (core.SessionPulse, error) {
 		}
 		m := core.PulseMember{Handle: r.Handle, Role: r.Role, Live: r.Live(), Task: r.Task}
 		if hasHB && hb.By == r.Handle {
-			m.HandBack = hb.At.UTC().Format(time.RFC3339Nano)
+			sum := sha256.Sum256([]byte(hb.Body))
+			m.HandBack = hb.At.UTC().Format(time.RFC3339Nano) + "#" + hex.EncodeToString(sum[:4])
 		}
 		if m.LastMail, err = e.lastMail(r.Handle); err != nil {
 			return p, err
@@ -50,6 +53,15 @@ func (e Env) sessionPulse(key core.SessionKey) (core.SessionPulse, error) {
 		p.Members = append(p.Members, m)
 	}
 	return p.Normalize(), nil
+}
+
+// withoutHandBacks is p with no hand-back marked.
+func withoutHandBacks(p core.SessionPulse) core.SessionPulse {
+	out := p.Normalize()
+	for i := range out.Members {
+		out.Members[i].HandBack = ""
+	}
+	return out
 }
 
 // lastMail is the newest message id h holds or sent; ids sort by time.
@@ -106,7 +118,13 @@ func (e Env) tellNarrator(ctx context.Context, key core.SessionKey, narr store.R
 	}
 	at := e.Now().UTC()
 	if !ok {
-		return e.Store.PutPulse(key.SessionID, store.PulseCursor{Pulse: now, At: at})
+		// The first look only records the session, except a hand-back
+		// already stored: the narrator may have read its view before it was,
+		// so it is told as new.
+		cur.Pulse = withoutHandBacks(now)
+		if cur.Pulse.Digest() == now.Digest() {
+			return e.Store.PutPulse(key.SessionID, store.PulseCursor{Pulse: now, At: at})
+		}
 	}
 	c := core.ComparePulse(cur.Pulse, now)
 	if c.Priority == "" {

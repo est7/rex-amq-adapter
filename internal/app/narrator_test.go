@@ -369,7 +369,8 @@ func TestSessionWatcherTellsTheNarratorOfAHandBackAtOnce(t *testing.T) {
 func TestHandBackOnlyTheOrchestratorRecords(t *testing.T) {
 	e, _, key := watcherWorld(t)
 	ctx := context.Background()
-	for _, b := range []string{"block:n", "block:w"} {
+	add(t, e, store.Record{Handle: "pi-04", Kind: core.Pi, Role: core.PersonalRole, BlockID: "block:p", Server: fakeServer, SessionID: "session:s", AgentPID: os.Getpid(), AdoptedAt: e.Now()})
+	for _, b := range []string{"block:n", "block:w", "block:p"} {
 		if _, err := e.RecordHandBack(ctx, Location{Block: b}, "report"); !errors.Is(err, ErrRefused) {
 			t.Fatalf("%s recorded a hand-back: %v", b, err)
 		}
@@ -391,6 +392,38 @@ func TestHandBackOnlyTheOrchestratorRecords(t *testing.T) {
 	}
 	if got, ok, err := e.Store.HandBack(key.SessionID); !ok || err != nil || got.Body != "report" {
 		t.Fatalf("stored %+v %v %v", got, ok, err)
+	}
+	leave(t, e, "codex-01")
+	if _, err := e.RecordHandBack(ctx, Location{Block: "block:o"}, "late"); err == nil {
+		t.Fatal("a departed orchestrator recorded a hand-back")
+	}
+	if got, _, _ := e.Store.HandBack(key.SessionID); got.Body != "report" {
+		t.Fatalf("a refused hand-back replaced the stored one: %+v", got)
+	}
+}
+
+// A hand-back stored before the watcher's first look at the session (the
+// narrator may have read its view before it was) is told as new, not taken
+// into the first pulse unannounced; a first look with none tells nothing.
+func TestSessionWatcherTellsAHandBackStoredBeforeItsFirstLook(t *testing.T) {
+	e, _, key := watcherWorld(t)
+	ctx := context.Background()
+	if _, err := e.RecordHandBack(ctx, Location{Block: "block:o"}, "fast report"); err != nil {
+		t.Fatal(err)
+	}
+	keepers := []store.Record{recordOf(t, e, "codex-01"), recordOf(t, e, "codex-02")}
+	if err := e.watchOnce(ctx, key, keepers); err != nil {
+		t.Fatal(err)
+	}
+	n := narratorInbox(t, e)
+	if len(n) != 1 || n[0].Priority != core.PriorityUrgent {
+		t.Fatalf("a hand-back before the first look: %+v", n)
+	}
+	if err := e.watchOnce(ctx, key, keepers); err != nil {
+		t.Fatal(err)
+	}
+	if n := narratorInbox(t, e); len(n) != 1 {
+		t.Fatalf("told twice: %d", len(n))
 	}
 }
 

@@ -11,18 +11,26 @@ import (
 	"time"
 )
 
-const handBackUsage = "usage: rex-amq-adapter hand-back TEXT|@FILE|-   (the whole final report; - reads stdin)"
+const handBackUsage = "usage: rex-amq-adapter hand-back TEXT|@FILE|-   (the whole final report; - reads stdin; `--` before a TEXT that starts with a dash)"
+
+// handBackReadMax is how much of stdin a hand-back reads: past the 256 KiB
+// the adapter takes, so an oversized report is refused, not cut.
+const handBackReadMax = 256<<10 + 1
 
 // handBackBody is the report a hand-back's one argument names: the text
 // itself, @FILE for a file's contents, or - for stdin.
 func handBackBody(args []string, stdin io.Reader) (string, error) {
+	if len(args) == 2 && args[0] == "--" {
+		return args[1], nil // a report that starts with a dash
+	}
 	if len(args) != 1 {
 		return "", errors.New("hand-back takes one argument")
 	}
 	a := args[0]
 	switch {
 	case a == "-":
-		b, err := io.ReadAll(stdin)
+		// One byte past the limit is enough for the limit to refuse it.
+		b, err := io.ReadAll(io.LimitReader(stdin, handBackReadMax))
 		return string(b), err
 	case strings.HasPrefix(a, "@"):
 		b, err := os.ReadFile(a[1:])

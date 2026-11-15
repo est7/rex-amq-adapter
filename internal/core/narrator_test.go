@@ -143,4 +143,8 @@ func TestPulseHandBackMarker(t *testing.T) {
 	if c := ComparePulse(q, SessionPulse{Members: []PulseMember{gone}}); c.Priority != PriorityUrgent || len(c.Lines) != 1 || c.Lines[0] != "claude-01 (orchestrator) left" {
 		t.Fatalf("a departure after the hand-back: %+v", c)
 	}
+	// An orchestrator that joins and hands back between two looks.
+	if c := ComparePulse(SessionPulse{}, q); c.Priority != PriorityUrgent || len(c.Lines) != 2 || c.Lines[1] != "claude-01 handed back: its report is in your view (hand_back)" {
+		t.Fatalf("a hand-back by a member not seen before: %+v", c)
+	}
 }

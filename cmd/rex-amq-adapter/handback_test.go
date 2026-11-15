@@ -33,7 +33,26 @@ func TestHandBackBodyArgs(t *testing.T) {
 			t.Errorf("%q was taken", args)
 		}
 	}
-	if code := runHandBack([]string{"--bogus"}, strings.NewReader("")); code != 2 {
-		t.Errorf("a bad flag exits %d", code)
+}
+
+// hand-back is a command: help exits 0, bad usage 2, and a report reaches the
+// caller lookup (which fails here, with no Rex) instead of being usage.
+func TestHandBackIsDispatched(t *testing.T) {
+	isolate(t)
+	for args, want := range map[string]int{"--help": 0, "--bogus": 2, "": 2, "report": 1} {
+		argv := []string{"hand-back"}
+		if args != "" {
+			argv = append(argv, args)
+		}
+		if code := run(argv); code != want {
+			t.Errorf("hand-back %q: exit %d, want %d", args, code, want)
+		}
+	}
+	if got, err := handBackBody([]string{"--", "- PR #18"}, strings.NewReader("")); err != nil || got != "- PR #18" {
+		t.Errorf("a report after --: %q %v", got, err)
+	}
+	big, err := handBackBody([]string{"-"}, strings.NewReader(strings.Repeat("x", 1<<20)))
+	if err != nil || len(big) != handBackReadMax {
+		t.Errorf("stdin is read to %d bytes, want %d (%v)", len(big), handBackReadMax, err)
 	}
 }

@@ -27,8 +27,9 @@ type PulseMember struct {
 	// Attention lists what waits on someone, each "<what>@<since>": a turn
 	// that ended in an error, a prompt waiting on the human, a stall.
 	Attention []string `json:"attention,omitempty"`
-	// HandBack is when the agent last recorded the session's hand-back
-	// (store.HandBack), set only once it is on disk.
+	// HandBack marks the session's hand-back the agent last recorded
+	// (store.HandBack: its time and a digest of its body), set only once it
+	// is on disk.
 	HandBack string `json:"hand_back,omitempty"`
 }
 
@@ -110,7 +111,7 @@ func ComparePulse(prev, now SessionPulse) PulseChange {
 				raise(PriorityUrgent, fmt.Sprintf("%s: %s", m.Handle, strings.ReplaceAll(what, "_", " ")))
 			}
 		}
-		if had && b.HandBack != m.HandBack && m.HandBack != "" {
+		if b.HandBack != m.HandBack && m.HandBack != "" {
 			// The run ended and waits on the user: urgent, so it neither waits
 			// behind a routine notice nor sits out the narrator's hold.
 			raise(PriorityUrgent, fmt.Sprintf("%s handed back: its report is in your view (hand_back)", m.Handle))

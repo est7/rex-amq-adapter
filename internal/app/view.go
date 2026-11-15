@@ -229,7 +229,27 @@ func (e Env) ReadSessionView(ctx context.Context, loc Location, session string) 
 	if !ok {
 		return nil, ErrNoView
 	}
-	return b, nil
+	return e.withHandBack(id, b)
+}
+
+// withHandBack is view b with session id's stored hand-back in place of the
+// one the narrator last wrote, so a hand-back is read whole the moment it is
+// recorded, before any refresh. Nothing is written.
+func (e Env) withHandBack(id string, b json.RawMessage) (json.RawMessage, error) {
+	hb, ok, err := e.Store.HandBack(id)
+	if err != nil || !ok {
+		return b, err
+	}
+	var v SessionView
+	if err := json.Unmarshal(b, &v); err != nil {
+		return nil, fmt.Errorf("decode the view of %s: %w", id, err)
+	}
+	if v.HandBack != nil && *v.HandBack == hb {
+		return b, nil
+	}
+	v.HandBack = &hb
+	out, err := json.Marshal(v)
+	return append(out, '\n'), err
 }
 
 // RefreshSessionView rebuilds the view of the narrator's session in loc and
@@ -374,6 +394,7 @@ func (e Env) buildView(ctx context.Context, narr store.Record, key core.SessionK
 		return v, err
 	} else if ok {
 		v.HandBack = &hb
+		v.Sources = append(v.Sources, "hand-back.json")
 	}
 	var g gaps
 
