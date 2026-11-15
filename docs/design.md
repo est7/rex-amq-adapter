@@ -790,12 +790,28 @@ parent, depth, target) that the launched agent carries as `REX_AMQ_SUMMON`.
 Its first hook commits a record with that parent and depth and only then
 deletes the token, so a failed write keeps the lineage for the retry; an
 unadopted token stops holding its place after `store.PendingSummonFor`
-(2 minutes). The harness is the role's default (`reviewer`, `editor`, `qa`:
-Codex; any other role: Claude Code) unless `--harness` names one, and every
+(2 minutes). The harness is the role's default unless `--harness` names one: any role
+but a review role starts in Claude Code; `reviewer`, `editor`, and `qa`
+start in the first of Codex, Antigravity, Claude Code that is another
+family than the caller's (`core.DefaultHarnesses`; Pi's model is the user's,
+so it is never a default), that the summoner's PATH finds, and whose
+preflight passes (`app.Env.pickHarness`). The result names the `harness`
+and each one `passed_over` with its reason; with none ready the summon
+refuses with every reason and never falls back to the caller's family. An
+explicit `--harness` is never swapped. The preflight refuses Codex with
+`unapproved_hooks` when a hook in its `hooks.json` lacks the user's `/hooks`
+approval or changed since (`install.CodexHooksNeedingReview`, a read-only
+port of Codex's `trusted_hash`: sha256 of the sorted compact JSON of the
+event, its matcher, and the normalized handler, keyed by the hooks file's
+path, resolved when `CODEX_HOME` names it), before it grants any folder
+trust; a pane that still stops on "Hooks need review" is `trust_screen`
+with a note naming `/hooks`. Every
 start keeps a brief that starts with a dash a prompt: Claude Code, Codex,
 and Pi take it after `--`, Antigravity as the value of `-i`. Every summon, refusals included, is a JSON
 line in `logs/summon.log` (summoner, parent, depth, target, kind, subject,
-action, handles, block, reason, grant, asked).
+action, handles, block, reason, grant, asked, and for a start `harness` and
+`passed_over`), and the command's own JSON line carries `harness` and
+`passed_over` too.
 
 The guards hold for `summon` only. An agent started by hand (`rex split`,
 `rex run`) has no token: it is recorded at depth 0, as the user's own
@@ -1490,6 +1506,14 @@ while the last notice is unread rides along with it. A narrator's
 when it is adopted, and `announceMail` applies amq's hold rule to mail not yet
 announced, so Pi's mail watcher and every busy hook batch as its waker does;
 urgent mail skips the hold.
+
+A notice ends by telling the narrator to refresh its view, record its reading
+with `--summary`, and end its turn unless its role prompt names the case for
+mail; the launch brief says the same of its first turn: the summary in the
+view is its report. It mails the linked personal agent only to answer it, once
+per hand-back or orchestrator departure, and once per `waiting_on_the_human`
+wait; a cheap model told only whom it narrates for mailed "nothing happened
+yet" on its first turn, which held the personal agent's Stop hook.
 
 ## 9. Module layout
 

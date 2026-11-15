@@ -61,6 +61,10 @@ type SummonResult struct {
 	Parent  core.Handle   `json:"parent,omitempty"`
 	Depth   int           `json:"depth"`
 	Mailed  bool          `json:"mailed"` // the message is in a mailbox already
+	// Harness is the CLI a start launched; Passed names each default
+	// harness it passed over, and why (not installed, unapproved_hooks, …).
+	Harness core.Kind `json:"harness,omitempty"`
+	Passed  []string  `json:"passed_over,omitempty"`
 }
 
 // Summon resolves r.Target in the caller's session and acts.
@@ -362,12 +366,13 @@ func (e Env) start(ctx context.Context, caller store.Record, s Session, r Summon
 	if r.Grant == "" && r.Asked == "" {
 		return refuse("starting a new agent needs the user's own words in this session asking for it (--asked \"<their words>\", your attestation, logged) or a brief that cites their grant file (--grant <file>, which you verified and the brief names)")
 	}
-	kind := core.DefaultHarness(role)
+	kinds := core.DefaultHarnesses(role, caller.Kind)
 	if r.Harness != "" {
-		var err error
-		if kind, err = core.ParseKind(r.Harness); err != nil {
+		kind, err := core.ParseKind(r.Harness)
+		if err != nil {
 			return refuse(err.Error())
 		}
+		kinds = []core.Kind{kind}
 	}
 	brief := r.Body + "\n\nYou were started by " + string(caller.Handle) + " (summon on send). Report back with `" + e.SelfBin + " send --to " + string(caller.Handle) + " --subject \"…\" --body \"…\"`; the same request waits in your mailbox once you are adopted, so you can `" + e.SelfBin + " reply` to it."
 	label := role + " | " + core.Task(r.Subject)
@@ -379,15 +384,18 @@ func (e Env) start(ctx context.Context, caller store.Record, s Session, r Summon
 		}
 		cwd = r.Cwd
 	}
-	cmd := withModel(startCommand(kind, brief), core.RoleModel(role, kind))
-	if len(cmd) == 0 {
-		return refuse(fmt.Sprintf("unsupported harness %q; no agent was started", kind))
-	}
-	if refusal, err := e.preflight(ctx, cwd, kind); err != nil {
+	kind, passed, refusal, err := e.pickHarness(ctx, cwd, kinds, r.Harness == "")
+	if err != nil {
 		_ = e.Store.DeleteSummon(res.Token)
 		return res, err
 	} else if refusal != "" {
+		res.Passed = passed
 		return refuse(refusal)
+	}
+	res.Harness, res.Passed = kind, passed
+	cmd := withModel(startCommand(kind, brief), core.RoleModel(role, kind))
+	if len(cmd) == 0 {
+		return refuse(fmt.Sprintf("unsupported harness %q; no agent was started", kind))
 	}
 	block, err := e.launch(ctx, caller, s, r.Split, label, cwd, res.Token, cmd)
 	if err != nil {
@@ -399,10 +407,45 @@ func (e Env) start(ctx context.Context, caller store.Record, s Session, r Summon
 	return res, nil
 }
 
-// preflight checks, before a pane opens, that kind meets no folder-trust
-// dialog in cwd (trust.Gate.Preflight, which grants a project under a
-// declared root). refusal is the untrusted_folder reason, or a directory
-// that no longer exists; err is a failure to decide, which starts nothing
+// pickHarness picks the harness a start launches in cwd: the first of kinds
+// that is installed and passes the preflight. An explicit --harness (one
+// kind, byDefault false) is never swapped: its refusal is the summon's. A
+// default passes over each unready harness, naming why in passed, so an
+// unapproved Codex hook sends a review to Antigravity instead of a pane
+// stuck on "Hooks need review"; when none is ready the summon refuses with
+// every reason, and never falls back to the caller's own family.
+func (e Env) pickHarness(ctx context.Context, cwd string, kinds []core.Kind, byDefault bool) (kind core.Kind, passed []string, refusal string, err error) {
+	// Only a choice among several looks a CLI up: this process's PATH may
+	// lack one the pane's shell finds, which must not refuse a role's only
+	// harness, while passing over a candidate costs nothing.
+	choosing := byDefault && len(kinds) > 1
+	for _, k := range kinds {
+		if choosing && e.LookPath != nil {
+			if _, err := e.LookPath(string(k)); err != nil {
+				passed = append(passed, fmt.Sprintf("%s: not installed", k))
+				continue
+			}
+		}
+		refusal, err := e.preflight(ctx, cwd, k)
+		if err != nil {
+			return "", passed, "", err
+		}
+		if refusal == "" {
+			return k, passed, "", nil
+		}
+		if !byDefault {
+			return "", nil, refusal, nil
+		}
+		passed = append(passed, fmt.Sprintf("%s: %s", k, refusal))
+	}
+	return "", passed, "no harness for this role is ready, so no agent was started: " + strings.Join(passed, "; ") + "; clear one of these, or name another harness with --harness", nil
+}
+
+// preflight checks, before a pane opens, that kind meets no trust screen in
+// cwd (trust.Gate.Preflight: Codex hooks the user has not approved, or a
+// folder-trust dialog, granting a project under a declared root). refusal
+// is the unapproved_hooks or untrusted_folder reason, or a directory that
+// no longer exists; err is a failure to decide, which starts nothing
 // either.
 func (e Env) preflight(ctx context.Context, cwd string, kind core.Kind) (refusal string, err error) {
 	if cwd == "" {
@@ -416,12 +459,11 @@ func (e Env) preflight(ctx context.Context, cwd string, kind core.Kind) (refusal
 		return fmt.Sprintf("the working directory %s does not exist (a removed worktree?), so no agent was started; name another with --cwd", cwd), nil
 	}
 	err = e.trustGate().Preflight(ctx, cwd, kind)
-	var untrusted trust.Untrusted
-	if errors.As(err, &untrusted) {
-		return untrusted.Error(), nil
+	if trust.Refusal(err) {
+		return err.Error(), nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("folder trust in %s: %w", cwd, err)
+		return "", fmt.Errorf("trust preflight in %s: %w", cwd, err)
 	}
 	return "", nil
 }
@@ -514,6 +556,12 @@ func (e Env) Deliver(ctx context.Context, loc Location, h core.Handle, kind, sub
 // summon, whose mail or pane already exists.
 func (e Env) summonLog(caller store.Record, r SummonRequest, res SummonResult) {
 	entry := map[string]any{"at": e.Now().UTC().Format(time.RFC3339), "summoner": caller.Handle, "parent": caller.Parent, "depth": caller.Depth, "target": r.Target, "kind": r.Kind, "subject": r.Subject, "action": res.Action, "handles": res.Handles, "block": res.Block, "reason": res.Reason, "grant": r.Grant, "asked": r.Asked}
+	if res.Harness != "" {
+		entry["harness"] = res.Harness
+	}
+	if len(res.Passed) > 0 {
+		entry["passed_over"] = res.Passed
+	}
 	b, _ := json.Marshal(entry)
 	write := func() error {
 		if err := os.MkdirAll(e.Paths.Logs(), 0o700); err != nil {

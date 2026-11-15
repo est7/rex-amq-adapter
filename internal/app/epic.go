@@ -112,13 +112,12 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 	// Both agents' folder trust before the session exists: an Epic either
 	// starts with no dialog in its panes or does not start.
 	if err := e.trustGate().Preflight(ctx, dir, core.DefaultHarness(core.NarratorRole), kind); err != nil {
-		var untrusted trust.Untrusted
-		if errors.As(err, &untrusted) {
+		if trust.Refusal(err) {
 			return EpicResult{}, fmt.Errorf("%w: %v", ErrRefused, err)
 		}
-		return EpicResult{}, fmt.Errorf("folder trust: %w", err)
+		return EpicResult{}, fmt.Errorf("trust preflight: %w", err)
 	}
-	narrate := fmt.Sprintf("Narrate the Epic %q for the personal agent %s.", name, caller.Handle)
+	narrate := fmt.Sprintf("Narrate the Epic %q for the personal agent %s. On this first turn, refresh the view, add your reading with --summary, and end your turn: do not mail %s now. Mail it only when your role prompt says so (its question, a hand-back or orchestrator departure, a wait on the human).", name, caller.Handle, caller.Handle)
 	// The narrator's tab first and the orchestrator's last, which Rex makes
 	// the session's active tab; both keep Rex's placeholder name, so each
 	// follows its agent (core.FollowTab).

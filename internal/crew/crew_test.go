@@ -234,3 +234,31 @@ func TestPurposeSaysMoreThanWhoItIs(t *testing.T) {
 		}
 	}
 }
+
+// A narrator on a cheap model read its first turn as a cue to report to the
+// personal agent (F5: haiku narrators mailed "nothing happened yet" within
+// seconds of every Epic's start). The role prompt says what a first turn and
+// a routine wake do, and that they mail nobody.
+func TestNarratorPromptForbidsUnsolicitedMailToPersonal(t *testing.T) {
+	p, ok, err := Load("").Role("", "narrator")
+	if err != nil || !ok {
+		t.Fatalf("built-in narrator role: %v %v", ok, err)
+	}
+	for _, want := range []string{
+		"Your first turn and every routine wake do only that, then end your turn",
+		"Never send unsolicited mail to the personal agent",
+		// The cases that still mail it, each with its command.
+		"rex-amq-adapter reply",
+		"or the orchestrator departs, tell the linked personal agent",
+		`--subject "hand-back ready"`,
+		"`waiting_on_the_human`",
+		`--subject "waits on the user"`,
+	} {
+		if !strings.Contains(p.Text, want) {
+			t.Errorf("narrator prompt lacks %q:\n%s", want, p.Text)
+		}
+	}
+	if strings.Contains(p.Text, "tell the user's personal agent where it stands") {
+		t.Error("the opening still casts the narrator as reporting to the personal agent")
+	}
+}
