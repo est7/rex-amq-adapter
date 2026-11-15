@@ -374,3 +374,33 @@ func TestTrustConcurrentGrantsKeepEveryKey(t *testing.T) {
 		t.Errorf("log rows %d", len(rows))
 	}
 }
+
+// Trust roots are existing directories, kept by physical path, never / or
+// the home directory; removing one forgets it, and an unknown one is an error.
+func TestTrustRootsAddListRemove(t *testing.T) {
+	g, home := world(t)
+	ctx := context.Background()
+	side := mkdir(t, home, "projects", "side")
+	alias := filepath.Join(home, "side-link")
+	if err := os.Symlink(side, alias); err != nil {
+		t.Fatal(err)
+	}
+	roots, err := g.AddRoots(ctx, alias, side)
+	if err != nil || len(roots) != 1 || roots[0].Path != side {
+		t.Fatalf("%+v %v", roots, err)
+	}
+	for _, bad := range []string{"/", home, filepath.Join(home, "missing")} {
+		if _, err := g.AddRoots(ctx, bad); err == nil {
+			t.Errorf("%s accepted", bad)
+		}
+	}
+	if got, _ := g.Roots(); len(got) != 1 {
+		t.Fatalf("a refused root was kept: %+v", got)
+	}
+	if _, err := g.RemoveRoots(ctx, filepath.Join(home, "nope")); err == nil {
+		t.Error("an unknown root was removed")
+	}
+	if roots, err := g.RemoveRoots(ctx, alias); err != nil || len(roots) != 0 {
+		t.Fatalf("%+v %v", roots, err)
+	}
+}

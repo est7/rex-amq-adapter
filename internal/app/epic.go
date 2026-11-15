@@ -109,6 +109,15 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 			return EpicResult{}, fmt.Errorf("%w: no crew %q in %s: `rex-amq-adapter crews` lists them", ErrUsage, crewName, dir)
 		}
 	}
+	// Both agents' folder trust before the session exists: an Epic either
+	// starts with no dialog in its panes or does not start.
+	if err := e.trustGate().Preflight(ctx, dir, core.DefaultHarness(core.NarratorRole), kind); err != nil {
+		var untrusted trust.Untrusted
+		if errors.As(err, &untrusted) {
+			return EpicResult{}, fmt.Errorf("%w: %v", ErrRefused, err)
+		}
+		return EpicResult{}, fmt.Errorf("folder trust: %w", err)
+	}
 	narrate := fmt.Sprintf("Narrate the Epic %q for the personal agent %s.", name, caller.Handle)
 	// The narrator's tab first and the orchestrator's last, which Rex makes
 	// the session's active tab; both keep Rex's placeholder name, so each

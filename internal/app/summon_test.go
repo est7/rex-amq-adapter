@@ -25,6 +25,7 @@ func summonWorld(t *testing.T) (Env, *fakeTerm, Location) {
 	now := time.Date(2026, 11, 10, 3, 0, 0, 0, time.UTC)
 	e.Now = func() time.Time { return now }
 	e.TranscriptHome = t.TempDir()
+	trustTemp(t, e)
 	add(t, e, store.Record{Handle: "claude-01", Kind: core.Claude, Server: "unix:///fake.sock", BlockID: block, SessionID: "session:s", WindowID: "window:1", AgentPID: term.fgPID, AdoptedAt: now, Cwd: "/work/app"})
 	return e, term, Location{Block: block}
 }

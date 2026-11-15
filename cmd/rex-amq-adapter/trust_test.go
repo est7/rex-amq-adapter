@@ -23,8 +23,9 @@ func isolateTrust(t *testing.T) string {
 }
 
 // trust grant writes each project's key into Claude's and Codex's stores
-// under HOME and prints what it did; the single-directory form still prints agy's --settings or exits 1.
-func TestTrustGrantCommand(t *testing.T) {
+// under HOME and prints what it did; trust root adds, lists, and removes;
+// the single-directory form still prints agy's --settings or exits 1.
+func TestTrustGrantAndRootCommands(t *testing.T) {
 	home := isolateTrust(t)
 	repo := filepath.Join(home, "projects", "app")
 	if out, err := exec.Command("git", "init", "-q", repo).CombinedOutput(); err != nil {
@@ -49,7 +50,20 @@ func TestTrustGrantCommand(t *testing.T) {
 	if code, _ := capture(t, runTrust, "grant", filepath.Join(home, "missing")); code != 1 {
 		t.Errorf("grant of a missing directory: exit %d", code)
 	}
-	for _, args := range [][]string{{"grant"}, {"grant", "-x"}, {"a", "b"}} {
+	root := filepath.Dir(repo)
+	if code, out := capture(t, runTrust, "root", "add", root); code != 0 || strings.TrimSpace(out) != root {
+		t.Fatalf("root add: %d %q", code, out)
+	}
+	if code, out := capture(t, runTrust, "root", "ls"); code != 0 || strings.TrimSpace(out) != root {
+		t.Fatalf("root ls: %d %q", code, out)
+	}
+	if code, _ := capture(t, runTrust, "root", "add", home); code != 1 {
+		t.Errorf("root add $HOME: exit %d", code)
+	}
+	if code, out := capture(t, runTrust, "root", "rm", root); code != 0 || out != "" {
+		t.Fatalf("root rm: %d %q", code, out)
+	}
+	for _, args := range [][]string{{"grant"}, {"grant", "-x"}, {"root"}, {"root", "ls", "x"}, {"root", "add"}, {"root", "mv", "x"}, {"a", "b"}} {
 		if code, _ := capture(t, runTrust, args...); code != 2 {
 			t.Errorf("trust %v: exit %d, want 2", args, code)
 		}

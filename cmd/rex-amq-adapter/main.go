@@ -115,6 +115,9 @@ Agent and user commands:
                             at once: Claude's and Codex's stores get the project's
                             key, Antigravity and Pi sessions get it per launch;
                             logged in logs/trust.log
+  trust root add|rm <dir>... | trust root ls
+                            declare the roots whose projects an Epic or a summon
+                            grants on first need (never / or the home directory)
 
 Installation:
   setup|status|remove       install, inspect, or remove the skill, hooks, and
@@ -645,13 +648,16 @@ func runSummon(args []string) int {
 }
 
 const trustUsage = `usage: rex-amq-adapter trust <dir>          (prints agy's --settings value for dir; exit 1 when there is none)
-       rex-amq-adapter trust grant <dir>...  (trust each project for every harness)`
+       rex-amq-adapter trust grant <dir>...  (trust each project for every harness)
+       rex-amq-adapter trust root add|rm <dir>... | trust root ls`
 
 func runTrust(args []string) int {
 	if len(args) > 0 {
 		switch args[0] {
 		case "grant":
 			return runTrustGrant(args[1:])
+		case "root":
+			return runTrustRoot(args[1:])
 		}
 	}
 	if len(args) != 1 || strings.HasPrefix(args[0], "-") {
@@ -718,6 +724,40 @@ func runTrustGrant(args []string) int {
 		fmt.Println(string(b))
 	}
 	return code
+}
+
+// runTrustRoot adds, removes, or lists the declared trust roots, printing
+// the roots one per line afterwards.
+func runTrustRoot(args []string) int {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, trustUsage)
+		return 2
+	}
+	g, err := trustGate()
+	if err != nil {
+		return fail(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var roots []trust.Root
+	switch op, dirs := args[0], args[1:]; {
+	case op == "ls" && len(dirs) == 0:
+		roots, err = g.Roots()
+	case op == "add" && dirArgs(dirs):
+		roots, err = g.AddRoots(ctx, dirs...)
+	case op == "rm" && dirArgs(dirs):
+		roots, err = g.RemoveRoots(ctx, dirs...)
+	default:
+		fmt.Fprintln(os.Stderr, trustUsage)
+		return 2
+	}
+	if err != nil {
+		return fail(err)
+	}
+	for _, r := range roots {
+		fmt.Println(r.Path)
+	}
+	return 0
 }
 
 func runJoin(args []string) int {

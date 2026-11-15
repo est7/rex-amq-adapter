@@ -24,6 +24,7 @@ func openEpicWorld(t *testing.T) (Env, *fakeTerm, Location, string) {
 	term := &fakeTerm{state: "idle", windows: map[string]string{"block:me": "window:me"}, tabs: map[string]string{"window:me": "me"}}
 	e := fixture(t, term)
 	e.TranscriptHome = t.TempDir()
+	trustTemp(t, e)
 	if err := e.Store.DeleteRecord("codex"); err != nil {
 		t.Fatal(err)
 	}
@@ -209,6 +210,7 @@ func TestOpenEpicBriefsAnAgentAdoptedAtOnceWithItsCrew(t *testing.T) {
 	term := &fakeTerm{state: "idle", windows: map[string]string{"block:me": "window:me"}, tabs: map[string]string{"window:me": "me"}}
 	e := realAmqEnv(t, term)
 	e.TranscriptHome = t.TempDir()
+	trustTemp(t, e)
 	e.Crews = func(string) crew.Library { return crew.Load("") }
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	put(t, e, store.Record{Handle: "claude-01", Kind: core.Claude, Role: core.PersonalRole, BlockID: "block:me", SessionID: "session:me", WindowID: "window:me", AdoptedAt: time.Now()})

@@ -16,6 +16,7 @@ import (
 	"github.com/est7/rex-amq-adapter/internal/core"
 	"github.com/est7/rex-amq-adapter/internal/store"
 	"github.com/est7/rex-amq-adapter/internal/transcript"
+	"github.com/est7/rex-amq-adapter/internal/trust"
 )
 
 // Summon on send (core/summon.go for the guards): an agent addresses a peer
@@ -310,6 +311,15 @@ func (e Env) resume(ctx context.Context, caller store.Record, s Session, r Summo
 		e.summonLog(caller, r, res)
 		return res, nil
 	}
+	if refusal, err := e.preflight(ctx, cwd, departed.Kind); err != nil || refusal != "" {
+		_ = e.Store.DeleteSummon(res.Token)
+		if err != nil {
+			return res, err
+		}
+		res.Action, res.Reason = "refused", refusal+"; the message waits in "+string(departed.Handle)+"'s mailbox"
+		e.summonLog(caller, r, res)
+		return res, nil
+	}
 	label := core.PaneLabel(departed.Handle, departed.Role, departed.Task)
 	block, err := e.launch(ctx, caller, s, r.Split, label, cwd, res.Token, cmd)
 	if err != nil {
@@ -366,6 +376,12 @@ func (e Env) start(ctx context.Context, caller store.Record, s Session, r Summon
 	if len(cmd) == 0 {
 		return refuse(fmt.Sprintf("unsupported harness %q; no agent was started", kind))
 	}
+	if refusal, err := e.preflight(ctx, cwd, kind); err != nil {
+		_ = e.Store.DeleteSummon(res.Token)
+		return res, err
+	} else if refusal != "" {
+		return refuse(refusal)
+	}
 	block, err := e.launch(ctx, caller, s, r.Split, label, cwd, res.Token, cmd)
 	if err != nil {
 		_ = e.Store.DeleteSummon(res.Token)
@@ -374,6 +390,27 @@ func (e Env) start(ctx context.Context, caller store.Record, s Session, r Summon
 	res.Action, res.Block, res.Label = "start", block, label
 	e.summonLog(caller, r, res)
 	return res, nil
+}
+
+// preflight checks, before a pane opens, that kind meets no folder-trust
+// dialog in cwd (trust.Gate.Preflight, which grants a project under a
+// declared root). refusal is the untrusted_folder reason; err is a failure
+// to decide, which starts nothing either.
+func (e Env) preflight(ctx context.Context, cwd string, kind core.Kind) (refusal string, err error) {
+	if cwd == "" {
+		if cwd, err = os.Getwd(); err != nil {
+			return "", err
+		}
+	}
+	err = e.trustGate().Preflight(ctx, cwd, kind)
+	var untrusted trust.Untrusted
+	if errors.As(err, &untrusted) {
+		return untrusted.Error(), nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("folder trust in %s: %w", cwd, err)
+	}
+	return "", nil
 }
 
 // launch opens a tab of its own, which follows the agent's pane label from
