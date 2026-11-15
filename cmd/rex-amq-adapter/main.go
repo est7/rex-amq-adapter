@@ -60,8 +60,10 @@ Agent and user commands:
                             purpose
   crews show [CREW] [--role R] [-c DIR]
                             print, changing nothing, the briefing an agent taking
-                            role R in crew CREW gets: the crew's conventions and
-                            the role's prompt; without --role, the crew's lead
+                            role R in crew CREW gets: the crew's conventions,
+                            the role's prompt, and the harnesses, models and
+                            efforts it starts on (routing.toml, and from which
+                            layer); without --role, the crew's lead
   summon <handle|role> --subject S --body B [--kind K] [--grant FILE | --asked "WORDS"] [--harness H] [--cwd DIR] [--split]
                             send to a peer by handle or role: a live one gets the
                             mail; a departed one of this session is resumed in a
@@ -1046,10 +1048,39 @@ func runCrewsShow(args []string) int {
 			return fail(fmt.Errorf("no prompt for role %q: `rex-amq-adapter crews` lists the roles", r))
 		}
 		fmt.Printf("\n## Role %s\n\nno prompt: an agent in this role works from the conventions and its brief\n", r)
-		return 0
+	} else {
+		fmt.Printf("\n## Role %s (%s)\n\n%s\n", r, from(p), p.Text)
 	}
-	fmt.Printf("\n## Role %s (%s)\n\n%s\n", r, from(p), p.Text)
+	if err := printRouting(lib, r); err != nil {
+		return fail(err)
+	}
 	return 0
+}
+
+// printRouting prints the harnesses, models, and efforts role starts on,
+// and the routing.toml table they come from.
+func printRouting(lib crew.Library, role string) error {
+	route, err := lib.Routing(role)
+	if err != nil {
+		return err
+	}
+	source := route.Layer
+	if route.Path != "" {
+		source += " " + route.Path
+	}
+	fmt.Printf("\n## Routing of role %s ([role.%q], %s)\n\n", role, route.Role, source)
+	for _, k := range route.Harnesses {
+		l := route.Launch(k)
+		fmt.Printf("- %s: model %s, effort %s\n", k, orDefault(l.Model), orDefault(l.Effort))
+	}
+	return nil
+}
+
+func orDefault(s string) string {
+	if s == "" {
+		return "(the CLI's default)"
+	}
+	return s
 }
 
 func from(p crew.Prompt) string {
