@@ -49,7 +49,12 @@ type Result struct {
 // repository. It only reads: the store is never written, so it cannot race
 // the Antigravity processes that rewrite it.
 func Derive(home, dir string) (Result, error) {
-	r := Result{Harness: "agy", Store: filepath.Join(home, ".gemini", "antigravity-cli", "settings.json")}
+	return derive(filepath.Join(home, ".gemini", "antigravity-cli", "settings.json"), dir)
+}
+
+// derive is Derive against the Antigravity store at store.
+func derive(store, dir string) (Result, error) {
+	r := Result{Harness: "agy", Store: store}
 	dir, err := filepath.Abs(dir)
 	if err != nil {
 		return r, err

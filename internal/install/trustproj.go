@@ -66,6 +66,8 @@ const claudeLockStale = 10 * time.Second
 func TrustClaudeProject(ctx context.Context, file, root string) (changed bool, err error) {
 	if r, err := filepath.EvalSymlinks(file); err == nil {
 		file = r // replace the target, never a symlink the user keeps
+	} else if st, lerr := os.Lstat(file); lerr == nil && st.Mode()&fs.ModeSymlink != 0 {
+		return false, fmt.Errorf("%s is a symlink whose target cannot be resolved (%v); fix the link or trust the folder in Claude once", file, err)
 	}
 	if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
 		return false, err
@@ -175,9 +177,13 @@ func CodexProjectTrusted(config string, keys ...string) (bool, error) {
 	return false, nil
 }
 
-func codexTrustLevel(doc map[string]any, root string) any {
+func codexProjects(doc map[string]any) map[string]any {
 	projects, _ := doc["projects"].(map[string]any)
-	project, _ := projects[root].(map[string]any)
+	return projects
+}
+
+func codexTrustLevel(doc map[string]any, root string) any {
+	project, _ := codexProjects(doc)[root].(map[string]any)
 	return project["trust_level"]
 }
 
@@ -194,7 +200,8 @@ func TrustCodexProject(config, root string) (changed bool, err error) {
 	if codexTrustLevel(c.doc, root) == "trusted" {
 		return false, nil
 	}
-	edits := func(lines []string) [][]string { return codexTrustEdits(lines, root) }
+	_, exists := codexProjects(c.doc)[root]
+	edits := func(lines []string) [][]string { return codexTrustEdits(lines, root, exists) }
 	check := func(before map[string]any, text string) error { return checkCodexTrustEdit(before, text, root) }
 	if err := writeCodexEdit(config, edits, check, fmt.Sprintf("add [projects.%s] trust_level = \"trusted\" by hand", strconv.Quote(root))); err != nil {
 		return false, err
@@ -207,11 +214,21 @@ var (
 	projectsHeader = regexp.MustCompile(`^\s*\[\s*projects\s*\.`)
 )
 
-// codexTrustEdits are the ways to trust root by lines, most specific first:
-// rewrite a trust_level line, insert one after a [projects.…] header, or
-// append the table. A candidate in the wrong table changes another project,
-// so checkCodexTrustEdit refuses it and the next is tried.
-func codexTrustEdits(lines []string, root string) [][]string {
+// codexTrustEdits are the ways to trust root by lines: rewrite a
+// trust_level line, insert one after a [projects.…] header, or append the
+// table. A candidate in the wrong table changes another project, so
+// checkCodexTrustEdit refuses it and the next is tried. A project the file
+// does not hold yet takes the appended table first: each other candidate
+// costs a parse, and a config holds hundreds of projects.
+func codexTrustEdits(lines []string, root string, exists bool) [][]string {
+	table := slices.Clone(lines)
+	if len(table) > 0 && strings.TrimSpace(table[len(table)-1]) != "" {
+		table = append(table, "")
+	}
+	appended := append(table, "[projects."+strconv.Quote(root)+"]", `trust_level = "trusted"`)
+	if !exists {
+		return [][]string{appended}
+	}
 	var edits [][]string
 	for i, line := range lines {
 		if trustLevelLine.MatchString(line) {
@@ -225,11 +242,7 @@ func codexTrustEdits(lines []string, root string) [][]string {
 			edits = append(edits, slices.Insert(slices.Clone(lines), i+1, `trust_level = "trusted"`))
 		}
 	}
-	table := slices.Clone(lines)
-	if len(table) > 0 && strings.TrimSpace(table[len(table)-1]) != "" {
-		table = append(table, "")
-	}
-	return append(edits, append(table, "[projects."+strconv.Quote(root)+"]", `trust_level = "trusted"`))
+	return append(edits, appended)
 }
 
 // checkCodexTrustEdit reports whether text is before with only

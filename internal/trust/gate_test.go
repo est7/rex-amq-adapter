@@ -218,14 +218,51 @@ func TestTrustPiRule(t *testing.T) {
 	if v := check(t, g, core.Pi, filepath.Join(home, "w", "_pi-SYSTEM_md")); !v.Trusted {
 		t.Errorf("a trusted ancestor: %+v", v)
 	}
-	if v := check(t, g, core.Pi, gated); v.Trusted {
+	// An explicit "do not trust" answers without a dialog: Pi starts
+	// without the project's resources (core/project-trust.js).
+	if v := check(t, g, core.Pi, gated); !v.Trusted || !strings.Contains(v.Why, "distrusts") {
 		t.Errorf("the nearest entry distrusts: %+v", v)
 	}
+	// No gated resource means no question, whatever an ancestor says.
+	writeFile(t, g.Stores.Pi, fmt.Sprintf(`{%q: false}`, home))
+	if v := check(t, g, core.Pi, quiet); !v.Trusted {
+		t.Errorf("no resources under a distrusted ancestor: %+v", v)
+	}
+	writeFile(t, g.Stores.Pi, `{}`)
+	if v := check(t, g, core.Pi, gated); v.Trusted {
+		t.Errorf("gated, undecided: %+v", v)
+	}
+	writeFile(t, filepath.Join(filepath.Dir(g.Stores.Pi), "settings.json"), `{"defaultProjectTrust": "never"}`)
+	if v := check(t, g, core.Pi, gated); !v.Trusted {
+		t.Errorf("defaultProjectTrust never asks nothing: %+v", v)
+	}
+	writeFile(t, filepath.Join(filepath.Dir(g.Stores.Pi), "settings.json"), `{"defaultProjectTrust": "ask"}`)
 	if _, err := g.Grant(context.Background(), gated, "explicit"); err != nil {
 		t.Fatal(err)
 	}
-	if v := check(t, g, core.Pi, gated); !v.Trusted {
+	if v := check(t, g, core.Pi, gated); !v.Trusted || !strings.Contains(v.Why, "granted") {
 		t.Errorf("granted: %+v", v)
+	}
+}
+
+// A granted project reached through a symlink gets both spellings in agy's
+// session list, the one the session starts in first; Args reads the store
+// Stores names.
+func TestTrustAgyArgsKeepTheSessionsSpelling(t *testing.T) {
+	g, home := world(t)
+	real := mkdir(t, home, "projects", "x")
+	link := filepath.Join(home, "x-link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	g.Stores.Agy = filepath.Join(t.TempDir(), "agy.json")
+	writeFile(t, g.Stores.Agy, `{"trustedWorkspaces": ["/elsewhere"]}`)
+	if _, err := g.Grant(context.Background(), link, "explicit"); err != nil {
+		t.Fatal(err)
+	}
+	argv := g.Args(link, []string{"agy", "-i", "b"})
+	if len(argv) < 3 || argv[1] != "--settings" || !slices.Equal(trustedList(t, argv[2]), []string{"/elsewhere", link, real}) {
+		t.Fatalf("argv %q", argv)
 	}
 }
 

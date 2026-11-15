@@ -253,3 +253,39 @@ func TestTrustCodexProjectCreatesOrRefuses(t *testing.T) {
 		t.Fatal("a broken config was edited")
 	}
 }
+
+// A ~/.claude.json symlink whose target is missing (a dotfiles link not
+// yet stowed) is refused, never replaced by a regular file.
+func TestTrustClaudeProjectKeepsADanglingSymlink(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, ".claude.json")
+	if err := os.Symlink(filepath.Join(dir, "dotfiles", "claude.json"), file); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := TrustClaudeProject(context.Background(), file, "/p"); err == nil {
+		t.Fatal("a dangling symlink was written through")
+	}
+	if st, err := os.Lstat(file); err != nil || st.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the symlink was replaced: %v %v", st, err)
+	}
+}
+
+// A new project in a config of hundreds is one parse, not one per table.
+func TestTrustCodexProjectAppendsANewProjectAtOnce(t *testing.T) {
+	config := filepath.Join(t.TempDir(), "config.toml")
+	var b strings.Builder
+	for i := range 400 {
+		fmt.Fprintf(&b, "[projects.\"/p/%d\"]\ntrust_level = \"trusted\"\n\n", i)
+	}
+	os.WriteFile(config, []byte(b.String()), 0o600)
+	start := time.Now()
+	if changed, err := TrustCodexProject(config, "/p/new"); err != nil || !changed {
+		t.Fatalf("changed %v err %v", changed, err)
+	}
+	if d := time.Since(start); d > 300*time.Millisecond {
+		t.Errorf("took %v", d)
+	}
+	if ok, _ := CodexProjectTrusted(config, "/p/new"); !ok {
+		t.Fatal("not trusted")
+	}
+}
