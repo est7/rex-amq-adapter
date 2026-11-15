@@ -34,6 +34,26 @@ func DefaultHarness(role string) Kind {
 	return Claude
 }
 
+// DefaultHarnesses are the harnesses a role may start in when the summoner
+// names none, best first. A review role (reviewer, editor, qa) goes to
+// another model family than the caller's, Codex, then Antigravity, then
+// Claude Code, and never to the caller's own: a review by the same family
+// misses what that family misses. Pi is never a default: its model is the
+// user's choice, so its family is unknown. Every other role starts in
+// DefaultHarness.
+func DefaultHarnesses(role string, caller Kind) []Kind {
+	if DefaultHarness(role) == Claude {
+		return []Kind{Claude}
+	}
+	var out []Kind
+	for _, k := range []Kind{Codex, Agy, Claude} {
+		if k != caller {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
 // RoleModel is the model a role's agent runs on in kind's CLI, "" for the
 // CLI's own default. A narrator only reads mail and rewrites the view, so it
 // runs on the cheap tier of its CLI (the user's choice, 2026-11-15).

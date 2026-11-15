@@ -71,7 +71,7 @@ func check(t *testing.T, g Gate, kind core.Kind, dir string) Verdict {
 // CLAUDE_CONFIG_DIR when set, else in home itself (not ~/.claude).
 func TestTrustStoresFollowEachHarness(t *testing.T) {
 	got := StoresFor("/h", nil)
-	want := Stores{Home: "/h", Claude: "/h/.claude.json", Codex: "/h/.codex/config.toml", Agy: "/h/.gemini/antigravity-cli/settings.json", Pi: "/h/.pi/agent/trust.json"}
+	want := Stores{Home: "/h", Claude: "/h/.claude.json", Codex: "/h/.codex/config.toml", CodexHooks: "/h/.codex/hooks.json", Agy: "/h/.gemini/antigravity-cli/settings.json", Pi: "/h/.pi/agent/trust.json"}
 	if got != want {
 		t.Fatalf("%+v", got)
 	}

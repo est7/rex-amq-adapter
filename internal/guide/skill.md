@@ -257,7 +257,8 @@ this needs is below; no other skill is required.
    to give: when a pane would stop on a trust dialog, tell the user the command that gives it
    for every harness, `rex-amq-adapter trust grant <dir>` (or `trust root add <dir>` for a root
    whose projects are granted on first need); never answer the dialog for them. `epic` and
-   `summon` check this before any pane opens: an `untrusted_folder` refusal started nothing and
+   `summon` check this before any pane opens: an `untrusted_folder` refusal (or, for Codex,
+   `unapproved_hooks`: hooks waiting for the user's `/hooks` approval) started nothing and
    names that command, which is the user's to run. Save the returned block id. When unsure whether work is the same task,
    prefer a pane: the user can move it (`rex move`), and an unseen peer is easy
    to forget. Tell the user where the peer is ("opened reviewer in a pane on the
@@ -304,10 +305,13 @@ of its own under a built-in role (`architect`, `reviewer`, `qa`, `writer`,
   and a `personal` agent do not count. Agents you start with `rex split` or
   `rex run` are not checked, so count them yourself and keep one session
   within 6, yourself included.
-- **Model families.** `summon` starts `reviewer`, `editor`, and `qa` in Codex
-  and every other role in Claude Code unless `--harness` says otherwise; when
-  you start peers yourself, give the reviewer another family than the
-  implementer.
+- **Model families.** `summon` starts `reviewer`, `editor`, and `qa` in
+  another family than yours, Codex first, then Antigravity, then Claude Code,
+  passing over one that is not installed or not ready (Codex hooks waiting
+  for `/hooks` approval: `unapproved_hooks`), and every other role in Claude
+  Code, unless `--harness` says otherwise; an explicit `--harness codex` with
+  unapproved hooks is refused before any pane. When you start peers
+  yourself, give the reviewer another family than the implementer.
 - **Several Slices.** One implementer per Slice, in that Slice's worktree
   (`summon implementer --cwd <worktree>`), and one reviewer or QA kept open
   across Slices (`summon reviewer` without `--cwd` reaches it).
@@ -356,8 +360,10 @@ A live agent of that handle or role in your session gets the mail; when
 several agents of a role are live, summon refuses: name one by handle. A departed one of this session is resumed in a tab of its own (`--split`: beside you, when the user asked; never a narrator or personal agent),
 in the directory it ran in, and its mail waits for it. With none, a new agent
 is started for the role (`--harness` picks the CLI; reviewer, editor and qa
-default to Codex, every other built-in or custom role, a custom `explorer`
-included, to Claude Code), with the message as its
+default to the first of Codex, Antigravity, Claude Code that is another
+family than yours, installed, and passes the preflight, every other
+built-in or custom role, a custom `explorer` included, to Claude Code; the
+JSON names the `harness` started and each one `passed_over`, and why), with the message as its
 brief, in your directory or the one `--cwd` names (a Slice worktree), and told
 once it is adopted. With `--cwd` it only ever starts a new agent there, a
 second one of a live role included: it refuses a handle and a directory a live

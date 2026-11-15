@@ -606,3 +606,16 @@ func TestContextLenCountsUTF16Units(t *testing.T) {
 // bareAmq matches an instruction to run amq's own mail commands, which skip
 // the adapter's gateway (ARCH-1).
 var bareAmq = regexp.MustCompile(`\bamq (drain|send|reply)\b`)
+
+// Codex's hook review gets a note of its own: the user approves the hooks
+// with /hooks; any other dialog keeps the generic note.
+func TestStartupHooksNeedReviewNamesTheFix(t *testing.T) {
+	got, done := DecideStartup(StartupObservation{TrustPhrase: HooksReviewPhrase})
+	if !done || got.Status != StartupTrust || !strings.Contains(got.Note, "/hooks") || !strings.Contains(got.Note, "--harness") {
+		t.Fatalf("%+v %v", got, done)
+	}
+	got, _ = DecideStartup(StartupObservation{TrustPhrase: "Trust this folder?"})
+	if strings.Contains(got.Note, "/hooks") || !strings.Contains(got.Note, `"Trust this folder?"`) {
+		t.Fatalf("folder trust note: %+v", got)
+	}
+}

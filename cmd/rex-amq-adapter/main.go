@@ -589,7 +589,7 @@ func runSummon(args []string) int {
 	kind := fs.String("kind", "question", "amq kind: question, review_request, todo, brainstorm summon; others deliver only")
 	grant := fs.String("grant", "", "the user's grant file the brief cites (allows a start)")
 	asked := fs.String("asked", "", "the user's own words asking for a new agent, quoted (allows a start)")
-	harness := fs.String("harness", "", "claude, codex, agy, or pi for a start (default: by role)")
+	harness := fs.String("harness", "", "claude, codex, agy, or pi for a start (default: by role; a review role takes the first ready family other than yours)")
 	cwd := fs.String("cwd", "", "the working directory of a started agent, such as its Slice worktree (default: yours)")
 	split := fs.Bool("split", false, "open a launched agent in a pane beside yours, when the human asked for one (default: a tab of its own)")
 	timeout := fs.Duration("timeout", 45*time.Second, "how long to wait for a launched agent's adoption")

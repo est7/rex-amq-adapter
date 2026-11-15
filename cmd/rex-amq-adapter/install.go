@@ -63,8 +63,20 @@ func runInstall(cmd string, args []string) int {
 	if err != nil {
 		return fail(err)
 	}
+	// Codex runs none of the adapter's hooks until the user approves them
+	// in /hooks: status reports which still wait (read-only).
+	var approvals []codexHooks
+	if cmd == "status" {
+		if approvals, err = codexHookApprovals(agents); err != nil {
+			return fail(err)
+		}
+	}
 	if *asJSON {
-		b, err := json.MarshalIndent(map[string]any{"binary": self, "dry_run": *dryRun, "items": items}, "", "  ")
+		out := map[string]any{"binary": self, "dry_run": *dryRun, "items": items}
+		if cmd == "status" {
+			out["codex_hooks"] = approvals
+		}
+		b, err := json.MarshalIndent(out, "", "  ")
 		if err != nil {
 			return fail(err)
 		}
@@ -72,6 +84,9 @@ func runInstall(cmd string, args []string) int {
 		return 0
 	}
 	printItems(cmd, items)
+	for _, a := range approvals {
+		fmt.Print(a.note())
+	}
 	switch cmd {
 	case "setup":
 		printSetupNotes(agents, items)
@@ -84,6 +99,42 @@ func runInstall(cmd string, args []string) int {
 		}
 	}
 	return 0
+}
+
+// codexHooks is a Codex hooks file and the hooks in it the user has not
+// approved.
+type codexHooks struct {
+	File       string                    `json:"file"`
+	Unapproved []install.CodexHookReview `json:"unapproved"`
+}
+
+func codexHookApprovals(agents []install.Agent) ([]codexHooks, error) {
+	var out []codexHooks
+	for _, a := range agents {
+		if a.Kind != core.Codex {
+			continue
+		}
+		review, err := a.CodexHookReview()
+		if err != nil {
+			return nil, fmt.Errorf("codex hook approvals: %w", err)
+		}
+		out = append(out, codexHooks{File: a.HookFile, Unapproved: append([]install.CodexHookReview{}, review...)})
+	}
+	return out, nil
+}
+
+// note is the status line for c: approved, or which hooks wait and what
+// that does to Codex sessions and summons until the user approves them.
+func (c codexHooks) note() string {
+	if len(c.Unapproved) == 0 {
+		return "\nCodex hooks: every hook in " + c.File + " is approved.\n"
+	}
+	var which []string
+	for _, h := range c.Unapproved {
+		which = append(which, "  "+h.Key+" ("+h.Status+")")
+	}
+	return fmt.Sprintf("\nCodex hooks: %d hook(s) in %s wait for your approval (unapproved_hooks):\n%s\nUntil you approve them with /hooks in a Codex session, every new Codex session stops on \"Hooks need review\", `epic` and `summon --harness codex` refuse Codex, and `summon` without --harness starts a review role in another family.\n",
+		len(c.Unapproved), c.File, strings.Join(which, "\n"))
 }
 
 func foundOnly(agents []install.Agent) []install.Agent {

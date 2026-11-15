@@ -26,8 +26,13 @@ type Stores struct {
 	Home   string
 	Claude string // Claude Code's global config, .claude.json
 	Codex  string // config.toml
-	Agy    string // Antigravity's settings.json (trustedWorkspaces)
-	Pi     string // Pi's trust.json
+	// CodexHooks is Codex's user hooks.json; CodexHomeSet says CODEX_HOME
+	// named its directory, which changes how Codex keys their approvals
+	// (install.CodexHooksKey).
+	CodexHooks   string
+	CodexHomeSet bool
+	Agy          string // Antigravity's settings.json (trustedWorkspaces)
+	Pi           string // Pi's trust.json
 }
 
 // StoresFor resolves Stores under home the way each harness does: Claude's
@@ -44,6 +49,8 @@ func StoresFor(home string, getenv func(string) string) Stores {
 	s := Stores{Home: home, Claude: claude}
 	if d.Codex != "" {
 		s.Codex = filepath.Join(d.Codex, "config.toml")
+		s.CodexHooks = filepath.Join(d.Codex, "hooks.json")
+		s.CodexHomeSet = getenv != nil && getenv("CODEX_HOME") != ""
 	}
 	if d.AgyCLI != "" {
 		s.Agy = filepath.Join(d.AgyCLI, "settings.json")
@@ -676,13 +683,20 @@ func (g Gate) distrusted(p Project) (string, error) {
 	return "", nil
 }
 
-// Preflight makes sure none of kinds stops on a folder-trust dialog in dir,
-// before any pane opens there. When one would, and dir's project lies
-// strictly under a declared root, it grants the project as `trust grant`
-// does (source "root:<root>", logged) and checks again; otherwise it
-// returns Untrusted and changes nothing.
+// Preflight makes sure none of kinds stops on a trust screen in dir, before
+// any pane opens there. Codex with a hook the user has not approved would
+// stop on "Hooks need review": that returns HooksUnapproved, before any
+// folder trust is granted. When a harness would stop on a folder-trust
+// dialog, and dir's project lies strictly under a declared root, it grants
+// the project as `trust grant` does (source "root:<root>", logged) and
+// checks again; otherwise it returns Untrusted and changes nothing.
 // A root never overrides the user's explicit "no" in a harness's store.
 func (g Gate) Preflight(ctx context.Context, dir string, kinds ...core.Kind) error {
+	if slices.Contains(kinds, core.Codex) {
+		if err := g.codexHooks(); err != nil {
+			return err
+		}
+	}
 	asking, err := g.asking(dir, kinds)
 	if err != nil || len(asking) == 0 {
 		return err
@@ -725,4 +739,55 @@ func (g Gate) asking(dir string, kinds []core.Kind) ([]Verdict, error) {
 		}
 	}
 	return asking, nil
+}
+
+// HooksUnapproved is the preflight's refusal for Codex: hooks in its
+// hooks.json that the user has not approved (or changed since), on which a
+// new Codex session stops at "Hooks need review" and runs none of the
+// adapter's hooks, so it is never adopted. Only the user approves them, in
+// Codex's /hooks; the adapter never writes that approval.
+type HooksUnapproved struct {
+	File  string
+	Hooks []install.CodexHookReview
+}
+
+// ReasonUnapprovedHooks names the refusal in a result or an error.
+const ReasonUnapprovedHooks = "unapproved_hooks"
+
+func (u HooksUnapproved) Error() string {
+	var which []string
+	for _, h := range u.Hooks {
+		which = append(which, h.Key+" ("+h.Status+")")
+	}
+	return fmt.Sprintf("%s: codex would stop on its \"Hooks need review\" screen: %d hook(s) in %s are not approved: %s; the user approves them with /hooks in a Codex session (the adapter never does)",
+		ReasonUnapprovedHooks, len(u.Hooks), u.File, strings.Join(which, ", "))
+}
+
+// CodexHooks lists the hooks a new Codex session would ask the user to
+// review, reading Codex's hooks.json and config.toml only.
+func (g Gate) CodexHooks() ([]install.CodexHookReview, error) {
+	if g.Stores.CodexHooks == "" {
+		return nil, nil
+	}
+	return install.CodexHooksNeedingReview(g.Stores.CodexHooks, install.CodexHooksKey(g.Stores.CodexHooks, g.Stores.CodexHomeSet), g.Stores.Codex)
+}
+
+func (g Gate) codexHooks() error {
+	review, err := g.CodexHooks()
+	if err != nil {
+		return fmt.Errorf("codex hook approvals: %w", err)
+	}
+	if len(review) > 0 {
+		return HooksUnapproved{File: g.Stores.CodexHooks, Hooks: review}
+	}
+	return nil
+}
+
+// Refusal reports whether err is a preflight refusal (Untrusted or
+// HooksUnapproved), which started nothing and is the user's to clear, as
+// opposed to a failure to decide.
+func Refusal(err error) bool {
+	var u Untrusted
+	var h HooksUnapproved
+	return errors.As(err, &u) || errors.As(err, &h)
 }
