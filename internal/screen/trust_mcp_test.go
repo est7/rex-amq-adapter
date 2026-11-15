@@ -13,4 +13,9 @@ func TestClaudeProjectMcpApprovalIsATrustScreen(t *testing.T) {
 			t.Errorf("%s: got %q %v", name, got, ok)
 		}
 	}
+	// Two or more servers: Claude words it in lower case and plural.
+	plural := "╭────╮\n│ 3 new MCP servers found in this project\n│ ❯ 1. Use all\n╰────╯\n"
+	if got, ok := TrustScreen("claude", plural); !ok || got != "new MCP servers found in this project" {
+		t.Errorf("plural: got %q %v", got, ok)
+	}
 }
