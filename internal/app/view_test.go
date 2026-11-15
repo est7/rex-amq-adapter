@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/core"
@@ -246,5 +247,42 @@ func TestSessionViewNarratorReadsByID(t *testing.T) {
 	}
 	for _, h := range []string{"claude-02", "codex-03"} {
 		noReceipts(t, e, h)
+	}
+}
+
+// The view carries the orchestrator's recorded hand-back whole, past the
+// excerpt limit, for the narrator, the orchestrator, and a linked personal
+// agent to read; a refresh after a new one shows the new one.
+func TestHandBackInTheViewWhole(t *testing.T) {
+	e := viewWorld(t)
+	noOpenObligations(e)
+	ctx := context.Background()
+	body := "## Review queue\n- https://github.com/est7/rex-amq-adapter/pull/18\n## Blocked on me\n- merge #18\n" + strings.Repeat("Found: 一行说明。", viewExcerpt)
+	if _, err := e.RecordHandBack(ctx, Location{Block: "block:claude-01"}, body); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.RefreshSessionView(ctx, Location{Block: "block:pi-04"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	for _, who := range []string{"pi-05", "pi-04", "claude-01"} {
+		b, err := e.ReadSessionView(ctx, Location{Block: "block:" + who}, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var v SessionView
+		if err := json.Unmarshal(b, &v); err != nil {
+			t.Fatal(err)
+		}
+		if v.HandBack == nil || v.HandBack.By != "claude-01" || v.HandBack.Body != body || v.HandBack.At.IsZero() {
+			t.Fatalf("%s read the hand-back %+v", who, v.HandBack)
+		}
+	}
+	e.Now = func() time.Time { return time.Now().Add(time.Hour) }
+	if _, err := e.RecordHandBack(ctx, Location{Block: "block:claude-01"}, "Goal 2"); err != nil {
+		t.Fatal(err)
+	}
+	v, err := e.RefreshSessionView(ctx, Location{Block: "block:pi-04"}, "")
+	if err != nil || v.HandBack == nil || v.HandBack.Body != "Goal 2" {
+		t.Fatalf("the next hand-back: %+v %v", v.HandBack, err)
 	}
 }

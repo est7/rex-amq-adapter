@@ -18,7 +18,8 @@ import (
 // A session's view is what its narrator knows of it, kept in view.json for
 // the linked personal agent to read without mailing anyone. The narrator
 // rebuilds it in two tiers, neither of which moves a message, writes a
-// receipt, or reads a mailbox as its owner:
+// receipt, or reads a mailbox as its owner, and carries the orchestrator's
+// recorded hand-back whole (RecordHandBack):
 //
 //  1. Envelopes: the session's agents and their mail headers (what events
 //     shows) and the open obligations amq finds without reading a body
@@ -42,11 +43,14 @@ const (
 
 // SessionView is view.json.
 type SessionView struct {
-	Schema       int              `json:"schema"`
-	AsOf         ViewCursor       `json:"as_of"`
-	Session      ViewSession      `json:"session"`
-	Narrator     core.Handle      `json:"narrator"`
-	Narrative    *ViewNarrative   `json:"narrative,omitempty"`
+	Schema    int            `json:"schema"`
+	AsOf      ViewCursor     `json:"as_of"`
+	Session   ViewSession    `json:"session"`
+	Narrator  core.Handle    `json:"narrator"`
+	Narrative *ViewNarrative `json:"narrative,omitempty"`
+	// HandBack is the orchestrator's latest recorded hand-back, whole: no
+	// excerpt limit applies to it.
+	HandBack     *store.HandBack  `json:"hand_back,omitempty"`
 	Members      []ViewMember     `json:"members"`
 	Obligations  []ViewObligation `json:"obligations"`
 	Activity     []ViewMessage    `json:"activity"`
@@ -366,6 +370,11 @@ func (e Env) buildView(ctx context.Context, narr store.Record, key core.SessionK
 		return v, err
 	}
 	v.AsOf.Pulse = pulse.Digest()
+	if hb, ok, err := e.Store.HandBack(key.SessionID); err != nil {
+		return v, err
+	} else if ok {
+		v.HandBack = &hb
+	}
 	var g gaps
 
 	// Tier 1: obligations.

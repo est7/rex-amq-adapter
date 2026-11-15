@@ -27,6 +27,9 @@ type PulseMember struct {
 	// Attention lists what waits on someone, each "<what>@<since>": a turn
 	// that ended in an error, a prompt waiting on the human, a stall.
 	Attention []string `json:"attention,omitempty"`
+	// HandBack is when the agent last recorded the session's hand-back
+	// (store.HandBack), set only once it is on disk.
+	HandBack string `json:"hand_back,omitempty"`
 }
 
 // SessionPulse is a session's pulse.
@@ -62,7 +65,7 @@ const (
 
 // PulseChange is what changed from prev to now, and how soon the narrator
 // must hear it: urgent for attention (an agent left, a new error, stall, or
-// wait on the human, an orchestrator's hand-back), which skips the
+// wait on the human, a hand-back recorded), which skips the
 // narrator's doorbell hold; normal for a
 // change of members or tasks; low for mail alone. Priority is "" when
 // nothing changed.
@@ -107,12 +110,12 @@ func ComparePulse(prev, now SessionPulse) PulseChange {
 				raise(PriorityUrgent, fmt.Sprintf("%s: %s", m.Handle, strings.ReplaceAll(what, "_", " ")))
 			}
 		}
-		switch {
-		case had && b.Task != m.Task && m.Live && m.Role == OrchestratorRole && HandBack(m.Task):
+		if had && b.HandBack != m.HandBack && m.HandBack != "" {
 			// The run ended and waits on the user: urgent, so it neither waits
 			// behind a routine notice nor sits out the narrator's hold.
-			raise(PriorityUrgent, fmt.Sprintf("%s handed back: %s", m.Handle, m.Task))
-		case had && b.Task != m.Task && m.Live:
+			raise(PriorityUrgent, fmt.Sprintf("%s handed back: its report is in your view (hand_back)", m.Handle))
+		}
+		if had && b.Task != m.Task && m.Live {
 			raise(PriorityNormal, fmt.Sprintf("%s is on: %s", m.Handle, m.Task))
 		}
 		if had && b.Role != m.Role {
@@ -132,12 +135,6 @@ func ComparePulse(prev, now SessionPulse) PulseChange {
 		raise(PriorityLow, "the session changed")
 	}
 	return c
-}
-
-// HandBack reports whether task is an orchestrator's hand-back, which its
-// role prompt sets with `title "hand-back: <line>"` when its run ends.
-func HandBack(task string) bool {
-	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(task)), "hand-back")
 }
 
 func (m PulseMember) named() string {

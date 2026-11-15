@@ -19,9 +19,14 @@ import (
 // one routine notice waits unread, later routine changes ride along with it.
 
 // sessionPulse is session key's pulse now: its agents other than the stealth
-// ones, from their records, mailbox listings, and health marks.
+// ones, from their records, mailbox listings, health marks, and the
+// session's recorded hand-back.
 func (e Env) sessionPulse(key core.SessionKey) (core.SessionPulse, error) {
 	recs, err := e.Store.Records()
+	if err != nil {
+		return core.SessionPulse{}, err
+	}
+	hb, hasHB, err := e.Store.HandBack(key.SessionID)
 	if err != nil {
 		return core.SessionPulse{}, err
 	}
@@ -31,6 +36,9 @@ func (e Env) sessionPulse(key core.SessionKey) (core.SessionPulse, error) {
 			continue
 		}
 		m := core.PulseMember{Handle: r.Handle, Role: r.Role, Live: r.Live(), Task: r.Task}
+		if hasHB && hb.By == r.Handle {
+			m.HandBack = hb.At.UTC().Format(time.RFC3339Nano)
+		}
 		if m.LastMail, err = e.lastMail(r.Handle); err != nil {
 			return p, err
 		}
