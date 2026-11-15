@@ -1418,7 +1418,9 @@ crashed, or its pane closed", and the narrator's pulse raises an urgent
    server. The dying agent's `SessionEnd` and the collection that follows
    find a departed record and do nothing. A block already gone is not an
    error; a close that fails leaves the departure standing, exits non-zero,
-   and names the block for `rex block close <block>`.
+   and names the block for `rex block close <block>`. The agent still runs
+   then, and its next turn takes its handle back like any resume; once `who`
+   lists it again, retiring it again closes it quietly.
 
 The session pulse marks a member departed as `retired` (`PulseMember.Retired`,
 set only then, so other pulses keep their digests), and `ComparePulse` raises

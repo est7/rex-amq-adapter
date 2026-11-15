@@ -91,6 +91,9 @@ func (e Env) Retire(ctx context.Context, loc Location, r RetireRequest) (RetireR
 	if err != nil {
 		return res, err
 	}
+	if ok {
+		res.Block = target.BlockID
+	}
 	if !ok || !target.Live() {
 		res.Action = RetireAlreadyDeparted
 		res.DepartReason = target.DepartReason
@@ -101,7 +104,9 @@ func (e Env) Retire(ctx context.Context, loc Location, r RetireRequest) (RetireR
 	}
 	res.Action, res.DepartReason = RetireRetired, store.DepartRetired
 	if err := on.CloseBlock(ctx, target.BlockID); err != nil && !errors.Is(err, rex.ErrNotFound) {
-		return res, fmt.Errorf("%s is retired, but its pane did not close (%w); close it with `rex block close %s`", r.Handle, err, target.BlockID)
+		// The agent still runs, and its next turn takes its handle back
+		// (a resume): then a raw close would read as a crash again.
+		return res, fmt.Errorf("%s is retired, but its pane did not close (%w); close it with `rex block close %s`, or, once `rex-amq-adapter who` lists it again, retire it again", r.Handle, err, target.BlockID)
 	}
 	// A tab it shared may now hold one agent, whose label it then follows.
 	tabs := e

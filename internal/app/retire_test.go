@@ -240,3 +240,41 @@ func TestRetireWhoseBlockDoesNotCloseStillDeparts(t *testing.T) {
 		t.Errorf("the orchestrator was mailed: %q", mail)
 	}
 }
+
+// A block Rex no longer has counts as closed. A retire whose close failed
+// leaves the agent running: its next turn takes its handle back, and
+// retiring it again then closes its pane, still mailing nobody.
+func TestRetireAfterAFailedCloseFinishesOnASecondRun(t *testing.T) {
+	e, term, loc := closeWorld(t)
+	orch, worker := handleIn(t, e, "block:o"), handleIn(t, e, "block:w")
+	ctx := context.Background()
+	before := len(unread(t, e, string(orch)))
+	term.closeErr = rex.ErrNotFound
+	if res, err := retire(e, "block:o", handleIn(t, e, "block:n"), true); err == nil {
+		t.Fatalf("the narrator was retired: %+v", res)
+	}
+	term.closeErr = errors.New("rex timed out")
+	if _, err := retire(e, loc.Block, worker, false); err == nil {
+		t.Fatal("a retire from another session went through")
+	}
+	if _, err := retire(e, "block:o", worker, false); err == nil || !strings.Contains(err.Error(), "retire it again") {
+		t.Fatalf("a failed close: %v", err)
+	}
+	if _, err := e.Hook(ctx, EventPrompt, core.Pi, Location{Block: "block:w"}, HookInput{SessionID: "w1", AgentPID: os.Getpid()}); err != nil {
+		t.Fatal(err)
+	}
+	if r := recordOf(t, e, worker); !r.Live() {
+		t.Fatalf("the running agent's next turn did not take its handle back: %+v", r)
+	}
+	term.closeErr = rex.ErrNotFound
+	res, err := retire(e, "block:o", worker, false)
+	if err != nil || res.Action != RetireRetired || res.Block != "block:w" {
+		t.Fatalf("the second retire, its block gone: %+v %v", res, err)
+	}
+	if r := recordOf(t, e, worker); r.Live() || r.DepartReason != store.DepartRetired {
+		t.Errorf("record %+v", r)
+	}
+	if n := len(unread(t, e, string(orch))); n != before {
+		t.Errorf("the orchestrator got %d departure messages", n-before)
+	}
+}
