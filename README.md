@@ -195,7 +195,7 @@ The adapter passes them as each CLI's flags (`claude`/`agy` `--model`
 `--effort`, `codex` `-m` `-c model_reasoning_effort=`, `pi` `--model`
 `--thinking`) on `epic`, a summon's start, and a resume, and records them on
 the agent (`who --json` shows `model` and `effort`), so a resume runs on what
-the agent started on. A model is letters, digits, and `._:/-` that never
+the agent started on, CLI defaults included, whatever the routing says by then. A model is letters, digits, and `._:/-` that never
 starts with `-`; an effort is one of `off|minimal|low|medium|high|xhigh|max`
 that the CLI takes. A file that breaks either rule, misspells a key, or
 names an unknown harness refuses every launch and names the file. A model's

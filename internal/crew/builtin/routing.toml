@@ -3,9 +3,10 @@
 # [role.<name>] holds `harness`, the harnesses best first, and one table per
 # harness with its `model` and `effort` (either may be left out: the CLI's
 # own default). A review role (reviewer, editor, qa) starts on the first
-# harness whose model is another family than its summoner's; every other
-# role on the first harness that is ready. [role."*"] routes any role
-# without a table of its own.
+# installed, ready harness whose model is another family than its
+# summoner's; every other role on its first harness only, refused rather
+# than moved when that one is not ready. [role."*"] routes any role without
+# a table of its own.
 #
 # A project's .agents/crews/routing.toml, then the user's
 # $XDG_CONFIG_HOME/rex-amq-adapter/crews/routing.toml, override this file

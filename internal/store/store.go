@@ -99,12 +99,14 @@ type Record struct {
 	// Cwd is the directory the agent runs in, from its foreground process at
 	// adoption; a resume starts there.
 	Cwd string `json:"cwd,omitempty"`
-	// Model and Effort are what the adapter launched the agent on (its
-	// routing, carried to adoption as LaunchModelEnv and LaunchEffortEnv);
-	// a resume reuses them. Both are empty for an agent the user started,
-	// or one launched on its CLI's defaults.
-	Model  string `json:"model,omitempty"`
-	Effort string `json:"effort,omitempty"`
+	// Launched is set when the adapter launched the agent, and then Model and
+	// Effort are what it launched it on (its routing, carried to adoption as
+	// LaunchModelEnv and LaunchEffortEnv; empty for the CLI's default); a
+	// resume reuses them. An agent the user started, or one launched before
+	// records kept them, has none.
+	Launched bool   `json:"launched,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Effort   string `json:"effort,omitempty"`
 	// Parent is the agent whose summon started this one ("" for an agent the
 	// user started), Depth how many summons lie between the user and it (the
 	// user's agents are 0), SummonedFor why the parent summoned it.

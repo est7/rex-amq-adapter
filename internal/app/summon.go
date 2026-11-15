@@ -398,8 +398,9 @@ func (e Env) start(ctx context.Context, caller store.Record, s Session, r Summon
 		return refuse(fmt.Sprintf("the routing of role %s cannot be read, so no agent was started: %v", role, err))
 	}
 	// A review role takes the first ready harness of another family than the
-	// caller's; every other role its first harness, launched even when this
-	// process's PATH lacks it (pickHarness).
+	// caller's, installed even when it is the only one; every other role its
+	// first harness, launched even when this process's PATH lacks it
+	// (pickHarness).
 	// An explicit --harness is the caller's choice and is never filtered.
 	kinds := route.Harnesses[:1]
 	switch {
@@ -415,7 +416,7 @@ func (e Env) start(ctx context.Context, caller store.Record, s Session, r Summon
 			return refuse(fmt.Sprintf("no harness in the routing of %s (%s) runs a model family known to differ from yours (%s %s), so no agent was started; name one with --harness", role, strings.Join(kindNames(route.Harnesses), ", "), caller.Kind, orUnknown(mine)))
 		}
 	}
-	kind, passed, refusal, err := e.pickHarness(ctx, cwd, kinds, r.Harness == "")
+	kind, passed, refusal, err := e.pickHarness(ctx, cwd, kinds, r.Harness == "" && core.ReviewRole(role))
 	if err != nil {
 		_ = e.Store.DeleteSummon(res.Token)
 		return res, err
@@ -439,18 +440,17 @@ func (e Env) start(ctx context.Context, caller store.Record, s Session, r Summon
 	return res, nil
 }
 
-// pickHarness picks the harness a start launches in cwd: the first of kinds
-// that is installed and passes the preflight. An explicit --harness (one
-// kind, byDefault false) is never swapped: its refusal is the summon's. A
-// default passes over each unready harness, naming why in passed, so an
-// unapproved Codex hook sends a review to Antigravity instead of a pane
-// stuck on "Hooks need review"; when none is ready the summon refuses with
-// every reason, and never falls back to the caller's own family.
-func (e Env) pickHarness(ctx context.Context, cwd string, kinds []core.Kind, byDefault bool) (kind core.Kind, passed []string, refusal string, err error) {
-	// Only a choice among several looks a CLI up: this process's PATH may
-	// lack one the pane's shell finds, which must not refuse a role's only
-	// harness, while passing over a candidate costs nothing.
-	choosing := byDefault && len(kinds) > 1
+// pickHarness picks the harness a start launches in cwd. With choosing (a
+// review role's default) it is the first of kinds that is installed and
+// passes the preflight: it passes over each unready harness, naming why in
+// passed, so an unapproved Codex hook sends a review to Antigravity instead
+// of a pane stuck on "Hooks need review"; when none is ready the summon
+// refuses with every reason, and never falls back to the caller's own
+// family. Otherwise (an explicit --harness, or another role's first
+// harness: one kind) it is never swapped and never looked up, since this
+// process's PATH may lack a CLI the pane's shell finds; its preflight
+// refusal is the summon's.
+func (e Env) pickHarness(ctx context.Context, cwd string, kinds []core.Kind, choosing bool) (kind core.Kind, passed []string, refusal string, err error) {
 	for _, k := range kinds {
 		if choosing && e.LookPath != nil {
 			if _, err := e.LookPath(string(k)); err != nil {
@@ -465,7 +465,7 @@ func (e Env) pickHarness(ctx context.Context, cwd string, kinds []core.Kind, byD
 		if refusal == "" {
 			return k, passed, "", nil
 		}
-		if !byDefault {
+		if !choosing {
 			return "", nil, refusal, nil
 		}
 		passed = append(passed, fmt.Sprintf("%s: %s", k, refusal))
@@ -579,12 +579,12 @@ func (e Env) route(dir, role string) (crew.Route, error) {
 }
 
 // resumeLaunch is what departed resumes on: what it was launched on, checked
-// again, since a record is a file on disk. A record that names neither (an
-// agent launched before records kept them) takes its role's routing on its
-// harness, so a narrator stays on its cheap tier; one with no role keeps its
-// CLI's defaults.
+// again, since a record is a file on disk. A record without a launch (an
+// agent launched before records kept them, or one the user started) takes
+// its role's routing on its harness, so a narrator stays on its cheap tier;
+// one with no role keeps its CLI's defaults.
 func (e Env) resumeLaunch(cwd string, departed store.Record) (core.Launch, error) {
-	if departed.Model != "" || departed.Effort != "" {
+	if departed.Launched || departed.Model != "" || departed.Effort != "" {
 		return core.ParseLaunch(departed.Kind, departed.Model, departed.Effort)
 	}
 	if departed.Role == "" {

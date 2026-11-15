@@ -243,3 +243,50 @@ func writeFile(t *testing.T, p, text string) {
 		t.Fatal(err)
 	}
 }
+
+// An agent launched on its CLI's defaults resumes on them: a routing change
+// made after its start, or a broken routing file, does not reach it. Only a
+// record the adapter never wrote a launch to takes the current routing.
+func TestSummonResumeLaunchKeepsALaunchOnTheDefaults(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	user := filepath.Join(xdg, "rex-amq-adapter", "crews", crew.RoutingFile)
+	writeFile(t, user, "[role.implementer]\nharness = [\"claude\"]\n")
+	e, term, loc := summonWorld(t)
+	e.Crews = crew.Load
+	if res := summon(t, e, loc, "implementer", func(r *SummonRequest) { r.Asked = "build it" }); res.Action != "start" || launchProgram(term.launches[0])[1] != "--" {
+		t.Fatalf("%+v %q", res, term.launches)
+	}
+	rec := adoptLaunched(t, e, term, term.launches[0], core.Claude, "sess-d")
+	if !rec.Launched || rec.Model != "" || rec.Effort != "" {
+		t.Fatalf("adopted %+v", rec)
+	}
+	writeFile(t, user, "[role.implementer]\nharness = [\"claude\"]\nclaude = { model = \"sonnet\", effort = \"max\" }\n")
+	rec.Cwd = workDir(t, e, "app")
+	add(t, e, departed(rec, e.Now()))
+	if res := summon(t, e, loc, string(rec.Handle)); res.Action != "resume" || launchProgram(term.launches[1])[1] != "--resume" {
+		t.Fatalf("resumed on the new routing: %+v %q", res, term.launches)
+	}
+	writeFile(t, user, "[role.implementer]\nharness = [\"claude\"]\nclaude = { model = \"-x\" }\n")
+	if res := summon(t, e, loc, string(rec.Handle)); res.Action != "resume" {
+		t.Fatalf("a broken routing file blocked a resume that does not read it: %+v", res)
+	}
+}
+
+// A default review role checks that its harness is installed even when the
+// routing, or the family filter, leaves only one.
+func TestSummonReviewerChecksASingleRoutedHarnessIsInstalled(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	writeFile(t, filepath.Join(xdg, "rex-amq-adapter", "crews", crew.RoutingFile), "[role.reviewer]\nharness = [\"codex\"]\ncodex = { model = \"gpt-5.4\" }\n")
+	e, term, loc := summonWorld(t)
+	e.Crews = crew.Load
+	e.LookPath = installedOnly(core.Claude)
+	if res := summon(t, e, loc, "reviewer", func(r *SummonRequest) { r.Asked = "review it" }); res.Action != "refused" || !strings.Contains(res.Reason, "codex: not installed") || len(term.launches) != 0 {
+		t.Fatalf("%+v %v", res, term.launches)
+	}
+	// An explicit --harness is still launched as named.
+	if res := summon(t, e, loc, "reviewer", func(r *SummonRequest) { r.Asked = "review it"; r.Harness = "codex" }); res.Action != "start" {
+		t.Fatalf("explicit: %+v", res)
+	}
+}
