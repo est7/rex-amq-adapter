@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -99,6 +100,9 @@ type Env struct {
 	// Getenv reads the harnesses' directory overrides (core.HarnessDirs);
 	// nil reads none, so a test's directories stay under TranscriptHome.
 	Getenv func(string) string
+	// LookPath finds a harness's CLI, so a default harness that is not
+	// installed is passed over; nil finds every one.
+	LookPath func(string) (string, error)
 }
 
 // harnessDirs is where each harness keeps its files, under TranscriptHome.
@@ -145,6 +149,7 @@ func NewEnvAt(server string, paths store.Paths) (Env, error) {
 		Now:            time.Now,
 		TranscriptHome: home,
 		Getenv:         os.Getenv,
+		LookPath:       exec.LookPath,
 		ClaudeDir:      dirs.Claude,
 		AgyBrainDir:    agyBrain,
 	}, nil

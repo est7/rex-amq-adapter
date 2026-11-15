@@ -35,7 +35,20 @@ type Agent struct {
 	// TasksFile, when set, is the settings file where the harness's native
 	// task-list tools are enabled (tasks.go).
 	TasksFile string
-	Found     bool
+	// HookKey is the path Codex keys its /hooks approvals of HookFile by
+	// (CodexHooksKey); "" for the other harnesses.
+	HookKey string
+	Found   bool
+}
+
+// CodexHookReview lists the hooks in a Codex agent's hooks.json that the
+// user has not approved in /hooks (or changed since), read from its
+// config.toml beside it; nil for another harness.
+func (a Agent) CodexHookReview() ([]CodexHookReview, error) {
+	if a.Kind != core.Codex || a.HookKey == "" {
+		return nil, nil
+	}
+	return CodexHooksNeedingReview(a.HookFile, a.HookKey, filepath.Join(filepath.Dir(a.HookFile), "config.toml"))
 }
 
 const skillName = "rex-amq-adapter"
@@ -55,7 +68,8 @@ func Agents(only []core.Kind) ([]Agent, error) {
 		{Kind: core.Claude, Name: "Claude Code", SkillDir: filepath.Join(claudeDir, "skills", skillName), HookFile: filepath.Join(claudeDir, "settings.json"),
 			SupervisorFile: filepath.Join(claudeDir, "settings.json"), TasksFile: filepath.Join(claudeDir, "settings.json"), Found: exists(claudeDir) || onPath("claude")},
 		{Kind: core.Codex, Name: "Codex", SkillDir: filepath.Join(home, ".agents", "skills", skillName), HookFile: filepath.Join(codexDir, "hooks.json"),
-			SupervisorFile: filepath.Join(codexDir, "config.toml"), TasksFile: filepath.Join(codexDir, "config.toml"), Found: exists(codexDir) || onPath("codex")},
+			SupervisorFile: filepath.Join(codexDir, "config.toml"), TasksFile: filepath.Join(codexDir, "config.toml"),
+			HookKey: CodexHooksKey(filepath.Join(codexDir, "hooks.json"), os.Getenv("CODEX_HOME") != ""), Found: exists(codexDir) || onPath("codex")},
 		{Kind: core.Agy, Name: "Antigravity", SkillDir: filepath.Join(agyDir, "skills", skillName), HookFile: filepath.Join(agyDir, "hooks.json"),
 			TitleFile: filepath.Join(dirs.AgyCLI, "settings.json"), Found: exists(agyDir) || onPath("agy")},
 		// Pi reads the Agent Skills directory it shares with Codex; its "hook"

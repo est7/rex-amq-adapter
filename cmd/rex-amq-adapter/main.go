@@ -582,6 +582,19 @@ func runAwait(args []string) int {
 	return 0
 }
 
+// summonOutput is the JSON line summon prints before any await: what it did,
+// and for a start the harness it launched and each default it passed over.
+func summonOutput(res app.SummonResult) map[string]any {
+	out := map[string]any{"action": res.Action, "handles": res.Handles, "block": res.Block, "reason": res.Reason, "parent": res.Parent, "depth": res.Depth, "mailed": res.Mailed}
+	if res.Harness != "" {
+		out["harness"] = res.Harness
+	}
+	if len(res.Passed) > 0 {
+		out["passed_over"] = res.Passed
+	}
+	return out
+}
+
 func runSummon(args []string) int {
 	fs := flag.NewFlagSet("summon", flag.ContinueOnError)
 	subject := fs.String("subject", "", "the message's subject (a started peer's task label)")
@@ -589,7 +602,7 @@ func runSummon(args []string) int {
 	kind := fs.String("kind", "question", "amq kind: question, review_request, todo, brainstorm summon; others deliver only")
 	grant := fs.String("grant", "", "the user's grant file the brief cites (allows a start)")
 	asked := fs.String("asked", "", "the user's own words asking for a new agent, quoted (allows a start)")
-	harness := fs.String("harness", "", "claude, codex, agy, or pi for a start (default: by role)")
+	harness := fs.String("harness", "", "claude, codex, agy, or pi for a start (default: by role; a review role takes the first ready family other than yours)")
 	cwd := fs.String("cwd", "", "the working directory of a started agent, such as its Slice worktree (default: yours)")
 	split := fs.Bool("split", false, "open a launched agent in a pane beside yours, when the human asked for one (default: a tab of its own)")
 	timeout := fs.Duration("timeout", 45*time.Second, "how long to wait for a launched agent's adoption")
@@ -621,7 +634,7 @@ func runSummon(args []string) int {
 	if err != nil {
 		return fail(err)
 	}
-	out := map[string]any{"action": res.Action, "handles": res.Handles, "block": res.Block, "reason": res.Reason, "parent": res.Parent, "depth": res.Depth, "mailed": res.Mailed}
+	out := summonOutput(res)
 	if res.Block != "" {
 		wctx, wcancel := context.WithTimeout(context.Background(), *timeout)
 		st, err := env.AwaitStartup(wctx, res.Block)
