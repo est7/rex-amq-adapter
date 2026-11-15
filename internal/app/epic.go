@@ -195,11 +195,14 @@ func orchestratorBrief(kind core.Kind, r EpicRequest) (string, error) {
 	return run, nil
 }
 
-// withTrust extends to dir, for an Antigravity session, the trust the user
-// gave its repository (trust.Derive); any other command is unchanged.
+// withTrust carries into an Antigravity or Pi session in dir the trust the
+// user gave its project (trust.Gate.Args); any other command is unchanged.
 func (e Env) withTrust(dir string, cmd []string) []string {
-	if t, err := trust.Derive(e.TranscriptHome, dir); err == nil {
-		return trust.Args(cmd, t.Settings)
-	}
-	return cmd
+	return e.trustGate().Args(dir, cmd)
+}
+
+// trustGate is folder trust under the harnesses' home and the adapter's
+// state directory.
+func (e Env) trustGate() trust.Gate {
+	return trust.Gate{Stores: trust.StoresFor(e.TranscriptHome, e.Getenv), State: e.Paths.Home, Now: e.Now}
 }

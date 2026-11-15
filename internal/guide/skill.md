@@ -253,7 +253,9 @@ this needs is below; no other skill is required.
    start `agy "$@" …`. It extends the trust you already gave that repository to
    the worktree (and nothing else); with no such trust, or one already stored,
    it prints nothing and exits 1, and agy starts without the flag. `summon` and `tab` do
-   this themselves; none of them writes Antigravity's settings file. Save the returned block id. When unsure whether work is the same task,
+   this themselves; none of them writes Antigravity's settings file. Folder trust is the user's
+   to give: when a pane would stop on a trust dialog, tell the user the command that gives it
+   for every harness, `rex-amq-adapter trust grant <dir>`; never answer the dialog for them. Save the returned block id. When unsure whether work is the same task,
    prefer a pane: the user can move it (`rex move`), and an unseen peer is easy
    to forget. Tell the user where the peer is ("opened reviewer in a pane on the
    right", "started codex in a new session `billing-api`").

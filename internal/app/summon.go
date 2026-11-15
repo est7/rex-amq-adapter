@@ -16,7 +16,6 @@ import (
 	"github.com/est7/rex-amq-adapter/internal/core"
 	"github.com/est7/rex-amq-adapter/internal/store"
 	"github.com/est7/rex-amq-adapter/internal/transcript"
-	"github.com/est7/rex-amq-adapter/internal/trust"
 )
 
 // Summon on send (core/summon.go for the guards): an agent addresses a peer
@@ -393,11 +392,8 @@ func (e Env) launch(ctx context.Context, caller store.Record, s Session, split b
 	if cwd == "" {
 		cwd, _ = os.Getwd()
 	}
-	// An Antigravity peer in a linked worktree of a repository the user
-	// trusts meets no folder dialog: the trust goes in for its session only.
-	if t, err := trust.Derive(e.TranscriptHome, cwd); err == nil {
-		cmd = trust.Args(cmd, t.Settings)
-	}
+	// Trust Antigravity and Pi keep no route for goes in for the session.
+	cmd = e.trustGate().Args(cwd, cmd)
 	cmd = append([]string{"env", SummonEnv + "=" + token}, cmd...)
 	if split {
 		return e.Rex.NewSplit(ctx, s.id, caller.BlockID, label, cwd, cmd)
