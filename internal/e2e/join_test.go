@@ -112,7 +112,7 @@ func TestASummonedPeerGetsATabOfItsOwn(t *testing.T) {
 		return out
 	}
 	before, tabs := w.tabLabel(tb, tb.first), len(labels())
-	w.typeInto(tb.first, "summon implementer --subject fix --body do-it --kind todo --asked go --harness claude")
+	w.typeInto(tb.first, "summon implementer --subject fix --body do-it --kind todo --asked go --harness claude --cwd "+w.project("app"))
 	w.until("the summon to finish", 40*time.Second, func() bool { return strings.Contains(w.joined("lead"), "exit=") })
 	if out := w.joined("lead"); !strings.Contains(out, "exit=0") {
 		t.Fatalf("summon:\n%s\n%s", out, w.dump())

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
@@ -54,24 +55,32 @@ func StoresFor(home string, getenv func(string) string) Stores {
 }
 
 // Gate is folder trust as the adapter keeps it: the harness stores, and its
-// own book (trust.json in its state directory) of what the user granted,
-// with every grant appended to logs/trust.log.
+// own book (trust.json in its state directory) of what the user granted and
+// which roots they declared, with every grant appended to logs/trust.log.
 type Gate struct {
 	Stores Stores
 	State  string // the adapter's state directory
 	Now    func() time.Time
 }
 
-// Grant is one granted project root and who granted it (Source
-// "explicit": the user's own `trust grant`).
+// Grant is one granted project root, by the user (Source "explicit") or by a
+// declared root ("root:<root>").
 type Grant struct {
 	Root   string    `json:"root"`
 	Source string    `json:"source"`
 	At     time.Time `json:"at"`
 }
 
+// Root is a directory the user declared: a project under it is granted the
+// first time an Epic or a summon needs it.
+type Root struct {
+	Path string    `json:"path"`
+	At   time.Time `json:"at"`
+}
+
 type book struct {
 	Grants []Grant `json:"grants"`
+	Roots  []Root  `json:"roots"`
 }
 
 func (g Gate) bookPath() string { return filepath.Join(g.State, "trust.json") }
@@ -411,7 +420,7 @@ type GrantResult struct {
 // this folder" does, once: the root is recorded in the adapter's book,
 // Claude's and Codex's stores get its key (Antigravity and Pi get it per
 // session from Args), and a line goes to logs/trust.log. It is idempotent
-// and safe to run concurrently.
+// and safe to run concurrently. source is "explicit" or "root:<root>".
 func (g Gate) Grant(ctx context.Context, dir, source string) (GrantResult, error) {
 	p, err := Resolve(dir)
 	if err != nil {
@@ -483,6 +492,72 @@ func (g Gate) log(entry map[string]any) error {
 	return err
 }
 
+// AddRoots declares each dir a trust root. A root must be an existing
+// directory other than / and the home directory; it is kept by its physical
+// path. Adding one twice keeps the first.
+func (g Gate) AddRoots(ctx context.Context, dirs ...string) ([]Root, error) {
+	var add []string
+	for _, d := range dirs {
+		abs, err := filepath.Abs(d)
+		if err != nil {
+			return nil, err
+		}
+		phys, err := filepath.EvalSymlinks(abs)
+		if err != nil {
+			return nil, fmt.Errorf("a trust root must exist: %w", err)
+		}
+		if info, err := os.Stat(phys); err != nil || !info.IsDir() {
+			return nil, fmt.Errorf("a trust root must be a directory: %s", d)
+		}
+		if err := g.unbounded(phys); err != nil {
+			return nil, err
+		}
+		add = append(add, phys)
+	}
+	var roots []Root
+	err := g.update(ctx, func(b *book) error {
+		for _, a := range add {
+			if !slices.ContainsFunc(b.Roots, func(r Root) bool { return r.Path == a }) {
+				b.Roots = append(b.Roots, Root{Path: a, At: g.now()})
+			}
+		}
+		roots = b.Roots
+		return nil
+	})
+	return roots, err
+}
+
+// RemoveRoots forgets each dir as a trust root, by its physical path when
+// it still exists, else as written. What its roots granted stays granted.
+func (g Gate) RemoveRoots(ctx context.Context, dirs ...string) ([]Root, error) {
+	var roots []Root
+	err := g.update(ctx, func(b *book) error {
+		for _, d := range dirs {
+			key := filepath.Clean(d)
+			if abs, err := filepath.Abs(d); err == nil {
+				key = abs
+				if phys, err := filepath.EvalSymlinks(abs); err == nil {
+					key = phys
+				}
+			}
+			n := len(b.Roots)
+			b.Roots = slices.DeleteFunc(b.Roots, func(r Root) bool { return r.Path == key })
+			if len(b.Roots) == n {
+				return fmt.Errorf("%s is not a trust root", d)
+			}
+		}
+		roots = b.Roots
+		return nil
+	})
+	return roots, err
+}
+
+// Roots lists the declared trust roots.
+func (g Gate) Roots() ([]Root, error) {
+	b, err := g.readBook()
+	return b.Roots, err
+}
+
 // Args carries the adapter's grants into a session that has no persisted
 // route for them: an Antigravity session gets `--settings` with dir added to
 // trustedWorkspaces (Derive's, for a linked worktree of a trusted main
@@ -541,4 +616,113 @@ func (g Gate) Args(dir string, argv []string) []string {
 		return append([]string{argv[0], "--approve"}, argv[1:]...)
 	}
 	return argv
+}
+
+// Under reports the declared root that strictly contains path (both
+// physical), if any.
+func Under(roots []Root, path string) (string, bool) {
+	for _, r := range roots {
+		rel, err := filepath.Rel(r.Path, path)
+		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		return r.Path, true
+	}
+	return "", false
+}
+
+// Untrusted is the preflight's refusal: a harness would stop on a
+// folder-trust dialog in Dir, and no declared root covers its project, or
+// the user said no to it in a harness's own store (Distrusted), which only
+// their explicit `trust grant` overrides.
+type Untrusted struct {
+	Dir, Root  string
+	Asking     []Verdict // the harnesses that would ask
+	Distrusted string    // the store and key holding the user's "no", if any
+}
+
+// ReasonUntrusted names the refusal in a result or an error.
+const ReasonUntrusted = "untrusted_folder"
+
+func (u Untrusted) Error() string {
+	var who []string
+	for _, v := range u.Asking {
+		who = append(who, fmt.Sprintf("%s (%s)", v.Harness, v.Why))
+	}
+	if u.Distrusted != "" {
+		return fmt.Sprintf("%s: %s would stop on a folder-trust dialog in %s, and %s records that you do not trust it, so no trust root grants it; if you trust it now, run `rex-amq-adapter trust grant %s`",
+			ReasonUntrusted, strings.Join(who, ", "), u.Dir, u.Distrusted, u.Root)
+	}
+	return fmt.Sprintf("%s: %s would stop on a folder-trust dialog in %s, and no trust root covers %s; give the trust with `rex-amq-adapter trust grant %s` (or declare a parent with `rex-amq-adapter trust root add <dir>`)",
+		ReasonUntrusted, strings.Join(who, ", "), u.Dir, u.Root, u.Root)
+}
+
+// distrusted names the store holding the user's explicit "no" to p: Codex's
+// trust_level = "untrusted", or Pi's nearest false entry. Claude and
+// Antigravity record no refusal.
+func (g Gate) distrusted(p Project) (string, error) {
+	if no, err := install.CodexProjectDistrusted(g.Stores.Codex, p.Dir, p.Top, p.Root); err != nil {
+		return "", err
+	} else if no && p.Git() {
+		return g.Stores.Codex, nil
+	}
+	k, d, err := g.piDecision(p.Dir)
+	if err != nil {
+		return "", err
+	}
+	if k != "" && !d {
+		return g.Stores.Pi + " (" + k + ")", nil
+	}
+	return "", nil
+}
+
+// Preflight makes sure none of kinds stops on a folder-trust dialog in dir,
+// before any pane opens there. When one would, and dir's project lies
+// strictly under a declared root, it grants the project as `trust grant`
+// does (source "root:<root>", logged) and checks again; otherwise it
+// returns Untrusted and changes nothing.
+// A root never overrides the user's explicit "no" in a harness's store.
+func (g Gate) Preflight(ctx context.Context, dir string, kinds ...core.Kind) error {
+	asking, err := g.asking(dir, kinds)
+	if err != nil || len(asking) == 0 {
+		return err
+	}
+	p, err := Resolve(dir)
+	if err != nil {
+		return err
+	}
+	roots, err := g.Roots()
+	if err != nil {
+		return err
+	}
+	root, ok := Under(roots, p.Root)
+	if !ok {
+		return Untrusted{Dir: p.Dir, Root: p.Root, Asking: asking}
+	}
+	if no, err := g.distrusted(p); err != nil {
+		return err
+	} else if no != "" {
+		return Untrusted{Dir: p.Dir, Root: p.Root, Asking: asking, Distrusted: no}
+	}
+	if _, err := g.Grant(ctx, dir, "root:"+root); err != nil {
+		return err
+	}
+	if asking, err = g.asking(dir, kinds); err != nil || len(asking) == 0 {
+		return err
+	}
+	return Untrusted{Dir: p.Dir, Root: p.Root, Asking: asking}
+}
+
+func (g Gate) asking(dir string, kinds []core.Kind) ([]Verdict, error) {
+	var asking []Verdict
+	for _, k := range slices.Compact(slices.Sorted(slices.Values(kinds))) {
+		v, err := g.Check(k, dir)
+		if err != nil {
+			return nil, err
+		}
+		if !v.Trusted {
+			asking = append(asking, v)
+		}
+	}
+	return asking, nil
 }

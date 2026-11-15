@@ -18,7 +18,7 @@ func TestPersonalAgentOpensAnEpic(t *testing.T) {
 	w.ready("me")
 	goal := filepath.Join(w.dir, "goal.md")
 	w.write(goal, "GOAL: ship it\n")
-	w.typeInto(tb.first, "epic e2e-login -c "+w.dir+" --goal "+goal+" --timeout 40")
+	w.typeInto(tb.first, "epic e2e-login -c "+w.project("app")+" --goal "+goal+" --timeout 40")
 	w.until("the epic command to finish", 50*time.Second, func() bool { return strings.Contains(w.joined("me"), "exit=") })
 	out := w.joined("me")
 	if !strings.Contains(out, "exit=0") {
@@ -76,7 +76,7 @@ func TestPersonalAgentClosesAnEpic(t *testing.T) {
 	tb := w.newTab("me", "personal")
 	w.ready("me")
 	exits := func() int { return strings.Count(w.joined("me"), "exit=") }
-	w.typeInto(tb.first, "epic e2e-close -c "+w.dir+" --asked open-it --timeout 40")
+	w.typeInto(tb.first, "epic e2e-close -c "+w.project("app")+" --asked open-it --timeout 40")
 	w.until("the epic command to finish", 50*time.Second, func() bool { return exits() == 1 })
 	out := w.joined("me")
 	if !strings.Contains(out, "exit=0") {

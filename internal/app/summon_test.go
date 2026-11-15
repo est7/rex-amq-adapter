@@ -25,7 +25,9 @@ func summonWorld(t *testing.T) (Env, *fakeTerm, Location) {
 	now := time.Date(2026, 11, 10, 3, 0, 0, 0, time.UTC)
 	e.Now = func() time.Time { return now }
 	e.TranscriptHome = t.TempDir()
-	add(t, e, store.Record{Handle: "claude-01", Kind: core.Claude, Server: "unix:///fake.sock", BlockID: block, SessionID: "session:s", WindowID: "window:1", AgentPID: term.fgPID, AdoptedAt: now, Cwd: "/work/app"})
+	trustTemp(t, e)
+	trustAgy(t, e, workDir(t, e, "app"))
+	add(t, e, store.Record{Handle: "claude-01", Kind: core.Claude, Server: "unix:///fake.sock", BlockID: block, SessionID: "session:s", WindowID: "window:1", AgentPID: term.fgPID, AdoptedAt: now, Cwd: workDir(t, e, "app")})
 	return e, term, Location{Block: block}
 }
 
@@ -123,13 +125,13 @@ func TestSummonDeliversToLivePeers(t *testing.T) {
 // one, the resume is refused and the mail still waits.
 func TestSummonResumesADepartedPeer(t *testing.T) {
 	e, term, loc := summonWorld(t)
-	add(t, e, departed(store.Record{Handle: "codex-02", Kind: core.Codex, Server: "unix:///fake.sock", BlockID: "block:gone", SessionID: "session:s", Role: "reviewer", AgentPID: 2, AgentSessionID: "thread-2", AdoptedAt: e.Now().Add(-time.Hour), Cwd: "/work/app"}, e.Now().Add(-time.Minute)))
+	add(t, e, departed(store.Record{Handle: "codex-02", Kind: core.Codex, Server: "unix:///fake.sock", BlockID: "block:gone", SessionID: "session:s", Role: "reviewer", AgentPID: 2, AgentSessionID: "thread-2", AdoptedAt: e.Now().Add(-time.Hour), Cwd: workDir(t, e, "app")}, e.Now().Add(-time.Minute)))
 	res := summon(t, e, loc, "reviewer")
 	if res.Action != "resume" || res.Block == "" || !res.Mailed || len(unread(t, e, "codex-02")) != 1 {
 		t.Fatalf("%+v", res)
 	}
 	l := term.launches[0]
-	if l.Dir != "/work/app" || l.Command[0] != "env" || !strings.HasPrefix(l.Command[1], SummonEnv+"=") || strings.Join(launchProgram(l)[:3], " ") != "codex --no-daemon resume" || launchProgram(l)[3] != "thread-2" || !strings.Contains(launchProgram(l)[4], e.SelfBin+" drain --include-body") || l.Label != "reviewer(codex-02)" {
+	if l.Dir != workDir(t, e, "app") || l.Command[0] != "env" || !strings.HasPrefix(l.Command[1], SummonEnv+"=") || strings.Join(launchProgram(l)[:3], " ") != "codex --no-daemon resume" || launchProgram(l)[3] != "thread-2" || !strings.Contains(launchProgram(l)[4], e.SelfBin+" drain --include-body") || l.Label != "reviewer(codex-02)" {
 		t.Fatalf("launch: %+v", l)
 	}
 	// Adopted, it is the same agent, lineage included.
@@ -146,8 +148,8 @@ func TestSummonResumesADepartedPeer(t *testing.T) {
 	// A transcript naming the directory makes it resumable.
 	p := filepath.Join(e2.TranscriptHome, ".codex/sessions/2026/11/10/rollout-2026-11-10T02-00-00-thread-2.jsonl")
 	os.MkdirAll(filepath.Dir(p), 0o700)
-	os.WriteFile(p, []byte(`{"type":"session_meta","payload":{"cwd":"/work/from-transcript"}}`+"\n"), 0o600)
-	if res := summon(t, e2, loc2, "codex-02"); res.Action != "resume" || term2.launches[0].Dir != "/work/from-transcript" {
+	os.WriteFile(p, []byte(`{"type":"session_meta","payload":{"cwd":"`+workDir(t, e2, "from-transcript")+`"}}`+"\n"), 0o600)
+	if res := summon(t, e2, loc2, "codex-02"); res.Action != "resume" || term2.launches[0].Dir != workDir(t, e2, "from-transcript") {
 		t.Fatalf("%+v launches %v", res, term2.launches)
 	}
 }
@@ -168,7 +170,7 @@ func TestSummonStartsARoleOnceAuthorized(t *testing.T) {
 		t.Fatalf("%+v", res)
 	}
 	l := term.launches[0]
-	if l.Dir != "/work/app" || l.Label != "reviewer | look at #42" || l.Command[0] != "env" || launchProgram(l)[0] != "codex" || !strings.Contains(l.Command[len(l.Command)-1], "please review #42") || !strings.Contains(l.Command[len(l.Command)-1], e.SelfBin+" send --to claude-01") {
+	if l.Dir != workDir(t, e, "app") || l.Label != "reviewer | look at #42" || l.Command[0] != "env" || launchProgram(l)[0] != "codex" || !strings.Contains(l.Command[len(l.Command)-1], "please review #42") || !strings.Contains(l.Command[len(l.Command)-1], e.SelfBin+" send --to claude-01") {
 		t.Fatalf("launch: %+v", l)
 	}
 	if n, _ := e.Store.PendingSummons("session:s", e.Now()); n != 1 {
@@ -285,7 +287,7 @@ func TestSummonSplitsOnlyWhenAskedAndNeverAStealthAgent(t *testing.T) {
 	if res.Action != "start" || len(term.newTabs) != 0 || term.windows[res.Block] != "window:1" {
 		t.Fatalf("%+v tabs %v window %q", res, term.newTabs, term.windows[res.Block])
 	}
-	add(t, e, departed(store.Record{Handle: "pi-05", Kind: core.Pi, Server: "unix:///fake.sock", BlockID: "block:gone", SessionID: "session:s", Role: core.NarratorRole, AgentPID: 9, AdoptedAt: e.Now(), Cwd: "/work/app"}, e.Now()))
+	add(t, e, departed(store.Record{Handle: "pi-05", Kind: core.Pi, Server: "unix:///fake.sock", BlockID: "block:gone", SessionID: "session:s", Role: core.NarratorRole, AgentPID: 9, AdoptedAt: e.Now(), Cwd: workDir(t, e, "app")}, e.Now()))
 	for _, target := range []string{core.NarratorRole, core.PersonalRole, "pi-05"} {
 		res := summon(t, e, loc, target, split)
 		if res.Action != "refused" || !strings.Contains(res.Reason, "never shares a worker's tab") {
@@ -335,7 +337,7 @@ func TestSummonSameLabelKeepsEachLaunchLineage(t *testing.T) {
 	caller.Depth, caller.Parent = 1, "pi-00"
 	add(t, e, caller)
 	add(t, e, store.Record{Handle: "pi-00", Kind: core.Pi, Server: "unix:///fake.sock", BlockID: "block:root", SessionID: "session:s", AgentPID: 5, AdoptedAt: e.Now()})
-	add(t, e, store.Record{Handle: "claude-02", Kind: core.Claude, Server: "unix:///fake.sock", BlockID: "block:caller-2", SessionID: "session:s", AgentPID: term.fgPID, AdoptedAt: e.Now(), Cwd: "/work/app"})
+	add(t, e, store.Record{Handle: "claude-02", Kind: core.Claude, Server: "unix:///fake.sock", BlockID: "block:caller-2", SessionID: "session:s", AgentPID: term.fgPID, AdoptedAt: e.Now(), Cwd: workDir(t, e, "app")})
 	auth := func(r *SummonRequest) { r.Asked = "start a reviewer" }
 	a := summon(t, e, loc, "reviewer", auth)
 	b := summon(t, e, Location{Block: "block:caller-2"}, "reviewer", auth)

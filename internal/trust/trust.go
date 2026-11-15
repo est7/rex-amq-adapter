@@ -6,7 +6,9 @@
 // Grant): the project's root goes into the adapter's own book, Claude's
 // ~/.claude.json and Codex's config.toml get its key, and Antigravity and Pi
 // sessions get it per launch (Gate.Args: agy --settings, pi --approve), so
-// their own files are never written. Gate.Check
+// their own files are never written. A directory the user declares with
+// `trust root add` lets the adapter grant a project under it the first time
+// an Epic or a summon needs it, logged like an explicit grant. Gate.Check
 // replicates each harness's own rule to tell, before a pane opens, whether
 // it would ask.
 //
