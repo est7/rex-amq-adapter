@@ -582,6 +582,19 @@ func runAwait(args []string) int {
 	return 0
 }
 
+// summonOutput is the JSON line summon prints before any await: what it did,
+// and for a start the harness it launched and each default it passed over.
+func summonOutput(res app.SummonResult) map[string]any {
+	out := map[string]any{"action": res.Action, "handles": res.Handles, "block": res.Block, "reason": res.Reason, "parent": res.Parent, "depth": res.Depth, "mailed": res.Mailed}
+	if res.Harness != "" {
+		out["harness"] = res.Harness
+	}
+	if len(res.Passed) > 0 {
+		out["passed_over"] = res.Passed
+	}
+	return out
+}
+
 func runSummon(args []string) int {
 	fs := flag.NewFlagSet("summon", flag.ContinueOnError)
 	subject := fs.String("subject", "", "the message's subject (a started peer's task label)")
@@ -1224,17 +1237,4 @@ func runEpicClose(args []string) int {
 	}
 	fmt.Println(string(out))
 	return 0
-}
-
-// summonOutput is the JSON line summon prints before any await: what it did,
-// and for a start the harness it launched and each default it passed over.
-func summonOutput(res app.SummonResult) map[string]any {
-	out := map[string]any{"action": res.Action, "handles": res.Handles, "block": res.Block, "reason": res.Reason, "parent": res.Parent, "depth": res.Depth, "mailed": res.Mailed}
-	if res.Harness != "" {
-		out["harness"] = res.Harness
-	}
-	if len(res.Passed) > 0 {
-		out["passed_over"] = res.Passed
-	}
-	return out
 }
