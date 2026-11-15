@@ -306,13 +306,17 @@ of its own under a built-in role (`architect`, `reviewer`, `qa`, `writer`,
   and a `personal` agent do not count. Agents you start with `rex split` or
   `rex run` are not checked, so count them yourself and keep one session
   within 6, yourself included.
-- **Model families.** `summon` starts `reviewer`, `editor`, and `qa` in
-  another family than yours, Codex first, then Antigravity, then Claude Code,
-  passing over one that is not installed or not ready (Codex hooks waiting
-  for `/hooks` approval: `unapproved_hooks`), and every other role in Claude
-  Code, unless `--harness` says otherwise; an explicit `--harness codex` with
-  unapproved hooks is refused before any pane. When you start peers
-  yourself, give the reviewer another family than the implementer.
+- **Model families.** Each role starts on the harness, model, and effort
+  its `routing.toml` names (`rex-amq-adapter crews show --role <R>` prints
+  them and the file they come from). `summon` starts `reviewer`, `editor`,
+  and `qa` on the first harness in that list whose model is another family
+  than yours (by model name: Antigravity running a Claude model is
+  Anthropic), passing over one that is not installed or not ready (Codex
+  hooks waiting for `/hooks` approval: `unapproved_hooks`), and every other
+  role on its first harness, unless `--harness` says otherwise; an explicit
+  `--harness codex` with unapproved hooks is refused before any pane. When
+  you start peers yourself, give the reviewer another family than the
+  implementer.
 - **Several Slices.** One implementer per Slice, in that Slice's worktree
   (`summon implementer --cwd <worktree>`), and one reviewer or QA kept open
   across Slices (`summon reviewer` without `--cwd` reaches it).
@@ -332,8 +336,8 @@ rex-amq-adapter epic close <session_id> --asked "<the user's words>"   # only on
 ```
 
 It creates the Epic's Rex session with its orchestrator (briefed to run the
-goal contract, or with the user's words) and its narrator (on its CLI's
-cheap model, `haiku` for Claude), links the Epic to
+goal contract, or with the user's words) and its narrator, each on its
+role's routing (the narrator on a cheap model, `haiku` for Claude), links the Epic to
 you, and prints one JSON line (`session_id`, each agent's `handle`, `block`
 and `status`, `linked`); it exits 0 only when both agents are adopted and
 linked. Closing is two-phase: the orchestrator records its whole final report
@@ -362,11 +366,13 @@ several agents of a role are live, summon refuses: name one by handle. A departe
 in the directory it ran in, and its mail waits for it. With `--harness` and no
 `--cwd`, only an agent of the role on that harness counts: one on another harness, live or
 departed, is passed over and gets no mail. With none, a new agent
-is started for the role (`--harness` picks the CLI; reviewer, editor and qa
-default to the first of Codex, Antigravity, Claude Code that is another
-family than yours, installed, and passes the preflight, every other
-built-in or custom role, a custom `explorer` included, to Claude Code; the
-JSON names the `harness` started and each one `passed_over`, and why), with the message as its
+is started for the role on its routing (`--harness` picks the CLI;
+reviewer, editor and qa default to the first harness of their routing
+whose model is another family than yours, installed, and passing the
+preflight, every other built-in or custom role, a custom `explorer`
+included, to the first harness of its routing, `[role."*"]` for a role
+without its own; the JSON names the `harness` started and each one
+`passed_over`, and why), with the message as its
 brief, in your directory or the one `--cwd` names (a Slice worktree), and told
 once it is adopted. With `--cwd` it only ever starts a new agent there, a
 second one of a live role included: it refuses a handle and a directory a live
