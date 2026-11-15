@@ -322,7 +322,8 @@ rex-amq-adapter epic close <session_id> --asked "<the user's words>"   # only on
 ```
 
 It creates the Epic's Rex session with its orchestrator (briefed to run the
-goal contract, or with the user's words) and its narrator, links the Epic to
+goal contract, or with the user's words) and its narrator (on its CLI's
+cheap model, `haiku` for Claude), links the Epic to
 you, and prints one JSON line (`session_id`, each agent's `handle`, `block`
 and `status`, `linked`); it exits 0 only when both agents are adopted and
 linked. Closing is two-phase: the orchestrator records its whole final report
@@ -358,6 +359,8 @@ second one of a live role included: it refuses a handle and a directory a live
 agent of the role already works in, and a departed one is not resumed. The guards decide, and a refusal says
 why; never retry a refused summon with other words:
 
+- a personal agent never summons: it opens an Epic (`epic`), and the refusal
+  mails and launches nothing;
 - only a request summons (`--kind question`, `review_request`, `todo`,
   `brainstorm`); an answer, review_response, status or decision delivers only;
 - no cycle: a handle or role already in your summon chain (the agents that

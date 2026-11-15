@@ -67,7 +67,7 @@ Agent and user commands:
                             tab of its own, then gets it; none starts one for the
                             role (its brief is the message), awaits its adoption,
                             then delivers. --split opens it in a pane beside you
-                            instead, when the human asked (never a narrator). Guards: a request kind only, no cycle,
+                            instead, when the human asked (never a narrator). Guards: never from a personal agent (it runs epic), a request kind only, no cycle,
                             depth 2 at most, 6 live agents per session at most, and
                             a new agent only with the user's words or grant file
   send|reply|read|drain|thread|trace|dlq|list [AMQ FLAGS...]

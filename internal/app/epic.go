@@ -113,8 +113,9 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 	// The narrator's tab first and the orchestrator's last, which Rex makes
 	// the session's active tab; both keep Rex's placeholder name, so each
 	// follows its agent (core.FollowTab).
+	narrator := core.DefaultHarness(core.NarratorRole)
 	panes := []rex.Pane{
-		{Label: core.NarratorRole + core.PaneSeparator + task, Dir: dir, Command: e.withTrust(dir, startCommand(core.DefaultHarness(core.NarratorRole), narrate))},
+		{Label: core.NarratorRole + core.PaneSeparator + task, Dir: dir, Command: e.withTrust(dir, withModel(startCommand(narrator, narrate), core.RoleModel(core.NarratorRole, narrator)))},
 		{Label: core.OrchestratorRole + core.PaneSeparator + task, Dir: dir, Command: e.withTrust(dir, startCommand(kind, brief))},
 	}
 	session, blocks, crewErr, err := e.newEpicSession(ctx, name, panes, crewName, caller.Handle)
