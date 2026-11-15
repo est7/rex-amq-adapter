@@ -171,3 +171,15 @@ func TestPulseRetiredMemberIsRoutine(t *testing.T) {
 		t.Fatalf("a retired member collected away: %+v", c)
 	}
 }
+
+// A member retired, then back and gone again between two looks (a failed
+// close, a resume, a crash) left: urgent, not a quiet change.
+func TestPulseRetiredMemberThatLeftAgainIsUrgent(t *testing.T) {
+	a := PulseMember{Handle: "claude-01", Role: OrchestratorRole, Live: true}
+	retired := PulseMember{Handle: "codex-02", Role: "implementer", Retired: true}
+	gone := PulseMember{Handle: "codex-02", Role: "implementer"}
+	c := ComparePulse(SessionPulse{Members: []PulseMember{a, retired}}, SessionPulse{Members: []PulseMember{a, gone}})
+	if c.Priority != PriorityUrgent || len(c.Lines) != 1 || c.Lines[0] != "codex-02 (implementer) left" {
+		t.Fatalf("retired, then left again: %+v", c)
+	}
+}

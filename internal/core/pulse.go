@@ -105,7 +105,8 @@ func ComparePulse(prev, now SessionPulse) PulseChange {
 		case !had:
 		case b.Live && !m.Live && m.Retired:
 			raise(PriorityNormal, fmt.Sprintf("%s retired", m.named()))
-		case b.Live && !m.Live:
+		case b.Live && !m.Live, b.Retired && !m.Live && !m.Retired:
+			// The second: retired, then back and gone again between looks.
 			raise(PriorityUrgent, fmt.Sprintf("%s left", m.named()))
 		case !b.Live && m.Live:
 			raise(PriorityNormal, fmt.Sprintf("%s is back", m.named()))
