@@ -326,10 +326,14 @@ goal contract, or with the user's words) and its narrator (on its CLI's
 cheap model, `haiku` for Claude), links the Epic to
 you, and prints one JSON line (`session_id`, each agent's `handle`, `block`
 and `status`, `linked`); it exits 0 only when both agents are adopted and
-linked. Closing is two-phase: the narrator reports the hand-back ready, you
-ask the user, and only on their words `epic close` kills the Epic's Rex
-session, parks its agents (their handles stay reserved for a resume), and
-unlinks it; it refuses while an agent of the Epic is working or holds unread
+linked. Closing is two-phase: the orchestrator records its whole final report
+(review queue with PR links, Blocked on me, Decided for you, Changed, Found)
+last, once every PR is open, with `rex-amq-adapter hand-back @<file>` (`-`
+reads stdin; a new one replaces it), which `view` shows whole as `hand_back`;
+the narrator, woken once that report is stored, reports the hand-back ready;
+you read `hand_back` and ask the user, and only on their words `epic close`
+kills the Epic's Rex session, parks its agents (their handles stay reserved
+for a resume), and unlinks it; it refuses while an agent of the Epic is working or holds unread
 mail, unless `--force`. Only a `personal` agent opens, links, or closes Epics,
 and the narrator is the only agent of an Epic it mails; your briefing (`crews
 show --role personal`) has the rest.

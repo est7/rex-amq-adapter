@@ -225,9 +225,15 @@ the personal agent reads the Epic with `view --session` and asks or directs it
 only through the narrator, which relays your decisions to the orchestrator
 verbatim; the Epic's workers never see either of them.
 
-An Epic ends in two steps. When the orchestrator hands back, the narrator tells
-the personal agent, which tells you what was handed back and asks whether to
-close it. Only on your words does it run `rex-amq-adapter epic close
+An Epic ends in two steps. The orchestrator records its whole final report
+(review queue with PR links, Blocked on me, Decided for you, Changed, Found)
+with `rex-amq-adapter hand-back @<file>` (or `-` for stdin); the adapter
+stores it in `sessions/<id>/hand-back.json`, `view` shows it whole as
+`hand_back` (`by`, `at`, `body`), and only once it is stored does the
+session's watcher wake the narrator, urgently. The narrator tells the
+personal agent, which reads `hand_back` and tells you what was handed back and
+asks whether to close it. A pane label that reads `hand-back: …` signals
+nothing. Only on your words does it run `rex-amq-adapter epic close
 <session_id> --asked "<your words>"`, which kills the Epic's Rex session (what
 its panes showed is gone), parks its agents as `epic_closed` with their handles
 reserved for a resume for 7 days, and unlinks it. It refuses a session you did
@@ -282,6 +288,7 @@ rex-amq-adapter link <epic-session>    # (a personal agent) exchange mail with t
 rex-amq-adapter unlink <epic-session>  # revoke it
 rex-amq-adapter view --session <id>    # an Epic's view.json (its narrator, orchestrator, or a linked personal agent)
 rex-amq-adapter view refresh --summary "<what changed>"   # (the narrator) rebuild the view; `view read --ids …` reads named mail
+rex-amq-adapter hand-back @report.md   # (the orchestrator, last) record its final report; view shows it as hand_back
 ```
 
 `--me`, `--root`, `--session`, and `--project` are the adapter's to set and

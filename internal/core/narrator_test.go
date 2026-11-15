@@ -65,15 +65,10 @@ func TestSessionWatcherPulse(t *testing.T) {
 	if c := ComparePulse(p, SessionPulse{Members: []PulseMember{task, b}}); c.Priority != PriorityNormal {
 		t.Fatalf("task: %+v", c)
 	}
-	handback := a
-	handback.Task = "hand-back: login ships"
-	if c := ComparePulse(p, SessionPulse{Members: []PulseMember{handback, b}}); c.Priority != PriorityUrgent || len(c.Lines) != 1 || c.Lines[0] != "claude-01 handed back: hand-back: login ships" {
-		t.Fatalf("an orchestrator's hand-back: %+v", c)
-	}
-	notOrch := b
-	notOrch.Task = "hand-back: my part"
-	if c := ComparePulse(p, SessionPulse{Members: []PulseMember{a, notOrch}}); c.Priority != PriorityNormal {
-		t.Fatalf("a worker's hand-back task is routine: %+v", c)
+	titled := a
+	titled.Task = "hand-back: login ships"
+	if c := ComparePulse(p, SessionPulse{Members: []PulseMember{titled, b}}); c.Priority != PriorityNormal {
+		t.Fatalf("a task that reads like a hand-back is routine: %+v", c)
 	}
 	gone := a
 	gone.Live = false
@@ -117,5 +112,39 @@ func TestNarratorHoldUntil(t *testing.T) {
 	}
 	if _, held := HoldUntil([]Waiting{{Priority: PriorityNormal, Arrived: now}}, 0, 0, now); held {
 		t.Error("no hold configured holds nothing")
+	}
+}
+
+// A recorded hand-back marks its author in the pulse: urgent each time a new
+// one is stored, whatever the author's task says, and kept by Normalize so
+// the digest sees it.
+func TestPulseHandBackMarker(t *testing.T) {
+	a := PulseMember{Handle: "claude-01", Role: OrchestratorRole, Live: true, Task: "plan"}
+	p := SessionPulse{Members: []PulseMember{a}}
+	first := a
+	first.HandBack = "2026-11-15T10:00:00Z"
+	q := SessionPulse{Members: []PulseMember{first}}
+	if p.Digest() == q.Digest() {
+		t.Fatal("the digest does not see the hand-back")
+	}
+	if c := ComparePulse(p, q); c.Priority != PriorityUrgent || len(c.Lines) != 1 || c.Lines[0] != "claude-01 handed back: its report is in your view (hand_back)" {
+		t.Fatalf("a recorded hand-back: %+v", c)
+	}
+	if c := ComparePulse(q, q); c.Priority != "" {
+		t.Fatalf("the same hand-back again: %+v", c)
+	}
+	second := first
+	second.HandBack = "2026-11-15T11:00:00Z"
+	if c := ComparePulse(q, SessionPulse{Members: []PulseMember{second}}); c.Priority != PriorityUrgent {
+		t.Fatalf("a second hand-back of the Epic: %+v", c)
+	}
+	gone := first
+	gone.Live = false
+	if c := ComparePulse(q, SessionPulse{Members: []PulseMember{gone}}); c.Priority != PriorityUrgent || len(c.Lines) != 1 || c.Lines[0] != "claude-01 (orchestrator) left" {
+		t.Fatalf("a departure after the hand-back: %+v", c)
+	}
+	// An orchestrator that joins and hands back between two looks.
+	if c := ComparePulse(SessionPulse{}, q); c.Priority != PriorityUrgent || len(c.Lines) != 2 || c.Lines[1] != "claude-01 handed back: its report is in your view (hand_back)" {
+		t.Fatalf("a hand-back by a member not seen before: %+v", c)
 	}
 }

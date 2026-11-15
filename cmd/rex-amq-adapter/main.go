@@ -100,6 +100,11 @@ Agent and user commands:
                             obligations, recent mail, and what it could not cover;
                             the narrator's, orchestrator's, or a linked personal
                             agent's to read
+  hand-back TEXT|@FILE|-     (an orchestrator, when its run ends) record its whole final
+                            report (review queue, PR links, Blocked on me, Decided for
+                            you, Changed, Found) as the session's hand-back; view shows
+                            it as hand_back, whole, and the narrator is woken once it
+                            is stored. - reads it from stdin; a new one replaces the last
   view refresh [--summary TEXT|@FILE]
                             (the narrator) rebuild the view without moving mail or
                             writing a receipt, keeping or replacing its narrative
@@ -164,6 +169,8 @@ func run(args []string) int {
 		return runEpic(rest)
 	case "view":
 		return runView(rest)
+	case "hand-back":
+		return runHandBack(rest, os.Stdin)
 	case "join":
 		return runJoin(rest)
 	case "setup", "status", "remove":

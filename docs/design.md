@@ -1256,7 +1256,8 @@ Overridable with `REX_AMQ_ADAPTER_HOME` (tests use a temporary directory).
 │       ├── quarantine/<handle>/<msg_id>.md (+ .json reason)  mail the gateway took out of an inbox
 │       ├── sessions/<session_id>/view.json  the session's view, written whole by its narrator
 │       ├── sessions/<session_id>/pulse.json what the session's watcher last told the narrator
-│       └── sessions/<session_id>/crew.json  the crew the session works as (join CREW, epic --crew)
+│       ├── sessions/<session_id>/crew.json  the crew the session works as (join CREW, epic --crew)
+│       └── sessions/<session_id>/hand-back.json the orchestrator's latest hand-back, whole (hand-back)
 ├── bin/inject                the wrapper amq wake runs as --inject-via
 ├── records/<handle>.json     one record per handle
 ├── ledger/<handle>.json      announced message ids
@@ -1349,11 +1350,22 @@ the user's own would: the orchestrator is depth 0 in its session.
 
 Nothing closes an Epic on its own: a hand-back can leave items only the user
 can act on, and a killed session's screens are gone for good. The end has two
-phases. The orchestrator's final report sets its task to `hand-back: …`
-(`title`), which the session's pulse counts as urgent (`core.HandBack`), so it
-neither waits behind an unread routine notice nor sits out the narrator's
-hold; the narrator tells the linked personal agent, unasked, and the
-personal agent asks the user. On the user's
+phases. The orchestrator records its final report, whole, with
+`rex-amq-adapter hand-back TEXT|@FILE|-` (`app.Env.RecordHandBack`: a live
+orchestrator placed in a session only, a non-empty body of at most 256 KiB,
+refused rather than cut). It is written atomically to
+`sessions/<id>/hand-back.json` (`store.HandBack`: `by`, `at`, `body`),
+replacing the one before, and the view carries it uncut as `hand_back`:
+the narrator's refresh writes it into `view.json`, and every `view` read puts
+the stored one in place in memory, so it is whole the moment it is recorded.
+The session's pulse marks its author with the hand-back's time and a digest
+of its body (`core.PulseMember.HandBack`), which the watcher reads from that
+file, so the narrator is woken only once the report is on disk, and once for
+each new one, also when its author joined since the last look or the
+watcher's first look finds one already stored; the change is urgent, so it neither waits behind an unread routine
+notice nor sits out the narrator's hold. The orchestrator's task (its pane
+label) signals nothing. The narrator tells the linked personal agent,
+unasked, from `hand_back`, and the personal agent asks the user. On the user's
 words it runs `rex-amq-adapter epic close <session_id> --asked "WORDS"
 [--force]` (`app.Env.CloseEpic`):
 
@@ -1406,7 +1418,8 @@ What was not read is listed in `coverage_gaps` (`peer_mail_body_not_read`,
 `unverified_provenance` for mail sent without the adapter, `other_session`,
 `not_found`, truncation), never guessed. The view (`sessions/<id>/view.json`:
 `as_of` cursor, Epic label, members, obligations, activity, control-plane
-excerpts, gaps, limits, the narrator's own `--summary`) is written whole; the
+excerpts, gaps, limits, the narrator's own `--summary`, and the
+orchestrator's recorded `hand_back`, uncut) is written whole; the
 narrator, the session's orchestrator, a pane with no agent in that session,
 and a personal agent linked to the Epic read it with `view`; anyone else is
 refused.
@@ -1415,7 +1428,7 @@ The narrator takes no member mail. The session's watcher compares a
 deterministic pulse of the session (members, tasks, newest mail id, attention
 from health marks) and mails the narrator adapter system mail from itself:
 `urgent` for a departure or new attention (a turn error, a wait on the human, a
-stall) and for an orchestrator whose task turns to `hand-back: …`, `normal`
+stall) and for a newly recorded hand-back, `normal`
 for members or tasks, `low` for mail alone. A routine change
 while the last notice is unread rides along with it. A narrator's
 `.wake.settings` get `--hold-normal 2m --hold-low 10m` (`amq wake config`)
@@ -1426,7 +1439,7 @@ urgent mail skips the hold.
 ## 9. Module layout
 
 ```
-cmd/rex-amq-adapter/   subcommands: hook, inject, env, title, who, events, await, collect, crews, tab, trust, summon, epic, join, send, reply, read, drain, thread, trace, dlq, list, link, unlink, setup, status, remove, __internal, version
+cmd/rex-amq-adapter/   subcommands: hook, inject, env, title, who, events, await, collect, crews, tab, trust, summon, epic, view, hand-back, join, send, reply, read, drain, thread, trace, dlq, list, link, unlink, setup, status, remove, __internal, version
 internal/app/          entry points: observe, ask core, act (adopt, inject, announce, depart, collect, discovery, await, session watcher, narrator view, and watchdog, summon, join, the events stream); who runs a command (Caller); the hook's process ancestry (golang.org/x/sys)
 internal/core/         pure policy: the gateway (CanExchange), handle choice, roles and pane labels, inject decision, announce decision, session-mates, notice text, the observer's projection and diff
 internal/crew/         crew and role prompt lookup across project, user, and built-in layers; crew headers (lead, members); built-in prompts
