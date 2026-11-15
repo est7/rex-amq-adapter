@@ -1,0 +1,64 @@
+# Which harness, model, and reasoning effort each role starts on.
+#
+# [role.<name>] holds `harness`, the harnesses best first, and one table per
+# harness with its `model` and `effort` (either may be left out: the CLI's
+# own default). A review role (reviewer, editor, qa) starts on the first
+# installed, ready harness whose model is another family than its
+# summoner's; every other role on its first harness only, refused rather
+# than moved when that one is not ready. [role."*"] routes any role without
+# a table of its own.
+#
+# A project's .agents/crews/routing.toml, then the user's
+# $XDG_CONFIG_HOME/rex-amq-adapter/crews/routing.toml, override this file
+# role by role: the first file with a table for the role wins it whole.
+# `rex-amq-adapter crews show --role <R>` prints what applies and from where.
+#
+# effort: off|minimal|low|medium|high|xhigh|max, as the CLI takes it
+# (claude and agy: low..max; codex: off..max, off as "none"; pi: off..max).
+
+[role.orchestrator]
+harness = ["claude", "agy", "codex"]
+claude = { model = "opus", effort = "high" }
+agy = { model = "gemini-pro-orchestrator" }
+codex = { model = "gpt-5.4", effort = "high" }
+
+[role.narrator]
+harness = ["claude", "agy"]
+claude = { model = "haiku", effort = "low" }
+agy = { model = "gemini-4-hydrogen-low" }
+
+[role.architect]
+harness = ["claude", "codex", "agy"]
+claude = { model = "opus", effort = "max" }
+codex = { model = "gpt-5.4", effort = "xhigh" }
+agy = { model = "gemini-4-carbon-high", effort = "high" }
+
+[role.implementer]
+harness = ["claude", "codex", "agy"]
+claude = { model = "opus", effort = "high" }
+codex = { model = "gpt-5.4", effort = "high" }
+agy = { model = "gemini-4-carbon-high", effort = "high" }
+
+[role.reviewer]
+harness = ["codex", "agy", "claude"]
+codex = { model = "gpt-5.4", effort = "xhigh" }
+agy = { model = "gemini-4-carbon-high", effort = "high" }
+claude = { model = "opus", effort = "high" }
+
+[role.qa]
+harness = ["codex", "agy", "claude"]
+codex = { model = "gpt-5.4", effort = "high" }
+agy = { model = "gemini-4-carbon-medium", effort = "medium" }
+claude = { model = "sonnet", effort = "high" }
+
+[role.editor]
+harness = ["codex", "agy", "claude"]
+codex = { model = "gpt-5.4", effort = "high" }
+agy = { model = "gemini-4-carbon-high", effort = "high" }
+claude = { model = "opus", effort = "high" }
+
+[role."*"]
+harness = ["claude", "agy", "codex"]
+claude = { model = "opus", effort = "high" }
+agy = { model = "gemini-4-carbon-medium", effort = "medium" }
+codex = { model = "gpt-5.4", effort = "medium" }

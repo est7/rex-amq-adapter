@@ -202,6 +202,10 @@ Make the changes in this order; each step has tests before the next.
    Antigravity takes its brief as the value of `-i`. Test a dash-leading brief
    through `Summon` before marking the kind supported. `resumeCommand` passes no
    `--`: its prompt is the adapter's fixed "Resumed by ..." text, never a brief.
+   Map its model and effort flags in `core.Launch.Args`, the efforts its CLI
+   takes in `harnessEfforts`, and its own model family in `core.Family`
+   (`internal/core/launch.go`); check each flag in both launch forms with the
+   installed CLI's `--help`.
 9. **Docs** — `docs/design.md` §2 (primitives with evidence), §6 (lifecycle
    notes for the kind), §11 (end-to-end rows); `README.md` (supported agents,
    tested version, install notes such as approvals).

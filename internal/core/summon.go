@@ -24,52 +24,6 @@ const (
 // delivers only.
 var RequestKinds = map[string]bool{"question": true, "review_request": true, "todo": true, "brainstorm": true}
 
-// DefaultHarness is the harness a role starts in when the summoner names
-// none: review roles on another family than the usual implementer.
-func DefaultHarness(role string) Kind {
-	switch role {
-	case "reviewer", "editor", "qa":
-		return Codex
-	}
-	return Claude
-}
-
-// DefaultHarnesses are the harnesses a role may start in when the summoner
-// names none, best first. A review role (reviewer, editor, qa) goes to
-// another model family than the caller's, Codex, then Antigravity, then
-// Claude Code, and never to the caller's own: a review by the same family
-// misses what that family misses. Pi is never a default: its model is the
-// user's choice, so its family is unknown. Every other role starts in
-// DefaultHarness.
-func DefaultHarnesses(role string, caller Kind) []Kind {
-	if DefaultHarness(role) == Claude {
-		return []Kind{Claude}
-	}
-	var out []Kind
-	for _, k := range []Kind{Codex, Agy, Claude} {
-		if k != caller {
-			out = append(out, k)
-		}
-	}
-	return out
-}
-
-// RoleModel is the model a role's agent runs on in kind's CLI, "" for the
-// CLI's own default. A narrator only reads mail and rewrites the view, so it
-// runs on the cheap tier of its CLI (the user's choice, 2026-11-15).
-func RoleModel(role string, kind Kind) string {
-	if role != NarratorRole {
-		return ""
-	}
-	switch kind {
-	case Claude:
-		return "haiku"
-	case Agy:
-		return "gemini-4-hydrogen-low"
-	}
-	return ""
-}
-
 // SummonCheck is what the guards decide for a resume or start. A refusal
 // is also an error, so a caller can carry it up.
 type SummonCheck struct {

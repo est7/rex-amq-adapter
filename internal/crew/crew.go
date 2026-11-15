@@ -66,8 +66,13 @@ func Load(dir string) Library {
 	if u := userDir(); u != "" && isDir(u) {
 		lib = append(lib, Layer{Name: "user", FS: os.DirFS(u), Dir: u})
 	}
+	return append(lib, Builtin()...)
+}
+
+// Builtin is the library of the built-in layer alone.
+func Builtin() Library {
 	sub, _ := fs.Sub(builtin, "builtin") // a constant, existing directory
-	return append(lib, Layer{Name: "built-in", FS: sub})
+	return Library{{Name: "built-in", FS: sub}}
 }
 
 // Crew is a crew's declared shape and its conventions.

@@ -71,7 +71,7 @@ func TestOpenEpicStartsOrchestratorAndNarratorAndLinks(t *testing.T) {
 	if narr.Tab != "" || narr.Label != "narrator | login revamp" || narr.Dir != dir || !strings.Contains(strings.Join(narr.Command, " "), "claude-01") {
 		t.Errorf("narrator pane %+v", narr)
 	}
-	if orch.Tab != "" || orch.Label != "orchestrator | login revamp" || orch.Command[0] != "claude" || !strings.Contains(orch.Command[len(orch.Command)-1], goal) {
+	if orch.Tab != "" || orch.Label != "orchestrator | login revamp" || program(orch.Command)[0] != "claude" || !strings.Contains(orch.Command[len(orch.Command)-1], goal) {
 		t.Errorf("orchestrator pane %+v", orch)
 	}
 	// The brief is make-goal's file-delivery prompt whole: run-goal stops at
@@ -136,7 +136,7 @@ func TestOpenEpicReportsAMidwayFailureWithoutTearingDown(t *testing.T) {
 	if res.Ready() || res.Orchestrator.Status != core.StartupAdopted || res.Narrator.Status != core.StartupTimeout || !res.Linked || res.Narrator.Block != "block:epic-1-1" {
 		t.Fatalf("result %+v", res)
 	}
-	if orch := term.sessions_[0].panes[1]; orch.Command[0] != "codex" || orch.Command[len(orch.Command)-1] != "build the login page" {
+	if orch := term.sessions_[0].panes[1]; program(orch.Command)[0] != "codex" || orch.Command[len(orch.Command)-1] != "build the login page" {
 		t.Errorf("the orchestrator's brief is the user's words: %+v", orch.Command)
 	}
 	if len(term.closed) != 0 {

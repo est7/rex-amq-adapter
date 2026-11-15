@@ -790,12 +790,20 @@ parent, depth, target) that the launched agent carries as `REX_AMQ_SUMMON`.
 Its first hook commits a record with that parent and depth and only then
 deletes the token, so a failed write keeps the lineage for the retry; an
 unadopted token stops holding its place after `store.PendingSummonFor`
-(2 minutes). The harness is the role's default unless `--harness` names one: any role
-but a review role starts in Claude Code; `reviewer`, `editor`, and `qa`
-start in the first of Codex, Antigravity, Claude Code that is another
-family than the caller's (`core.DefaultHarnesses`; Pi's model is the user's,
-so it is never a default), that the summoner's PATH finds, and whose
-preflight passes (`app.Env.pickHarness`). The result names the `harness`
+(2 minutes). The harness is the role's routing unless `--harness` names one
+(`crew.Library.Routing`: `routing.toml`, the project's over the user's over
+the built-in, role by role, `[role."*"]` for a role without a table): any
+role but a review role starts on its first harness; `reviewer`, `editor`, and
+`qa` start on the first of their harnesses whose routed model is a known
+family other than the caller's recorded model's (`core.Family`: the model
+name's prefix, else the harness's own; Pi on its default is unknown and never
+counts as another), that the summoner's PATH finds, and whose preflight
+passes (`app.Env.pickHarness`). The model and effort of that harness go on
+the command line as the CLI's flags (`core.Launch.Args`) and into the
+launch's environment (`REX_AMQ_MODEL`, `REX_AMQ_EFFORT`), which the
+adoption records on `store.Record`; a resume reuses them after checking them
+again (`core.ParseLaunch`), and a record holding neither takes its role's
+routing. The result names the `harness`
 and each one `passed_over` with its reason; with none ready the summon
 refuses with every reason and never falls back to the caller's family. An
 explicit `--harness` is never swapped, and for a role without `--cwd` it passes over every agent
@@ -1524,7 +1532,7 @@ yet" on its first turn, which held the personal agent's Stop hook.
 cmd/rex-amq-adapter/   subcommands: hook, inject, env, title, who, events, await, collect, crews, tab, trust, summon, epic, view, hand-back, join, send, reply, read, drain, thread, trace, dlq, list, link, unlink, setup, status, remove, __internal, version
 internal/app/          entry points: observe, ask core, act (adopt, inject, announce, depart, collect, discovery, await, session watcher, narrator view, and watchdog, summon, join, the events stream); who runs a command (Caller); the hook's process ancestry (golang.org/x/sys)
 internal/core/         pure policy: the gateway (CanExchange), handle choice, roles and pane labels, inject decision, announce decision, session-mates, notice text, the observer's projection and diff
-internal/crew/         crew and role prompt lookup across project, user, and built-in layers; crew headers (lead, members); built-in prompts
+internal/crew/         crew and role prompt lookup across project, user, and built-in layers; crew headers (lead, members); built-in prompts; routing.toml, each role's harnesses, models, and efforts
 internal/fsutil/       flock and atomic replace
 internal/rex/          rex CLI client: process, program_status, capture, write, block and window labels, whoami, block list, new window
 internal/amq/          wake check/start/repair/retire, mailbox registration, inbox listing (ported); read-only mailbox, header, and receipt readers

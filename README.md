@@ -171,9 +171,36 @@ conventions, shared by every agent of the session, in any tab:
 rex-amq-adapter join pair    # claim crew pair for this Rex session and take its lead, implementer
 rex-amq-adapter summon reviewer --subject "review #42" --body "Review the implementer's fix for #42 when it hands off." --kind todo --asked "<your words>"
 rex-amq-adapter crews        # every crew, its lead and members, and every role available here
-rex-amq-adapter crews show ship --role qa   # the briefing a QA agent in a ship session gets, changing nothing
+rex-amq-adapter crews show ship --role qa   # the briefing a QA agent in a ship session gets, and its routing, changing nothing
 rex-amq-adapter crews --json # crews and roles as JSON, each with its purpose
 ```
+
+Which harness, model, and reasoning effort each role starts on comes from
+`routing.toml`: the built-in one
+([`internal/crew/builtin/routing.toml`](internal/crew/builtin/routing.toml)),
+overridden role by role by `~/.config/rex-amq-adapter/crews/routing.toml`
+and then by the project's `.agents/crews/routing.toml`. Each `[role.<name>]`
+lists `harness = [...]`, best first, and a `<harness> = { model, effort }`
+table for each; `[role."*"]` routes a role without one:
+
+```toml
+[role.reviewer]
+harness = ["codex", "agy", "claude"]
+codex = { model = "gpt-5.4", effort = "xhigh" }
+agy = { model = "gemini-4-carbon-high", effort = "high" }
+claude = { model = "opus", effort = "high" }
+```
+
+The adapter passes them as each CLI's flags (`claude`/`agy` `--model`
+`--effort`, `codex` `-m` `-c model_reasoning_effort=`, `pi` `--model`
+`--thinking`) on `epic`, a summon's start, and a resume, and records them on
+the agent (`who --json` shows `model` and `effort`), so a resume runs on what
+the agent started on, CLI defaults included, whatever the routing says by then. A model is letters, digits, and `._:/-` that never
+starts with `-`; an effort is one of `off|minimal|low|medium|high|xhigh|max`
+that the CLI takes. A file that breaks either rule, misspells a key, or
+names an unknown harness refuses every launch and names the file. A model's
+family comes from its name (`claude`, `opus`, `sonnet`, `haiku` Anthropic;
+`gpt`, `o1`, `o3`, `o4` OpenAI; `gemini` Google), else from its harness.
 
 The agent you are already talking to can lead the crew itself: asked to "open
 a pair for #42", it runs `rex-amq-adapter join pair` where it stands, which
@@ -207,7 +234,7 @@ Whether the human stays is the brief's to say, not the role's: an orchestrator h
 rex run --label orchestrator --focus=false -- claude "/goal Load skill run-goal. Execute the goal contract at /abs/path/.goal/20261110-ship-42.md; it is the grant. …"
 ```
 
-An agent reaches a peer that may not be running with `rex-amq-adapter summon <handle|role> --subject S --body B [--cwd DIR]`: a live agent of that handle or role gets the mail; a departed one of this session is resumed in a tab of its own (in the directory it ran in, which adoption now records; `--split` puts a started or resumed agent beside the caller instead, when you asked, never a narrator or personal agent) and its mail waits for it; with `--harness H` and no `--cwd`, only an agent of the role on `H` counts, so one on another harness, live or departed, gets no mail and is not resumed; with none, a new agent is started for the role with the message as its brief and told once adopted; a reviewer, editor or qa starts, unless `--harness` names one, in the first of Codex, Antigravity, Claude Code that is another family than the caller's, installed, and passes the preflight (the result's `harness` and `passed_over` say which and why), and is refused, naming each reason, when none is. The guards are the boundary: a personal agent never summons (it opens an Epic with `epic`, and nothing is mailed or launched); only a request kind summons; no handle or role already in the caller's summon chain; depth 2 at most, the user's agents being 0; 6 live agents per session at most; a new agent only when the brief cites the user's grant file (`--grant`, which the caller checks; the adapter does not read it) or the caller quotes the user's own words asking for it (`--asked`, an attestation the log keeps); no start or resume when the caller's own summon chain cannot be traced back to the user. A launch carries a token in its environment (`REX_AMQ_SUMMON`) that binds its adoption to the summon. It holds its place in the cap until then; a resume starts with a fixed prompt that makes the agent drain its mailbox. The message keeps the kind the caller gave it. A summoned agent's record carries its parent and depth; every summon is logged in `logs/summon.log` and listed in the summoner's hand-back.
+An agent reaches a peer that may not be running with `rex-amq-adapter summon <handle|role> --subject S --body B [--cwd DIR]`: a live agent of that handle or role gets the mail; a departed one of this session is resumed in a tab of its own (in the directory it ran in, which adoption now records; `--split` puts a started or resumed agent beside the caller instead, when you asked, never a narrator or personal agent) and its mail waits for it; with `--harness H` and no `--cwd`, only an agent of the role on `H` counts, so one on another harness, live or departed, gets no mail and is not resumed; with none, a new agent is started for the role with the message as its brief and told once adopted; a started agent runs on its role's routing (below); a reviewer, editor or qa starts, unless `--harness` names one, on the first harness of its routing whose model is another family than the caller's model, installed, and passes the preflight (the result's `harness` and `passed_over` say which and why), and is refused, naming each reason, when none is. The guards are the boundary: a personal agent never summons (it opens an Epic with `epic`, and nothing is mailed or launched); only a request kind summons; no handle or role already in the caller's summon chain; depth 2 at most, the user's agents being 0; 6 live agents per session at most; a new agent only when the brief cites the user's grant file (`--grant`, which the caller checks; the adapter does not read it) or the caller quotes the user's own words asking for it (`--asked`, an attestation the log keeps); no start or resume when the caller's own summon chain cannot be traced back to the user. A launch carries a token in its environment (`REX_AMQ_SUMMON`) that binds its adoption to the summon. It holds its place in the cap until then; a resume starts with a fixed prompt that makes the agent drain its mailbox. The message keeps the kind the caller gave it. A summoned agent's record carries its parent and depth; every summon is logged in `logs/summon.log` and listed in the summoner's hand-back.
 
 A personal agent runs Epics without working in them. Give an agent in a Rex
 session of its own (your `~/me`, say) the role with `rex-amq-adapter join
@@ -222,9 +249,9 @@ rex-amq-adapter epic "login revamp" -c ~/src/app --goal ~/src/app/.goal/20261112
 `epic` creates the Epic's Rex session (named after it) with the orchestrator,
 briefed to run the contract (or, with `--asked "<your words>"`, with your
 request), and a narrator in a background tab of its own, each tab following
-its agent's pane label. The narrator only reads mail and rewrites the view, so
-it runs on its CLI's cheap tier (`claude --model haiku`, `agy --model
-gemini-4-hydrogen-low`), on a resume too; with `--crew C` the session works as crew C. It links
+its agent's pane label. Both start on their role's routing (below); the
+narrator only reads mail and rewrites the view, so it runs on a cheap tier
+(`claude --model haiku --effort low`), on a resume too; with `--crew C` the session works as crew C. It links
 the Epic to the personal agent and waits for both agents (`--timeout`, 90 s
 by default).
 It prints one JSON line and exits 0 only when both are adopted and linked; a

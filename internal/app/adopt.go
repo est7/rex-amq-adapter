@@ -209,6 +209,12 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 		if rec.Cwd == "" {
 			rec.Cwd = own.Cwd
 		}
+		rec.Launched, rec.Model, rec.Effort = own.Launched, own.Model, own.Effort
+	}
+	// What the adapter launched it on; an agent started by hand, or a
+	// repeated hook of one launched before this version, keeps its own.
+	if in.Launch != nil {
+		rec.Launched, rec.Model, rec.Effort = true, in.Launch.Model, in.Launch.Effort
 	}
 	sm, summoned, err := e.Store.Summon(in.SummonToken)
 	if err != nil {

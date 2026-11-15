@@ -193,6 +193,9 @@ type HookInput struct {
 	// summon launched this agent with (store.Summon), binding the launch to
 	// this adoption and no other.
 	SummonToken string `json:"-"`
+	// Launch is LaunchModelEnv and LaunchEffortEnv in the hook's
+	// environment, nil when the adapter did not launch the agent.
+	Launch *core.Launch `json:"-"`
 	// Idle: the agent is at rest (sent by Pi's extension when it rescans
 	// between runs), so only an announcement can start it.
 	Idle bool `json:"idle"`
