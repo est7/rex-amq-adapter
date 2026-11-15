@@ -167,7 +167,8 @@ with your next prompt names each that joins or leaves ("… joined your Rex
 session", "… left your Rex session"). Stop waiting for a reply from an agent
 that left. In a session with an orchestrator, it hears of a departure by mail at
 once, even when idle; if that agent itself leaves, one peer is told to report
-and stop. When the user says "the one beside you", "旁边那个", or "隔壁", they
+and stop. A peer retired as finished (`rex-amq-adapter retire`) is not such a
+departure: nobody is mailed. When the user says "the one beside you", "旁边那个", or "隔壁", they
 mean the agents of your session; `who`'s TAB column tells them apart. Reach them
 with `rex-amq-adapter send`, not with your harness's own agent messaging, which does not
 know AMQ handles. Use `rex-amq-adapter who` for the current list of your
@@ -205,7 +206,7 @@ this needs is below; no other skill is required.
    hand off before it reads your brief, so keep the brief to the task.
    Planning a team for a goal: see Plan a crew below. Use
    `orchestrator` when one agent should own a goal and coordinate the others:
-   it records progress, reports, and starts and closes agents, and the others
+   it records progress, reports, and starts and retires agents, and the others
    take to it what they would take to the user.
 2. **Write the brief** as the peer's first prompt: the task, the files or diff,
    and, for a peer in your session, that it should report back with
@@ -404,7 +405,7 @@ process name, working directory, or screen text.
 | see whether a peer's program still runs | `rex block call -b <block> process` |
 | list panes in your session | `rex block ls -s "$REX_SESSION" --json` |
 | list sessions | `rex ls --json` |
-| close a peer's pane when the user asks | `rex block close <block>` |
+| close a finished peer's pane (one you started, or the user asks) | `rex-amq-adapter retire <handle>`, not raw `rex block close`, which reads as a crash |
 
 - Use the full ids commands return (`.block_ids[0]`, `.session_id`); labels can
   change and repeat.

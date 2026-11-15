@@ -273,6 +273,7 @@ rex-amq-adapter view         # a session's view.json (the narrator writes it; it
 rex-amq-adapter events --json # stream this session's agents and mail as NDJSON (read-only; --tab, --session S, --all)
 rex-amq-adapter await <block> # wait for an agent you started; prints its outcome as JSON
 rex-amq-adapter collect      # retire agents whose pane closed or process died
+rex-amq-adapter retire <handle> # close a finished peer's pane without a crash report (not rex block close)
 ```
 
 Mail through the gateway. One AMQ root holds every Rex session, and the
@@ -327,6 +328,7 @@ directory from `amq who`.
 | Agent's first hook runs | Handle chosen (`<kind>-<NN>`; the role, from the pane label, kept in the record), mailbox created, `amq wake` started, pane relabeled `<role>(<handle>)` (then `… \| <task>` once the agent names its task); it is told its session-mates and its crew and role briefing, and its session-mates are told it joined |
 | Agent exits | `SessionEnd` retires its waker and tells its session-mates it left; the handle stays reserved for its session for 7 days |
 | Agent crashes or its pane closes | The next adoption or `collect` notices and does the same, as does `who` in that session, a send to it, or within seconds an orchestrator there |
+| A finished peer is retired (`rex-amq-adapter retire <handle> [--force]`) | Its record departs as `retired` (waker retired, no "left" mail or urgent narrator notice), then its pane closes; its `SessionEnd` and collection then change nothing, and the handle stays reserved for 7 days. An orchestrator uses this instead of `rex block close`, which reads as a crash. Refused for itself, a narrator, personal, or orchestrator agent, an agent of another session, and, unless `--force`, one still working or holding unread mail |
 | Session resumed (`claude --resume`, `codex resume`), in any pane | Gets its handle back, with the mail that arrived meanwhile; so does a Claude conversation that moved to a new session id, found through its transcript, and an agy conversation `/resume`d by a new agy in the same pane, whose next hook adopts it |
 | Mail sent to an agent that left | The sender's next hook says so once, naming who now runs in that pane and who is in its session |
 | New session in a used pane | Gets a new handle; the previous session keeps its own |
