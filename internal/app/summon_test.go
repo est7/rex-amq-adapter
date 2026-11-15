@@ -504,3 +504,51 @@ func TestSummonSucceedsWhenItsLogCannotBeWritten(t *testing.T) {
 		t.Fatalf("diagnostics: %q", diag.String())
 	}
 }
+
+// An explicit --harness names the CLI the caller wants (F10): a peer of the
+// role on another harness, departed or live (a stuck one included), does not
+// stand in for it, is not mailed, and a new agent starts on that harness. A
+// peer on the named harness is still resumed or delivered to, and a handle
+// is addressed whatever --harness says.
+func TestSummonExplicitHarnessSkipsAPeerOfAnotherKind(t *testing.T) {
+	asked := func(h string) func(*SummonRequest) {
+		return func(r *SummonRequest) { r.Asked = "换个 agy 审"; r.Harness = h }
+	}
+	codex := func(e Env) store.Record {
+		return store.Record{Handle: "codex-02", Kind: core.Codex, Server: "unix:///fake.sock", BlockID: "block:b", SessionID: "session:s", Role: "reviewer", AgentPID: 2, AgentSessionID: "thread-2", AdoptedAt: e.Now().Add(-time.Hour), Cwd: workDir(t, e, "app")}
+	}
+	// A departed codex reviewer: agy starts, codex is neither resumed nor mailed.
+	e, term, loc := summonWorld(t)
+	add(t, e, departed(codex(e), e.Now().Add(-time.Minute)))
+	if res := summon(t, e, loc, "reviewer", asked("agy")); res.Action != "start" || res.Mailed || res.Harness != core.Agy || len(term.launches) != 1 || launchProgram(term.launches[0])[0] != "agy" || len(unread(t, e, "codex-02")) != 0 {
+		t.Fatalf("departed codex stood in for --harness agy: %+v launches %+v", res, term.launches)
+	}
+	rec := adoptLaunch(t, e, term, term.launches[0], core.Agy, "conv-1")
+	if rec.Handle == "codex-02" || rec.Kind != core.Agy || rec.Parent != "claude-01" || rec.Depth != 1 {
+		t.Fatalf("adopted: %+v", rec)
+	}
+	// A live codex reviewer (one stuck on a screen looks the same): agy starts.
+	e2, term2, loc2 := summonWorld(t)
+	add(t, e2, codex(e2))
+	if res := summon(t, e2, loc2, "reviewer", asked("agy")); res.Action != "start" || res.Mailed || len(term2.launches) != 1 || launchProgram(term2.launches[0])[0] != "agy" || len(unread(t, e2, "codex-02")) != 0 {
+		t.Fatalf("live codex stood in for --harness agy: %+v launches %+v", res, term2.launches)
+	}
+	// The named harness still reaches its own peer: delivered when live ...
+	e3, term3, loc3 := summonWorld(t)
+	add(t, e3, codex(e3))
+	if res := summon(t, e3, loc3, "reviewer", asked("codex")); res.Action != "deliver" || len(unread(t, e3, "codex-02")) != 1 || len(term3.launches) != 0 {
+		t.Fatalf("%+v", res)
+	}
+	// ... resumed when departed ...
+	e4, term4, loc4 := summonWorld(t)
+	add(t, e4, departed(codex(e4), e4.Now().Add(-time.Minute)))
+	if res := summon(t, e4, loc4, "reviewer", asked("codex")); res.Action != "resume" || len(term4.launches) != 1 || len(unread(t, e4, "codex-02")) != 1 {
+		t.Fatalf("%+v", res)
+	}
+	// ... and a handle is the agent it names.
+	e5, term5, loc5 := summonWorld(t)
+	add(t, e5, codex(e5))
+	if res := summon(t, e5, loc5, "codex-02", asked("agy")); res.Action != "deliver" || len(term5.launches) != 0 {
+		t.Fatalf("%+v", res)
+	}
+}

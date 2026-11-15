@@ -40,7 +40,9 @@ type SummonRequest struct {
 	// words asking for a new agent (self-attested, logged); starting a new
 	// agent needs one of them. Neither is verified here.
 	Grant, Asked string
-	Harness      string // overrides the role's default harness for a start
+	// Harness overrides the role's default harness for a start; for a role
+	// target it also passes over any agent of the role on another harness.
+	Harness string
 	// Cwd is the working directory of a started agent (a Slice worktree);
 	// empty means the caller's. A resume keeps the departed agent's own.
 	Cwd string
@@ -105,6 +107,12 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 	for i, rec := range recs {
 		if rec.Handle == caller.Handle || !matches(rec, target, isHandle) {
 			continue // nobody summons themselves
+		}
+		// An explicit --harness for a role asks for that CLI: a peer of the
+		// role on another one, departed or live and stuck, never stands in
+		// for it (a handle is the agent it names, whatever --harness says).
+		if !isHandle && r.Harness != "" && string(rec.Kind) != r.Harness {
+			continue
 		}
 		switch {
 		case rec.Live() && s.holds(rec):
