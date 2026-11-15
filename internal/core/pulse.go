@@ -31,6 +31,9 @@ type PulseMember struct {
 	// (store.HandBack: its time and a digest of its body), set only once it
 	// is on disk.
 	HandBack string `json:"hand_back,omitempty"`
+	// Retired marks a departed agent that a session-mate retired as finished
+	// (rex-amq-adapter retire): its leaving is routine, not attention.
+	Retired bool `json:"retired,omitempty"`
 }
 
 // SessionPulse is a session's pulse.
@@ -68,7 +71,7 @@ const (
 // must hear it: urgent for attention (an agent left, a new error, stall, or
 // wait on the human, a hand-back recorded), which skips the
 // narrator's doorbell hold; normal for a
-// change of members or tasks; low for mail alone. Priority is "" when
+// change of members or tasks, a retired agent included; low for mail alone. Priority is "" when
 // nothing changed.
 type PulseChange struct {
 	Priority string
@@ -100,7 +103,10 @@ func ComparePulse(prev, now SessionPulse) PulseChange {
 		case !had && m.Live:
 			raise(PriorityNormal, fmt.Sprintf("%s joined", m.named()))
 		case !had:
-		case b.Live && !m.Live:
+		case b.Live && !m.Live && m.Retired:
+			raise(PriorityNormal, fmt.Sprintf("%s retired", m.named()))
+		case b.Live && !m.Live, b.Retired && !m.Live && !m.Retired:
+			// The second: retired, then back and gone again between looks.
 			raise(PriorityUrgent, fmt.Sprintf("%s left", m.named()))
 		case !b.Live && m.Live:
 			raise(PriorityNormal, fmt.Sprintf("%s is back", m.named()))

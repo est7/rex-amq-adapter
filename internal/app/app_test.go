@@ -56,6 +56,8 @@ type fakeTerm struct {
 	resizeErr      error    // ResizeBlock fails (after recording the request)
 	boxAfterResize string   // the box a successful resize reveals (a draft a tiny pane hid)
 	closed         []string
+	closeErr       error // CloseBlock fails, closing nothing
+	closeHangs     bool  // CloseBlock waits until its context ends, as a stalled Rex would
 	newTabs        []string
 	launches       []launch
 	states         map[string]rex.Status                 // block -> program status, overriding state
@@ -75,7 +77,7 @@ func (f *fakeTerm) Whoami(context.Context) (rex.Server, error) {
 func (f *fakeTerm) Foreground(_ context.Context, block string) (rex.Process, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.gone {
+	if f.gone || slices.Contains(f.closed, block) {
 		return rex.Process{}, false, rex.ErrNotFound
 	}
 	if p, ok := f.fgs[block]; ok {
@@ -87,6 +89,9 @@ func (f *fakeTerm) Foreground(_ context.Context, block string) (rex.Process, boo
 func (f *fakeTerm) ProgramStatus(_ context.Context, block string) (rex.Status, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.gone || slices.Contains(f.closed, block) {
+		return rex.Status{}, false, rex.ErrNotFound
+	}
 	if st, ok := f.states[block]; ok {
 		return st, true, nil
 	}
@@ -139,6 +144,9 @@ func (f *fakeTerm) SendKeys(_ context.Context, _ string, keys ...string) error {
 func (f *fakeTerm) InspectBlock(_ context.Context, id string) (rex.Block, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.gone || slices.Contains(f.closed, id) {
+		return rex.Block{}, rex.ErrNotFound
+	}
 	label := f.label
 	if label == "" {
 		label = "shell"
@@ -673,9 +681,19 @@ func (f *fakeTerm) MoveBlock(_ context.Context, session, block, anchor string) e
 	return nil
 }
 
-func (f *fakeTerm) CloseBlock(_ context.Context, block string) error {
+func (f *fakeTerm) CloseBlock(ctx context.Context, block string) error {
+	f.mu.Lock()
+	hangs := f.closeHangs
+	f.mu.Unlock()
+	if hangs {
+		<-ctx.Done()
+		return ctx.Err()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.closeErr != nil {
+		return f.closeErr
+	}
 	delete(f.windows, block)
 	f.closed = append(f.closed, block)
 	return nil

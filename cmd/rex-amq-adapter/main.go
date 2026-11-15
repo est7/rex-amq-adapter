@@ -97,6 +97,15 @@ Agent and user commands:
                             handles stay reserved for a resume), and unlink it;
                             refused while one of its agents is not at rest or
                             holds unread mail, unless --force
+  retire <handle> [--force] close a finished peer of this Rex session: mark it
+                            departed (depart_reason "retired"), retire its waker,
+                            and close its pane, telling nobody it left; a pane that
+                            no longer shows it stays open. Prints one JSON line
+                            (action retired or already_departed; pane closed,
+                            gone, or left_open). Never
+                            a narrator, personal, or orchestrator agent, nor
+                            yourself; refused while it works or holds unread
+                            mail, unless --force. Use it, not rex block close
   view [--session S]        print a session's view (view.json): its members, open
                             obligations, recent mail, and what it could not cover;
                             the narrator's, orchestrator's, or a linked personal
@@ -175,6 +184,8 @@ func run(args []string) int {
 		return runLink(cmd == "link", rest)
 	case "epic":
 		return runEpic(rest)
+	case "retire":
+		return runRetire(rest)
 	case "view":
 		return runView(rest)
 	case "hand-back":
@@ -1236,5 +1247,48 @@ func runEpicClose(args []string) int {
 		return fail(err)
 	}
 	fmt.Println(string(out))
+	return 0
+}
+
+const retireUsage = `usage: rex-amq-adapter retire <handle> [--force]`
+
+// runRetire retires a finished peer of the caller's Rex session
+// (app.Retire) and prints what was done, also when its pane did not close.
+func runRetire(args []string) int {
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		fmt.Fprintln(os.Stderr, retireUsage)
+		return 2
+	}
+	handle := args[0]
+	fs := flag.NewFlagSet("retire", flag.ContinueOnError)
+	force := fs.Bool("force", false, "retire even while the agent works, waits on a dialog, or holds unread mail")
+	if err := fs.Parse(args[1:]); err != nil {
+		return 2
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintln(os.Stderr, retireUsage)
+		return 2
+	}
+	env, loc, err := caller()
+	if err != nil {
+		return fail(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	res, err := env.Retire(ctx, loc, app.RetireRequest{Handle: core.Handle(handle), Force: *force})
+	if errors.Is(err, app.ErrUsage) {
+		fmt.Fprintf(os.Stderr, "rex-amq-adapter: %v\n", err)
+		return 2
+	}
+	if res.Action != "" {
+		out, merr := json.Marshal(res)
+		if merr != nil {
+			return fail(merr)
+		}
+		fmt.Println(string(out))
+	}
+	if err != nil {
+		return fail(err)
+	}
 	return 0
 }

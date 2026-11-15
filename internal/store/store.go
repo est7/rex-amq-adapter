@@ -109,9 +109,10 @@ type Record struct {
 	// handle reserved for its agent session (a resume, in any block) until
 	// collected.
 	DepartedAt *time.Time `json:"departed_at,omitempty"`
-	// DepartReason says why: DepartSessionEnd, DepartReplaced, DepartEpicClosed, or the binding
+	// DepartReason says why: DepartSessionEnd, DepartReplaced, DepartEpicClosed, DepartRetired, or the binding
 	// check's code when collection found the agent gone (block_gone,
-	// agent_gone, agent_left_pane). Shown to observers; nothing decides on it.
+	// agent_gone, agent_left_pane). Shown to observers; only the session
+	// pulse decides on it (a retired agent's leaving is routine).
 	DepartReason string `json:"depart_reason,omitempty"`
 	// Unfinished names the transition this record was committed in the middle
 	// of, so whoever reads it next can finish it.
@@ -132,6 +133,7 @@ const (
 	DepartSessionEnd = "session_end" // the harness ended the session
 	DepartReplaced   = "replaced"    // another agent or session took the block
 	DepartEpicClosed = "epic_closed" // the personal agent closed its Epic's session
+	DepartRetired    = "retired"     // a session-mate retired it as finished (rex-amq-adapter retire)
 )
 
 // Live reports whether the record describes a running agent.

@@ -374,9 +374,11 @@ A record is one JSON file per handle, the single source of truth:
 
 `unfinished` is present only while a transition is under way (section 6).
 A departed record also says why it departed (`depart_reason`): `session_end`,
-`replaced` (another agent or session took the block), or the binding check's
-code when collection found the agent gone (`block_gone`, `agent_gone`,
-`agent_left_pane`). Observers show it; nothing decides on it.
+`replaced` (another agent or session took the block), `epic_closed` (its
+Epic was closed), `retired` (a session-mate retired it as finished, Retiring a
+peer), or the binding check's code when collection found the agent gone
+(`block_gone`, `agent_gone`, `agent_left_pane`). Observers show it; only the
+narrator's pulse decides on it, telling `retired` as routine.
 
 The record holds only facts the adapter owns. The waker's identity and
 liveness belong to amq: the adapter asks `amq wake check` and retires a waker
@@ -1043,7 +1045,7 @@ with a timeout (both harnesses run hook commands through a shell). Outside Rex
 | `UserPromptSubmit`, `PostToolUse` | Announce new ids from the ledger; `UserPromptSubmit` also delivers queued window notes. Filesystem only, no subprocess, unless the agent must be adopted first or has just sent mail (measured p50 6.8 ms, max 16.7 ms over 30 runs, before the outbox check) | 3 s / 2.5 s |
 | `Stop` | Block once per section 3, then supervise the waker: one `amq wake check` (about 60 ms), and `Ensure` when it is dead or runs an older binary; an orchestrator's missing watcher is started here too. A turn that ended in an error or a limit is never held: it is reported instead (below) | 3 s / 2.5 s (supervision bounded to 1.5 s) |
 | `StopFailure` (Claude Code only) | Report the turn error (below), then supervise the waker | 3 s / 2.5 s |
-| `SessionEnd` | Retire the block's waker (identified by amq's saved target), set `departed_at` and `depart_reason` (`session_end`), drop the agent's undelivered window notes, queue "left" notes for its session-mates, and mail the orchestrator if the session has one | 3 s / 2.5 s (Codex clamps to 3 s) |
+| `SessionEnd` | Retire the block's waker (identified by amq's saved target), set `departed_at` and `depart_reason` (`session_end`), drop the agent's undelivered window notes, queue "left" notes for its session-mates, and mail the orchestrator if the session has one; nothing for a record already departed, as a retired peer's is (Retiring a peer) | 3 s / 2.5 s (Codex clamps to 3 s) |
 
 **Antigravity** has no `SessionEnd` hook and no `stop_hook_active`. Its agents
 depart through collection, and its Stop hook blocks only for mail never
@@ -1409,6 +1411,59 @@ words it runs `rex-amq-adapter epic close <session_id> --asked "WORDS"
 The session's watcher, with no orchestrator or narrator live, exits on its
 own. A direct session the user started is never an Epic to close.
 
+### Retiring a peer
+
+An agent closes a finished peer of its own Rex session with
+`rex-amq-adapter retire <handle> [--force]` (`app.Env.Retire`). A raw
+`rex block close` reads as a crash: collection finds the block gone, parks
+the record as `block_gone`, mails the orchestrator that the peer "quit,
+crashed, or its pane closed", and the narrator's pulse raises an urgent
+"left". A retire departs the record first, so nothing reads it as a crash:
+
+1. Everything happens under the lifecycle lock, so the guards read the
+   records and the mailbox as they are when it acts: a resume, a move, a
+   role change, or mail that arrived while the retire waited for the lock is
+   seen. The caller is an adopted agent, and the target is another agent
+   recorded in the caller's Rex session (same server and session), not a
+   `narrator`, `personal`, or `orchestrator`. One already departed is a
+   no-op (`"action":"already_departed"`, its own `depart_reason`). Unless
+   `--force`, the target must be at rest and hold no unread mail, the same
+   check as an Epic's close (`unrest`); a local Claude Code background job
+   is judged by its supervisor's state, since the client showing it reports
+   none of its own or a stale one.
+2. It departs quietly, as an Epic's close parks its agents: waker retired,
+   window notes cleared, `DepartReason` `retired`, `Unfinished` empty, and
+   no departure notes or mail.
+3. Its block is looked at on the record's server (`observeBinding`). A block
+   that no longer shows the agent stays open (`"pane":"left_open"` with a
+   `pane_note`), since closing it would close another program's pane: the
+   conversation moved to the background (agent view or another conversation
+   in the title), the agent's process exited under another foreground (its
+   shell), or a background job's pane no longer shows the job. A block Rex
+   no longer has is `"pane":"gone"`.
+4. Otherwise the block is closed (`"pane":"closed"`). The dying agent's
+   `SessionEnd`, its late hooks (adoption finds the block gone), and the
+   collection that follows find a departed record and do nothing. A close
+   that fails leaves the departure standing, exits non-zero, and names the
+   block for `rex block close <block>`. The agent still runs then, and its
+   next turn takes its handle back like any resume; once `who` lists it
+   again, retiring it again closes it quietly.
+
+Each Rex call made under the lock (the rest check, the look, the close) is
+bounded to 2 seconds, since every adoption and departure on the host waits
+for that lock; the lock is released before the tab the agent shared is
+relabeled (`followTab`).
+
+The session pulse marks a member departed as `retired` (`PulseMember.Retired`,
+set only then, so other pulses keep their digests), and `ComparePulse` raises
+`<handle> retired` at normal priority, not the urgent `left`. A member seen
+retired and then departed again without it (a failed close, a resume, a
+crash between two looks) is an urgent `left`. The handle stays reserved
+(`ReserveFor`) like any departure. The command prints one JSON line:
+`handle`, `block`, `action` (`retired` or `already_departed`),
+`depart_reason`, and, once retired, `pane` (`closed`, `gone`, or
+`left_open`, with `pane_note`).
+
 ### Narrator
 
 A `narrator` (`core.Stealth`, like a `personal` agent) observes its Epic
@@ -1445,7 +1500,7 @@ deterministic pulse of the session (members, tasks, newest mail id, attention
 from health marks) and mails the narrator adapter system mail from itself:
 `urgent` for a departure or new attention (a turn error, a wait on the human, a
 stall) and for a newly recorded hand-back, `normal`
-for members or tasks, `low` for mail alone. A routine change
+for members or tasks (a peer retired as finished included), `low` for mail alone. A routine change
 while the last notice is unread rides along with it. A narrator's
 `.wake.settings` get `--hold-normal 2m --hold-low 10m` (`amq wake config`)
 when it is adopted, and `announceMail` applies amq's hold rule to mail not yet
