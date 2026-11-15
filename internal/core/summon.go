@@ -34,6 +34,22 @@ func DefaultHarness(role string) Kind {
 	return Claude
 }
 
+// RoleModel is the model a role's agent runs on in kind's CLI, "" for the
+// CLI's own default. A narrator only reads mail and rewrites the view, so it
+// runs on the cheap tier of its CLI (the user's choice, 2026-11-15).
+func RoleModel(role string, kind Kind) string {
+	if role != NarratorRole {
+		return ""
+	}
+	switch kind {
+	case Claude:
+		return "haiku"
+	case Agy:
+		return "gemini-4-hydrogen-low"
+	}
+	return ""
+}
+
 // SummonCheck is what the guards decide for a resume or start. A refusal
 // is also an error, so a caller can carry it up.
 type SummonCheck struct {
@@ -42,6 +58,17 @@ type SummonCheck struct {
 }
 
 func (c SummonCheck) Error() string { return c.Reason }
+
+// GuardSummoner refuses a summoner by its role, before anything is mailed or
+// launched. A personal agent coordinates Epics only: its gateway lets it
+// mail just a linked narrator, so an agent it summoned could never report
+// back to it. It opens an Epic instead, whose orchestrator starts the crew.
+func GuardSummoner(role string) SummonCheck {
+	if role == PersonalRole {
+		return SummonCheck{Refused: true, Reason: "a personal agent coordinates Epics only; open one with 'rex-amq-adapter epic <name> -c <dir> --asked \"…\"'"}
+	}
+	return SummonCheck{}
+}
 
 // GuardSummon applies the guards to a summoner at depth, with chain its
 // handles from the user's agent down to itself (itself last), wanting

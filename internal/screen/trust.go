@@ -16,6 +16,10 @@ var trustPhrases = []string{
 	"Do you trust the files in this folder?",
 	"Yes, I trust this folder",
 	"Yes, I trust these settings",
+	// A project .mcp.json server waiting for approval; Enter would approve
+	// the command it names.
+	"New MCP server found",
+	"new MCP servers found in this project", // two or more: "2 new MCP servers found …"
 	// Codex
 	"Trust this folder?",
 	"Do you trust the contents of this directory?",
