@@ -354,6 +354,8 @@ second one of a live role included: it refuses a handle and a directory a live
 agent of the role already works in, and a departed one is not resumed. The guards decide, and a refusal says
 why; never retry a refused summon with other words:
 
+- a personal agent never summons: it opens an Epic (`epic`), and the refusal
+  mails and launches nothing;
 - only a request summons (`--kind question`, `review_request`, `todo`,
   `brainstorm`); an answer, review_response, status or decision delivers only;
 - no cycle: a handle or role already in your summon chain (the agents that

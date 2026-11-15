@@ -75,6 +75,12 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 	if r.Kind == "" {
 		r.Kind = "question"
 	}
+	// Before any mail or pane: a refused summoner leaves nothing behind.
+	if g := core.GuardSummoner(caller.Role); g.Refused {
+		res := SummonResult{Action: "refused", Reason: g.Reason, Parent: caller.Handle, Depth: caller.Depth + 1}
+		e.summonLog(caller, r, res)
+		return res, nil
+	}
 	// A target is a handle, or a role in the form adoption records it.
 	target, isHandle := r.Target, core.LooksLikeHandle(r.Target)
 	if !isHandle {
