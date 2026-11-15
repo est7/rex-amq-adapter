@@ -88,12 +88,24 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
 		return EpicResult{}, fmt.Errorf("%w: %s is not a directory", ErrUsage, r.Dir)
 	}
-	kind := core.DefaultHarness(core.OrchestratorRole)
+	// Each agent starts on its role's first harness (--harness overrides the
+	// orchestrator's), with that harness's model and effort.
+	orchRoute, err := e.route(dir, core.OrchestratorRole)
+	if err != nil {
+		return EpicResult{}, fmt.Errorf("%w: %v", ErrUsage, err)
+	}
+	narrRoute, err := e.route(dir, core.NarratorRole)
+	if err != nil {
+		return EpicResult{}, fmt.Errorf("%w: %v", ErrUsage, err)
+	}
+	kind := orchRoute.Harnesses[0]
 	if r.Harness != "" {
 		if kind, err = core.ParseKind(r.Harness); err != nil {
 			return EpicResult{}, fmt.Errorf("%w: %v", ErrUsage, err)
 		}
 	}
+	narrator := narrRoute.Harnesses[0]
+	orchLaunch, narrLaunch := orchRoute.Launch(kind), narrRoute.Launch(narrator)
 	brief, err := orchestratorBrief(kind, r)
 	if err != nil {
 		return EpicResult{}, err
@@ -111,7 +123,7 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 	}
 	// Both agents' folder trust before the session exists: an Epic either
 	// starts with no dialog in its panes or does not start.
-	if err := e.trustGate().Preflight(ctx, dir, core.DefaultHarness(core.NarratorRole), kind); err != nil {
+	if err := e.trustGate().Preflight(ctx, dir, narrator, kind); err != nil {
 		if trust.Refusal(err) {
 			return EpicResult{}, fmt.Errorf("%w: %v", ErrRefused, err)
 		}
@@ -121,10 +133,9 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 	// The narrator's tab first and the orchestrator's last, which Rex makes
 	// the session's active tab; both keep Rex's placeholder name, so each
 	// follows its agent (core.FollowTab).
-	narrator := core.DefaultHarness(core.NarratorRole)
 	panes := []rex.Pane{
-		{Label: core.NarratorRole + core.PaneSeparator + task, Dir: dir, Command: e.withTrust(dir, withModel(startCommand(narrator, narrate), core.RoleModel(core.NarratorRole, narrator)))},
-		{Label: core.OrchestratorRole + core.PaneSeparator + task, Dir: dir, Command: e.withTrust(dir, startCommand(kind, brief))},
+		{Label: core.NarratorRole + core.PaneSeparator + task, Dir: dir, Command: withLaunchEnv(narrLaunch, e.withTrust(dir, narrLaunch.Args(narrator, startCommand(narrator, narrate))))},
+		{Label: core.OrchestratorRole + core.PaneSeparator + task, Dir: dir, Command: withLaunchEnv(orchLaunch, e.withTrust(dir, orchLaunch.Args(kind, startCommand(kind, brief))))},
 	}
 	session, blocks, crewErr, err := e.newEpicSession(ctx, name, panes, crewName, caller.Handle)
 	if err != nil {

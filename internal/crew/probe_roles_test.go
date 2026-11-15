@@ -9,9 +9,17 @@ import (
 	"github.com/est7/rex-amq-adapter/internal/crew"
 )
 
-func TestDefaultHarnessMatchesBuiltinRolesOnly(t *testing.T) {
+func TestRoutingFirstHarnessMatchesBuiltinRolesOnly(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	entries, err := crew.Load("").List()
+	lib := crew.Load("")
+	first := func(role string) core.Kind {
+		r, err := lib.Routing(role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r.Harnesses[0]
+	}
+	entries, err := lib.List()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,8 +39,8 @@ func TestDefaultHarnessMatchesBuiltinRolesOnly(t *testing.T) {
 		if !slices.Contains(shared, r) {
 			t.Errorf("Codex-default role %q has no built-in roles/%s.md prompt", r, r)
 		}
-		if got := core.DefaultHarness(r); got != core.Codex {
-			t.Errorf("DefaultHarness(%q) = %v, want %v", r, got, core.Codex)
+		if got := first(r); got != core.Codex {
+			t.Errorf("first harness of %q = %v, want %v", r, got, core.Codex)
 		}
 	}
 	for _, r := range shared {
@@ -40,16 +48,16 @@ func TestDefaultHarnessMatchesBuiltinRolesOnly(t *testing.T) {
 		if slices.Contains(codexRoles, r) {
 			want = core.Codex
 		}
-		if got := core.DefaultHarness(r); got != want {
-			t.Errorf("DefaultHarness(%q) = %v, want %v", r, got, want)
+		if got := first(r); got != want {
+			t.Errorf("first harness of %q = %v, want %v", r, got, want)
 		}
 	}
 	// Removed orphan role must not exist in built-in roles or carry a special-case harness.
 	if slices.Contains(shared, "explorer") {
 		t.Error("orphan role explorer should not be in shared built-in roles")
 	}
-	if got := core.DefaultHarness("explorer"); got != core.Claude {
-		t.Errorf("DefaultHarness(\"explorer\") = %v, want default %v", got, core.Claude)
+	if got := first("explorer"); got != core.Claude {
+		t.Errorf("first harness of explorer = %v, want default %v", got, core.Claude)
 	}
 }
 

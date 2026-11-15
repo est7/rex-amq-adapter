@@ -27,6 +27,7 @@ type AgentObservation struct {
 	Kind                                 Kind
 	Server, SessionID, WindowID, BlockID string
 	Tab, Role                            string
+	Model, Effort                        string
 	Placed                               bool // the block is in the observed layout
 	Task                                 string
 	Adopting, Departing                  bool // a transition the record is in the middle of
@@ -85,16 +86,20 @@ type Snapshot struct {
 
 // Agent is an agent entity, keyed by Handle.
 type Agent struct {
-	Handle    Handle    `json:"handle"`
-	Kind      Kind      `json:"kind"`
-	Server    string    `json:"server"`
-	SessionID string    `json:"session_id"`
-	WindowID  string    `json:"window_id"`
-	Tab       string    `json:"tab"`
-	BlockID   string    `json:"block_id"`
-	Pane      string    `json:"pane"` // "present" | "gone"
-	Task      string    `json:"task"`
-	Role      string    `json:"role"`
+	Handle    Handle `json:"handle"`
+	Kind      Kind   `json:"kind"`
+	Server    string `json:"server"`
+	SessionID string `json:"session_id"`
+	WindowID  string `json:"window_id"`
+	Tab       string `json:"tab"`
+	BlockID   string `json:"block_id"`
+	Pane      string `json:"pane"` // "present" | "gone"
+	Task      string `json:"task"`
+	Role      string `json:"role"`
+	// Model and Effort are what the adapter launched it on; empty for its
+	// CLI's defaults or an agent the user started.
+	Model     string    `json:"model,omitempty"`
+	Effort    string    `json:"effort,omitempty"`
 	Lifecycle Lifecycle `json:"lifecycle"`
 	Activity  Activity  `json:"activity"`
 	Delivery  Delivery  `json:"delivery"`
@@ -181,7 +186,7 @@ func Project(obs Observations) Snapshot {
 func projectAgent(o AgentObservation) Agent {
 	a := Agent{
 		Handle: o.Handle, Kind: o.Kind, Server: o.Server, SessionID: o.SessionID, WindowID: o.WindowID,
-		Tab: o.Tab, BlockID: o.BlockID, Pane: "gone", Task: o.Task, Role: o.Role,
+		Tab: o.Tab, BlockID: o.BlockID, Pane: "gone", Task: o.Task, Role: o.Role, Model: o.Model, Effort: o.Effort,
 	}
 	if o.Placed {
 		a.Pane = "present"

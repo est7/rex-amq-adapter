@@ -249,6 +249,7 @@ func runHook(args []string) int {
 		return hookFail(log, err)
 	}
 	in.SummonToken = os.Getenv(app.SummonEnv)
+	in.Launch = app.LaunchFromEnv(os.LookupEnv)
 	loc, err := app.Here()
 	if errors.Is(err, app.ErrNotInRex) {
 		reply(app.Reply{})

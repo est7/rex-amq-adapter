@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
+	"github.com/est7/rex-amq-adapter/internal/crew"
 	"github.com/est7/rex-amq-adapter/internal/store"
 	"github.com/est7/rex-amq-adapter/internal/transcript"
 	"github.com/est7/rex-amq-adapter/internal/trust"
@@ -315,10 +316,16 @@ func (e Env) resume(ctx context.Context, caller store.Record, s Session, r Summo
 	}
 	bootstrap := fmt.Sprintf("Resumed by %s (summon on send): mail waits for you. Run %s drain --include-body and act on it.", caller.Handle, e.SelfBin)
 	cmd, ok := resumeCommand(departed.Kind, departed.AgentSessionID, bootstrap)
-	cmd = withModel(cmd, core.RoleModel(departed.Role, departed.Kind))
 	if !ok {
 		_ = e.Store.DeleteSummon(res.Token)
 		res.Action, res.Reason = "refused", fmt.Sprintf("%s (%s) cannot be resumed from outside; the message waits in its mailbox", departed.Handle, departed.Kind)
+		e.summonLog(caller, r, res)
+		return res, nil
+	}
+	launch, err := e.resumeLaunch(cwd, departed)
+	if err != nil {
+		_ = e.Store.DeleteSummon(res.Token)
+		res.Action, res.Reason = "refused", fmt.Sprintf("%s cannot be resumed on what it was launched on: %v; the message waits in its mailbox", departed.Handle, err)
 		e.summonLog(caller, r, res)
 		return res, nil
 	}
@@ -332,7 +339,7 @@ func (e Env) resume(ctx context.Context, caller store.Record, s Session, r Summo
 		return res, nil
 	}
 	label := core.PaneLabel(departed.Handle, departed.Role, departed.Task)
-	block, err := e.launch(ctx, caller, s, r.Split, label, cwd, res.Token, cmd)
+	block, err := e.launch(ctx, caller, s, r.Split, label, cwd, res.Token, launch, launch.Args(departed.Kind, cmd))
 	if err != nil {
 		_ = e.Store.DeleteSummon(res.Token)
 		return res, err
@@ -366,14 +373,6 @@ func (e Env) start(ctx context.Context, caller store.Record, s Session, r Summon
 	if r.Grant == "" && r.Asked == "" {
 		return refuse("starting a new agent needs the user's own words in this session asking for it (--asked \"<their words>\", your attestation, logged) or a brief that cites their grant file (--grant <file>, which you verified and the brief names)")
 	}
-	kinds := core.DefaultHarnesses(role, caller.Kind)
-	if r.Harness != "" {
-		kind, err := core.ParseKind(r.Harness)
-		if err != nil {
-			return refuse(err.Error())
-		}
-		kinds = []core.Kind{kind}
-	}
 	brief := r.Body + "\n\nYou were started by " + string(caller.Handle) + " (summon on send). Report back with `" + e.SelfBin + " send --to " + string(caller.Handle) + " --subject \"…\" --body \"…\"`; the same request waits in your mailbox once you are adopted, so you can `" + e.SelfBin + " reply` to it."
 	label := role + " | " + core.Task(r.Subject)
 	cwd := caller.Cwd
@@ -384,6 +383,28 @@ func (e Env) start(ctx context.Context, caller store.Record, s Session, r Summon
 		}
 		cwd = r.Cwd
 	}
+	route, err := e.route(cwd, role)
+	if err != nil {
+		return refuse(fmt.Sprintf("the routing of role %s cannot be read, so no agent was started: %v", role, err))
+	}
+	// A review role takes the first ready harness of another family than the
+	// caller's; every other role its first harness, launched even when this
+	// process's PATH lacks it (pickHarness).
+	// An explicit --harness is the caller's choice and is never filtered.
+	kinds := route.Harnesses[:1]
+	switch {
+	case r.Harness != "":
+		kind, err := core.ParseKind(r.Harness)
+		if err != nil {
+			return refuse(err.Error())
+		}
+		kinds = []core.Kind{kind}
+	case core.ReviewRole(role):
+		mine := core.Family(caller.Kind, caller.Model)
+		if kinds = otherFamilies(route, mine); len(kinds) == 0 {
+			return refuse(fmt.Sprintf("no harness in the routing of %s (%s) runs a model family known to differ from yours (%s %s), so no agent was started; name one with --harness", role, strings.Join(kindNames(route.Harnesses), ", "), caller.Kind, orUnknown(mine)))
+		}
+	}
 	kind, passed, refusal, err := e.pickHarness(ctx, cwd, kinds, r.Harness == "")
 	if err != nil {
 		_ = e.Store.DeleteSummon(res.Token)
@@ -393,11 +414,12 @@ func (e Env) start(ctx context.Context, caller store.Record, s Session, r Summon
 		return refuse(refusal)
 	}
 	res.Harness, res.Passed = kind, passed
-	cmd := withModel(startCommand(kind, brief), core.RoleModel(role, kind))
+	cmd := startCommand(kind, brief)
 	if len(cmd) == 0 {
 		return refuse(fmt.Sprintf("unsupported harness %q; no agent was started", kind))
 	}
-	block, err := e.launch(ctx, caller, s, r.Split, label, cwd, res.Token, cmd)
+	launch := route.Launch(kind)
+	block, err := e.launch(ctx, caller, s, r.Split, label, cwd, res.Token, launch, launch.Args(kind, cmd))
 	if err != nil {
 		_ = e.Store.DeleteSummon(res.Token)
 		return res, err
@@ -469,17 +491,17 @@ func (e Env) preflight(ctx context.Context, cwd string, kind core.Kind) (refusal
 }
 
 // launch opens a tab of its own, which follows the agent's pane label from
-// its adoption on (core.FollowTab), running cmd with the token in its
-// environment; with split, the human's choice, a pane beside the caller
-// instead. A new tab is opened in the background, so the human's view stays
-// where it is.
-func (e Env) launch(ctx context.Context, caller store.Record, s Session, split bool, label, cwd, token string, cmd []string) (string, error) {
+// its adoption on (core.FollowTab), running cmd with the token and what it
+// is launched on (l, already in cmd's flags) in its environment; with split,
+// the human's choice, a pane beside the caller instead. A new tab is opened
+// in the background, so the human's view stays where it is.
+func (e Env) launch(ctx context.Context, caller store.Record, s Session, split bool, label, cwd, token string, l core.Launch, cmd []string) (string, error) {
 	if cwd == "" {
 		cwd, _ = os.Getwd()
 	}
 	// Trust Antigravity and Pi keep no route for goes in for the session.
 	cmd = e.trustGate().Args(cwd, cmd)
-	cmd = append([]string{"env", SummonEnv + "=" + token}, cmd...)
+	cmd = append([]string{"env", SummonEnv + "=" + token}, withLaunchEnv(l, cmd)[1:]...)
 	if split {
 		return e.Rex.NewSplit(ctx, s.id, caller.BlockID, label, cwd, cmd)
 	}
@@ -511,13 +533,85 @@ func startCommand(kind core.Kind, brief string) []string {
 	return nil
 }
 
-// withModel returns argv with `--model <model>` after its program; an empty
-// model or argv is returned unchanged. Every CLI here takes the flag there.
-func withModel(argv []string, model string) []string {
-	if model == "" || len(argv) == 0 {
-		return argv
+// LaunchModelEnv and LaunchEffortEnv carry the model and effort an agent
+// was launched on to its adoption, which records them (store.Record).
+const (
+	LaunchModelEnv  = "REX_AMQ_MODEL"
+	LaunchEffortEnv = "REX_AMQ_EFFORT"
+)
+
+// withLaunchEnv runs cmd under env with l in LaunchModelEnv and
+// LaunchEffortEnv, set even when empty: the adoption then knows the adapter
+// launched it on its CLI's defaults.
+func withLaunchEnv(l core.Launch, cmd []string) []string {
+	return append([]string{"env", LaunchModelEnv + "=" + l.Model, LaunchEffortEnv + "=" + l.Effort}, cmd...)
+}
+
+// LaunchFromEnv reads what the adapter launched this agent on from the
+// hook's environment; nil when neither variable is set.
+func LaunchFromEnv(lookup func(string) (string, bool)) *core.Launch {
+	model, m := lookup(LaunchModelEnv)
+	effort, ef := lookup(LaunchEffortEnv)
+	if !m && !ef {
+		return nil
 	}
-	return append([]string{argv[0], "--model", model}, argv[1:]...)
+	return &core.Launch{Model: model, Effort: effort}
+}
+
+// route is role's routing for an agent working in dir: the crews library's
+// layers, or only the built-in table when the Env has none.
+func (e Env) route(dir, role string) (crew.Route, error) {
+	lib := crew.Builtin()
+	if e.Crews != nil {
+		lib = e.Crews(dir)
+	}
+	return lib.Routing(role)
+}
+
+// resumeLaunch is what departed resumes on: what it was launched on, checked
+// again, since a record is a file on disk. A record that names neither (an
+// agent launched before records kept them) takes its role's routing on its
+// harness, so a narrator stays on its cheap tier; one with no role keeps its
+// CLI's defaults.
+func (e Env) resumeLaunch(cwd string, departed store.Record) (core.Launch, error) {
+	if departed.Model != "" || departed.Effort != "" {
+		return core.ParseLaunch(departed.Kind, departed.Model, departed.Effort)
+	}
+	if departed.Role == "" {
+		return core.Launch{}, nil
+	}
+	route, err := e.route(cwd, departed.Role)
+	if err != nil {
+		return core.Launch{}, err
+	}
+	return route.Launch(departed.Kind), nil
+}
+
+// otherFamilies are route's harnesses whose model is of a known family other
+// than mine; an unknown family (Pi on its user's default) is never another.
+func otherFamilies(route crew.Route, mine string) []core.Kind {
+	var out []core.Kind
+	for _, k := range route.Harnesses {
+		if f := core.Family(k, route.Launch(k).Model); f != "" && f != mine {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+func kindNames(kinds []core.Kind) []string {
+	out := make([]string, len(kinds))
+	for i, k := range kinds {
+		out[i] = string(k)
+	}
+	return out
+}
+
+func orUnknown(family string) string {
+	if family == "" {
+		return "of an unknown family"
+	}
+	return family
 }
 
 // resumeCommand resumes session in its harness with a first prompt: every

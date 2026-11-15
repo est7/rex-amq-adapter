@@ -65,10 +65,16 @@ func tokenOf(l launch) string {
 }
 
 // launchProgram is the launch command after its env prefix.
-func launchProgram(l launch) []string {
-	for i, a := range l.Command[1:] {
+func launchProgram(l launch) []string { return program(l.Command) }
+
+// program is cmd after an env prefix and its assignments.
+func program(cmd []string) []string {
+	if len(cmd) == 0 || cmd[0] != "env" {
+		return cmd
+	}
+	for i, a := range cmd[1:] {
 		if !strings.Contains(a, "=") {
-			return l.Command[1+i:]
+			return cmd[1+i:]
 		}
 	}
 	return nil
@@ -131,7 +137,7 @@ func TestSummonResumesADepartedPeer(t *testing.T) {
 		t.Fatalf("%+v", res)
 	}
 	l := term.launches[0]
-	if l.Dir != workDir(t, e, "app") || l.Command[0] != "env" || !strings.HasPrefix(l.Command[1], SummonEnv+"=") || strings.Join(launchProgram(l)[:3], " ") != "codex --no-daemon resume" || launchProgram(l)[3] != "thread-2" || !strings.Contains(launchProgram(l)[4], e.SelfBin+" drain --include-body") || l.Label != "reviewer(codex-02)" {
+	if l.Dir != workDir(t, e, "app") || l.Command[0] != "env" || !strings.HasPrefix(l.Command[1], SummonEnv+"=") || launchProgram(l)[0] != "codex" || !strings.Contains(strings.Join(launchProgram(l), " "), " --no-daemon resume thread-2 ") || !strings.Contains(l.Command[len(l.Command)-1], e.SelfBin+" drain --include-body") || l.Label != "reviewer(codex-02)" {
 		t.Fatalf("launch: %+v", l)
 	}
 	// Adopted, it is the same agent, lineage included.

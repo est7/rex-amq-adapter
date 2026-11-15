@@ -139,7 +139,7 @@ func (e Env) observeAgents(v view, recs []store.Record, activity map[core.Handle
 		}
 		o := core.AgentObservation{
 			Handle: r.Handle, Kind: r.Kind, Server: r.Server, SessionID: session, WindowID: window,
-			Tab: v.tab(session, window), BlockID: r.BlockID, Placed: placed, Task: r.Task, Role: r.Role,
+			Tab: v.tab(session, window), BlockID: r.BlockID, Placed: placed, Task: r.Task, Role: r.Role, Model: r.Model, Effort: r.Effort,
 			Adopting: r.Live() && r.Unfinished == store.Adopting, Departing: !r.Live() && r.Unfinished == store.Departing,
 			AdoptedAt: r.AdoptedAt, DepartedAt: r.DepartedAt, DepartReason: r.DepartReason,
 		}
