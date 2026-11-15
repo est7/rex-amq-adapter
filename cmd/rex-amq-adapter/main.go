@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -110,6 +111,10 @@ Agent and user commands:
                             already trusts in Antigravity, that trust for DIR, so a
                             peer started there meets no folder dialog; writes
                             nothing for any other directory (tab runs it for -c)
+  trust grant <dir>...      the user's "yes, I trust this folder" for every harness
+                            at once: Claude's and Codex's stores get the project's
+                            key, Antigravity and Pi sessions get it per launch;
+                            logged in logs/trust.log
 
 Installation:
   setup|status|remove       install, inspect, or remove the skill, hooks, and
@@ -639,9 +644,18 @@ func runSummon(args []string) int {
 	return 0
 }
 
+const trustUsage = `usage: rex-amq-adapter trust <dir>          (prints agy's --settings value for dir; exit 1 when there is none)
+       rex-amq-adapter trust grant <dir>...  (trust each project for every harness)`
+
 func runTrust(args []string) int {
+	if len(args) > 0 {
+		switch args[0] {
+		case "grant":
+			return runTrustGrant(args[1:])
+		}
+	}
 	if len(args) != 1 || strings.HasPrefix(args[0], "-") {
-		fmt.Fprintln(os.Stderr, "usage: rex-amq-adapter trust <dir>  (prints agy's --settings value for dir; exit 1 when there is none)")
+		fmt.Fprintln(os.Stderr, trustUsage)
 		return 2
 	}
 	home, err := os.UserHomeDir()
@@ -660,6 +674,50 @@ func runTrust(args []string) int {
 	}
 	fmt.Println(r.Settings)
 	return 0
+}
+
+// trustGate is the user's own trust stores and the adapter's book.
+func trustGate() (trust.Gate, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return trust.Gate{}, err
+	}
+	paths, err := store.DefaultPaths()
+	if err != nil {
+		return trust.Gate{}, err
+	}
+	return trust.Gate{Stores: trust.StoresFor(home, os.Getenv), State: paths.Home}, nil
+}
+
+func dirArgs(args []string) bool {
+	return len(args) > 0 && !slices.ContainsFunc(args, func(a string) bool { return strings.HasPrefix(a, "-") })
+}
+
+// runTrustGrant prints one JSON line per directory, what the grant did, and
+// exits 1 when any directory could not be granted.
+func runTrustGrant(args []string) int {
+	if !dirArgs(args) {
+		fmt.Fprintln(os.Stderr, trustUsage)
+		return 2
+	}
+	g, err := trustGate()
+	if err != nil {
+		return fail(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	code := 0
+	for _, d := range args {
+		r, err := g.Grant(ctx, d, "explicit")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "rex-amq-adapter: trust grant %s: %v\n", d, err)
+			code = 1
+			continue
+		}
+		b, _ := json.Marshal(r)
+		fmt.Println(string(b))
+	}
+	return code
 }
 
 func runJoin(args []string) int {

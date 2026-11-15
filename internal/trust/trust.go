@@ -1,13 +1,22 @@
-// Package trust derives, for a linked git worktree, the folder trust the user
-// already gave its main checkout in a harness's own trust store. It derives
-// and never creates: a repository the user never trusted keeps its dialog.
+// Package trust decides and records folder trust for the harnesses the
+// adapter launches, so an agent it starts never waits on a trust dialog.
 //
-// Only Antigravity needs it. Claude Code 2.1.319 and Codex 0.167 resolve a
-// linked worktree to its main checkout themselves (Codex in
-// codex-rs/git-utils/src/trust.rs); Antigravity keeps one exact directory per
-// entry of trustedWorkspaces in ~/.gemini/antigravity-cli/settings.json (a
-// trusted parent does not cover its children) and asks again in every
-// worktree. ~/.gemini/trustedFolders.json is Gemini CLI's, not Antigravity's.
+// The user creates trust; the adapter only carries it. `trust grant <dir>`
+// is the user's "yes, I trust this folder" for every harness at once (Gate.
+// Grant): the project's root goes into the adapter's own book, Claude's
+// ~/.claude.json and Codex's config.toml get its key, and Antigravity and Pi
+// sessions get it per launch (Gate.Args: agy --settings, pi --approve), so
+// their own files are never written. Gate.Check
+// replicates each harness's own rule to tell, before a pane opens, whether
+// it would ask.
+//
+// Derive is the narrow, read-only case: Antigravity keeps one exact
+// directory per entry of trustedWorkspaces in
+// ~/.gemini/antigravity-cli/settings.json (a trusted parent does not cover
+// its children) and asks again in every linked worktree, so the trust its
+// main checkout has is extended to the worktree for one session. Claude Code
+// and Codex resolve a linked worktree to its main checkout themselves.
+// ~/.gemini/trustedFolders.json is Gemini CLI's, not Antigravity's.
 package trust
 
 import (

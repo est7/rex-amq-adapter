@@ -1436,7 +1436,7 @@ internal/amq/          wake check/start/repair/retire, mailbox registration, inb
 internal/screen/       input-box classifier (ported from herdr-amq-adapter)
 internal/store/        records, ledger, inject log, window notes, reservations, locks; the gateway's links, provenance, and quarantine
 internal/transcript/   reads the end of an agent's own transcript (Claude Code, Codex, Pi JSONL; Antigravity's SQLite through sqlite3) into rows for the watchdog and turn-error routing, and a departed agent's working directory for a resume
-internal/trust/        derives, for a linked worktree, the Antigravity folder trust the user gave its main checkout (--settings for one session; never writes the store)
+internal/trust/        folder trust: each harness's rule (Check), the user's grants and declared roots (trust.json, logs/trust.log), Claude/Codex store keys via install, agy --settings / pi --approve per session
 internal/e2e/          scripted agents on a private Rex server and real amq wake
 internal/install/      settings.json / hooks.json merge, stub skills, supervisor and task-tool settings (config.toml through go-toml)
 internal/guide/        embedded agent guide
