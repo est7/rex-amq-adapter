@@ -242,3 +242,25 @@ func TestOpenEpicBriefsAnAgentAdoptedAtOnceWithItsCrew(t *testing.T) {
 		t.Fatalf("the orchestrator adopted while the Epic opened was briefed without its crew (%v):\n%s", a.err, a.notice)
 	}
 }
+
+// The launch brief is the narrator's first prompt. A cheap model took "for
+// the personal agent" as a cue to mail it at once (F5: three haiku narrators
+// mailed "nothing happened yet" seconds after their Epics opened), so the
+// brief says what the first turn does and that it mails nobody.
+func TestNarratorLaunchBriefForbidsUnsolicitedMail(t *testing.T) {
+	e, term, loc, goal := openEpicWorld(t)
+	adoptPane(t, e, "block:epic-1-1", "claude-02", core.NarratorRole)
+	adoptPane(t, e, "block:epic-1-2", "claude-03", core.OrchestratorRole)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := e.OpenEpic(ctx, loc, EpicRequest{Name: "login revamp", Dir: filepath.Dir(goal), Goal: goal}); err != nil {
+		t.Fatal(err)
+	}
+	narr := term.sessions_[0].panes[0]
+	narrate := narr.Command[len(narr.Command)-1]
+	for _, want := range []string{"refresh the view, add your reading with --summary, and end your turn", "do not mail claude-01 now", "a hand-back or orchestrator departure"} {
+		if !strings.Contains(narrate, want) {
+			t.Errorf("narrator launch brief lacks %q: %s", want, narrate)
+		}
+	}
+}
