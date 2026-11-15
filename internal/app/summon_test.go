@@ -421,6 +421,10 @@ func TestSummonStartsTheAgentInItsWorktree(t *testing.T) {
 	if res := summon(t, e4, loc4, "implementer", func(r *SummonRequest) { r.Asked = "start one"; r.Cwd = wt }); res.Action != "refused" || !strings.Contains(res.Reason, "already works in") || len(term4.launches) != 1 {
 		t.Fatalf("a second implementer in the same worktree: %+v", res)
 	}
+	// Nor on another harness: --harness does not lift the guard.
+	if res := summon(t, e4, loc4, "implementer", func(r *SummonRequest) { r.Asked = "start one"; r.Cwd = wt; r.Harness = "codex" }); res.Action != "refused" || !strings.Contains(res.Reason, "already works in") || len(term4.launches) != 1 {
+		t.Fatalf("a second implementer on another harness in the same worktree: %+v", res)
+	}
 	wt2 := t.TempDir()
 	if res := summon(t, e4, loc4, "implementer", func(r *SummonRequest) { r.Asked = "start one"; r.Cwd = wt2 }); res.Action != "start" || len(term4.launches) != 2 || term4.launches[1].Dir != wt2 || len(unread(t, e4, string(first.Handle))) != 0 {
 		t.Fatalf("a second implementer in its own worktree: %+v launches %+v", res, term4.launches)

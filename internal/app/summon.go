@@ -111,7 +111,9 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 		// An explicit --harness for a role asks for that CLI: a peer of the
 		// role on another one, departed or live and stuck, never stands in
 		// for it (a handle is the agent it names, whatever --harness says).
-		if !isHandle && r.Harness != "" && string(rec.Kind) != r.Harness {
+		// With --cwd nobody stands in anyway, and every live peer of the role
+		// still counts for the guard against sharing a directory.
+		if !isHandle && r.Harness != "" && r.Cwd == "" && string(rec.Kind) != r.Harness {
 			continue
 		}
 		switch {
