@@ -56,6 +56,7 @@ type fakeTerm struct {
 	resizeErr      error    // ResizeBlock fails (after recording the request)
 	boxAfterResize string   // the box a successful resize reveals (a draft a tiny pane hid)
 	closed         []string
+	closeErr       error // CloseBlock fails, closing nothing
 	newTabs        []string
 	launches       []launch
 	states         map[string]rex.Status                 // block -> program status, overriding state
@@ -75,7 +76,7 @@ func (f *fakeTerm) Whoami(context.Context) (rex.Server, error) {
 func (f *fakeTerm) Foreground(_ context.Context, block string) (rex.Process, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.gone {
+	if f.gone || slices.Contains(f.closed, block) {
 		return rex.Process{}, false, rex.ErrNotFound
 	}
 	if p, ok := f.fgs[block]; ok {
@@ -676,6 +677,9 @@ func (f *fakeTerm) MoveBlock(_ context.Context, session, block, anchor string) e
 func (f *fakeTerm) CloseBlock(_ context.Context, block string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.closeErr != nil {
+		return f.closeErr
+	}
 	delete(f.windows, block)
 	f.closed = append(f.closed, block)
 	return nil

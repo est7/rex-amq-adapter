@@ -113,9 +113,7 @@ func (e Env) linkTo(caller store.Record, session string) (core.Link, error) {
 }
 
 // unsettled names each live agent of epic, Stealth ones aside, that is not
-// at rest: working, waiting on a dialog, with unread mail, or reporting no
-// state, which cannot be told from working. An agent whose block is gone
-// is not in the way.
+// at rest (unrest).
 func (e Env) unsettled(ctx context.Context, on Terminal, epic core.SessionKey) ([]string, error) {
 	recs, err := e.Store.Records()
 	if err != nil {
@@ -126,29 +124,41 @@ func (e Env) unsettled(ctx context.Context, on Terminal, epic core.SessionKey) (
 		if !rec.Live() || rec.Server != epic.Server || rec.SessionID != epic.SessionID || core.Stealth(rec.Role) {
 			continue
 		}
-		st, ok, err := on.ProgramStatus(ctx, rec.BlockID)
-		switch {
-		case errors.Is(err, rex.ErrNotFound):
-			continue
-		case err != nil:
-			busy = append(busy, fmt.Sprintf("%s: state unknown (%v)", rec.Handle, err))
-			continue
-		case !ok:
-			busy = append(busy, fmt.Sprintf("%s: reports no state", rec.Handle))
-			continue
-		case !core.AgentState(st.State).AtRest():
-			busy = append(busy, fmt.Sprintf("%s: %s", rec.Handle, st.State))
-			continue
-		}
-		unread, err := amq.Unread(e.Paths.Root(), string(rec.Handle))
+		why, err := e.unrest(ctx, on, rec)
 		if err != nil {
 			return nil, err
 		}
-		if len(unread) > 0 {
-			busy = append(busy, fmt.Sprintf("%s: %d unread message(s)", rec.Handle, len(unread)))
+		if why != "" {
+			busy = append(busy, why)
 		}
 	}
 	return busy, nil
+}
+
+// unrest says, "<handle>: <why>", how rec's agent is not at rest: working,
+// waiting on a dialog, with unread mail, or reporting no state, which cannot
+// be told from working. It is "" at rest, and when its block is gone, which
+// leaves nothing in the way.
+func (e Env) unrest(ctx context.Context, on Terminal, rec store.Record) (string, error) {
+	st, ok, err := on.ProgramStatus(ctx, rec.BlockID)
+	switch {
+	case errors.Is(err, rex.ErrNotFound):
+		return "", nil
+	case err != nil:
+		return fmt.Sprintf("%s: state unknown (%v)", rec.Handle, err), nil
+	case !ok:
+		return fmt.Sprintf("%s: reports no state", rec.Handle), nil
+	case !core.AgentState(st.State).AtRest():
+		return fmt.Sprintf("%s: %s", rec.Handle, st.State), nil
+	}
+	unread, err := amq.Unread(e.Paths.Root(), string(rec.Handle))
+	if err != nil {
+		return "", err
+	}
+	if len(unread) > 0 {
+		return fmt.Sprintf("%s: %d unread message(s)", rec.Handle, len(unread)), nil
+	}
+	return "", nil
 }
 
 // parkClosed parks each live agent recorded in epic, the caller holding the
@@ -166,7 +176,7 @@ func (e Env) parkClosed(ctx context.Context, epic core.SessionKey) ([]core.Handl
 		if !rec.Live() || rec.Server != epic.Server || rec.SessionID != epic.SessionID {
 			continue
 		}
-		if err := e.retireClosed(ctx, rec); err != nil {
+		if err := e.departQuietly(ctx, rec, store.DepartEpicClosed); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", rec.Handle, err))
 			continue
 		}
@@ -175,7 +185,11 @@ func (e Env) parkClosed(ctx context.Context, epic core.SessionKey) ([]core.Handl
 	return parked, errors.Join(errs...)
 }
 
-func (e Env) retireClosed(ctx context.Context, rec store.Record) error {
+// departQuietly marks rec's agent departed for reason, the caller holding the
+// lifecycle lock: it retires the handle's waker, clears its window notes, and
+// tells nobody. The record is left finished (Unfinished ""), so collection
+// and a later SessionEnd find nothing to do. A failure leaves the record live.
+func (e Env) departQuietly(ctx context.Context, rec store.Record, reason string) error {
 	if !rec.Kind.InProcess() {
 		if err := e.prepareInjector(); err != nil {
 			return err
@@ -188,6 +202,6 @@ func (e Env) retireClosed(ctx context.Context, rec store.Record) error {
 		return err
 	}
 	now := e.Now().UTC()
-	rec.DepartedAt, rec.DepartReason, rec.Unfinished = &now, store.DepartEpicClosed, ""
+	rec.DepartedAt, rec.DepartReason, rec.Unfinished = &now, reason, ""
 	return e.Store.PutRecord(rec)
 }

@@ -37,7 +37,7 @@ func (e Env) sessionPulse(key core.SessionKey) (core.SessionPulse, error) {
 		if r.Server != key.Server || r.SessionID != key.SessionID || core.Stealth(r.Role) {
 			continue
 		}
-		m := core.PulseMember{Handle: r.Handle, Role: r.Role, Live: r.Live(), Task: r.Task}
+		m := core.PulseMember{Handle: r.Handle, Role: r.Role, Live: r.Live(), Task: r.Task, Retired: !r.Live() && r.DepartReason == store.DepartRetired}
 		if hasHB && hb.By == r.Handle {
 			sum := sha256.Sum256([]byte(hb.Body))
 			m.HandBack = hb.At.UTC().Format(time.RFC3339Nano) + "#" + hex.EncodeToString(sum[:4])

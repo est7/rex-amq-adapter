@@ -148,3 +148,26 @@ func TestPulseHandBackMarker(t *testing.T) {
 		t.Fatalf("a hand-back by a member not seen before: %+v", c)
 	}
 }
+
+// A member retired as finished leaves routinely, at normal priority, while
+// any other departure stays urgent; a retired member collected away later
+// raises nothing urgent.
+func TestPulseRetiredMemberIsRoutine(t *testing.T) {
+	a := PulseMember{Handle: "claude-01", Role: OrchestratorRole, Live: true}
+	b := PulseMember{Handle: "codex-02", Role: "implementer", Live: true}
+	p := SessionPulse{Members: []PulseMember{a, b}}
+	retired := b
+	retired.Live, retired.Retired = false, true
+	q := SessionPulse{Members: []PulseMember{a, retired}}
+	if c := ComparePulse(p, q); c.Priority != PriorityNormal || len(c.Lines) != 1 || c.Lines[0] != "codex-02 (implementer) retired" {
+		t.Fatalf("a retire: %+v", c)
+	}
+	gone := b
+	gone.Live = false
+	if c := ComparePulse(p, SessionPulse{Members: []PulseMember{a, gone}}); c.Priority != PriorityUrgent || c.Lines[0] != "codex-02 (implementer) left" {
+		t.Fatalf("a departure: %+v", c)
+	}
+	if c := ComparePulse(q, SessionPulse{Members: []PulseMember{a}}); c.Priority == PriorityUrgent {
+		t.Fatalf("a retired member collected away: %+v", c)
+	}
+}

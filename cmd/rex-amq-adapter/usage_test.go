@@ -164,3 +164,20 @@ func TestEpicRejectsBadUsage(t *testing.T) {
 		}
 	}
 }
+
+// retire takes one handle, then its flags; anything else is usage (exit 2),
+// and the command is listed in usage.
+func TestRetireUsage(t *testing.T) {
+	isolate(t)
+	for _, args := range [][]string{nil, {"--force"}, {"codex-01", "extra"}, {"codex-01", "--nope"}} {
+		if code := runRetire(args); code != 2 {
+			t.Errorf("retire %v: exit %d, want 2", args, code)
+		}
+	}
+	if code := runRetire([]string{"codex-01"}); code == 0 {
+		t.Error("retire from no Rex pane: exit 0")
+	}
+	if !strings.Contains(usage, "retire <handle> [--force]") {
+		t.Error("usage does not list retire")
+	}
+}
