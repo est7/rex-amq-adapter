@@ -1107,7 +1107,7 @@ ended inside the minute, so it idled with no mailbox until the next prompt.
 **Waiting for a started peer.** `rex-amq-adapter await <block>` polls every
 250 ms and prints one JSON line: `adopted` with the handle once the adoption
 finished, `trust_screen`
-(a folder-trust dialog on the block's screen), `blocked` (the program reports
+(a folder-trust, hooks, settings, or project MCP-server approval dialog on the block's screen), `blocked` (the program reports
 it), `exited` (the block is gone), or `timeout` (30 s unless `--timeout`). It
 names a block, not a window, so it also works for a peer placed in another tab.
 The decision is `core.DecideStartup`. `adopted` means the mailbox and the waker
