@@ -556,6 +556,12 @@ func (e Env) Deliver(ctx context.Context, loc Location, h core.Handle, kind, sub
 // summon, whose mail or pane already exists.
 func (e Env) summonLog(caller store.Record, r SummonRequest, res SummonResult) {
 	entry := map[string]any{"at": e.Now().UTC().Format(time.RFC3339), "summoner": caller.Handle, "parent": caller.Parent, "depth": caller.Depth, "target": r.Target, "kind": r.Kind, "subject": r.Subject, "action": res.Action, "handles": res.Handles, "block": res.Block, "reason": res.Reason, "grant": r.Grant, "asked": r.Asked}
+	if res.Harness != "" {
+		entry["harness"] = res.Harness
+	}
+	if len(res.Passed) > 0 {
+		entry["passed_over"] = res.Passed
+	}
 	b, _ := json.Marshal(entry)
 	write := func() error {
 		if err := os.MkdirAll(e.Paths.Logs(), 0o700); err != nil {

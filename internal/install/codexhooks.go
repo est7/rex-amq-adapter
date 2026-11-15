@@ -11,6 +11,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 )
@@ -48,9 +49,14 @@ func CodexHooksKey(hooksFile string, fromEnv bool) string {
 	if !fromEnv {
 		return filepath.Clean(hooksFile)
 	}
-	dir, err := filepath.EvalSymlinks(filepath.Dir(hooksFile))
+	// canonicalize makes a relative CODEX_HOME absolute too.
+	abs, err := filepath.Abs(filepath.Dir(hooksFile))
 	if err != nil {
 		return filepath.Clean(hooksFile)
+	}
+	dir, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return filepath.Join(abs, filepath.Base(hooksFile))
 	}
 	return filepath.Join(dir, filepath.Base(hooksFile))
 }
@@ -68,10 +74,8 @@ func CodexHooksNeedingReview(hooksFile, key, config string) ([]CodexHookReview, 
 	if err != nil {
 		return nil, err
 	}
-	var file struct {
-		Hooks map[string][]codexMatcherGroup `json:"hooks"`
-	}
-	if json.Unmarshal(b, &file) != nil {
+	var file codexHooksFile
+	if json.Unmarshal(b, &file) != nil || !file.loadable() {
 		return nil, nil
 	}
 	c, err := readCodexConfig(config)
@@ -89,6 +93,10 @@ func CodexHooksNeedingReview(hooksFile, key, config string) ([]CodexHookReview, 
 			matcher := group.Matcher
 			if !event.matches {
 				matcher = nil
+			}
+			if matcher != nil && !codexMatcherCompiles(*matcher) {
+				// Codex warns and skips the whole group, asking nothing.
+				continue
 			}
 			for h, handler := range group.Hooks {
 				id, ok := handler.identity(event, matcher)
@@ -115,6 +123,11 @@ func codexHookStates(doc map[string]any) map[string]string {
 	states, _ := hooks["state"].(map[string]any)
 	out := map[string]string{}
 	for k, v := range states {
+		// Codex trims each key and skips an empty one.
+		k = strings.TrimSpace(k)
+		if k == "" {
+			continue
+		}
 		st, _ := v.(map[string]any)
 		if h, ok := st["trusted_hash"].(string); ok {
 			out[k] = h
@@ -150,19 +163,116 @@ var codexEvents = map[string]codexEvent{
 	"Interrupt":         {label: "interrupt", sessionEnd: true},
 }
 
+type codexHooksFile struct {
+	Hooks map[string][]codexMatcherGroup `json:"hooks"`
+}
+
 type codexMatcherGroup struct {
 	Matcher *string        `json:"matcher"`
 	Hooks   []codexHandler `json:"hooks"`
 }
 
 type codexHandler struct {
-	Type                   string  `json:"type"`
-	Command                string  `json:"command"`
-	Timeout                *uint64 `json:"timeout"`
-	Async                  bool    `json:"async"`
-	StatusMessage          *string `json:"statusMessage"`
-	AdditionalContextLimit *uint64 `json:"additionalContextLimit"`
+	Type                   string          `json:"type"`
+	Command                *string         `json:"command"`
+	Timeout                *uint64         `json:"timeout"`
+	Async                  bool            `json:"async"`
+	StatusMessage          *string         `json:"statusMessage"`
+	AdditionalContextLimit *uint64         `json:"additionalContextLimit"`
+	Server                 *string         `json:"server"`
+	Tool                   *string         `json:"tool"`
+	Input                  json.RawMessage `json:"input"`
 }
+
+// loadable reports whether Codex's own parse of the file (serde, a tagged
+// handler enum) succeeds: an unknown handler type, a command without its
+// command, an MCP tool without its server or tool, or an MCP input that
+// TOML cannot hold fails the whole file, and Codex then loads none of it.
+func (f codexHooksFile) loadable() bool {
+	for _, groups := range f.Hooks {
+		for _, g := range groups {
+			for _, h := range g.Hooks {
+				switch h.Type {
+				case "command":
+					if h.Command == nil {
+						return false
+					}
+				case "mcp_tool":
+					if h.Server == nil || h.Tool == nil {
+						return false
+					}
+					if _, ok := codexMCPInput(h.Input); !ok {
+						return false
+					}
+				case "prompt", "agent":
+				default:
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
+// codexMCPInput decodes an MCP hook's input as Codex does: absent is an
+// empty object; null, a non-object, or a value TOML cannot represent (a
+// null anywhere, an integer past int64) is rejected.
+func codexMCPInput(raw json.RawMessage) (map[string]any, bool) {
+	if len(raw) == 0 {
+		return map[string]any{}, true
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var in map[string]any
+	if err := dec.Decode(&in); err != nil || in == nil {
+		return nil, false
+	}
+	var representable func(any) bool
+	representable = func(v any) bool {
+		switch v := v.(type) {
+		case nil:
+			return false
+		case json.Number:
+			if strings.ContainsAny(string(v), ".eE") {
+				return true
+			}
+			_, err := v.Int64()
+			return err == nil
+		case []any:
+			for _, x := range v {
+				if !representable(x) {
+					return false
+				}
+			}
+		case map[string]any:
+			for _, x := range v {
+				if !representable(x) {
+					return false
+				}
+			}
+		}
+		return true
+	}
+	for _, v := range in {
+		if !representable(v) {
+			return nil, false
+		}
+	}
+	return in, true
+}
+
+// codexMatcherCompiles is HookMatcher::new succeeding: "", "*", or a plain
+// name list match as they are; anything else must compile as a regex (Go's
+// RE2 syntax stands in for Rust's regex crate, which it nearly matches).
+func codexMatcherCompiles(m string) bool {
+	if m == "" || m == "*" || codexPlainMatcher.MatchString(m) {
+		return true
+	}
+	_, err := regexp.Compile(m)
+	return err == nil
+}
+
+var codexPlainMatcher = regexp.MustCompile(`^[A-Za-z0-9_|]+$`)
 
 // codexDefaultContextLimit is DEFAULT_HOOK_OUTPUT_TOKEN_LIMIT: a limit equal
 // to it is dropped from the hashed declaration.
@@ -172,27 +282,29 @@ const codexDefaultContextLimit = 2500
 // Codex skips at load (and so never asks about: an empty command, a prompt
 // or agent hook) or one whose declaration this port does not model.
 func (h codexHandler) identity(e codexEvent, matcher *string) (string, bool) {
-	if h.Type != "command" || strings.TrimSpace(h.Command) == "" {
+	var handler map[string]any
+	switch h.Type {
+	case "command":
+		if strings.TrimSpace(*h.Command) == "" {
+			return "", false
+		}
+		handler = map[string]any{"type": "command", "command": *h.Command, "timeout": h.timeout(e), "async": h.Async}
+		if e.context && h.AdditionalContextLimit != nil && *h.AdditionalContextLimit != codexDefaultContextLimit {
+			handler["additionalContextLimit"] = *h.AdditionalContextLimit
+		}
+	case "mcp_tool":
+		// Codex loads no MCP hook on SessionEnd, nor one without a server
+		// and a tool.
+		if e.label == "session_end" || strings.TrimSpace(*h.Server) == "" || strings.TrimSpace(*h.Tool) == "" {
+			return "", false
+		}
+		input, _ := codexMCPInput(h.Input)
+		handler = map[string]any{"type": "mcp_tool", "server": *h.Server, "tool": *h.Tool, "input": input, "timeout": h.timeout(e)}
+	default:
 		return "", false
 	}
-	var timeout uint64
-	switch {
-	case e.sessionEnd:
-		timeout = 1
-		if h.Timeout != nil {
-			timeout = min(max(*h.Timeout, 1), 3)
-		}
-	case h.Timeout != nil:
-		timeout = max(*h.Timeout, 1)
-	default:
-		timeout = 600
-	}
-	handler := map[string]any{"type": "command", "command": h.Command, "timeout": timeout, "async": h.Async}
 	if h.StatusMessage != nil {
 		handler["statusMessage"] = *h.StatusMessage
-	}
-	if e.context && h.AdditionalContextLimit != nil && *h.AdditionalContextLimit != codexDefaultContextLimit {
-		handler["additionalContextLimit"] = *h.AdditionalContextLimit
 	}
 	id := map[string]any{"event_name": e.label, "hooks": []any{handler}}
 	if matcher != nil {
@@ -208,4 +320,22 @@ func (h codexHandler) identity(e codexEvent, matcher *string) (string, bool) {
 	}
 	sum := sha256.Sum256(bytes.TrimSuffix(buf.Bytes(), []byte("\n")))
 	return "sha256:" + hex.EncodeToString(sum[:]), true
+}
+
+// timeout is normalize_command_hook: SessionEnd and Interrupt default to
+// 1 s and clamp to 1..3 s; every other event defaults to 600 s, at least 1.
+func (h codexHandler) timeout(e codexEvent) uint64 {
+	var timeout uint64
+	switch {
+	case e.sessionEnd:
+		timeout = 1
+		if h.Timeout != nil {
+			timeout = min(max(*h.Timeout, 1), 3)
+		}
+	case h.Timeout != nil:
+		timeout = max(*h.Timeout, 1)
+	default:
+		timeout = 600
+	}
+	return timeout
 }

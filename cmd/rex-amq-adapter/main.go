@@ -621,7 +621,7 @@ func runSummon(args []string) int {
 	if err != nil {
 		return fail(err)
 	}
-	out := map[string]any{"action": res.Action, "handles": res.Handles, "block": res.Block, "reason": res.Reason, "parent": res.Parent, "depth": res.Depth, "mailed": res.Mailed}
+	out := summonOutput(res)
 	if res.Block != "" {
 		wctx, wcancel := context.WithTimeout(context.Background(), *timeout)
 		st, err := env.AwaitStartup(wctx, res.Block)
@@ -1224,4 +1224,17 @@ func runEpicClose(args []string) int {
 	}
 	fmt.Println(string(out))
 	return 0
+}
+
+// summonOutput is the JSON line summon prints before any await: what it did,
+// and for a start the harness it launched and each default it passed over.
+func summonOutput(res app.SummonResult) map[string]any {
+	out := map[string]any{"action": res.Action, "handles": res.Handles, "block": res.Block, "reason": res.Reason, "parent": res.Parent, "depth": res.Depth, "mailed": res.Mailed}
+	if res.Harness != "" {
+		out["harness"] = res.Harness
+	}
+	if len(res.Passed) > 0 {
+		out["passed_over"] = res.Passed
+	}
+	return out
 }

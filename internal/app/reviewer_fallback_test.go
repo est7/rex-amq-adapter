@@ -134,3 +134,18 @@ func TestSummonReviewerFallbackLeavesOtherRolesAlone(t *testing.T) {
 		t.Fatalf("%+v", res)
 	}
 }
+
+// logs/summon.log keeps which harness a fallback started and what it passed
+// over, so the summoner's hand-back can list it.
+func TestSummonFallbackIsLogged(t *testing.T) {
+	e, _, loc := summonWorld(t)
+	e.LookPath = installedOnly(core.Codex, core.Agy)
+	unapprovedCodexHook(t, e)
+	if res := summon(t, e, loc, "reviewer", func(r *SummonRequest) { r.Asked = "review it" }); res.Action != "start" {
+		t.Fatalf("%+v", res)
+	}
+	b, err := os.ReadFile(filepath.Join(e.Paths.Logs(), "summon.log"))
+	if err != nil || !strings.Contains(string(b), `"harness":"agy"`) || !strings.Contains(string(b), `"passed_over":["codex: unapproved_hooks`) {
+		t.Fatalf("summon.log %s %v", b, err)
+	}
+}

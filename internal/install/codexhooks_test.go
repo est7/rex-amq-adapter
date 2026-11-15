@@ -190,3 +190,74 @@ func TestCodexHookReviewAfterSetup(t *testing.T) {
 		}
 	}
 }
+
+// An MCP tool hook is reviewed like a command hook (agy-29's s1 review):
+// unapproved it is reported, approved under the hash of its normalized
+// declaration it passes. The hash was computed outside Go from Codex's rule
+// (sorted compact JSON of event, matcher, and the handler with its default
+// timeout); no Codex-recorded MCP hash was at hand.
+func TestCodexHookReviewCoversMCPToolHooks(t *testing.T) {
+	dir := t.TempDir()
+	group := `{"matcher":"Bash","hooks":[{"type":"mcp_tool","server":"guard","tool":"check","input":{"mode":"strict","n":2,"x":1.5,"tags":["a","b"]}}]}`
+	hooks := writeCodexHooks(t, dir, map[string]string{"PreToolUse": group})
+	config := filepath.Join(dir, "config.toml")
+	got, err := CodexHooksNeedingReview(hooks, hooks, config)
+	if err != nil || len(got) != 1 || got[0].Status != HookUntrusted || got[0].Key != hooks+":pre_tool_use:0:0" {
+		t.Fatalf("unapproved MCP hook: %+v %v", got, err)
+	}
+	writeFile(t, config, "[hooks.state.\""+hooks+":pre_tool_use:0:0\"]\ntrusted_hash = \"sha256:7dfb73d9d8adabd4f398e3d6f267f4c13535f75a9de11f17fcad32bb942bc298\"\n")
+	if got, err := CodexHooksNeedingReview(hooks, hooks, config); err != nil || len(got) != 0 {
+		t.Fatalf("approved MCP hook: %+v %v", got, err)
+	}
+}
+
+// What Codex skips asks nothing: an MCP hook on SessionEnd or without a
+// tool, a group whose matcher is not a valid regex; and what Codex cannot
+// parse loads nothing at all: an MCP input holding null, an unknown hook
+// type.
+func TestCodexHookReviewSkipsWhatCodexSkips(t *testing.T) {
+	for name, events := range map[string]map[string]string{
+		"mcp on SessionEnd": {"SessionEnd": `{"hooks":[{"type":"mcp_tool","server":"s","tool":"t"}]}`},
+		"mcp without tool":  {"Stop": `{"hooks":[{"type":"mcp_tool","server":"s","tool":" "}]}`},
+		"invalid matcher":   {"PreToolUse": `{"matcher":"(unclosed","hooks":[{"type":"command","command":"x"}]}`},
+		"null mcp input":    {"Stop": `{"hooks":[{"type":"mcp_tool","server":"s","tool":"t","input":{"a":null}}]}`, "SessionStart": codexGolden[1].group},
+		"unknown type":      {"Stop": `{"hooks":[{"type":"webhook","url":"x"}]}`, "SessionStart": codexGolden[1].group},
+	} {
+		dir := t.TempDir()
+		hooks := writeCodexHooks(t, dir, events)
+		if got, err := CodexHooksNeedingReview(hooks, hooks, filepath.Join(dir, "config.toml")); err != nil || len(got) != 0 {
+			t.Errorf("%s: %+v %v", name, got, err)
+		}
+	}
+	// A plain name list is a matcher, not a regex.
+	dir := t.TempDir()
+	hooks := writeCodexHooks(t, dir, map[string]string{"PreToolUse": `{"matcher":"Bash|Edit","hooks":[{"type":"command","command":"x"}]}`})
+	if got, _ := CodexHooksNeedingReview(hooks, hooks, filepath.Join(dir, "config.toml")); len(got) != 1 {
+		t.Errorf("a name-list matcher skipped its group: %+v", got)
+	}
+}
+
+// Codex trims each hooks.state key, so a padded key still approves.
+func TestCodexHookStateKeysAreTrimmed(t *testing.T) {
+	g := codexGolden[1]
+	dir := t.TempDir()
+	hooks := writeCodexHooks(t, dir, map[string]string{g.event: g.group})
+	config := filepath.Join(dir, "config.toml")
+	writeFile(t, config, "[hooks.state.\"  "+hooks+":session_start:0:0 \"]\ntrusted_hash = \""+g.hash+"\"\n")
+	if got, err := CodexHooksNeedingReview(hooks, hooks, config); err != nil || len(got) != 0 {
+		t.Fatalf("padded key: %+v %v", got, err)
+	}
+}
+
+// A relative CODEX_HOME is keyed by its absolute, resolved path.
+func TestCodexHooksKeyOfARelativeCodexHome(t *testing.T) {
+	base := t.TempDir()
+	if err := os.Mkdir(filepath.Join(base, "ch"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(base)
+	real, _ := filepath.EvalSymlinks(base)
+	if got := CodexHooksKey(filepath.Join("ch", "hooks.json"), true); got != filepath.Join(real, "ch", "hooks.json") {
+		t.Fatalf("relative CODEX_HOME key %s", got)
+	}
+}

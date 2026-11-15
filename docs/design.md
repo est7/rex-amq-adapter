@@ -807,7 +807,9 @@ with a note naming `/hooks`. Every
 start keeps a brief that starts with a dash a prompt: Claude Code, Codex,
 and Pi take it after `--`, Antigravity as the value of `-i`. Every summon, refusals included, is a JSON
 line in `logs/summon.log` (summoner, parent, depth, target, kind, subject,
-action, handles, block, reason, grant, asked).
+action, handles, block, reason, grant, asked, and for a start `harness` and
+`passed_over`), and the command's own JSON line carries `harness` and
+`passed_over` too.
 
 The guards hold for `summon` only. An agent started by hand (`rex split`,
 `rex run`) has no token: it is recorded at depth 0, as the user's own
