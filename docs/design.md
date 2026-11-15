@@ -798,7 +798,10 @@ so it is never a default), that the summoner's PATH finds, and whose
 preflight passes (`app.Env.pickHarness`). The result names the `harness`
 and each one `passed_over` with its reason; with none ready the summon
 refuses with every reason and never falls back to the caller's family. An
-explicit `--harness` is never swapped. The preflight refuses Codex with
+explicit `--harness` is never swapped, and for a role without `--cwd` it passes over every agent
+of the role on another harness, live or departed: none is mailed or resumed, and a new agent
+starts on the named one (F10: a stuck Codex reviewer no longer answers for
+`summon reviewer --harness agy`). The preflight refuses Codex with
 `unapproved_hooks` when a hook in its `hooks.json` lacks the user's `/hooks`
 approval or changed since (`install.CodexHooksNeedingReview`, a read-only
 port of Codex's `trusted_hash`: sha256 of the sorted compact JSON of the

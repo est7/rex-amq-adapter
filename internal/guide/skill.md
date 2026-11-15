@@ -359,7 +359,9 @@ eval "$(rex-amq-adapter env)" && rex-amq-adapter summon reviewer --subject "revi
 
 A live agent of that handle or role in your session gets the mail; when
 several agents of a role are live, summon refuses: name one by handle. A departed one of this session is resumed in a tab of its own (`--split`: beside you, when the user asked; never a narrator or personal agent),
-in the directory it ran in, and its mail waits for it. With none, a new agent
+in the directory it ran in, and its mail waits for it. With `--harness` and no
+`--cwd`, only an agent of the role on that harness counts: one on another harness, live or
+departed, is passed over and gets no mail. With none, a new agent
 is started for the role (`--harness` picks the CLI; reviewer, editor and qa
 default to the first of Codex, Antigravity, Claude Code that is another
 family than yours, installed, and passes the preflight, every other
