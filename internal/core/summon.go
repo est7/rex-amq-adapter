@@ -59,6 +59,17 @@ type SummonCheck struct {
 
 func (c SummonCheck) Error() string { return c.Reason }
 
+// GuardSummoner refuses a summoner by its role, before anything is mailed or
+// launched. A personal agent coordinates Epics only: its gateway lets it
+// mail just a linked narrator, so an agent it summoned could never report
+// back to it. It opens an Epic instead, whose orchestrator starts the crew.
+func GuardSummoner(role string) SummonCheck {
+	if role == PersonalRole {
+		return SummonCheck{Refused: true, Reason: "a personal agent coordinates Epics only; open one with 'rex-amq-adapter epic <name> -c <dir> --asked \"…\"'"}
+	}
+	return SummonCheck{}
+}
+
 // GuardSummon applies the guards to a summoner at depth, with chain its
 // handles from the user's agent down to itself (itself last), wanting
 // target (a handle, or a role), with live agents in the session.
