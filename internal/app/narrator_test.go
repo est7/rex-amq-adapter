@@ -309,8 +309,10 @@ func TestSessionWatcherTellsTheNarrator(t *testing.T) {
 	noReceipts(t, e, "codex-03")
 }
 
-// An orchestrator's hand-back reaches the narrator at once, as an urgent
-// notice of its own, even while a routine notice waits unread for its hold.
+// An orchestrator's recorded hand-back reaches the narrator at once, as an
+// urgent notice of its own, even while a routine notice waits unread for its
+// hold; a task that only reads like one is routine, so the narrator is never
+// woken before the report is stored; a second hand-back wakes it again.
 func TestSessionWatcherTellsTheNarratorOfAHandBackAtOnce(t *testing.T) {
 	e, _, key := watcherWorld(t)
 	ctx := context.Background()
@@ -333,13 +335,95 @@ func TestSessionWatcherTellsTheNarratorOfAHandBackAtOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	look()
+	if n := narratorInbox(t, e); len(n) != 1 {
+		t.Fatalf("a task alone woke the narrator before any hand-back was stored: %+v", n)
+	}
+	if _, err := e.RecordHandBack(ctx, Location{Block: "block:o"}, "## Review queue\nPR #9 login ships\n## Blocked on me\nmerge #9"); err != nil {
+		t.Fatal(err)
+	}
+	look()
 	n := narratorInbox(t, e)
 	if len(n) != 2 || n[1].Priority != core.PriorityUrgent {
 		t.Fatalf("the hand-back waited behind the routine notice: %+v", n)
 	}
 	b, err := os.ReadFile(filepath.Join(amq.Inbox(e.Paths.Root(), "codex-02"), n[1].ID+".md"))
-	if err != nil || !strings.Contains(string(b), "codex-01 handed back: hand-back: login ships") {
+	if err != nil || !strings.Contains(string(b), "codex-01 handed back: its report is in your view (hand_back)") {
 		t.Fatalf("the hand-back notice: %s %v", b, err)
+	}
+	look()
+	if n := narratorInbox(t, e); len(n) != 2 {
+		t.Fatalf("one hand-back told twice: %d notices", len(n))
+	}
+	e.Now = func() time.Time { return time.Now().Add(time.Hour) }
+	if _, err := e.RecordHandBack(ctx, Location{Block: "block:o"}, "Goal 2 hand-back"); err != nil {
+		t.Fatal(err)
+	}
+	look()
+	if n := narratorInbox(t, e); len(n) != 3 || n[2].Priority != core.PriorityUrgent {
+		t.Fatalf("the Epic's next hand-back: %+v", n)
+	}
+}
+
+// Only a live orchestrator placed in a session records its hand-back, and
+// only a non-empty one the view can hold whole; nothing is stored otherwise.
+func TestHandBackOnlyTheOrchestratorRecords(t *testing.T) {
+	e, _, key := watcherWorld(t)
+	ctx := context.Background()
+	add(t, e, store.Record{Handle: "pi-04", Kind: core.Pi, Role: core.PersonalRole, BlockID: "block:p", Server: fakeServer, SessionID: "session:s", AgentPID: os.Getpid(), AdoptedAt: e.Now()})
+	for _, b := range []string{"block:n", "block:w", "block:p"} {
+		if _, err := e.RecordHandBack(ctx, Location{Block: b}, "report"); !errors.Is(err, ErrRefused) {
+			t.Fatalf("%s recorded a hand-back: %v", b, err)
+		}
+	}
+	if _, err := e.RecordHandBack(ctx, Location{Block: "block:none"}, "report"); err == nil {
+		t.Fatal("a pane without an agent recorded a hand-back")
+	}
+	for _, body := range []string{"", " \n\t", strings.Repeat("x", handBackMax+1)} {
+		if _, err := e.RecordHandBack(ctx, Location{Block: "block:o"}, body); err == nil {
+			t.Fatalf("a hand-back of %d bytes was recorded", len(body))
+		}
+	}
+	if _, ok, err := e.Store.HandBack(key.SessionID); ok || err != nil {
+		t.Fatalf("a refused hand-back was stored: %v %v", ok, err)
+	}
+	h, err := e.RecordHandBack(ctx, Location{Block: "block:o"}, "report")
+	if err != nil || h.By != "codex-01" || h.Body != "report" || h.At.IsZero() {
+		t.Fatalf("the orchestrator's hand-back: %+v %v", h, err)
+	}
+	if got, ok, err := e.Store.HandBack(key.SessionID); !ok || err != nil || got.Body != "report" {
+		t.Fatalf("stored %+v %v %v", got, ok, err)
+	}
+	leave(t, e, "codex-01")
+	if _, err := e.RecordHandBack(ctx, Location{Block: "block:o"}, "late"); err == nil {
+		t.Fatal("a departed orchestrator recorded a hand-back")
+	}
+	if got, _, _ := e.Store.HandBack(key.SessionID); got.Body != "report" {
+		t.Fatalf("a refused hand-back replaced the stored one: %+v", got)
+	}
+}
+
+// A hand-back stored before the watcher's first look at the session (the
+// narrator may have read its view before it was) is told as new, not taken
+// into the first pulse unannounced; a first look with none tells nothing.
+func TestSessionWatcherTellsAHandBackStoredBeforeItsFirstLook(t *testing.T) {
+	e, _, key := watcherWorld(t)
+	ctx := context.Background()
+	if _, err := e.RecordHandBack(ctx, Location{Block: "block:o"}, "fast report"); err != nil {
+		t.Fatal(err)
+	}
+	keepers := []store.Record{recordOf(t, e, "codex-01"), recordOf(t, e, "codex-02")}
+	if err := e.watchOnce(ctx, key, keepers); err != nil {
+		t.Fatal(err)
+	}
+	n := narratorInbox(t, e)
+	if len(n) != 1 || n[0].Priority != core.PriorityUrgent {
+		t.Fatalf("a hand-back before the first look: %+v", n)
+	}
+	if err := e.watchOnce(ctx, key, keepers); err != nil {
+		t.Fatal(err)
+	}
+	if n := narratorInbox(t, e); len(n) != 1 {
+		t.Fatalf("told twice: %d", len(n))
 	}
 }
 

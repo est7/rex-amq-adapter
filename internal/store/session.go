@@ -21,6 +21,8 @@ import (
 //     told the narrator about, and the notice that told it (PulseCursor).
 //   - sessions/<session_id>/crew.json: the crew the session works as
 //     (SessionCrew), claimed by join CREW or epic --crew.
+//   - sessions/<session_id>/hand-back.json: the orchestrator's latest
+//     hand-back (HandBack), which the view carries whole.
 
 // SessionDir is the extension directory of Rex session id.
 func (p Paths) SessionDir(id string) string {
@@ -112,4 +114,42 @@ func (s Store) ReadView(id string) (json.RawMessage, bool, error) {
 		return nil, false, nil
 	}
 	return b, err == nil, err
+}
+
+func (p Paths) handBackPath(id string) string {
+	return filepath.Join(p.SessionDir(id), "hand-back.json")
+}
+
+// HandBack is the final report an orchestrator recorded when its run ended:
+// the whole text, as written, for the session's view.
+type HandBack struct {
+	By   core.Handle `json:"by"`
+	At   time.Time   `json:"at"`
+	Body string      `json:"body"`
+}
+
+// HandBack reads session id's latest hand-back; ok is false when none was
+// recorded.
+func (s Store) HandBack(id string) (HandBack, bool, error) {
+	var h HandBack
+	b, err := os.ReadFile(s.P.handBackPath(id))
+	if errors.Is(err, fs.ErrNotExist) {
+		return h, false, nil
+	}
+	if err != nil {
+		return h, false, err
+	}
+	if err := json.Unmarshal(b, &h); err != nil {
+		return h, false, fmt.Errorf("decode the hand-back of %s: %w", id, err)
+	}
+	return h, true, nil
+}
+
+// PutHandBack records h as session id's latest hand-back, replacing the one
+// before, whole: a reader sees the old one or the new one, never a mix.
+func (s Store) PutHandBack(id string, h HandBack) error {
+	if id == "" || h.By == "" || h.Body == "" {
+		return errors.New("a hand-back needs its session, its author, and its body")
+	}
+	return writeJSON(s.P.handBackPath(id), h)
 }

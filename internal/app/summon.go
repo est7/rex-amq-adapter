@@ -75,6 +75,12 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 	if r.Kind == "" {
 		r.Kind = "question"
 	}
+	// Before any mail or pane: a refused summoner leaves nothing behind.
+	if g := core.GuardSummoner(caller.Role); g.Refused {
+		res := SummonResult{Action: "refused", Reason: g.Reason, Parent: caller.Handle, Depth: caller.Depth + 1}
+		e.summonLog(caller, r, res)
+		return res, nil
+	}
 	// A target is a handle, or a role in the form adoption records it.
 	target, isHandle := r.Target, core.LooksLikeHandle(r.Target)
 	if !isHandle {
@@ -305,6 +311,7 @@ func (e Env) resume(ctx context.Context, caller store.Record, s Session, r Summo
 	}
 	bootstrap := fmt.Sprintf("Resumed by %s (summon on send): mail waits for you. Run %s drain --include-body and act on it.", caller.Handle, e.SelfBin)
 	cmd, ok := resumeCommand(departed.Kind, departed.AgentSessionID, bootstrap)
+	cmd = withModel(cmd, core.RoleModel(departed.Role, departed.Kind))
 	if !ok {
 		_ = e.Store.DeleteSummon(res.Token)
 		res.Action, res.Reason = "refused", fmt.Sprintf("%s (%s) cannot be resumed from outside; the message waits in its mailbox", departed.Handle, departed.Kind)
@@ -372,7 +379,7 @@ func (e Env) start(ctx context.Context, caller store.Record, s Session, r Summon
 		}
 		cwd = r.Cwd
 	}
-	cmd := startCommand(kind, brief)
+	cmd := withModel(startCommand(kind, brief), core.RoleModel(role, kind))
 	if len(cmd) == 0 {
 		return refuse(fmt.Sprintf("unsupported harness %q; no agent was started", kind))
 	}
@@ -460,6 +467,15 @@ func startCommand(kind core.Kind, brief string) []string {
 		return []string{"pi", "--", brief}
 	}
 	return nil
+}
+
+// withModel returns argv with `--model <model>` after its program; an empty
+// model or argv is returned unchanged. Every CLI here takes the flag there.
+func withModel(argv []string, model string) []string {
+	if model == "" || len(argv) == 0 {
+		return argv
+	}
+	return append([]string{argv[0], "--model", model}, argv[1:]...)
 }
 
 // resumeCommand resumes session in its harness with a first prompt: every
