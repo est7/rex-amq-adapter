@@ -223,7 +223,9 @@ It prints one JSON line and exits 0 only when both are adopted and linked; a
 failure part way reports what started and tears nothing down. From then on
 the personal agent reads the Epic with `view --session` and asks or directs it
 only through the narrator, which relays your decisions to the orchestrator
-verbatim; the Epic's workers never see either of them.
+verbatim; the Epic's workers never see either of them. The narrator's report
+is its summary in the view: it mails the personal agent only to answer it,
+for a hand-back, or for something that waits on you, never to check in.
 
 An Epic ends in two steps. The orchestrator records its whole final report
 (review queue with PR links, Blocked on me, Decided for you, Changed, Found)

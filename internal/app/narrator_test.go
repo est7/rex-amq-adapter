@@ -485,3 +485,33 @@ func TestNarratorHoldBatchesHooksAndPi(t *testing.T) {
 		t.Fatalf("a former narrator keeps holds %v %v %v", normal, low, err)
 	}
 }
+
+// A routine wake is not a reason to mail the personal agent (F5): the notice
+// itself says to refresh, summarize, and end the turn.
+func TestNarratorWakeEndsInTheViewNotInMail(t *testing.T) {
+	e, _, key := watcherWorld(t)
+	ctx := context.Background()
+	keep := []store.Record{recordOf(t, e, "codex-01"), recordOf(t, e, "codex-02")}
+	if err := e.watchOnce(ctx, key, keep); err != nil {
+		t.Fatal(err)
+	}
+	if err := amq.Send(ctx, e.AMQ, e.Paths.Root(), "codex-03", "codex-01", "done", "implemented"); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.watchOnce(ctx, key, keep); err != nil {
+		t.Fatal(err)
+	}
+	n := narratorInbox(t, e)
+	if len(n) != 1 {
+		t.Fatalf("routine activity: %+v", n)
+	}
+	b, err := os.ReadFile(filepath.Join(amq.Inbox(e.Paths.Root(), "codex-02"), n[0].ID+".md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"and end your turn", "Mail the personal agent only as your role prompt says"} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("the wake notice lacks %q:\n%s", want, b)
+		}
+	}
+}

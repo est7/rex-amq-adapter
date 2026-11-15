@@ -1436,6 +1436,13 @@ when it is adopted, and `announceMail` applies amq's hold rule to mail not yet
 announced, so Pi's mail watcher and every busy hook batch as its waker does;
 urgent mail skips the hold.
 
+A notice ends by telling the narrator to refresh with `--summary` and end its
+turn, and the launch brief says the same of its first turn: the summary in the
+view is its report. It mails the linked personal agent only to answer it, once
+per hand-back or orchestrator departure, and for something that waits on the
+human; a cheap model told only whom it narrates for mailed "nothing happened
+yet" on its first turn, which held the personal agent's Stop hook.
+
 ## 9. Module layout
 
 ```
