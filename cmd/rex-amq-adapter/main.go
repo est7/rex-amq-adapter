@@ -99,8 +99,10 @@ Agent and user commands:
                             holds unread mail, unless --force
   retire <handle> [--force] close a finished peer of this Rex session: mark it
                             departed (depart_reason "retired"), retire its waker,
-                            and close its pane, telling nobody it left; prints one
-                            JSON line (action retired, or already_departed). Never
+                            and close its pane, telling nobody it left; a pane that
+                            no longer shows it stays open. Prints one JSON line
+                            (action retired or already_departed; pane closed,
+                            gone, or left_open). Never
                             a narrator, personal, or orchestrator agent, nor
                             yourself; refused while it works or holds unread
                             mail, unless --force. Use it, not rex block close

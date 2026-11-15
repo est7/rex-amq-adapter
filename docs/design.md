@@ -1404,30 +1404,49 @@ the record as `block_gone`, mails the orchestrator that the peer "quit,
 crashed, or its pane closed", and the narrator's pulse raises an urgent
 "left". A retire departs the record first, so nothing reads it as a crash:
 
-1. Guards, before any effect: the caller is an adopted agent, and the target
-   is another agent recorded in the caller's Rex session (same server and
-   session), not a `narrator`, `personal`, or `orchestrator`. Unless
+1. Everything happens under the lifecycle lock, so the guards read the
+   records and the mailbox as they are when it acts: a resume, a move, a
+   role change, or mail that arrived while the retire waited for the lock is
+   seen. The caller is an adopted agent, and the target is another agent
+   recorded in the caller's Rex session (same server and session), not a
+   `narrator`, `personal`, or `orchestrator`. One already departed is a
+   no-op (`"action":"already_departed"`, its own `depart_reason`). Unless
    `--force`, the target must be at rest and hold no unread mail, the same
-   check as an Epic's close.
-2. Under the lifecycle lock, the record is read again: one already departed
-   is a no-op (`"action":"already_departed"`, its own `depart_reason`).
-   Otherwise it departs quietly, as an Epic's close parks its agents: waker
-   retired, window notes cleared, `DepartReason` `retired`, `Unfinished`
-   empty, and no departure notes or mail.
-3. Only then, still under the lock, its block is closed on the record's
-   server. The dying agent's `SessionEnd` and the collection that follows
-   find a departed record and do nothing. A block already gone is not an
-   error; a close that fails leaves the departure standing, exits non-zero,
-   and names the block for `rex block close <block>`. The agent still runs
-   then, and its next turn takes its handle back like any resume; once `who`
-   lists it again, retiring it again closes it quietly.
+   check as an Epic's close (`unrest`); a local Claude Code background job
+   is judged by its supervisor's state, since the client showing it reports
+   none of its own or a stale one.
+2. It departs quietly, as an Epic's close parks its agents: waker retired,
+   window notes cleared, `DepartReason` `retired`, `Unfinished` empty, and
+   no departure notes or mail.
+3. Its block is looked at on the record's server (`observeBinding`). A block
+   that no longer shows the agent stays open (`"pane":"left_open"` with a
+   `pane_note`), since closing it would close another program's pane: the
+   conversation moved to the background (agent view or another conversation
+   in the title), the agent's process exited under another foreground (its
+   shell), or a background job's pane no longer shows the job. A block Rex
+   no longer has is `"pane":"gone"`.
+4. Otherwise the block is closed (`"pane":"closed"`). The dying agent's
+   `SessionEnd`, its late hooks (adoption finds the block gone), and the
+   collection that follows find a departed record and do nothing. A close
+   that fails leaves the departure standing, exits non-zero, and names the
+   block for `rex block close <block>`. The agent still runs then, and its
+   next turn takes its handle back like any resume; once `who` lists it
+   again, retiring it again closes it quietly.
+
+Each Rex call made under the lock (the rest check, the look, the close) is
+bounded to 2 seconds, since every adoption and departure on the host waits
+for that lock; the lock is released before the tab the agent shared is
+relabeled (`followTab`).
 
 The session pulse marks a member departed as `retired` (`PulseMember.Retired`,
 set only then, so other pulses keep their digests), and `ComparePulse` raises
-`<handle> retired` at normal priority, not the urgent `left`. The handle stays
-reserved (`ReserveFor`) like any departure. The command prints one JSON line:
-`handle`, `block`, `action` (`retired` or `already_departed`), and
-`depart_reason`.
+`<handle> retired` at normal priority, not the urgent `left`. A member seen
+retired and then departed again without it (a failed close, a resume, a
+crash between two looks) is an urgent `left`. The handle stays reserved
+(`ReserveFor`) like any departure. The command prints one JSON line:
+`handle`, `block`, `action` (`retired` or `already_departed`),
+`depart_reason`, and, once retired, `pane` (`closed`, `gone`, or
+`left_open`, with `pane_note`).
 
 ### Narrator
 
