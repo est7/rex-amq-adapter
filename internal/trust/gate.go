@@ -331,32 +331,57 @@ func agyTrusted(store string) ([]string, error) {
 var piGated = []string{"settings.json", "mcp.json", "extensions", "skills", "prompts", "themes", "SYSTEM.md", "APPEND_SYSTEM.md"}
 
 func (g Gate) pi(p Project) (bool, string, error) {
+	// Pi's own order (core/project-trust.js resolveProjectTrusted): no gated
+	// resource means no question; then the nearest trust.json entry, true or
+	// false, decides without a dialog (false starts without the project's
+	// resources); then defaultProjectTrust "always" or "never" does.
+	r, gated := piResources(p.Dir, g.home())
+	if !gated {
+		return true, "no project resources Pi asks about", nil
+	}
 	if ok, err := g.granted(p.Root); err != nil || ok {
 		return ok, "granted " + p.Root + ", approved for its session", err
 	}
+	if k, d, err := g.piDecision(p.Dir); err != nil {
+		return false, "", err
+	} else if k != "" {
+		if d {
+			return true, fmt.Sprintf("%s trusts %s", g.Stores.Pi, k), nil
+		}
+		return true, fmt.Sprintf("%s distrusts %s: Pi starts without its project resources, asking nothing", g.Stores.Pi, k), nil
+	}
+	var settings struct {
+		Default string `json:"defaultProjectTrust"`
+	}
+	if raw, err := os.ReadFile(filepath.Join(filepath.Dir(g.Stores.Pi), "settings.json")); err == nil {
+		_ = json.Unmarshal(raw, &settings) // Pi reads a broken settings file as its defaults
+	}
+	if settings.Default == "always" || settings.Default == "never" {
+		return true, "defaultProjectTrust " + settings.Default + " answers without a dialog", nil
+	}
+	return false, fmt.Sprintf("%s holds %s, which Pi asks about, and %s decides nothing for it", p.Dir, r, g.Stores.Pi), nil
+}
+
+// piDecision is the nearest trust.json entry at or above dir: its key and
+// decision, or "" when none decides.
+func (g Gate) piDecision(dir string) (string, bool, error) {
 	entries := map[string]*bool{}
 	raw, err := os.ReadFile(g.Stores.Pi)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
+		return "", false, nil
 	case err != nil:
-		return false, "", err
-	default:
-		if err := json.Unmarshal(raw, &entries); err != nil {
-			return false, "", fmt.Errorf("%s: %w", g.Stores.Pi, err)
-		}
+		return "", false, err
 	}
-	for _, k := range ancestors(p.Dir, "") {
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		return "", false, fmt.Errorf("%s: %w", g.Stores.Pi, err)
+	}
+	for _, k := range ancestors(dir, "") {
 		if d, ok := entries[k]; ok && d != nil {
-			if *d {
-				return true, fmt.Sprintf("%s trusts %s", g.Stores.Pi, k), nil
-			}
-			return false, fmt.Sprintf("%s distrusts %s", g.Stores.Pi, k), nil
+			return k, *d, nil
 		}
 	}
-	if r, gated := piResources(p.Dir, g.home()); gated {
-		return false, fmt.Sprintf("%s holds %s, which Pi asks about, and %s trusts no ancestor", p.Dir, r, g.Stores.Pi), nil
-	}
-	return true, "no project resources Pi asks about", nil
+	return "", false, nil
 }
 
 // piResources names the first project resource Pi gates: an entry of
@@ -545,7 +570,7 @@ func (g Gate) Args(dir string, argv []string) []string {
 	}
 	switch filepath.Base(argv[0]) {
 	case "agy":
-		if t, err := Derive(g.Stores.Home, dir); err == nil && t.Settings != "" {
+		if t, err := derive(g.Stores.Agy, dir); err == nil && t.Settings != "" {
 			return Args(argv, t.Settings)
 		}
 		p, err := Resolve(dir)
@@ -562,7 +587,17 @@ func (g Gate) Args(dir string, argv []string) []string {
 		if _, ok := lookup(list, p.Dir); ok {
 			return argv
 		}
-		out, err := json.Marshal(map[string][]string{"trustedWorkspaces": append(slices.Clone(list), p.Dir)})
+		// The directory as the session is started in it (Derive's spelling),
+		// and its physical path when that differs.
+		abs, err := filepath.Abs(dir)
+		if err != nil {
+			return argv
+		}
+		add := []string{abs}
+		if p.Dir != abs {
+			add = append(add, p.Dir)
+		}
+		out, err := json.Marshal(map[string][]string{"trustedWorkspaces": append(slices.Clone(list), add...)})
 		if err != nil {
 			return argv
 		}
