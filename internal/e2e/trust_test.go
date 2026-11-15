@@ -1,9 +1,11 @@
 package e2e
 
 import (
+	"context"
 	"os"
 	"path/filepath"
-	"strconv"
+
+	"github.com/est7/rex-amq-adapter/internal/install"
 )
 
 // project makes a directory under the world's home that the user trusts in
@@ -20,6 +22,8 @@ func (w *world) project(name string) string {
 	if err != nil {
 		w.t.Fatal(err)
 	}
-	w.write(filepath.Join(w.dir, ".claude.json"), `{"projects": {`+strconv.Quote(phys)+`: {"hasTrustDialogAccepted": true}}}`)
+	if _, err := install.TrustClaudeProject(context.Background(), filepath.Join(w.dir, ".claude.json"), phys); err != nil {
+		w.t.Fatal(err)
+	}
 	return dir
 }

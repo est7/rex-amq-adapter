@@ -632,10 +632,13 @@ func Under(roots []Root, path string) (string, bool) {
 }
 
 // Untrusted is the preflight's refusal: a harness would stop on a
-// folder-trust dialog in Dir, and no declared root covers its project.
+// folder-trust dialog in Dir, and no declared root covers its project, or
+// the user said no to it in a harness's own store (Distrusted), which only
+// their explicit `trust grant` overrides.
 type Untrusted struct {
-	Dir, Root string
-	Asking    []Verdict // the harnesses that would ask
+	Dir, Root  string
+	Asking     []Verdict // the harnesses that would ask
+	Distrusted string    // the store and key holding the user's "no", if any
 }
 
 // ReasonUntrusted names the refusal in a result or an error.
@@ -646,8 +649,31 @@ func (u Untrusted) Error() string {
 	for _, v := range u.Asking {
 		who = append(who, fmt.Sprintf("%s (%s)", v.Harness, v.Why))
 	}
+	if u.Distrusted != "" {
+		return fmt.Sprintf("%s: %s would stop on a folder-trust dialog in %s, and %s records that you do not trust it, so no trust root grants it; if you trust it now, run `rex-amq-adapter trust grant %s`",
+			ReasonUntrusted, strings.Join(who, ", "), u.Dir, u.Distrusted, u.Root)
+	}
 	return fmt.Sprintf("%s: %s would stop on a folder-trust dialog in %s, and no trust root covers %s; give the trust with `rex-amq-adapter trust grant %s` (or declare a parent with `rex-amq-adapter trust root add <dir>`)",
 		ReasonUntrusted, strings.Join(who, ", "), u.Dir, u.Root, u.Root)
+}
+
+// distrusted names the store holding the user's explicit "no" to p: Codex's
+// trust_level = "untrusted", or Pi's nearest false entry. Claude and
+// Antigravity record no refusal.
+func (g Gate) distrusted(p Project) (string, error) {
+	if no, err := install.CodexProjectDistrusted(g.Stores.Codex, p.Dir, p.Top, p.Root); err != nil {
+		return "", err
+	} else if no && p.Git() {
+		return g.Stores.Codex, nil
+	}
+	k, d, err := g.piDecision(p.Dir)
+	if err != nil {
+		return "", err
+	}
+	if k != "" && !d {
+		return g.Stores.Pi + " (" + k + ")", nil
+	}
+	return "", nil
 }
 
 // Preflight makes sure none of kinds stops on a folder-trust dialog in dir,
@@ -655,13 +681,8 @@ func (u Untrusted) Error() string {
 // strictly under a declared root, it grants the project as `trust grant`
 // does (source "root:<root>", logged) and checks again; otherwise it
 // returns Untrusted and changes nothing.
-//
-// A directory that does not exist has no folder to trust: it is not refused
-// here, and the launch meets whatever its terminal does with it.
+// A root never overrides the user's explicit "no" in a harness's store.
 func (g Gate) Preflight(ctx context.Context, dir string, kinds ...core.Kind) error {
-	if _, err := os.Stat(dir); errors.Is(err, fs.ErrNotExist) {
-		return nil
-	}
 	asking, err := g.asking(dir, kinds)
 	if err != nil || len(asking) == 0 {
 		return err
@@ -677,6 +698,11 @@ func (g Gate) Preflight(ctx context.Context, dir string, kinds ...core.Kind) err
 	root, ok := Under(roots, p.Root)
 	if !ok {
 		return Untrusted{Dir: p.Dir, Root: p.Root, Asking: asking}
+	}
+	if no, err := g.distrusted(p); err != nil {
+		return err
+	} else if no != "" {
+		return Untrusted{Dir: p.Dir, Root: p.Root, Asking: asking, Distrusted: no}
 	}
 	if _, err := g.Grant(ctx, dir, "root:"+root); err != nil {
 		return err

@@ -130,3 +130,23 @@ func TestSummonTrustPreflightCoversAResume(t *testing.T) {
 		t.Fatalf("pending reservations: %d", n)
 	}
 }
+
+// A directory that no longer exists (a removed worktree) starts nothing:
+// Rex would open the pane in the home directory instead.
+func TestSummonTrustPreflightRefusesAMissingDirectory(t *testing.T) {
+	e, term, loc := summonWorld(t)
+	gone := filepath.Join(t.TempDir(), "removed-worktree")
+	add(t, e, departed(store.Record{Handle: "claude-07", Kind: core.Claude, Server: "unix:///fake.sock", BlockID: "block:gone", SessionID: "session:s", Role: "implementer", AgentPID: 7, AgentSessionID: "sess-7", AdoptedAt: e.Now().Add(-time.Hour), Cwd: gone}, e.Now().Add(-time.Minute)))
+	if res := summon(t, e, loc, "claude-07"); res.Action != "refused" || !strings.Contains(res.Reason, "does not exist") || len(term.launches) != 0 {
+		t.Fatalf("resume: %+v %+v", res, term.launches)
+	}
+	me, _, _ := e.Store.Record(loc.Block)
+	me.Cwd = gone
+	add(t, e, me)
+	if res := summon(t, e, loc, "reviewer", func(r *SummonRequest) { r.Asked = "start one" }); res.Action != "refused" || !strings.Contains(res.Reason, "does not exist") || len(term.launches) != 0 {
+		t.Fatalf("start: %+v %+v", res, term.launches)
+	}
+	if n, _ := e.Store.PendingSummons("session:s", e.Now()); n != 0 {
+		t.Fatalf("pending reservations: %d", n)
+	}
+}

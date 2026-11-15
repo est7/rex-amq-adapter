@@ -394,13 +394,19 @@ func (e Env) start(ctx context.Context, caller store.Record, s Session, r Summon
 
 // preflight checks, before a pane opens, that kind meets no folder-trust
 // dialog in cwd (trust.Gate.Preflight, which grants a project under a
-// declared root). refusal is the untrusted_folder reason; err is a failure
-// to decide, which starts nothing either.
+// declared root). refusal is the untrusted_folder reason, or a directory
+// that no longer exists; err is a failure to decide, which starts nothing
+// either.
 func (e Env) preflight(ctx context.Context, cwd string, kind core.Kind) (refusal string, err error) {
 	if cwd == "" {
 		if cwd, err = os.Getwd(); err != nil {
 			return "", err
 		}
+	}
+	// Rex starts a pane whose directory is gone in the home directory
+	// instead, where no trust is ever recorded.
+	if info, err := os.Stat(cwd); err != nil || !info.IsDir() {
+		return fmt.Sprintf("the working directory %s does not exist (a removed worktree?), so no agent was started; name another with --cwd", cwd), nil
 	}
 	err = e.trustGate().Preflight(ctx, cwd, kind)
 	var untrusted trust.Untrusted

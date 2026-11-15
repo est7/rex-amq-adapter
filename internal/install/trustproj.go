@@ -177,6 +177,21 @@ func CodexProjectTrusted(config string, keys ...string) (bool, error) {
 	return false, nil
 }
 
+// CodexProjectDistrusted reports whether config marks any of keys
+// trust_level = "untrusted": the user's own "no" to that project.
+func CodexProjectDistrusted(config string, keys ...string) (bool, error) {
+	c, err := readCodexConfig(config)
+	if err != nil {
+		return false, err
+	}
+	for _, k := range keys {
+		if codexTrustLevel(c.doc, k) == "untrusted" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func codexProjects(doc map[string]any) map[string]any {
 	projects, _ := doc["projects"].(map[string]any)
 	return projects
