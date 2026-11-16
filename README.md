@@ -293,6 +293,36 @@ not link, and, unless `--force`, one whose agents are still working, waiting on
 a dialog, report no state, or hold unread mail. Nothing closes an Epic on its
 own, and a session you started yourself is yours to close.
 
+Both commands take `--op-id ID` (at most 256 bytes, no control characters),
+which makes a retry safe. `epic --op-id` records itself, with the sessions
+Rex has, before it asks Rex for the new one, and the new session and its
+blocks before it waits for either agent, so running the same command again
+after a timeout or a crash never starts a second Epic: it finds the session
+the first run started, relinks and reconciles it, and prints
+`"replayed":true`. It starts one only when Rex shows the first run created
+none, and when it cannot tell which new session is its own, it says so and
+starts nothing. `epic close --op-id` is recorded once
+its guards pass and before the kill, so a retry finishes the kill, the
+parking, and the unlink, even once the link is gone. The same op id for
+another request is refused, and a session Rex no longer has is reported, not
+replaced. Every Epic, with or without an op id, records its lifecycle in
+`sessions/<id>/lifecycle.json`: `partial_start` once its session exists,
+`opened` once both agents are adopted, `hand_back`, and `closed`, never
+moving back. Each hand-back carries a `seq` and a `digest`
+(`sha256:` of its body, line ends and surrounding blanks aside): recording
+the same report again keeps its `seq` and does not wake the narrator, a new
+one takes the next.
+
+`rex-amq-adapter view --cockpit` is the read-only cockpit of one personal
+agent: its linked Epics (lifecycle, hand-back, whether the narrator has
+written a view), or one of them with `--session S` (its view, or its
+lifecycle alone before the narrator writes one). It moves no mail and starts
+nothing. The personal agent runs it in its own pane; you run it from outside
+Rex with `--personal <handle>` or `--hub <dir>` (the directory the personal
+agent works in). Any other agent is refused, as is a command running under
+one (`env -i` included, by its process ancestry), a harness session no hook
+adopted, and a shell with `ME_UNATTENDED=1` that is not the personal agent's.
+
 Your own crews and roles override the built-in ones by name: a crew is a
 directory holding `team-conventions.md` and, optionally, `<role>.md` for a
 role that works differently in it; `roles/<role>.md` holds roles for any session.
@@ -340,6 +370,7 @@ rex-amq-adapter send --to codex-01 --subject S --body B   # also reply, read, dr
 rex-amq-adapter link <epic-session>    # (a personal agent) exchange mail with that Epic's narrator; `link` alone lists them
 rex-amq-adapter unlink <epic-session>  # revoke it
 rex-amq-adapter view --session <id>    # an Epic's view.json (its narrator, orchestrator, or a linked personal agent)
+rex-amq-adapter view --cockpit [--personal H | --hub DIR] [--session <id>]   # read-only: one personal agent's linked Epics
 rex-amq-adapter view refresh --summary "<what changed>"   # (the narrator) rebuild the view; `view read --ids …` reads named mail
 rex-amq-adapter hand-back @report.md   # (the orchestrator, last) record its final report; view shows it as hand_back
 rex-amq-adapter notify-personal --ref inbox:42 --event-id ev-1 [--hub ~/me] [--summary "…"]   # (an outside producer) ring the live personal agent

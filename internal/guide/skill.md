@@ -338,8 +338,9 @@ a narrator. Take the role in your pane with
 `rex-amq-adapter join --role personal`. One command opens an Epic:
 
 ```bash
-rex-amq-adapter epic "<name>" -c <repo> --goal <contract>   # or --asked "<the user's words>"; --crew <crew> to work as one
-rex-amq-adapter epic close <session_id> --asked "<the user's words>"   # only once the user says so
+rex-amq-adapter epic "<name>" -c <repo> --goal <contract> --op-id <id>   # or --asked "<the user's words>"; --crew <crew> to work as one
+rex-amq-adapter epic close <session_id> --asked "<the user's words>" --op-id <id>   # only once the user says so
+rex-amq-adapter view --cockpit                  # read-only: your linked Epics' lifecycle, hand-back, and whether a view exists
 ```
 
 It creates the Epic's Rex session with its orchestrator (briefed to run the
@@ -362,7 +363,23 @@ for a resume), and unlinks it; it refuses while an agent of the Epic is working 
 mail, unless `--force`. Every Epic runs unattended: its orchestrator,
 narrator, and every worker it starts or resumes carry `ME_UNATTENDED=1` in
 their own command, so outward writes stage for the user; you, the personal
-agent, never get it, and the adapter never clears one you inherited. Only a `personal` agent opens, links, or closes Epics,
+agent, never get it, and the adapter never clears one you inherited.
+Give each `epic` and `epic close` an `--op-id` of
+your own (at most 256 bytes, no control characters) and rerun the same
+command with the same id after a timeout or a failure: an `epic` retry never
+starts a second Epic; it reconciles the session the first run started
+(`"replayed":true`), starts one only when Rex shows the first run created
+none, and starts nothing when it cannot tell which new session is its own,
+and a close retry finishes the kill, the parking, and the unlink, even once
+the link is gone. The same id for another request is refused. The Epic's
+`lifecycle_state` moves `partial_start` (session up), `opened` (both agents
+adopted), `hand_back`, `closed`; each hand-back has a `seq` and a `digest`,
+and recording the same report again keeps its `seq` and tells nobody.
+`view --cockpit` reads, without moving mail, only the Epics linked to you
+(`--session S` for one whole); the human runs it from outside Rex with
+`--personal <your handle>` or `--hub <the directory you work in>`, and every
+other agent, any command under one, and an unattended shell are refused.
+Only a `personal` agent opens, links, or closes Epics,
 and the narrator is the only agent of an Epic it mails; your briefing (`crews
 show --role personal`) has the rest.
 

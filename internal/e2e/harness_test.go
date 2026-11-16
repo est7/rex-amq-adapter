@@ -431,8 +431,15 @@ func (w *world) send(from, to, body string) {
 // adapterRun runs the adapter from outside any block.
 func (w *world) adapterRun(args ...string) (string, int) {
 	w.t.Helper()
+	return w.adapterRunEnv(nil, args...)
+}
+
+// adapterRunEnv is adapterRun with extra variables (NAME=VALUE) in its
+// environment, overriding the world's.
+func (w *world) adapterRunEnv(extra []string, args ...string) (string, int) {
+	w.t.Helper()
 	cmd := exec.Command(w.adapter, args...)
-	cmd.Env = append(w.env[:len(w.env):len(w.env)], "REX_SERVER="+w.server)
+	cmd.Env = append(append(w.env[:len(w.env):len(w.env)], "REX_SERVER="+w.server), extra...)
 	out, err := cmd.Output()
 	var exit *exec.ExitError
 	switch {

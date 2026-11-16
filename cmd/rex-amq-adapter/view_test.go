@@ -24,13 +24,17 @@ func TestSessionViewArgs(t *testing.T) {
 		{[]string{"refresh", "--summary", "all green"}, viewArgs{verb: "refresh", summary: "all green"}},
 		{[]string{"refresh", "--summary", "@" + file}, viewArgs{verb: "refresh", summary: "review pending"}},
 		{[]string{"read", "--ids", "a, b,,c"}, viewArgs{verb: "read", ids: []string{"a", "b", "c"}}},
+		{[]string{"--cockpit"}, viewArgs{cockpit: true}},
+		{[]string{"--cockpit", "--session", "session:a", "--personal", "pi-01", "--hub", "/me"}, viewArgs{cockpit: true, session: "session:a", personal: "pi-01", hub: "/me"}},
 	} {
 		got, err := parseViewArgs(c.args)
-		if err != nil || got.verb != c.want.verb || got.session != c.want.session || got.summary != c.want.summary || !slices.Equal(got.ids, c.want.ids) {
+		if err != nil || got.verb != c.want.verb || got.session != c.want.session || got.summary != c.want.summary || !slices.Equal(got.ids, c.want.ids) ||
+			got.cockpit != c.want.cockpit || got.personal != c.want.personal || got.hub != c.want.hub {
 			t.Errorf("%v: %+v %v", c.args, got, err)
 		}
 	}
-	for _, bad := range [][]string{{"read"}, {"read", "--ids", ""}, {"drain"}, {"refresh", "--session", "x"}, {"--summary", "x"}, {"refresh", "extra"}} {
+	for _, bad := range [][]string{{"read"}, {"read", "--ids", ""}, {"drain"}, {"refresh", "--session", "x"}, {"--summary", "x"}, {"refresh", "extra"},
+		{"--personal", "pi-01"}, {"--hub", "/me"}, {"--session", "s", "--hub", "/me"}, {"refresh", "--cockpit"}, {"read", "--ids", "a", "--cockpit"}} {
 		if _, err := parseViewArgs(bad); err == nil {
 			t.Errorf("%v parsed", bad)
 		}

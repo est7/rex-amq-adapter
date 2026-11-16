@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -134,5 +136,113 @@ func TestPairEpicLeadSummonsItsReviewer(t *testing.T) {
 	res := summon(t, e, loc, "reviewer", func(r *SummonRequest) { r.Kind = "todo"; r.Asked = "review the Slice" })
 	if res.Action != "start" || res.Parent != rec.Handle || len(term.launches) != 1 {
 		t.Fatalf("%+v %v", res, term.launches)
+	}
+}
+
+// A pair Epic runs unattended like any Epic: its implementer lead and its
+// narrator carry ME_UNATTENDED=1 in their own commands, and the reviewer the
+// lead starts in the Epic's session does too.
+func TestPairEpicRunsItsLeadAndItsReviewerUnattended(t *testing.T) {
+	e, term, loc, goal := openEpicWorld(t)
+	e.Crews = crew.Load
+	adoptPane(t, e, "block:epic-1-1", "agy-02", core.NarratorRole)
+	adoptPane(t, e, "block:epic-1-2", "claude-03", implementerRole)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := e.OpenEpic(ctx, loc, EpicRequest{Name: "one slice", Dir: filepath.Dir(goal), Goal: goal, Crew: pairCrew}); err != nil {
+		t.Fatal(err)
+	}
+	for i, p := range term.sessions_[0].panes {
+		if !unattendedPrefix(p.Command) {
+			t.Errorf("pane %d (%s) %q: want %s=1 in its env prefix", i, p.Label, p.Command, UnattendedEnv)
+		}
+	}
+
+	e2, term2, loc2 := summonWorld(t)
+	lead, _, _ := e2.Store.Record(loc2.Block)
+	lead.Role = implementerRole
+	add(t, e2, lead)
+	if err := e2.Store.PutSessionCrew(lead.SessionID, store.SessionCrew{Crew: pairCrew, ClaimedBy: lead.Handle, ClaimedAt: e2.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	putPolicy(t, e2, lead.SessionID)
+	res := summon(t, e2, loc2, "reviewer", func(r *SummonRequest) { r.Kind = "todo"; r.Asked = "review the Slice"; r.Harness = "codex" })
+	if res.Action != "start" || !unattendedPrefix(term2.launches[0].Command) {
+		t.Fatalf("the pair lead's reviewer: %+v %q", res, term2.launches)
+	}
+}
+
+// epic --crew pair --op-id (s1 x s3 x s4): a first run whose op record fails
+// after Rex created the session, and that died before the Epic's policy was
+// written, is reconciled by its retry: the retry finds the session by its
+// narrator and its implementer lead (no orchestrator in a pair Epic), starts
+// nothing, reports the lead, and records the unattended policy the first run
+// left out.
+func TestPairEpicOpIDReconcilesItsSessionWithItsLeadAndPolicy(t *testing.T) {
+	e, term, loc, goal := openEpicWorld(t)
+	e.Crews = crew.Load
+	req := EpicRequest{Name: "one slice", Dir: filepath.Dir(goal), Goal: goal, Crew: pairCrew, OpID: "me:board:pair-1#open"}
+	repair := breakOpRecord(t, e, term, req.OpID)
+	first, err := openWithin(e, loc, req, time.Second)
+	if err == nil || !strings.Contains(err.Error(), "retry with the same op id") || first.SessionID != "session:epic-1" || first.Lead != implementerRole {
+		t.Fatalf("first run %+v: %v", first, err)
+	}
+	repair()
+	policy := filepath.Join(e.Paths.SessionDir("session:epic-1"), "policy.json")
+	if err := os.Remove(policy); err != nil {
+		t.Fatalf("setup: the first run wrote no policy to lose: %v", err)
+	}
+	for i, role := range []string{core.NarratorRole, implementerRole} {
+		put(t, e, store.Record{Handle: core.Handle(fmt.Sprintf("claude-%02d", i+2)), Kind: core.Claude, Role: role, BlockID: fmt.Sprintf("block:epic-1-%d", i+1), SessionID: "session:epic-1", AdoptedAt: time.Now()})
+	}
+	again, err := openWithin(e, loc, req, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(term.sessions_) != 1 {
+		t.Fatalf("the retry created another session: %+v", term.sessions_)
+	}
+	if !again.Replayed || !again.Ready() || again.Lead != implementerRole || again.Orchestrator.Block != "block:epic-1-2" || again.LifecycleState != store.EpicOpened {
+		t.Fatalf("retry %+v", again)
+	}
+	p, ok, err := e.Store.EpicPolicy("session:epic-1")
+	if err != nil || !ok || !p.Unattended || p.CreatedBy != "claude-01" || p.Server != fakeServer {
+		t.Fatalf("policy after the retry %+v %v %v", p, ok, err)
+	}
+	if c, ok, _ := e.Store.SessionCrew("session:epic-1"); !ok || c.Crew != pairCrew {
+		t.Errorf("crew after the retry %+v %v", c, ok)
+	}
+}
+
+// A pair lead's hand-backs (s1 x s4) are numbered and digested, and the
+// report its first hand-back stored while the Epic's lifecycle could not be
+// written is backfilled into the lifecycle beside the one replacing it.
+func TestPairEpicLeadHandBackIsNumberedAndBackfilled(t *testing.T) {
+	e := realAmqEnv(t, &fakeTerm{})
+	now := time.Now()
+	if err := e.Store.PutSessionCrew("session:pair", store.SessionCrew{Crew: pairCrew, ClaimedBy: "claude-01", ClaimedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	put(t, e, store.Record{Handle: "claude-10", Kind: core.Claude, Role: implementerRole, SessionID: "session:pair", AdoptedAt: now})
+	ctx := context.Background()
+	lead := Location{Block: "block:claude-10"}
+	lifecycle := filepath.Join(e.Paths.SessionDir("session:pair"), "lifecycle.json")
+	if err := os.MkdirAll(lifecycle, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	first, err := e.RecordHandBack(ctx, lead, "## Review queue\n- PR #1")
+	if err == nil || first.Seq != 1 || first.Digest != store.HandBackDigest("## Review queue\n- PR #1") {
+		t.Fatalf("first, its lifecycle unwritable: %+v %v", first, err)
+	}
+	if err := os.Remove(lifecycle); err != nil {
+		t.Fatal(err)
+	}
+	second, err := e.RecordHandBack(ctx, lead, "## Review queue\n- PR #1 merged")
+	if err != nil || second.Seq != 2 || second.By != "claude-10" {
+		t.Fatalf("second: %+v %v", second, err)
+	}
+	lc, ok, err := e.Store.EpicLifecycle("session:pair")
+	if err != nil || !ok || lc.State != store.EpicHandBack || len(lc.HandBacks) != 2 || lc.HandBacks[0].Digest != first.Digest || lc.HandBacks[1].Digest != second.Digest {
+		t.Fatalf("lifecycle %+v %v %v", lc, ok, err)
 	}
 }

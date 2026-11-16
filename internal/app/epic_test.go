@@ -26,6 +26,8 @@ func openEpicWorld(t *testing.T) (Env, *fakeTerm, Location, string) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	e.TranscriptHome = t.TempDir()
 	trustTemp(t, e)
+	// Routing comes from the user's config too: never the host's.
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	if err := e.Store.DeleteRecord("codex"); err != nil {
 		t.Fatal(err)
 	}

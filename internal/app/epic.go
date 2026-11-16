@@ -32,6 +32,9 @@ type EpicRequest struct {
 	Harness     string // the orchestrator's CLI; "" is the role's default
 	// Crew is the crew the Epic's session works as (Env.Join); "" for none.
 	Crew string
+	// OpID names this request, so a retry with the same OpID reconciles the
+	// Epic the first run started instead of starting another; "" for none.
+	OpID string
 }
 
 // EpicAgent is where one of the Epic's agents was started and how its
@@ -42,14 +45,20 @@ type EpicAgent struct {
 }
 
 // EpicResult is what was started. A failure part way leaves what started
-// running: nothing is torn down.
+// running: nothing is torn down. Replayed says a retry of OpID found the Epic
+// its first run started and started nothing; LifecycleState is the Epic's
+// lifecycle state when the command ended (store.EpicLifecycle).
 type EpicResult struct {
-	SessionID    string    `json:"session_id"`
-	Orchestrator EpicAgent `json:"orchestrator"`
-	Narrator     EpicAgent `json:"narrator"`
-	Linked       bool      `json:"linked"`
+	SessionID      string    `json:"session_id"`
+	Orchestrator   EpicAgent `json:"orchestrator"`
+	Narrator       EpicAgent `json:"narrator"`
+	Linked         bool      `json:"linked"`
+	OpID           string    `json:"op_id,omitempty"`
+	LifecycleState string    `json:"lifecycle_state,omitempty"`
+	Replayed       bool      `json:"replayed,omitempty"`
 	// Lead is the role of the agent that runs the goal, whose startup
-	// Orchestrator reports: an orchestrator, or a pair Epic's implementer.
+	// Orchestrator reports: an orchestrator, or a pair Epic's implementer
+	// (epicLead).
 	Lead string `json:"lead"`
 }
 
@@ -60,6 +69,15 @@ const (
 	implementerRole = "implementer"
 )
 
+// epicLead is the role of the agent that runs an Epic of crewName's goal:
+// its orchestrator, or a pair Epic's implementer.
+func epicLead(crewName string) string {
+	if crewName == pairCrew {
+		return implementerRole
+	}
+	return core.OrchestratorRole
+}
+
 // Ready reports whether the Epic is fully up: both agents adopted, and the
 // caller linked to its narrator.
 func (r EpicResult) Ready() bool {
@@ -69,7 +87,14 @@ func (r EpicResult) Ready() bool {
 // OpenEpic starts an Epic for the personal agent in loc: a session labelled
 // r.Name with a tab for its orchestrator, briefed with the goal contract or
 // the user's words, and one for its narrator, told whom it narrates for; then it links the session to the caller and
-// waits, until ctx ends, for both agents to be adopted.
+// waits, until ctx ends, for both agents to be adopted. The Epic's lifecycle
+// is partial_start from the moment its session exists, opened once both
+// agents are adopted. With r.OpID, the op is recorded before Rex is asked
+// for the session (store.EpicCreating, with the sessions Rex had then) and
+// again with the session and its blocks before any wait, so a retry of the
+// same request, however the first run ended, reconciles that session
+// (adoptCreated, reconcileOpen) and never creates another; the op id reused
+// for another request is refused.
 func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicResult, error) {
 	caller, ok, err := e.Store.Record(loc.Block)
 	if err != nil {
@@ -90,6 +115,9 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 	if utf8.RuneCountInString(name) > maxSessionLabel {
 		return EpicResult{}, fmt.Errorf("%w: an Epic's name is at most %d characters", ErrUsage, maxSessionLabel)
 	}
+	if err := ValidOpID(r.OpID); err != nil {
+		return EpicResult{}, err
+	}
 	task := core.Task(name)
 	dir, err := filepath.Abs(r.Dir)
 	if err != nil {
@@ -99,10 +127,7 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 		return EpicResult{}, fmt.Errorf("%w: %s is not a directory", ErrUsage, r.Dir)
 	}
 	crewName := crew.Name(r.Crew)
-	lead := core.OrchestratorRole
-	if crewName == pairCrew {
-		lead = implementerRole
-	}
+	lead := epicLead(crewName)
 	// Each agent starts on its role's first harness (--harness overrides the
 	// lead's), with that harness's model and effort.
 	orchRoute, err := e.route(dir, lead)
@@ -135,6 +160,57 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 			return EpicResult{}, fmt.Errorf("%w: no crew %q in %s: `rex-amq-adapter crews` lists them", ErrUsage, crewName, dir)
 		}
 	}
+	physical, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return EpicResult{}, err
+	}
+	seed := store.EpicLifecycle{Name: name, Dir: physical, PersonalHandle: caller.Handle, PersonalSessionID: caller.SessionID, Server: caller.Server, Crew: crewName, OpenOpID: r.OpID}
+	var op *store.EpicOpRecord
+	// release frees LockEpicLifecycle when an op id took it: once the new
+	// session is recorded, or on any return before.
+	release := func() {}
+	defer func() { release() }()
+	if r.OpID != "" {
+		id := openIdentity{Personal: caller.Endpoint().Session(), Name: name, Dir: physical, Asked: r.Asked, Crew: crewName}
+		if r.Goal != "" {
+			if id.Goal, err = filepath.Abs(r.Goal); err != nil {
+				return EpicResult{}, err
+			}
+		}
+		if r.Harness != "" {
+			id.Harness = string(kind)
+		}
+		hash := requestHash(id)
+		// Held from the look-up until the new session is recorded, so two
+		// runs of one op id create one session between them.
+		unlock, err := e.Store.LockEpicLifecycle(ctx)
+		if err != nil {
+			return EpicResult{}, err
+		}
+		prev, found, err := e.Store.EpicOp(store.EpicOpOpen, r.OpID)
+		switch {
+		case err != nil:
+			unlock()
+			return EpicResult{}, err
+		case found && prev.RequestHash != hash:
+			unlock()
+			return EpicResult{OpID: r.OpID}, errOpConflict(store.EpicOpOpen, r.OpID)
+		case found && prev.SessionID == "":
+			// The first run asked Rex for its session and ended before
+			// recording which: find it, or learn that there is none.
+			if found, err = e.adoptCreated(ctx, &prev, seed, name); err != nil {
+				unlock()
+				return EpicResult{OpID: r.OpID}, err
+			}
+		}
+		if found {
+			unlock()
+			seed.SessionID = prev.SessionID
+			return e.reconcileOpen(ctx, loc, prev, seed)
+		}
+		release = unlock
+		op = &store.EpicOpRecord{Kind: store.EpicOpOpen, OpID: r.OpID, RequestHash: hash, Name: name, Server: caller.Server, PersonalHandle: caller.Handle, PersonalSessionID: caller.SessionID, CreatedAt: e.Now().UTC()}
+	}
 	// Both agents' folder trust before the session exists: an Epic either
 	// starts with no dialog in its panes or does not start.
 	if err := e.trustGate().Preflight(ctx, dir, narrator, kind); err != nil {
@@ -152,17 +228,51 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 		{Label: core.NarratorRole + core.PaneSeparator + task, Dir: dir, Command: withUnattendedEnv(withLaunchEnv(narrLaunch, e.withTrust(dir, narrLaunch.Args(narrator, startCommand(narrator, narrate)))))},
 		{Label: lead + core.PaneSeparator + task, Dir: dir, Command: withUnattendedEnv(withLaunchEnv(orchLaunch, e.withTrust(dir, orchLaunch.Args(kind, startCommand(kind, brief)))))},
 	}
+	if op != nil {
+		// Recorded before Rex is asked, with the sessions it has, so a retry
+		// after any failure from here tells the session this run creates.
+		prior, err := e.Rex.ListSessions(ctx)
+		if err != nil {
+			return EpicResult{OpID: r.OpID}, fmt.Errorf("list Rex's sessions before creating the Epic's: %w", err)
+		}
+		op.State, op.PriorSessions, op.UpdatedAt = store.EpicCreating, prior, e.Now().UTC()
+		if err := e.Store.PutEpicOp(*op); err != nil {
+			return EpicResult{OpID: r.OpID}, fmt.Errorf("record --op-id %q before creating the Epic's session: %w", r.OpID, err)
+		}
+	}
 	session, blocks, policyErr, crewErr, err := e.newEpicSession(ctx, name, panes, crewName, caller)
 	if err != nil {
-		return EpicResult{}, fmt.Errorf("create the Epic's session: %w", err)
+		if op != nil {
+			e.dropUnstartedOp(ctx, *op)
+		}
+		return EpicResult{OpID: r.OpID}, fmt.Errorf("create the Epic's session: %w", err)
 	}
-	res := EpicResult{SessionID: session, Narrator: EpicAgent{Block: blocks[0]}, Orchestrator: EpicAgent{Block: blocks[1]}, Lead: lead}
+	res := EpicResult{SessionID: session, Narrator: EpicAgent{Block: blocks[0]}, Orchestrator: EpicAgent{Block: blocks[1]}, OpID: r.OpID, Lead: lead}
 	var errs []error
 	if policyErr != nil {
 		errs = append(errs, fmt.Errorf("record the Epic policy: %w", policyErr))
 	}
 	if crewErr != nil {
 		errs = append(errs, fmt.Errorf("record the crew: %w", crewErr))
+	}
+	// Recorded before any wait, so a run that dies or times out from here on
+	// leaves the session to reconcile.
+	seed.SessionID = session
+	if op != nil {
+		op.SessionID, op.NarratorBlock, op.OrchestratorBlock, op.PriorSessions = session, blocks[0], blocks[1], nil
+		lc, err := e.advanceEpic(seed, store.EpicPartialStart, op)
+		release()
+		release = func() {}
+		if err != nil {
+			// Not waited on: a retry of the same op id finds this session in
+			// Rex (adoptCreated) and carries on from there.
+			return res, fmt.Errorf("the Epic session %s started, but recording it under --op-id %q failed (retry with the same op id to carry on with it): %w", session, r.OpID, err)
+		}
+		res.LifecycleState = lc.State
+	} else if lc, err := e.lockedAdvanceEpic(ctx, seed, store.EpicPartialStart, nil); err != nil {
+		errs = append(errs, fmt.Errorf("record the lifecycle: %w", err))
+	} else {
+		res.LifecycleState = lc.State
 	}
 	// Linked before the narrator is adopted, so the caller can mail it the
 	// moment it is.
@@ -171,13 +281,13 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 	} else {
 		res.Linked = true
 	}
-	for _, a := range []*EpicAgent{&res.Orchestrator, &res.Narrator} {
-		s, err := e.AwaitStartup(ctx, a.Block)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("await %s: %w", a.Block, err))
-			continue
+	errs = append(errs, e.awaitEpicAgents(ctx, &res)...)
+	if res.Orchestrator.Status == core.StartupAdopted && res.Narrator.Status == core.StartupAdopted {
+		if lc, err := e.lockedAdvanceEpic(ctx, seed, store.EpicOpened, op); err != nil {
+			errs = append(errs, fmt.Errorf("record the lifecycle: %w", err))
+		} else {
+			res.LifecycleState = lc.State
 		}
-		a.Startup = s
 	}
 	return res, errors.Join(errs...)
 }

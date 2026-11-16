@@ -11,14 +11,17 @@ import (
 
 // A personal agent opens an Epic with one command, in a private Rex server:
 // the Epic's session gets an orchestrator and a narrator, both adopted, and
-// the link between the personal agent and the Epic is recorded.
+// the link between the personal agent and the Epic is recorded. The same
+// command run again under its --op-id starts nothing: it reports the same
+// session, replayed and opened.
 func TestPersonalAgentOpensAnEpic(t *testing.T) {
 	w := newWorld(t)
 	tb := w.newTab("me", "personal")
 	w.ready("me")
 	goal := filepath.Join(w.dir, "goal.md")
 	w.write(goal, "GOAL: ship it\n")
-	w.typeInto(tb.first, "epic e2e-login -c "+w.project("app")+" --goal "+goal+" --timeout 40")
+	open := "epic e2e-login -c " + w.project("app") + " --goal " + goal + " --timeout 40 --op-id e2e-open-1"
+	w.typeInto(tb.first, open)
 	w.until("the epic command to finish", 50*time.Second, func() bool { return strings.Contains(w.joined("me"), "exit=") })
 	out := w.joined("me")
 	if !strings.Contains(out, "exit=0") {
@@ -65,6 +68,43 @@ func TestPersonalAgentOpensAnEpic(t *testing.T) {
 	if code != 0 || !strings.Contains(who, `"role": "orchestrator"`) || !strings.Contains(who, `"role": "narrator"`) || !strings.Contains(who, `"tab": "narrator(`+res.Narrator.Handle+`) | e2e-login"`) {
 		t.Errorf("who in the Epic: %d\n%s", code, who)
 	}
+
+	sessions := w.rex("session", "list")
+	w.typeInto(tb.first, open)
+	w.until("the retried epic command to finish", 50*time.Second, func() bool { return strings.Count(w.joined("me"), "exit=") == 2 })
+	lines := strings.Split(strings.TrimSpace(w.joined("me")), "\n")
+	var again struct {
+		Session  string `json:"session_id"`
+		Replayed bool   `json:"replayed"`
+		State    string `json:"lifecycle_state"`
+	}
+	if len(lines) != 4 || lines[3] != "exit=0" || json.Unmarshal([]byte(lines[2]), &again) != nil || again.Session != res.Session || !again.Replayed || again.State != "opened" {
+		t.Fatalf("the retry:\n%s\n%s", w.joined("me"), w.dump())
+	}
+	if after := w.rex("session", "list"); after != sessions {
+		t.Errorf("the retry changed the sessions:\n%s\nthen\n%s", sessions, after)
+	}
+	// The human's cockpit, from outside Rex, names the personal agent and
+	// reads its linked Epic; run from the orchestrator's pane it is refused.
+	// ME_UNATTENDED is cleared: the agent running the tests may carry it.
+	quiet := []string{"ME_UNATTENDED="}
+	out, code = w.adapterRunEnv(quiet, "view", "--cockpit", "--personal", w.handleOf("me"))
+	var cockpit struct {
+		Epics []struct {
+			Session   string `json:"session_id"`
+			Lifecycle struct {
+				State string `json:"state"`
+				OpID  string `json:"open_op_id"`
+			} `json:"lifecycle"`
+		} `json:"epics"`
+	}
+	if code != 0 || json.Unmarshal([]byte(out), &cockpit) != nil || len(cockpit.Epics) != 1 || cockpit.Epics[0].Session != res.Session ||
+		cockpit.Epics[0].Lifecycle.State != "opened" || cockpit.Epics[0].Lifecycle.OpID != "e2e-open-1" {
+		t.Errorf("the cockpit outside Rex: exit %d\n%s", code, out)
+	}
+	if out, code := w.adapterRunEnv(append(quiet, "REX_BLOCK="+res.Orchestrator.Block), "view", "--cockpit", "--personal", w.handleOf("me")); code != 1 || out != "" {
+		t.Errorf("the cockpit from the orchestrator's pane: exit %d\n%s", code, out)
+	}
 }
 
 // The personal agent closes the Epic it opened, on the user's words: a
@@ -100,11 +140,18 @@ func TestPersonalAgentClosesAnEpic(t *testing.T) {
 		t.Fatalf("a refused close killed the session: %v", err)
 	}
 
-	w.typeInto(tb.first, "epic close "+res.Session+" --asked close-it")
+	w.typeInto(tb.first, "epic close "+res.Session+" --asked close-it --op-id e2e-close-1")
 	w.until("the close to finish", 20*time.Second, func() bool { return exits() == 3 })
 	got := w.joined("me")
 	if !strings.HasSuffix(strings.TrimSpace(got), "exit=0") || !strings.Contains(got, `"unlinked":true`) || !strings.Contains(got, orch) {
 		t.Fatalf("close:\n%s\n%s", got, w.dump())
+	}
+	// The same close again, under its op id: the session and the link are
+	// gone, and it finishes as done, with Rex's own answer to a second kill.
+	w.typeInto(tb.first, "epic close "+res.Session+" --asked close-it --op-id e2e-close-1")
+	w.until("the retried close to finish", 20*time.Second, func() bool { return exits() == 4 })
+	if got := w.joined("me"); !strings.HasSuffix(strings.TrimSpace(got), "exit=0") || strings.Count(got, `"replayed":true`) != 1 || !strings.Contains(got, `"lifecycle_state":"closed"`) {
+		t.Fatalf("the retried close:\n%s\n%s", got, w.dump())
 	}
 	if _, err := w.rexErr("session", "inspect", res.Session); err == nil {
 		t.Errorf("the Epic's session %s is still there", res.Session)

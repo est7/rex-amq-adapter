@@ -295,3 +295,223 @@ func TestHandBackInTheViewWhole(t *testing.T) {
 		t.Fatalf("the next hand-back: %+v %v", v.HandBack, err)
 	}
 }
+
+// cockpitWorld is viewWorld with the personal agent pi-05 working in a hub
+// directory and linked to a second Epic, session:b, whose narrator has not
+// written a view yet but whose lifecycle is recorded; pi-06 is linked to
+// session:c. The workers of session:a run as agent processes 701 to 704.
+func cockpitWorld(t *testing.T) (Env, string) {
+	t.Helper()
+	e := viewWorld(t)
+	noOpenObligations(e)
+	hub := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(hub, "work"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for h, pid := range map[core.Handle]int{"claude-01": 701, "claude-02": 702, "codex-03": 703, "pi-04": 704} {
+		r := recordOf(t, e, h)
+		r.AgentPID, r.AgentSessionID = pid, "harness-"+string(h)
+		put(t, e, r)
+	}
+	r := recordOf(t, e, "pi-05")
+	r.Cwd, r.AgentPID, r.AgentSessionID = filepath.Join(hub, "work"), 705, "harness-pi-05"
+	put(t, e, r)
+	put(t, e, store.Record{Handle: "claude-07", Kind: core.Claude, SessionID: "session:a", AgentPID: 707, AgentSessionID: "harness-claude-07"})
+	for _, l := range []core.Link{
+		{Personal: core.SessionKey{Server: fakeServer, SessionID: "session:p"}, Epic: core.SessionKey{Server: fakeServer, SessionID: "session:b"}},
+		{Personal: core.SessionKey{Server: fakeServer, SessionID: "session:q"}, Epic: core.SessionKey{Server: fakeServer, SessionID: "session:c"}},
+	} {
+		if err := e.Store.PutLink(l); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, lc := range []store.EpicLifecycle{
+		{SessionID: "session:a", Server: fakeServer, Name: "auth-refresh", State: store.EpicOpened, PersonalHandle: "pi-05"},
+		{SessionID: "session:b", Server: fakeServer, Name: "billing", Dir: hub, State: store.EpicPartialStart, PersonalHandle: "pi-05", OpenOpID: "op-b"},
+		{SessionID: "session:c", Server: fakeServer, Name: "secret", State: store.EpicOpened, PersonalHandle: "pi-06"},
+	} {
+		if err := e.Store.PutEpicLifecycle(lc); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := e.RefreshSessionView(context.Background(), Location{Block: "block:pi-04"}, "quiet"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.RecordHandBack(context.Background(), Location{Block: "block:claude-01"}, "## Review queue\nPR #3"); err != nil {
+		t.Fatal(err)
+	}
+	// The test process stands for whatever runs the command: by default no
+	// agent's.
+	e.Ancestors = func() ([]proc, error) { return []proc{{PID: 9001}, {PID: 9000}}, nil }
+	return e, hub
+}
+
+func cockpitEnv(vars map[string]string) func(string) string {
+	return func(k string) string { return vars[k] }
+}
+
+// A worker, the orchestrator, the narrator, a roleless agent, a harness
+// session no hook adopted, an unattended shell, a child an agent started
+// with its environment stripped, and a shell that names no personal agent
+// are all refused the cockpit, with and without --session or a scope that
+// would otherwise match; nothing is read for them.
+func TestCockpitViewRefusesEveryoneButThePersonalScope(t *testing.T) {
+	e, hub := cockpitWorld(t)
+	ctx := context.Background()
+	scoped := []CockpitViewRequest{{}, {Session: "session:a"}, {Session: "session:c"}, {Personal: "pi-05"}, {Personal: "pi-05", Session: "session:a"}, {Hub: hub}}
+	for _, c := range []struct {
+		name      string
+		env       map[string]string
+		ancestors []proc
+		reqs      []CockpitViewRequest
+		want      error
+	}{
+		{"an implementer's pane", map[string]string{"REX_BLOCK": "block:claude-02"}, nil, scoped, ErrRefused},
+		{"a reviewer's tool shell", map[string]string{"CODEX_THREAD_ID": "harness-codex-03"}, nil, scoped, ErrRefused},
+		{"a reviewer's tool shell in the personal pane", map[string]string{"CODEX_THREAD_ID": "harness-codex-03", "REX_BLOCK": "block:pi-05"}, nil, scoped, ErrRefused},
+		{"a roleless agent", map[string]string{"REX_BLOCK": "block:claude-07"}, nil, scoped, ErrRefused},
+		{"the orchestrator", map[string]string{"REX_BLOCK": "block:claude-01"}, nil, scoped, ErrRefused},
+		{"the narrator", map[string]string{"PI_SESSION_ID": "harness-pi-04"}, nil, scoped, ErrRefused},
+		{"an unadopted claude -p", map[string]string{"CLAUDE_CODE_SESSION_ID": "nobody", "REX_BLOCK": "block:pi-05"}, nil, scoped, ErrRefused},
+		{"a reviewer's session beside the personal agent's", map[string]string{"PI_SESSION_ID": "harness-pi-05", "CODEX_THREAD_ID": "harness-codex-03"}, []proc{{PID: 705}}, scoped, ErrRefused},
+		{"an unattended shell", map[string]string{"ME_UNATTENDED": "1"}, nil, scoped[3:], ErrRefused},
+		{"env -i under an implementer", nil, []proc{{PID: 9001}, {PID: 702}, {PID: 1}}, scoped[3:], ErrRefused},
+		{"env -i under a roleless agent", nil, []proc{{PID: 707}}, scoped[3:], ErrRefused},
+		{"a shell naming nobody", nil, nil, scoped[:3], ErrUsage},
+		{"a shell naming an unknown agent", nil, nil, []CockpitViewRequest{{Personal: "pi-99"}, {Hub: t.TempDir()}}, ErrRefused},
+	} {
+		e := e
+		if c.ancestors != nil {
+			e.Ancestors = func() ([]proc, error) { return c.ancestors, nil }
+		}
+		for _, r := range c.reqs {
+			b, err := e.ReadCockpitView(ctx, cockpitEnv(c.env), r)
+			if !errors.Is(err, c.want) || b != nil {
+				t.Errorf("%s %+v: %v, read %s; want %v", c.name, r, err, b, c.want)
+			}
+		}
+	}
+	// The personal agent's own scope is its own: another's handle, another
+	// hub, and an Epic linked to another personal agent are refused.
+	for _, r := range []CockpitViewRequest{{Personal: "pi-06"}, {Hub: t.TempDir()}, {Session: "session:c"}, {Session: "session:q"}} {
+		if _, err := e.ReadCockpitView(ctx, cockpitEnv(map[string]string{"REX_BLOCK": "block:pi-05"}), r); !errors.Is(err, ErrRefused) {
+			t.Errorf("pi-05 reading %+v: %v", r, err)
+		}
+	}
+	// A shell with no agent names one even when only one personal agent is
+	// live: being outside every agent is no grant by itself.
+	gone := recordOf(t, e, "pi-06")
+	put(t, e, departed(gone, time.Now()))
+	if _, err := e.ReadCockpitView(ctx, cockpitEnv(nil), CockpitViewRequest{}); !errors.Is(err, ErrUsage) {
+		t.Errorf("a bare shell with one personal agent live: %v", err)
+	}
+	put(t, e, gone)
+	// Gate 3 against the real process table: this test process is an
+	// implementer's agent.
+	real := e
+	real.Ancestors = nil
+	put(t, real, store.Record{Handle: "claude-08", Kind: core.Claude, Role: "implementer", SessionID: "session:a", AgentPID: os.Getpid()})
+	if _, err := real.ReadCockpitView(ctx, cockpitEnv(nil), CockpitViewRequest{Personal: "pi-05"}); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "claude-08") {
+		t.Errorf("a command under an implementer, by the real process table: %v", err)
+	}
+	r8 := recordOf(t, e, "claude-08")
+	put(t, e, departed(r8, time.Now()))
+	// Two personal agents in one hub are not told apart by it.
+	r := recordOf(t, e, "pi-06")
+	r.Cwd = hub
+	put(t, e, r)
+	if _, err := e.ReadCockpitView(ctx, cockpitEnv(nil), CockpitViewRequest{Hub: hub}); !errors.Is(err, ErrUsage) {
+		t.Errorf("an ambiguous hub: %v", err)
+	}
+}
+
+// The personal agent (even carrying an inherited ME_UNATTENDED=1), and the
+// human outside Rex naming it by handle or by hub, read the summary of its
+// linked Epics only, and one of them whole with --session: a view with its
+// stored hand-back and lifecycle, or for an Epic whose narrator has not
+// written one, its lifecycle alone. Reading moves no mail.
+func TestCockpitViewReadsOnlyThePersonalAgentsLinkedEpics(t *testing.T) {
+	e, hub := cockpitWorld(t)
+	ctx := context.Background()
+	before := mailTree(t, e)
+	for name, c := range map[string]struct {
+		env map[string]string
+		req CockpitViewRequest
+	}{
+		"its pane, unattended":   {map[string]string{"REX_BLOCK": "block:pi-05", "ME_UNATTENDED": "1"}, CockpitViewRequest{}},
+		"its tool shell":         {map[string]string{"PI_SESSION_ID": "harness-pi-05"}, CockpitViewRequest{Personal: "pi-05", Hub: hub}},
+		"outside Rex, by handle": {nil, CockpitViewRequest{Personal: "pi-05"}},
+		"outside Rex, by hub":    {nil, CockpitViewRequest{Hub: hub}},
+		"a plain Rex pane":       {map[string]string{"REX_BLOCK": "block:shell"}, CockpitViewRequest{Hub: hub}},
+	} {
+		b, err := e.ReadCockpitView(ctx, cockpitEnv(c.env), c.req)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		var v CockpitView
+		if err := json.Unmarshal(b, &v); err != nil {
+			t.Fatal(err)
+		}
+		var ids []string
+		for _, ep := range v.Epics {
+			ids = append(ids, ep.SessionID)
+		}
+		slices.Sort(ids)
+		if v.Personal != "pi-05" || v.SessionID != "session:p" || !slices.Equal(ids, []string{"session:a", "session:b"}) {
+			t.Fatalf("%s: %+v", name, v)
+		}
+		for _, ep := range v.Epics {
+			switch ep.SessionID {
+			case "session:a":
+				if !ep.HasView || ep.Name != "auth-refresh" || ep.HandBack == nil || ep.HandBack.Seq != 1 || ep.Lifecycle == nil || ep.Lifecycle.State != store.EpicHandBack {
+					t.Errorf("%s: session:a %+v", name, ep)
+				}
+			case "session:b":
+				if ep.HasView || ep.Name != "billing" || ep.Lifecycle == nil || ep.Lifecycle.State != store.EpicPartialStart || ep.HandBack != nil {
+					t.Errorf("%s: session:b %+v", name, ep)
+				}
+			}
+		}
+	}
+	b, err := e.ReadCockpitView(ctx, cockpitEnv(nil), CockpitViewRequest{Personal: "pi-05", Session: "session:a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v SessionView
+	if err := json.Unmarshal(b, &v); err != nil || v.Session.SessionID != "session:a" || v.HandBack == nil || v.HandBack.Body != "## Review queue\nPR #3" || v.Lifecycle == nil || v.Lifecycle.State != store.EpicHandBack || len(v.Members) == 0 {
+		t.Fatalf("session:a whole: %+v %v", v, err)
+	}
+	b, err = e.ReadCockpitView(ctx, cockpitEnv(nil), CockpitViewRequest{Hub: hub, Session: "session:b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v = SessionView{}
+	if err := json.Unmarshal(b, &v); err != nil || v.Session.Epic != "billing" || v.Lifecycle == nil || v.Lifecycle.OpenOpID != "op-b" || v.Members == nil || gapRefs(v.CoverageGaps, GapNoView) != nil || len(v.CoverageGaps) != 1 || v.CoverageGaps[0].Kind != GapNoView {
+		t.Fatalf("session:b before its view: %s %v", b, err)
+	}
+	if after := mailTree(t, e); after != before {
+		t.Fatal("reading the cockpit moved or wrote mail")
+	}
+	// The plain view carries the lifecycle too, for those it already lets read.
+	b, err = e.ReadSessionView(ctx, Location{Block: "block:pi-05"}, "session:a")
+	if err != nil || !strings.Contains(string(b), `"lifecycle":{"session_id":"session:a"`) {
+		t.Fatalf("the view without --cockpit: %s %v", b, err)
+	}
+	if _, err := e.ReadSessionView(ctx, Location{Block: "block:pi-05"}, "session:b"); !errors.Is(err, ErrNoView) {
+		t.Errorf("the plain view of an Epic with no view yet: %v", err)
+	}
+}
+
+// The plain view keeps refusing an Epic's workers, and a roleless agent,
+// another Epic's view and their own: the cockpit opened no way around it.
+func TestSessionViewStillRefusesWorkersAcrossEpics(t *testing.T) {
+	e, _ := cockpitWorld(t)
+	ctx := context.Background()
+	for _, h := range []string{"claude-02", "codex-03", "claude-07"} {
+		for _, session := range []string{"", "session:a", "session:b", "session:c"} {
+			if b, err := e.ReadSessionView(ctx, Location{Block: "block:" + h}, session); !errors.Is(err, ErrRefused) || b != nil {
+				t.Errorf("%s reading %q: %v %s", h, session, err, b)
+			}
+		}
+	}
+}

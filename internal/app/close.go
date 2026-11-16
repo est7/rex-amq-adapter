@@ -26,26 +26,36 @@ type CloseRequest struct {
 	// Force closes while an agent of the Epic is working, waiting on a
 	// dialog, holds unread mail, or reports no state.
 	Force bool
+	// OpID names this request, so a retry with the same OpID finishes the
+	// close the first run started, even once its link is gone; "" for none.
+	OpID string
 }
 
-// CloseResult is what was closed.
+// CloseResult is what was closed. Replayed says a retry of OpID found the
+// close its first run started and finished it.
 type CloseResult struct {
-	SessionID string        `json:"session_id"`
-	Parked    []core.Handle `json:"parked"`
-	Unlinked  bool          `json:"unlinked"`
+	SessionID      string        `json:"session_id"`
+	Parked         []core.Handle `json:"parked"`
+	Unlinked       bool          `json:"unlinked"`
+	OpID           string        `json:"op_id,omitempty"`
+	LifecycleState string        `json:"lifecycle_state,omitempty"`
+	Replayed       bool          `json:"replayed,omitempty"`
 }
 
 // CloseEpic closes the Epic session r.Session for the personal agent in
 // loc: it kills the Rex session, parks every live agent recorded in it as
 // departed for epic_closed (handles stay reserved for a resume, ReserveFor),
-// and removes the caller's link to it. It refuses a caller that is not a
-// live personal agent, one without the user's words, and a session not
-// linked to the caller; unless forced, also while an agent other than a
-// Stealth one is not at rest or holds unread mail. Run again after a
-// failure part way, it finishes what is left: a session already gone is not
-// an error.
+// removes the caller's link to it, and records the Epic's lifecycle closed.
+// It refuses a caller that is not a live personal agent, one without the
+// user's words, and a session not linked to the caller; unless forced, also
+// while an agent other than a Stealth one is not at rest or holds unread
+// mail. With r.OpID, the close is recorded once those guards pass and before
+// the kill, so a retry of the same request finishes it whatever the first
+// run got to, the unlink included; the op id reused for another request is
+// refused. Without one, a retry before the unlink finishes what is left: a
+// session already gone is not an error.
 func (e Env) CloseEpic(ctx context.Context, loc Location, r CloseRequest) (CloseResult, error) {
-	res := CloseResult{SessionID: r.Session}
+	res := CloseResult{SessionID: r.Session, OpID: r.OpID}
 	caller, ok, err := e.Store.Record(loc.Block)
 	if err != nil {
 		return res, err
@@ -58,6 +68,17 @@ func (e Env) CloseEpic(ctx context.Context, loc Location, r CloseRequest) (Close
 	}
 	if strings.TrimSpace(r.Asked) == "" {
 		return res, fmt.Errorf("%w: closing an Epic kills its Rex session and what its panes show; it needs the user's own words asking for it (--asked \"<their words>\")", ErrRefused)
+	}
+	if err := ValidOpID(r.OpID); err != nil {
+		return res, err
+	}
+	hash := requestHash(closeIdentity{Personal: caller.Endpoint().Session(), Session: r.Session})
+	// A recorded close is looked up before the link: the run that recorded
+	// it may have removed the link before it died.
+	if r.OpID != "" {
+		if out, done, err := e.replayClose(ctx, caller, r.OpID, hash); done || err != nil {
+			return out, err
+		}
 	}
 	link, err := e.linkTo(caller, r.Session)
 	if err != nil {
@@ -74,25 +95,67 @@ func (e Env) CloseEpic(ctx context.Context, loc Location, r CloseRequest) (Close
 			return res, fmt.Errorf("%w: not every agent of the Epic is at rest (%s); ask the user again, or pass --force when they say to close it anyway", ErrRefused, strings.Join(busy, "; "))
 		}
 	}
+	unlockEpic, err := e.Store.LockEpicLifecycle(ctx)
+	if err != nil {
+		return res, err
+	}
+	defer unlockEpic()
 	unlock, err := e.Store.LockLifecycle(ctx)
 	if err != nil {
 		return res, err
 	}
 	defer unlock()
-	// Killed first: parking first would retire the wakers of agents that
-	// stay alive if the kill fails. The lock keeps the session's watcher
-	// and the dying agents' SessionEnd hooks from parking them meanwhile.
-	if err := on.KillSession(ctx, link.Epic.SessionID); err != nil && !errors.Is(err, rex.ErrNotFound) {
-		return res, fmt.Errorf("kill the Epic's session: %w", err)
+	var op *store.EpicOpRecord
+	if r.OpID != "" {
+		prev, found, err := e.Store.EpicOp(store.EpicOpClose, r.OpID)
+		switch {
+		case err != nil:
+			return res, err
+		case found && prev.RequestHash != hash:
+			return res, errOpConflict(store.EpicOpClose, r.OpID)
+		case found:
+			op = &prev // a run of the same close got here meanwhile
+		default:
+			now := e.Now().UTC()
+			op = &store.EpicOpRecord{Kind: store.EpicOpClose, OpID: r.OpID, RequestHash: hash, SessionID: link.Epic.SessionID, Server: link.Epic.Server,
+				PersonalHandle: caller.Handle, PersonalSessionID: caller.SessionID, State: store.EpicClosing, CreatedAt: now, UpdatedAt: now}
+			if err := e.Store.PutEpicOp(*op); err != nil {
+				return res, fmt.Errorf("record the close under --op-id %q: %w", r.OpID, err)
+			}
+		}
 	}
-	if res.Parked, err = e.parkClosed(ctx, link.Epic); err != nil {
-		return res, err
+	return e.finishClose(ctx, on, link, caller, op)
+}
+
+// replayClose finishes the close recorded under opID, when there is one: done
+// is false when there is none, and the close goes on as a new one. The op id
+// of another request (another caller, another session) is refused.
+func (e Env) replayClose(ctx context.Context, caller store.Record, opID, hash string) (res CloseResult, done bool, err error) {
+	unlockEpic, err := e.Store.LockEpicLifecycle(ctx)
+	if err != nil {
+		return res, true, err
 	}
-	if _, err := e.Store.DeleteLink(link); err != nil {
-		return res, fmt.Errorf("unlink the Epic: %w", err)
+	defer unlockEpic()
+	op, found, err := e.Store.EpicOp(store.EpicOpClose, opID)
+	if err != nil || !found {
+		return res, err != nil, err
 	}
-	res.Unlinked = true
-	return res, nil
+	if op.RequestHash != hash {
+		return CloseResult{OpID: opID}, true, errOpConflict(store.EpicOpClose, opID)
+	}
+	unlock, err := e.Store.LockLifecycle(ctx)
+	if err != nil {
+		return res, true, err
+	}
+	defer unlock()
+	on := e.Rex
+	if e.RexOn != nil && op.Server != "" {
+		on = e.RexOn(op.Server)
+	}
+	link := core.Link{Personal: caller.Endpoint().Session(), Epic: core.SessionKey{Server: op.Server, SessionID: op.SessionID}}
+	res, err = e.finishClose(ctx, on, link, caller, &op)
+	res.Replayed = true
+	return res, true, err
 }
 
 // linkTo is caller's link to the Epic session, refused when there is none.

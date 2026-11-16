@@ -25,6 +25,8 @@ import (
 //     hand-back (HandBack), which the view carries whole.
 //   - sessions/<session_id>/policy.json: the Epic's external-write policy
 //     (EpicPolicy), written when epic creates the session.
+//   - sessions/<session_id>/lifecycle.json: the Epic's lifecycle
+//     (EpicLifecycle, epic_lifecycle.go).
 
 // SessionDir is the extension directory of Rex session id.
 func (p Paths) SessionDir(id string) string {
@@ -123,11 +125,16 @@ func (p Paths) handBackPath(id string) string {
 }
 
 // HandBack is the final report an orchestrator recorded when its run ended:
-// the whole text, as written, for the session's view.
+// the whole text, as written, for the session's view. Seq numbers the
+// session's distinct hand-backs from 1, and Digest (HandBackDigest) is what
+// tells a new one from the same one recorded again; a file written before
+// either was kept has neither.
 type HandBack struct {
-	By   core.Handle `json:"by"`
-	At   time.Time   `json:"at"`
-	Body string      `json:"body"`
+	By     core.Handle `json:"by"`
+	At     time.Time   `json:"at"`
+	Body   string      `json:"body"`
+	Seq    int         `json:"seq,omitempty"`
+	Digest string      `json:"digest,omitempty"`
 }
 
 // HandBack reads session id's latest hand-back; ok is false when none was

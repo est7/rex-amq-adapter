@@ -62,7 +62,10 @@ type fakeTerm struct {
 	launches       []launch
 	states         map[string]rex.Status                 // block -> program status, overriding state
 	sessions_      []fakeSession                         // NewSession calls that created one
+	sessionLabels  map[string]string                     // session -> label NewSession gave it, overriding sessionLabel
+	blockLabels    map[string]string                     // block -> label NewSession gave it
 	newSessionErr  error                                 // NewSession fails
+	createThenFail error                                 // NewSession creates the session, then fails, as a call timing out after the server finished would
 	killed         []string                              // sessions KillSession ended, in order
 	killErr        error                                 // KillSession fails
 	statusGone     bool                                  // ProgramStatus of a block not in windows is ErrNotFound, as Rex's
@@ -178,7 +181,7 @@ func (f *fakeTerm) ListBlocks(_ context.Context, session string) ([]rex.Block, e
 	var out []rex.Block
 	for b, w := range f.windows {
 		if f.sessionOf(w) == session {
-			out = append(out, rex.Block{ID: b, WindowID: w, SessionID: session})
+			out = append(out, rex.Block{ID: b, Label: f.blockLabels[b], WindowID: w, SessionID: session})
 		}
 	}
 	return out, nil
@@ -205,7 +208,13 @@ func (f *fakeTerm) ListSessions(context.Context) ([]string, error) {
 func (f *fakeTerm) InspectSession(_ context.Context, id string) (rex.Session, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if slices.Contains(f.killed, id) {
+		return rex.Session{}, rex.ErrNotFound
+	}
 	s := rex.Session{ID: id, Label: f.sessionLabel}
+	if l, ok := f.sessionLabels[id]; ok {
+		s.Label = l
+	}
 	for w, label := range f.tabs {
 		if f.sessionOf(w) == id {
 			s.Windows = append(s.Windows, rex.Window{ID: w, Label: label})
@@ -776,6 +785,10 @@ func (f *fakeTerm) NewSession(_ context.Context, label string, panes []rex.Pane)
 	f.sessions_ = append(f.sessions_, fakeSession{label: label, panes: panes})
 	n := len(f.sessions_)
 	session := fmt.Sprintf("session:epic-%d", n)
+	if f.sessionLabels == nil {
+		f.sessionLabels = map[string]string{}
+	}
+	f.sessionLabels[session] = label
 	var windows, blocks []string
 	for i, p := range panes {
 		w, b := fmt.Sprintf("window:epic-%d-%d", n, i+1), fmt.Sprintf("block:epic-%d-%d", n, i+1)
@@ -788,8 +801,14 @@ func (f *fakeTerm) NewSession(_ context.Context, label string, panes []rex.Pane)
 		if f.sessions == nil {
 			f.sessions = map[string]string{}
 		}
-		f.windows[b], f.tabs[w], f.sessions[w] = w, p.Tab, session
+		if f.blockLabels == nil {
+			f.blockLabels = map[string]string{}
+		}
+		f.windows[b], f.tabs[w], f.sessions[w], f.blockLabels[b] = w, p.Tab, session, p.Label
 		windows, blocks = append(windows, w), append(blocks, b)
+	}
+	if f.createThenFail != nil {
+		return "", nil, nil, f.createThenFail
 	}
 	if f.sessionStarted != nil {
 		started := f.sessionStarted

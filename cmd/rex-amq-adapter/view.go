@@ -10,19 +10,25 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/est7/rex-amq-adapter/internal/app"
 )
 
 // viewArgs is a parsed `view` command: print a session's view (verb ""),
 // rebuild the caller's (refresh), or read messages of its session by id
-// (read).
+// (read). cockpit reads a personal agent's linked Epics instead, named by
+// personal or hub when the caller is not that agent.
 type viewArgs struct {
-	verb    string
-	session string
-	summary string
-	ids     []string
+	verb     string
+	session  string
+	summary  string
+	ids      []string
+	cockpit  bool
+	personal string
+	hub      string
 }
 
-const viewUsage = "usage: rex-amq-adapter view [--session S] | view refresh [--summary TEXT|@FILE] | view read --ids ID[,ID...]"
+const viewUsage = "usage: rex-amq-adapter view [--session S] [--cockpit [--personal H] [--hub DIR]] | view refresh [--summary TEXT|@FILE] | view read --ids ID[,ID...]"
 
 func parseViewArgs(args []string) (viewArgs, error) {
 	var v viewArgs
@@ -35,6 +41,9 @@ func parseViewArgs(args []string) (viewArgs, error) {
 	switch v.verb {
 	case "":
 		fs.StringVar(&v.session, "session", "", "the Epic session to read (a personal agent's linked Epic)")
+		fs.BoolVar(&v.cockpit, "cockpit", false, "read a personal agent's linked Epics, read-only, from its pane or from outside Rex")
+		fs.StringVar(&v.personal, "personal", "", "with --cockpit: the personal agent whose Epics to read")
+		fs.StringVar(&v.hub, "hub", "", "with --cockpit: the directory the personal agent works in")
 	case "refresh":
 		fs.StringVar(&v.summary, "summary", "", "the narrator's reading of the session, or @FILE")
 	case "read":
@@ -47,6 +56,9 @@ func parseViewArgs(args []string) (viewArgs, error) {
 	}
 	if fs.NArg() > 0 {
 		return v, fmt.Errorf("unexpected %q", fs.Arg(0))
+	}
+	if !v.cockpit && (v.personal != "" || v.hub != "") {
+		return v, errors.New("--personal and --hub name a cockpit's scope: they need --cockpit")
 	}
 	if v.verb == "read" {
 		for _, id := range strings.Split(ids, ",") {
@@ -75,6 +87,9 @@ func runView(args []string) int {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "rex-amq-adapter: %v\n%s\n", err, viewUsage)
 		return 2
+	}
+	if v.cockpit {
+		return runCockpit(v)
 	}
 	env, loc, err := caller()
 	if err != nil {
@@ -105,6 +120,30 @@ func runView(args []string) int {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(out); err != nil {
+		return fail(err)
+	}
+	return 0
+}
+
+// runCockpit prints a personal agent's linked Epics, or one of them
+// (app.Env.ReadCockpitView). It resolves its caller itself: it runs from a
+// personal agent's pane or from outside Rex, where caller() has no pane.
+func runCockpit(v viewArgs) int {
+	env, err := app.NewEnv(os.Getenv("REX_SERVER"))
+	if err != nil {
+		return fail(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	b, err := env.ReadCockpitView(ctx, os.Getenv, app.CockpitViewRequest{Session: v.session, Personal: v.personal, Hub: v.hub})
+	if errors.Is(err, app.ErrUsage) {
+		fmt.Fprintf(os.Stderr, "rex-amq-adapter: %v\n", err)
+		return 2
+	}
+	if err != nil {
+		return fail(err)
+	}
+	if _, err := os.Stdout.Write(b); err != nil {
 		return fail(err)
 	}
 	return 0
