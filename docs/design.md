@@ -669,6 +669,19 @@ learns both with its identity, at adoption:
   `blocker` or `should` needs a run or a traced path, else it is a `nit`. It
   builds or tests only in a temporary detached worktree of its own, since
   council seats share one checkout.
+- Review tiers, in the `pair` conventions, the orchestrator's prompt, and
+  the embedded guide (tstack's `sol-loop` and `council`, taken as written,
+  with no round cap or default score of our own): by default one seat of
+  another family, 3 rounds, extended to 5 only for security, permissions,
+  auth, data loss, or state/concurrency while a `blocker` or `should` stays
+  open with evidence (or when the user asks), stopping when only nits
+  remain; when the user says "council" (a score after it is the bar),
+  `summon reviewer --council`, rounds until every seat is satisfied or
+  reaches that score, no editing the checkout while a seat reads it, no
+  substitute for a missing seat, and a `## Council review` table of scores
+  per seat and round (`no score` where none was given) in the PR description
+  or the final reply. In both, fight scope creep, and an item disputed after
+  two replies (or the one-seat budget's end) goes to the user with both sides.
 - Briefings are advice, like mates: a lookup that fails is logged and left
   out. A prompt over 4 000 bytes is named by path instead of inlined.
   `SessionStart` always briefs, so an agent keeps its briefing across a
@@ -857,6 +870,33 @@ line in `logs/summon.log` (summoner, parent, depth, target, kind, subject,
 action, handles, block, reason, grant, asked, and for a start `harness` and
 `passed_over`), and the command's own JSON line carries `harness` and
 `passed_over` too.
+
+`summon <review-role> --council` (`app.Env.council`, after tstack's
+`council` skill) puts one request in front of one seat per harness of the
+role's routing (`route.Harnesses`; codex, agy, claude for the built-in
+reviewer), the caller's own family included, since a council wants every
+provider. It is a usage error (exit 2, `ErrUsage`) for a writer role, a
+handle, or with `--harness`. Each seat is planned before anything is mailed
+or launched: the live seat of that harness in the scope (in `--cwd`, or
+anywhere in the session without it; two live seats of one harness refuse)
+is a `deliver`; without `--cwd` the latest departed seat is a `resume`
+(`planResume`: its directory, its resume command, its launch, its
+preflight); any other harness is a `start` (`ready`: on the PATH, past the
+preflight; `planStart`). When any seat cannot be seated, the council is
+refused naming each, and nothing is mailed, launched, or reserved: no other
+harness stands in. Then a start needs `--grant` or `--asked`, the chain must
+be traceable, and `reserve` takes a token per launch under one lifecycle
+lock, refusing when the guards fail or the launches together would pass the
+cap. Only then are the live and departed seats mailed and the panes opened;
+a Rex failure midway returns the seats already launched with the error and
+releases the unused tokens. The request every seat reads ends with a line
+asking for `SCORE: <n>/10`, and the command awaits each launched seat's
+adoption in parallel (`AwaitCouncil`) and mails it to each started one. Its
+JSON line adds `seats` (harness, action, handle, block, mailed, startup); it
+exits 3 when refused and 1 when a launched seat was not adopted. The same
+command after fixes reaches the live seats again: the next round. The round
+loop itself, the score bar, and the `## Council review` table are the
+caller's, in the prompts (Crews and roles: review tiers).
 
 The guards hold for `summon` only. An agent started by hand (`rex split`,
 `rex run`) has no token: it is recorded at depth 0, as the user's own
