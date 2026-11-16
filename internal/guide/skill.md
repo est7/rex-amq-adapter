@@ -31,7 +31,12 @@ found from the session id your harness sets in each tool shell, so when the
 inherited `REX_BLOCK` names another pane, or none, `env` also sets
 `REX_BLOCK` and `REX_SESSION` to yours. A session no hook adopted (a
 `claude -p` that another agent runs, an Antigravity subagent) has no
-identity, even in an adopted agent's pane. Notices from the adapter quote the
+identity, even in an adopted agent's pane. To run a headless harness from
+your tool shell (`codex exec`, `claude -p`, `agy -p`, `pi -p`, a probe of a
+model or a flag), start it as `env -u REX_BLOCK -u REX_SESSION <cli> …`, so its
+hooks see no Rex pane at all; the adapter also ignores every hook of a harness
+started under your pane's live agent, so it cannot take your identity, park
+you as replaced, or read your mail. Notices from the adapter quote the
 absolute path of `rex-amq-adapter`; use it when the bare command is not on
 `PATH`. Codex must run with `--no-daemon`: under its shared daemon one Codex
 process runs every pane's threads, so the adapter refuses to adopt it rather

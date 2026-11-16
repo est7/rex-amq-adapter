@@ -445,7 +445,28 @@ exec'ing its only command) looks the same as the pane's agent running
 `agy -p`, and agy is a native binary the pane runs directly. A refused print
 run says so in `hooks.log` and does not make the pane's agent back off its
 own adoption; an ancestry that cannot be read adopts the foreground, as
-above. Pi keeps plain descent: its hooks run in its extension, with its pid.
+above.
+
+The same holds for every kind (`runsUnder`): above the hook's own shells the
+first process is its harness, which must be the agent or a launcher of the
+agent's that runs it without a shell. A harness under a shell of the agent's
+was started by a command in the pane, and one of the agent's own name above it
+without a shell is Codex's shared daemon for Codex and the agent's own child
+for the others. Before any hook does anything (F14), it checks the block's live
+record: when that agent's pid is a strict ancestor of the hook, and the hook is
+another kind's or `runsUnder` says it was started in the pane, the hook is a
+tool shell's `codex exec`, `claude -p`, `agy -p`, or `pi -p`, and every event
+returns nothing, successfully: no adoption, no park as `replaced` or
+`session_end`, no turn-error mark set or cleared, no mail announced, no failed
+adoption recorded. On 2026-11-15 a live orchestrator's `codex exec` probe took
+its pane as `codex-13`..`codex-15`, parked it as `replaced`, and its narrator
+told the personal agent the orchestrator had left. The check needs no Rex call
+and fails open: an ancestry that cannot be read, a remote record, or an owner
+that is not an ancestor (one that exited, or a harness the pane now shows)
+lets the hook through as before. A tool shell that execs its only command
+(`zsh -c 'codex exec …'`) leaves no shell between a nested Codex and a Codex
+agent: that is refused as the shared daemon, which still keeps the pane's
+record (`env -u REX_BLOCK -u REX_SESSION` avoids both).
 
 Another session from the record's own process is trusted, not taken as a
 switch. agy runs each subagent as a conversation of its own inside the
