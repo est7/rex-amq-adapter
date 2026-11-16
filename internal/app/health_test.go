@@ -644,6 +644,7 @@ func TestFirstAdoptedAtPreservedAcrossResumeWhileAdoptedAtUpdates(t *testing.T) 
 		},
 	}
 	e := realAmqEnv(t, term)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	e.Crews = crew.Load
 	now := time.Date(2026, 11, 10, 1, 0, 0, 0, time.UTC)
 	e.Now = func() time.Time { return now }
@@ -762,6 +763,7 @@ func TestTurnErrorRoutingThroughTheHook(t *testing.T) {
 
 	e2, _, _, _, _, _ := healthWorld(t)
 	e2.Crews = func(string) crew.Library { return crew.Load("") }
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	member := claude04(t, e2)
 	member.Role = "reviewer"
 	if err := e2.Store.PutRecord(member); err != nil {

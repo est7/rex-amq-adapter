@@ -23,6 +23,7 @@ func openEpicWorld(t *testing.T) (Env, *fakeTerm, Location, string) {
 	t.Helper()
 	term := &fakeTerm{state: "idle", windows: map[string]string{"block:me": "window:me"}, tabs: map[string]string{"window:me": "me"}}
 	e := fixture(t, term)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	e.TranscriptHome = t.TempDir()
 	trustTemp(t, e)
 	if err := e.Store.DeleteRecord("codex"); err != nil {
