@@ -76,7 +76,7 @@ func TestAnEpicsAgentsRunUnattendedButNotPersonal(t *testing.T) {
 	w.ready("me2")
 	w.wantProbe("me2", "1")
 	for _, name := range []string{"me", "me2"} {
-		if _, env, printed := w.probed(name); strings.Contains(printed, "ME_UNATTENDED") || env == "" {
+		if _, _, printed := w.probed(name); strings.Contains(printed, "ME_UNATTENDED") || !strings.HasPrefix(printed, "export AM_ROOT=") {
 			t.Errorf("env for the personal agent %s: %q", name, printed)
 		}
 		if u, _ := w.record(name)["unattended"].(bool); u {
@@ -97,6 +97,9 @@ func TestAnEpicsAgentsRunUnattendedButNotPersonal(t *testing.T) {
 	if err := json.Unmarshal([]byte(line), &res); err != nil || res.Orchestrator.Block == "" {
 		t.Fatalf("output %q: %v", out, err)
 	}
+	// Adoption, which epic awaits, comes before the probes.
+	w.ready("orchestrator")
+	w.ready("narrator")
 	w.wantProbe("orchestrator", "1")
 	w.wantProbe("narrator", "1")
 
