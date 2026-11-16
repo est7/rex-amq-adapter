@@ -19,6 +19,10 @@ type Session struct {
 	windowOf map[string]string
 	// tabs labels the session's windows.
 	tabs map[string]string
+	// label is the session's own label (an Epic's name); described is false
+	// when Rex could not describe the session, so label says nothing.
+	label     string
+	described bool
 }
 
 // FindSession resolves the session block is in now. Discovery has no global
@@ -52,12 +56,14 @@ func (e Env) loadSession(ctx context.Context, server, id string) (Session, error
 	}
 	// Tab labels are for display; a session Rex cannot describe still has
 	// its layout, and its tabs show by id.
+	s := Session{server: server, id: id, windowOf: windowOf, tabs: tabs}
 	if rs, err := e.Rex.InspectSession(ctx, id); err == nil {
 		for _, w := range rs.Windows {
 			tabs[w.ID] = w.Label
 		}
+		s.label, s.described = rs.Label, true
 	}
-	return Session{server: server, id: id, windowOf: windowOf, tabs: tabs}, nil
+	return s, nil
 }
 
 // recorded reports whether r's agent was last recorded here. A record is only

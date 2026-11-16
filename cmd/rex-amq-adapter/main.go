@@ -44,6 +44,12 @@ Agent and user commands:
                             (snapshot, then upsert/remove/event/heartbeat
                             frames); read-only. --tab: this tab only; --all:
                             every agent of the server
+  panel --json [--session S]
+                            the human's panel: events --json of this Rex session (or
+                            S) plus a panel field on the snapshot (session_label,
+                            crew, attention, view, and in a personal agent's session
+                            cockpit) and a panel upsert when it changes; read-only.
+                            Refused under any agent of any role, ME_UNATTENDED=1 included
   await <block> [--timeout D]
                             wait for the agent started in a block, then print
                             its outcome as JSON; exits 0 only when adopted.
@@ -193,6 +199,8 @@ func run(args []string) int {
 		return runWho(rest)
 	case "events":
 		return runEvents(rest)
+	case "panel":
+		return runPanel(rest)
 	case "await":
 		return runAwait(rest)
 	case "collect":
@@ -569,6 +577,32 @@ func runEvents(args []string) int {
 		return fail(err)
 	}
 	if err := env.Stream(ctx, os.Stdout, sc, app.StreamTicks{}); err != nil {
+		return fail(err)
+	}
+	return 0
+}
+
+// runPanel streams the human's panel of a Rex session (app.Env.Panel). Like
+// events it only reads; unlike events it refuses any agent's caller before it
+// resolves the session.
+func runPanel(args []string) int {
+	fs := flag.NewFlagSet("panel", flag.ContinueOnError)
+	asJSON := fs.Bool("json", false, "write NDJSON frames (the only format)")
+	session := fs.String("session", "", "watch Rex session S")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if !*asJSON || fs.NArg() > 0 {
+		fmt.Fprintln(os.Stderr, "usage: rex-amq-adapter panel --json [--session S]")
+		return 2
+	}
+	env, err := app.NewEnv(os.Getenv("REX_SERVER"))
+	if err != nil {
+		return fail(err)
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := env.Panel(ctx, os.Stdout, os.Getenv, *session, app.StreamTicks{}); err != nil {
 		return fail(err)
 	}
 	return 0
