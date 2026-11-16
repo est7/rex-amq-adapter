@@ -224,6 +224,10 @@ func TestRunsUnderSeesHarnessesStartedInThePane(t *testing.T) {
 		// A tool shell that execs its only command leaves no shell between
 		// the two: indistinguishable from Codex's shared daemon, and refused
 		// as one.
+		// A launcher chain that runs Codex through a shell (npx: npm ← sh ←
+		// node ← codex) reads as a command in the pane, and is refused: the
+		// brief's rule that a shell above the harness marks a tool shell.
+		{"codex under npx's shell", core.Codex, []proc{{self, "rex-amq-adapter"}, {sh, "sh"}, {nested, "codex"}, {15, "node"}, {tool, "sh"}, {agent, "node"}}, ErrStartedInPane},
 		{"codex exec exec'd by the tool shell", core.Codex, []proc{{self, "rex-amq-adapter"}, {sh, "zsh"}, {nested, "codex"}, {agent, "codex"}}, ErrSharedHarness},
 	} {
 		t.Run(c.name, func(t *testing.T) {
