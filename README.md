@@ -280,10 +280,14 @@ a dialog, report no state, or hold unread mail. Nothing closes an Epic on its
 own, and a session you started yourself is yours to close.
 
 Both commands take `--op-id ID` (at most 256 bytes, no control characters),
-which makes a retry safe. `epic --op-id` records the new session and its
+which makes a retry safe. `epic --op-id` records itself, with the sessions
+Rex has, before it asks Rex for the new one, and the new session and its
 blocks before it waits for either agent, so running the same command again
-after a timeout or a crash starts nothing: it relinks and reconciles that
-session and prints `"replayed":true`. `epic close --op-id` is recorded once
+after a timeout or a crash never starts a second Epic: it finds the session
+the first run started, relinks and reconciles it, and prints
+`"replayed":true`. It starts one only when Rex shows the first run created
+none, and when it cannot tell which new session is its own, it says so and
+starts nothing. `epic close --op-id` is recorded once
 its guards pass and before the kill, so a retry finishes the kill, the
 parking, and the unlink, even once the link is gone. The same op id for
 another request is refused, and a session Rex no longer has is reported, not

@@ -69,10 +69,12 @@ func (r EpicResult) Ready() bool {
 // the user's words, and one for its narrator, told whom it narrates for; then it links the session to the caller and
 // waits, until ctx ends, for both agents to be adopted. The Epic's lifecycle
 // is partial_start from the moment its session exists, opened once both
-// agents are adopted. With r.OpID, the session and its blocks are recorded
-// under the op id before any wait, so a retry of the same request, however
-// the first run ended, reconciles that session (reconcileOpen) and never
-// creates another; the op id reused for another request is refused.
+// agents are adopted. With r.OpID, the op is recorded before Rex is asked
+// for the session (store.EpicCreating, with the sessions Rex had then) and
+// again with the session and its blocks before any wait, so a retry of the
+// same request, however the first run ended, reconciles that session
+// (adoptCreated, reconcileOpen) and never creates another; the op id reused
+// for another request is refused.
 func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicResult, error) {
 	caller, ok, err := e.Store.Record(loc.Block)
 	if err != nil {
@@ -165,14 +167,23 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 			return EpicResult{}, err
 		}
 		prev, found, err := e.Store.EpicOp(store.EpicOpOpen, r.OpID)
-		if err != nil || found {
+		switch {
+		case err != nil:
 			unlock()
-			switch {
-			case err != nil:
-				return EpicResult{}, err
-			case prev.RequestHash != hash:
-				return EpicResult{OpID: r.OpID}, errOpConflict(store.EpicOpOpen, r.OpID)
+			return EpicResult{}, err
+		case found && prev.RequestHash != hash:
+			unlock()
+			return EpicResult{OpID: r.OpID}, errOpConflict(store.EpicOpOpen, r.OpID)
+		case found && prev.SessionID == "":
+			// The first run asked Rex for its session and ended before
+			// recording which: find it, or learn that there is none.
+			if found, err = e.adoptCreated(ctx, &prev, seed, name); err != nil {
+				unlock()
+				return EpicResult{OpID: r.OpID}, err
 			}
+		}
+		if found {
+			unlock()
 			seed.SessionID = prev.SessionID
 			return e.reconcileOpen(ctx, loc, prev, seed)
 		}
@@ -195,6 +206,18 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 		{Label: core.NarratorRole + core.PaneSeparator + task, Dir: dir, Command: withLaunchEnv(narrLaunch, e.withTrust(dir, narrLaunch.Args(narrator, startCommand(narrator, narrate))))},
 		{Label: core.OrchestratorRole + core.PaneSeparator + task, Dir: dir, Command: withLaunchEnv(orchLaunch, e.withTrust(dir, orchLaunch.Args(kind, startCommand(kind, brief))))},
 	}
+	if op != nil {
+		// Recorded before Rex is asked, with the sessions it has, so a retry
+		// after any failure from here tells the session this run creates.
+		prior, err := e.Rex.ListSessions(ctx)
+		if err != nil {
+			return EpicResult{OpID: r.OpID}, fmt.Errorf("list Rex's sessions before creating the Epic's: %w", err)
+		}
+		op.State, op.PriorSessions, op.UpdatedAt = store.EpicCreating, prior, e.Now().UTC()
+		if err := e.Store.PutEpicOp(*op); err != nil {
+			return EpicResult{OpID: r.OpID}, fmt.Errorf("record --op-id %q before creating the Epic's session: %w", r.OpID, err)
+		}
+	}
 	session, blocks, crewErr, err := e.newEpicSession(ctx, name, panes, crewName, caller.Handle)
 	if err != nil {
 		return EpicResult{}, fmt.Errorf("create the Epic's session: %w", err)
@@ -208,14 +231,14 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 	// leaves the session to reconcile.
 	seed.SessionID = session
 	if op != nil {
-		op.SessionID, op.NarratorBlock, op.OrchestratorBlock = session, blocks[0], blocks[1]
+		op.SessionID, op.NarratorBlock, op.OrchestratorBlock, op.PriorSessions = session, blocks[0], blocks[1], nil
 		lc, err := e.advanceEpic(seed, store.EpicPartialStart, op)
 		release()
 		release = func() {}
 		if err != nil {
-			// Without its record a retry would start a second Epic: say so
-			// rather than wait on this one.
-			return res, fmt.Errorf("the Epic session %s started, but recording it under --op-id %q failed, so a retry would start another: %w", session, r.OpID, err)
+			// Not waited on: a retry of the same op id finds this session in
+			// Rex (adoptCreated) and carries on from there.
+			return res, fmt.Errorf("the Epic session %s started, but recording it under --op-id %q failed (retry with the same op id to carry on with it): %w", session, r.OpID, err)
 		}
 		res.LifecycleState = lc.State
 	} else if lc, err := e.lockedAdvanceEpic(ctx, seed, store.EpicPartialStart, nil); err != nil {

@@ -27,7 +27,8 @@ const handBackMax = 256 << 10
 // lifecycle hand_back. The same report recorded again (the same
 // store.HandBackDigest) leaves the stored one as it was, time included, so
 // the narrator is not told twice and its Seq stays; a different one takes the
-// next Seq. A retry after a failure part way finishes what is left.
+// next Seq, and is stored only once the lifecycle records it beside the one
+// it replaces. A retry after a failure part way finishes what is left.
 func (e Env) RecordHandBack(ctx context.Context, loc Location, body string) (store.HandBack, error) {
 	var h store.HandBack
 	rec, ok, err := e.Store.Record(loc.Block)
@@ -51,43 +52,67 @@ func (e Env) RecordHandBack(ctx context.Context, loc Location, body string) (sto
 		return h, err
 	}
 	defer unlock()
-	prev, hasPrev, err := e.Store.HandBack(rec.SessionID)
+	stored, hasPrev, err := e.Store.HandBack(rec.SessionID)
 	if err != nil {
 		return h, err
 	}
+	prev := numbered(stored)
 	h = nextHandBack(prev, hasPrev, store.HandBack{By: rec.Handle, At: e.Now().UTC(), Body: body})
-	if !hasPrev || h != prev {
+	// A different report replaces the stored one only once the lifecycle
+	// holds both, so a lifecycle that cannot be written never loses the one
+	// replaced. A first report, or the same one again, is stored at once:
+	// the report matters more than its place in the history, which the next
+	// hand-back fills in.
+	replaces := hasPrev && h.Seq != prev.Seq
+	if !replaces && (!hasPrev || h != stored) {
 		if err := e.Store.PutHandBack(rec.SessionID, h); err != nil {
 			return h, err
 		}
 	}
+	notStored := "the hand-back is stored; recording it in the Epic's lifecycle failed (run hand-back again)"
+	if replaces {
+		notStored = fmt.Sprintf("the hand-back is not stored, and %d stays: recording them both in the Epic's lifecycle failed", prev.Seq)
+	}
 	lc, _, err := e.Store.EpicLifecycle(rec.SessionID)
 	if err != nil {
-		return h, err
+		return h, fmt.Errorf("%s: %w", notStored, err)
 	}
 	if lc.SessionID == "" {
 		lc = store.EpicLifecycle{SessionID: rec.SessionID, Server: rec.Server}
 	}
+	if hasPrev {
+		lc.NoteHandBack(prev)
+	}
 	lc.NoteHandBack(h)
 	if err := e.Store.PutEpicLifecycle(lc); err != nil {
-		return h, fmt.Errorf("the hand-back is stored; recording it in the Epic's lifecycle failed (run hand-back again): %w", err)
+		return h, fmt.Errorf("%s: %w", notStored, err)
+	}
+	if replaces {
+		if err := e.Store.PutHandBack(rec.SessionID, h); err != nil {
+			return h, err
+		}
 	}
 	return h, nil
 }
 
-// nextHandBack is the hand-back to store when next is recorded over prev:
-// prev itself, given its digest and a Seq when it predates them, for the same
-// report; otherwise next, numbered after prev.
+// numbered is a stored hand-back with its Seq and digest; one stored before
+// they were kept counts as the first.
+func numbered(h store.HandBack) store.HandBack {
+	h.Seq = max(h.Seq, 1)
+	if h.Digest == "" {
+		h.Digest = store.HandBackDigest(h.Body)
+	}
+	return h
+}
+
+// nextHandBack is the hand-back to store when next is recorded over prev
+// (numbered): prev itself for the same report; otherwise next, numbered after
+// prev.
 func nextHandBack(prev store.HandBack, hasPrev bool, next store.HandBack) store.HandBack {
 	next.Digest = store.HandBackDigest(next.Body)
 	if !hasPrev {
 		next.Seq = 1
 		return next
-	}
-	// A hand-back stored before Seq was kept counts as the first.
-	prev.Seq = max(prev.Seq, 1)
-	if prev.Digest == "" {
-		prev.Digest = store.HandBackDigest(prev.Body)
 	}
 	if prev.Digest == next.Digest {
 		return prev

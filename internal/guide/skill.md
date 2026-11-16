@@ -351,8 +351,10 @@ kills the Epic's Rex session, parks its agents (their handles stay reserved
 for a resume), and unlinks it; it refuses while an agent of the Epic is working or holds unread
 mail, unless `--force`. Give each `epic` and `epic close` an `--op-id` of
 your own (at most 256 bytes, no control characters) and rerun the same
-command with the same id after a timeout or a failure: an `epic` retry starts
-nothing and reconciles the session the first run started (`"replayed":true`),
+command with the same id after a timeout or a failure: an `epic` retry never
+starts a second Epic; it reconciles the session the first run started
+(`"replayed":true`), starts one only when Rex shows the first run created
+none, and starts nothing when it cannot tell which new session is its own,
 and a close retry finishes the kill, the parking, and the unlink, even once
 the link is gone. The same id for another request is refused. The Epic's
 `lifecycle_state` moves `partial_start` (session up), `opened` (both agents

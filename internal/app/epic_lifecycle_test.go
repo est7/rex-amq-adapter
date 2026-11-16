@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/est7/rex-amq-adapter/internal/core"
 	"github.com/est7/rex-amq-adapter/internal/crew"
+	"github.com/est7/rex-amq-adapter/internal/rex"
 	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
@@ -345,5 +347,211 @@ func TestCloseEpicRecordsItsLifecycleWithoutAnOpID(t *testing.T) {
 	lc, ok, err := e.Store.EpicLifecycle("session:epic")
 	if err != nil || !ok || lc.State != store.EpicClosed || lc.ClosedAt == nil || lc.CloseOpID != "" || lc.PersonalHandle != "claude-01" || !lc.OpenedAt.IsZero() {
 		t.Fatalf("lifecycle %+v %v %v", lc, ok, err)
+	}
+}
+
+// breakOpRecord makes the op records of e unwritable from the moment the
+// Epic's session is created, as a full disk or a crash right after
+// session.create would leave them: the record of the op id that is there
+// (its intent, store.EpicCreating) becomes a directory. The returned repair
+// puts it back as it was.
+func breakOpRecord(t *testing.T, e Env, term *fakeTerm) (repair func()) {
+	t.Helper()
+	var path string
+	var saved []byte
+	term.sessionStarted = func(string, []string) {
+		paths, err := filepath.Glob(filepath.Join(e.Paths.Extensions(), "epic-ops", "open-*.json"))
+		if err != nil || len(paths) != 1 {
+			t.Errorf("op records as the session started: %v %v", paths, err)
+			return
+		}
+		path = paths[0]
+		if saved, err = os.ReadFile(path); err != nil {
+			t.Error(err)
+		}
+		if err := os.Remove(path); err != nil {
+			t.Error(err)
+		}
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Error(err)
+		}
+	}
+	return func() {
+		t.Helper()
+		term.sessionStarted = nil
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, saved, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// epicPanes are the panes of a session that looks like an Epic's.
+func epicPanes(dir string) []rex.Pane {
+	return []rex.Pane{
+		{Label: core.NarratorRole + core.PaneSeparator + "x", Dir: dir},
+		{Label: core.OrchestratorRole + core.PaneSeparator + "x", Dir: dir},
+	}
+}
+
+// An `epic --op-id` records its intent, with the sessions Rex has, before it
+// asks Rex for its own. When the record of the session it got then fails
+// (or the run dies), its retry finds that session in Rex, the one new since
+// then that is labelled for the Epic and holds its narrator and
+// orchestrator, and reconciles it: no second session, even beside an older
+// Epic of the same name.
+func TestOpenEpicOpIDFindsItsSessionAfterTheRecordFails(t *testing.T) {
+	e, term, loc, goal := openEpicWorld(t)
+	dir := filepath.Dir(goal)
+	ctx := context.Background()
+	if _, _, _, err := term.NewSession(ctx, "login revamp", epicPanes(dir)); err != nil {
+		t.Fatal(err)
+	}
+	req := EpicRequest{Name: "login revamp", Dir: dir, Goal: goal, OpID: "me:board:epic-8#open"}
+	repair := breakOpRecord(t, e, term)
+	first, err := openWithin(e, loc, req, time.Second)
+	if err == nil || !strings.Contains(err.Error(), "retry with the same op id") || first.SessionID != "session:epic-2" {
+		t.Fatalf("first run %+v: %v", first, err)
+	}
+	if links := mustLinks(t, e); len(links) != 0 {
+		t.Fatalf("a run that could not record its session linked it: %+v", links)
+	}
+	repair()
+	op, ok, err := e.Store.EpicOp(store.EpicOpOpen, req.OpID)
+	if err != nil || !ok || op.State != store.EpicCreating || op.SessionID != "" || !slices.Contains(op.PriorSessions, "session:epic-1") || slices.Contains(op.PriorSessions, "session:epic-2") {
+		t.Fatalf("the intent %+v %v %v", op, ok, err)
+	}
+	for i, h := range []core.Handle{"claude-02", "claude-03"} {
+		put(t, e, store.Record{Handle: h, Kind: core.Claude, Role: []string{core.NarratorRole, core.OrchestratorRole}[i], BlockID: fmt.Sprintf("block:epic-2-%d", i+1), SessionID: "session:epic-2", AdoptedAt: time.Now()})
+	}
+	again, err := openWithin(e, loc, req, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(term.sessions_) != 2 {
+		t.Fatalf("the retry created another session: %+v", term.sessions_)
+	}
+	if !again.Replayed || !again.Ready() || again.SessionID != "session:epic-2" || again.LifecycleState != store.EpicOpened {
+		t.Fatalf("retry %+v", again)
+	}
+	op, _, _ = e.Store.EpicOp(store.EpicOpOpen, req.OpID)
+	if op.SessionID != "session:epic-2" || op.NarratorBlock != "block:epic-2-1" || op.OrchestratorBlock != "block:epic-2-2" || op.State != store.EpicOpened || op.PriorSessions != nil {
+		t.Fatalf("op record after the retry %+v", op)
+	}
+	if links := mustLinks(t, e); len(links) != 1 || links[0].Epic.SessionID != "session:epic-2" {
+		t.Fatalf("links after the retry %+v", links)
+	}
+}
+
+// An `epic --op-id` whose session.create failed, or never answered, leaves
+// its intent and no session; Rex showing no new session for it, the retry
+// creates the Epic, once. A new session of the same name that another
+// `epic` opened since, and recorded as its own, is not taken for it.
+func TestOpenEpicOpIDCreatesOnceWhenRexMadeNone(t *testing.T) {
+	e, term, loc, goal := openEpicWorld(t)
+	req := EpicRequest{Name: "login revamp", Dir: filepath.Dir(goal), Goal: goal, OpID: "me:board:epic-9#open"}
+	term.newSessionErr = errors.New("rex: session.create: context deadline exceeded")
+	if _, err := openWithin(e, loc, req, time.Second); err == nil {
+		t.Fatal("a failed session.create opened an Epic")
+	}
+	if op, ok, err := e.Store.EpicOp(store.EpicOpOpen, req.OpID); err != nil || !ok || op.State != store.EpicCreating || op.SessionID != "" {
+		t.Fatalf("the intent %+v %v %v", op, ok, err)
+	}
+	term.newSessionErr = nil
+	other := EpicRequest{Name: req.Name, Dir: req.Dir, Asked: "open login revamp"}
+	if res, _ := openWithin(e, loc, other, 100*time.Millisecond); res.SessionID != "session:epic-1" {
+		t.Fatalf("another epic of the same name: %+v", res)
+	}
+	again, _ := openWithin(e, loc, req, 100*time.Millisecond)
+	if len(term.sessions_) != 2 || again.SessionID != "session:epic-2" || again.Replayed {
+		t.Fatalf("retry %+v; sessions %d", again, len(term.sessions_))
+	}
+	if op, _, _ := e.Store.EpicOp(store.EpicOpOpen, req.OpID); op.SessionID != "session:epic-2" || op.State != store.EpicPartialStart {
+		t.Fatalf("op record after the retry %+v", op)
+	}
+}
+
+// When Rex has more than one new session that could be the one an
+// unrecorded `epic --op-id` created, or one that does not hold an Epic's
+// narrator and orchestrator, the retry refuses to guess and creates
+// nothing; with the stranger closed, it finds its own.
+func TestOpenEpicOpIDRefusesToGuessItsSession(t *testing.T) {
+	e, term, loc, goal := openEpicWorld(t)
+	dir := filepath.Dir(goal)
+	ctx := context.Background()
+	req := EpicRequest{Name: "login revamp", Dir: dir, Goal: goal, OpID: "me:board:epic-10#open"}
+	repair := breakOpRecord(t, e, term)
+	if _, err := openWithin(e, loc, req, time.Second); err == nil {
+		t.Fatal("the record did not fail")
+	}
+	repair()
+	stranger, _, _, err := term.NewSession(ctx, "login revamp", epicPanes(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := openWithin(e, loc, req, 100*time.Millisecond); err == nil || !strings.Contains(err.Error(), "2 new sessions") {
+		t.Fatalf("two candidates: %v", err)
+	}
+	term.killed = append(term.killed, stranger)
+	if _, _, _, err := term.NewSession(ctx, "login revamp", []rex.Pane{{Label: "shell", Dir: dir}}); err != nil {
+		t.Fatal(err)
+	}
+	term.killed = append(term.killed, "session:epic-1") // only the shell is new
+	if _, err := openWithin(e, loc, req, 100*time.Millisecond); err == nil || !strings.Contains(err.Error(), "does not hold one narrator and one orchestrator") {
+		t.Fatalf("a session that is not an Epic's: %v", err)
+	}
+	if len(term.sessions_) != 3 || len(mustLinks(t, e)) != 0 {
+		t.Fatalf("a refused retry created or linked a session: %+v", term.sessions_)
+	}
+	if op, _, _ := e.Store.EpicOp(store.EpicOpOpen, req.OpID); op.State != store.EpicCreating {
+		t.Fatalf("a refused retry recorded a session: %+v", op)
+	}
+	term.killed = []string{stranger, "session:epic-3"}
+	again, err := openWithin(e, loc, req, 100*time.Millisecond)
+	if !again.Replayed || again.SessionID != "session:epic-1" || len(term.sessions_) != 3 {
+		t.Fatalf("with the strangers closed: %+v (%v); sessions %d", again, err, len(term.sessions_))
+	}
+}
+
+// A hand-back stored while the Epic's lifecycle cannot be written is not lost
+// from its history: a different report does not replace it until the
+// lifecycle records them both, and once it can, the lifecycle lists the
+// first beside the second.
+func TestHandBackKeepsTheReportItReplacesInTheLifecycle(t *testing.T) {
+	e, _, key := watcherWorld(t)
+	ctx := context.Background()
+	orch := Location{Block: "block:o"}
+	lifecycle := filepath.Join(e.Paths.SessionDir(key.SessionID), "lifecycle.json")
+	if err := os.MkdirAll(lifecycle, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	first, err := e.RecordHandBack(ctx, orch, "first report")
+	if err == nil || first.Seq != 1 || !strings.Contains(err.Error(), "the hand-back is stored") {
+		t.Fatalf("first, its lifecycle unwritable: %+v %v", first, err)
+	}
+	if _, err := e.RecordHandBack(ctx, orch, "updated report"); err == nil || !strings.Contains(err.Error(), "not stored, and 1 stays") {
+		t.Fatalf("a second report, its lifecycle unwritable: %v", err)
+	}
+	if hb, _, _ := e.Store.HandBack(key.SessionID); hb.Seq != 1 || hb.Digest != first.Digest {
+		t.Fatalf("the first report was replaced while its lifecycle was unwritable: %+v", hb)
+	}
+	if err := os.Remove(lifecycle); err != nil {
+		t.Fatal(err)
+	}
+	second, err := e.RecordHandBack(ctx, orch, "updated report")
+	if err != nil || second.Seq != 2 {
+		t.Fatalf("second: %+v %v", second, err)
+	}
+	lc, _, err := e.Store.EpicLifecycle(key.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lc.HandBacks) != 2 || lc.HandBacks[0].Seq != 1 || lc.HandBacks[0].Digest != first.Digest || lc.HandBacks[1].Seq != 2 || lc.HandBacks[1].Digest != second.Digest {
+		t.Fatalf("hand-backs in the lifecycle %+v", lc.HandBacks)
+	}
+	if hb, _, _ := e.Store.HandBack(key.SessionID); hb.Seq != 2 || hb.Body != "updated report" {
+		t.Fatalf("stored hand-back %+v", hb)
 	}
 }

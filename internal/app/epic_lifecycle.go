@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -170,6 +171,73 @@ func (e Env) reconcileOpen(ctx context.Context, loc Location, op store.EpicOpRec
 		res.LifecycleState = lc.State
 	}
 	return res, errors.Join(errs...)
+}
+
+// adoptCreated settles an open op whose first run asked Rex for its session
+// and ended before recording which (store.EpicCreating). The session it
+// created is the one Rex has now and did not have then (op.PriorSessions),
+// labelled name, holding the Epic's narrator and orchestrator, and not
+// another open's Epic: that one is recorded in op, and its lifecycle moved
+// to partial_start, and found is true. With none, Rex created nothing and
+// found is false: the op may create it. More than one, or one that is not an
+// Epic's, is an error, and nothing is created. The caller holds
+// LockEpicLifecycle.
+func (e Env) adoptCreated(ctx context.Context, op *store.EpicOpRecord, seed store.EpicLifecycle, name string) (found bool, err error) {
+	ids, err := e.Rex.ListSessions(ctx)
+	if err != nil {
+		return false, fmt.Errorf("list Rex's sessions for the one --op-id %q created: %w", op.OpID, err)
+	}
+	var fresh []string
+	for _, id := range ids {
+		if slices.Contains(op.PriorSessions, id) {
+			continue
+		}
+		s, err := e.Rex.InspectSession(ctx, id)
+		if errors.Is(err, rex.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return false, fmt.Errorf("inspect %s for the session --op-id %q created: %w", id, op.OpID, err)
+		}
+		if s.Label != name {
+			continue
+		}
+		if lc, ok, err := e.Store.EpicLifecycle(id); err != nil {
+			return false, err
+		} else if ok && lc.OpenOpID != op.OpID {
+			continue
+		}
+		fresh = append(fresh, id)
+	}
+	switch len(fresh) {
+	case 0:
+		return false, nil
+	case 1:
+	default:
+		return false, fmt.Errorf("--op-id %q: Rex has %d new sessions labelled %q (%s) and nothing tells which one this op created; nothing was started (close the ones that are not its Epic and retry)", op.OpID, len(fresh), name, strings.Join(fresh, ", "))
+	}
+	blocks, err := e.Rex.ListBlocks(ctx, fresh[0])
+	if err != nil {
+		return false, fmt.Errorf("list the blocks of %s, the session --op-id %q created: %w", fresh[0], op.OpID, err)
+	}
+	var narrators, orchestrators []string
+	for _, b := range blocks {
+		switch core.Role(b.Label) {
+		case core.NarratorRole:
+			narrators = append(narrators, b.ID)
+		case core.OrchestratorRole:
+			orchestrators = append(orchestrators, b.ID)
+		}
+	}
+	if len(narrators) != 1 || len(orchestrators) != 1 {
+		return false, fmt.Errorf("--op-id %q: Rex has a new session %s labelled %q, but it does not hold one narrator and one orchestrator, so it may not be this op's Epic; nothing was started", op.OpID, fresh[0], name)
+	}
+	op.SessionID, op.NarratorBlock, op.OrchestratorBlock, op.PriorSessions = fresh[0], narrators[0], orchestrators[0], nil
+	seed.SessionID = fresh[0]
+	if _, err := e.advanceEpic(seed, store.EpicPartialStart, op); err != nil {
+		return false, fmt.Errorf("record %s, the session --op-id %q created: %w", fresh[0], op.OpID, err)
+	}
+	return true, nil
 }
 
 // ensureSessionCrew records crew as session's crew unless one is.

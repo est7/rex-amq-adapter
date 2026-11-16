@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -91,12 +92,12 @@ func (l *EpicLifecycle) Advance(state string, at time.Time) bool {
 	return true
 }
 
-// NoteHandBack records h as the lifecycle's latest hand-back: the entry of
-// the same sequence number is replaced, a new one appended.
+// NoteHandBack records h among the lifecycle's hand-backs: the entry of the
+// same sequence number is replaced, wherever it is; a new one is appended.
 func (l *EpicLifecycle) NoteHandBack(h HandBack) {
 	ref := HandBackRef{Seq: h.Seq, Digest: h.Digest, By: h.By, At: h.At}
-	if n := len(l.HandBacks); n > 0 && l.HandBacks[n-1].Seq == h.Seq {
-		l.HandBacks[n-1] = ref
+	if i := slices.IndexFunc(l.HandBacks, func(r HandBackRef) bool { return r.Seq == h.Seq }); i >= 0 {
+		l.HandBacks[i] = ref
 	} else {
 		l.HandBacks = append(l.HandBacks, ref)
 	}
@@ -147,9 +148,14 @@ const (
 )
 
 // Epic operation states, besides the lifecycle's own (EpicPartialStart,
-// EpicOpened, EpicClosed): EpicClosing is a close that passed its guards and
-// may have killed the session, not yet seen through.
-const EpicClosing = "closing"
+// EpicOpened, EpicClosed): EpicCreating is an open about to ask Rex for its
+// session, which may or may not exist (its SessionID is not known yet);
+// EpicClosing is a close that passed its guards and may have killed the
+// session, not yet seen through.
+const (
+	EpicCreating = "creating"
+	EpicClosing  = "closing"
+)
 
 // EpicOpRecord is one `epic --op-id` or `epic close --op-id` request and how
 // far it got. RequestHash identifies the request (who asked for what), so
@@ -165,13 +171,17 @@ type EpicOpRecord struct {
 	OrchestratorBlock string      `json:"orchestrator_block,omitempty"`
 	NarratorBlock     string      `json:"narrator_block,omitempty"`
 	State             string      `json:"state"`
-	CreatedAt         time.Time   `json:"created_at"`
-	UpdatedAt         time.Time   `json:"updated_at"`
+	// PriorSessions is every Rex session there was just before an open
+	// asked for its own (EpicCreating): a retry that finds the op without
+	// its session tells the one this op created from those.
+	PriorSessions []string  `json:"prior_sessions,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 // opRank orders the states of each kind of operation.
 var opRank = map[string]map[string]int{
-	EpicOpOpen:  {EpicPartialStart: 1, EpicOpened: 2},
+	EpicOpOpen:  {EpicCreating: 1, EpicPartialStart: 2, EpicOpened: 3},
 	EpicOpClose: {EpicClosing: 1, EpicClosed: 2},
 }
 
@@ -210,8 +220,8 @@ func (s Store) EpicOp(kind, opID string) (EpicOpRecord, bool, error) {
 
 // PutEpicOp records r whole. The caller holds LockEpicLifecycle.
 func (s Store) PutEpicOp(r EpicOpRecord) error {
-	if opRank[r.Kind][r.State] == 0 || r.OpID == "" || r.RequestHash == "" || r.SessionID == "" {
-		return errors.New("an Epic operation needs its kind and a state of it, its op id, its request hash, and its session")
+	if opRank[r.Kind][r.State] == 0 || r.OpID == "" || r.RequestHash == "" || (r.SessionID == "") != (r.State == EpicCreating) {
+		return errors.New("an Epic operation needs its kind and a state of it, its op id, its request hash, and its session once it is past creating")
 	}
 	return writeJSON(s.epicOpPath(r.Kind, r.OpID), r)
 }
