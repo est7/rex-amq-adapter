@@ -121,6 +121,23 @@ func TestProbeBeforeAskingRulesPresent(t *testing.T) {
 	if !strings.Contains(design.Text, "safe, self-cleaning probes outside the repository") {
 		t.Errorf("design conventions missing disposable probe allowance: %s", design.Text)
 	}
+	// A pair Epic (epic --crew pair --goal) has no orchestrator: its
+	// implementer runs the goal, commits as it goes, and hands back.
+	pair, ok, err := lib.Conventions("pair")
+	if err != nil || !ok {
+		t.Fatalf("pair conventions: ok=%v err=%v", ok, err)
+	}
+	for _, want := range []string{
+		"`rex-amq-adapter epic <name> --crew pair --goal <file>`",
+		"The contract replaces steps 2 to 4 and the working-tree review of the role prompt",
+		"committing green Checkpoints as it goes",
+		"`rex-amq-adapter summon reviewer --grant <file> --kind todo",
+		"`rex-amq-adapter hand-back @<file>`",
+	} {
+		if !strings.Contains(pair.Text, want) {
+			t.Errorf("pair conventions missing goal-mode rule %q: %s", want, pair.Text)
+		}
+	}
 	// F15: a member's `nmem t` search during the seal surfaced the lead's
 	// unsent proposal from a live session summary.
 	if !strings.Contains(design.Text, "until then nobody searches session transcripts (`nmem t`, `rex-history`, transcript files)") {

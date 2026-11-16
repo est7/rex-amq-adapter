@@ -185,13 +185,17 @@ func (e Env) viewReader(ctx context.Context, loc Location, session string) (stri
 		}
 		return s.id, nil
 	}
-	switch rec.Role {
-	case core.NarratorRole, core.OrchestratorRole:
+	lead, err := e.pairLead(rec)
+	if err != nil {
+		return "", err
+	}
+	switch {
+	case rec.Role == core.NarratorRole, rec.Role == core.OrchestratorRole, lead:
 		if session != "" && session != rec.SessionID {
 			return "", refused(fmt.Sprintf("%s reading the view of %s", rec.Handle, session), core.Decision{Reason: core.ReasonCrossEpic})
 		}
 		return rec.SessionID, nil
-	case core.PersonalRole:
+	case rec.Role == core.PersonalRole:
 		links, err := e.Store.Links()
 		if err != nil {
 			return "", err
@@ -213,7 +217,7 @@ func (e Env) viewReader(ctx context.Context, loc Location, session string) (stri
 		}
 		return session, nil
 	}
-	return "", fmt.Errorf("%w: the view of a session is its narrator's, its orchestrator's, and a linked personal agent's to read; %s is %q", ErrRefused, rec.Handle, rec.Role)
+	return "", fmt.Errorf("%w: the view of a session is its narrator's, its orchestrator's (or a pair Epic's own implementer's), and a linked personal agent's to read; %s is %q", ErrRefused, rec.Handle, rec.Role)
 }
 
 // ReadSessionView returns the view.json the caller in loc may read.

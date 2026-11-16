@@ -1397,6 +1397,22 @@ nothing started is torn down, and the command exits 0 only when both agents
 are adopted and linked. The Epic's agents start outside any summon chain, as
 the user's own would: the orchestrator is depth 0 in its session.
 
+With `--crew pair` the Epic is one Slice and has no orchestrator: the second
+pane is an `implementer`, on the implementer's routing (`--harness` still
+overrides it) and briefed as the orchestrator would be, and the result's
+`lead` says so (`orchestrator` keeps its key and reports that agent). The
+pair crew's conventions tell it to run the contract with `run-goal`, commit
+Checkpoints, summon its own reviewer, and hand back. `pairLead` lets it do
+what only an orchestrator does: an implementer nobody summoned, in a session
+whose crew is `pair` and that holds no orchestrator record, live or
+departed, records the hand-back and reads its own Epic's view; an
+implementer an orchestrator summoned, or one in an Epic that had an
+orchestrator, stays a worker. The narrator wakes on its hand-back and its
+departure as on an orchestrator's (the pulse is role-blind), but the gateway
+still knows only an orchestrator as an Epic's control plane: a narrator's
+`send --control` to a pair lead is refused (`narrator_never_mails_workers`),
+and the orchestrator watchdog does not run for it.
+
 ### Closing an Epic
 
 Nothing closes an Epic on its own: a hand-back can leave items only the user

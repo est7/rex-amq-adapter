@@ -48,7 +48,17 @@ type EpicResult struct {
 	Orchestrator EpicAgent `json:"orchestrator"`
 	Narrator     EpicAgent `json:"narrator"`
 	Linked       bool      `json:"linked"`
+	// Lead is the role of the agent that runs the goal, whose startup
+	// Orchestrator reports: an orchestrator, or a pair Epic's implementer.
+	Lead string `json:"lead"`
 }
+
+// A pair Epic (epic --crew pair) runs one Slice with no orchestrator: its
+// implementer leads, runs the goal itself, and hands back (pairLead).
+const (
+	pairCrew        = "pair"
+	implementerRole = "implementer"
+)
 
 // Ready reports whether the Epic is fully up: both agents adopted, and the
 // caller linked to its narrator.
@@ -88,9 +98,14 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
 		return EpicResult{}, fmt.Errorf("%w: %s is not a directory", ErrUsage, r.Dir)
 	}
+	crewName := crew.Name(r.Crew)
+	lead := core.OrchestratorRole
+	if crewName == pairCrew {
+		lead = implementerRole
+	}
 	// Each agent starts on its role's first harness (--harness overrides the
-	// orchestrator's), with that harness's model and effort.
-	orchRoute, err := e.route(dir, core.OrchestratorRole)
+	// lead's), with that harness's model and effort.
+	orchRoute, err := e.route(dir, lead)
 	if err != nil {
 		return EpicResult{}, fmt.Errorf("%w: %v", ErrUsage, err)
 	}
@@ -110,7 +125,6 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 	if err != nil {
 		return EpicResult{}, err
 	}
-	crewName := crew.Name(r.Crew)
 	if crewName != "" {
 		if e.Crews == nil {
 			return EpicResult{}, fmt.Errorf("%w: no crews are available", ErrUsage)
@@ -135,13 +149,13 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 	// follows its agent (core.FollowTab).
 	panes := []rex.Pane{
 		{Label: core.NarratorRole + core.PaneSeparator + task, Dir: dir, Command: withLaunchEnv(narrLaunch, e.withTrust(dir, narrLaunch.Args(narrator, startCommand(narrator, narrate))))},
-		{Label: core.OrchestratorRole + core.PaneSeparator + task, Dir: dir, Command: withLaunchEnv(orchLaunch, e.withTrust(dir, orchLaunch.Args(kind, startCommand(kind, brief))))},
+		{Label: lead + core.PaneSeparator + task, Dir: dir, Command: withLaunchEnv(orchLaunch, e.withTrust(dir, orchLaunch.Args(kind, startCommand(kind, brief))))},
 	}
 	session, blocks, crewErr, err := e.newEpicSession(ctx, name, panes, crewName, caller.Handle)
 	if err != nil {
 		return EpicResult{}, fmt.Errorf("create the Epic's session: %w", err)
 	}
-	res := EpicResult{SessionID: session, Narrator: EpicAgent{Block: blocks[0]}, Orchestrator: EpicAgent{Block: blocks[1]}}
+	res := EpicResult{SessionID: session, Narrator: EpicAgent{Block: blocks[0]}, Orchestrator: EpicAgent{Block: blocks[1]}, Lead: lead}
 	var errs []error
 	if crewErr != nil {
 		errs = append(errs, fmt.Errorf("record the crew: %w", crewErr))

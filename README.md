@@ -254,7 +254,10 @@ its agent's pane label. Both start on their role's routing (below); the
 narrator only reads mail and rewrites the view, so it runs on a cheap tier
 (`agy --model gemini-4-hydrogen-low`, or `claude --model haiku --effort low`
 when routed to Claude), on a resume too, while the orchestrator starts on
-`claude --model opus --effort high`; with `--crew C` the session works as crew C. It links
+`claude --model opus --effort high`; with `--crew C` the session works as crew C, and
+with `--crew pair` it is one Slice with no orchestrator: an implementer, on
+its own routing, leads, runs the goal (Checkpoints, its own reviewer), and
+records the hand-back and reads the view as an orchestrator does. It links
 the Epic to the personal agent and waits for both agents (`--timeout`, 90 s
 by default).
 It prints one JSON line and exits 0 only when both are adopted and linked; a

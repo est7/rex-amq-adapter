@@ -346,8 +346,11 @@ goal contract, or with the user's words) and its narrator, each on its
 role's routing (the orchestrator on Claude `opus`, the narrator on agy's cheap
 `gemini-4-hydrogen-low`), links the Epic to
 you, and prints one JSON line (`session_id`, each agent's `handle`, `block`
-and `status`, `linked`); it exits 0 only when both agents are adopted and
-linked. Closing is two-phase: the orchestrator records its whole final report
+and `status`, `linked`, and `lead`, the role that runs the goal); it exits 0
+only when both agents are adopted and linked. With `--crew pair` the Epic is
+one Slice with no orchestrator: an implementer leads in its place, on the
+implementer's routing, runs the goal itself (Checkpoints, its own `summon
+reviewer`), and records the hand-back. Closing is two-phase: the orchestrator records its whole final report
 (review queue with PR links, Blocked on me, Decided for you, Changed, Found)
 last, once every PR is open, with `rex-amq-adapter hand-back @<file>` (`-`
 reads stdin; a new one replaces it), which `view` shows whole as `hand_back`;
