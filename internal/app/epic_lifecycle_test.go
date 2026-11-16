@@ -239,7 +239,7 @@ func TestOpenEpicRecordsItsLifecycleWithoutAnOpID(t *testing.T) {
 	if len(term.sessions_) != 1 {
 		t.Errorf("an invalid op id created a session: %+v", term.sessions_)
 	}
-	if err := validOpID(strings.Repeat("é", maxOpID/2)); err != nil {
+	if err := ValidOpID(strings.Repeat("é", maxOpID/2)); err != nil {
 		t.Errorf("a %d-byte op id: %v", maxOpID, err)
 	}
 }

@@ -1286,7 +1286,9 @@ Overridable with `REX_AMQ_ADAPTER_HOME` (tests use a temporary directory).
 │       ├── sessions/<session_id>/view.json  the session's view, written whole by its narrator
 │       ├── sessions/<session_id>/pulse.json what the session's watcher last told the narrator
 │       ├── sessions/<session_id>/crew.json  the crew the session works as (join CREW, epic --crew)
-│       └── sessions/<session_id>/hand-back.json the orchestrator's latest hand-back, whole (hand-back)
+│       ├── sessions/<session_id>/hand-back.json the orchestrator's latest hand-back, whole, with seq and digest (hand-back)
+│       ├── sessions/<session_id>/lifecycle.json the Epic's lifecycle: partial_start, opened, hand_back, closed
+│       └── epic-ops/<open|close>-<sha256(op_id)>.json  one epic or epic close --op-id request and how far it got
 ├── bin/inject                the wrapper amq wake runs as --inject-via
 ├── records/<handle>.json     one record per handle
 ├── ledger/<handle>.json      announced message ids
@@ -1309,6 +1311,7 @@ Overridable with `REX_AMQ_ADAPTER_HOME` (tests use a temporary directory).
 ├── watchdog/<block>.health.json  findings already told, the blocked episode, the last turn error
 ├── logs/watchdog.log         one JSON line per watchdog step
 ├── logs/blocked.log          one line per episode of an agent waiting on the user
+├── epic-lifecycle.lock       serialises Epic opens, closes, and hand-backs (taken before lifecycle.lock)
 └── lifecycle.lock
 ```
 
@@ -1383,8 +1386,14 @@ phases. The orchestrator records its final report, whole, with
 `rex-amq-adapter hand-back TEXT|@FILE|-` (`app.Env.RecordHandBack`: a live
 orchestrator placed in a session only, a non-empty body of at most 256 KiB,
 refused rather than cut). It is written atomically to
-`sessions/<id>/hand-back.json` (`store.HandBack`: `by`, `at`, `body`),
-replacing the one before, and the view carries it uncut as `hand_back`:
+`sessions/<id>/hand-back.json` (`store.HandBack`: `by`, `at`, `body`,
+`seq`, `digest`), replacing the one before, and the view carries it uncut as
+`hand_back`. `digest` is `sha256:` of the body with CRLF made LF and the
+surrounding blanks trimmed; the same report recorded again leaves the stored
+one as it was, `at` included, so the pulse below does not change, and a new
+one takes `seq` + 1 (a file from before `seq` counts as the first). Under
+`epic-lifecycle.lock` the hand-back is also listed in the Epic's lifecycle
+(`hand_backs`: `seq`, `digest`, `by`, `at`), which moves to `hand_back`:
 the narrator's refresh writes it into `view.json`, and every `view` read puts
 the stored one in place in memory, so it is whole the moment it is recorded.
 The session's pulse marks its author with the hand-back's time and a digest
@@ -1415,9 +1424,50 @@ words it runs `rex-amq-adapter epic close <session_id> --asked "WORDS"
    are sent: everyone they would reach was in the session just killed. The
    records stay reserved (`ReserveFor`, 7 days), so a resume in a new Epic
    gets its handle back, and `sessions/<id>/view.json` stays.
-4. The link is removed last, so a close that failed part way is finished by
+4. The link is removed, so a close that failed before this is finished by
    running it again: its guards pass on the same link, and the agents left
    live are parked then.
+5. The Epic's lifecycle is recorded `closed`.
+
+### Epic lifecycle and op ids
+
+`sessions/<id>/lifecycle.json` (`store.EpicLifecycle`) records an Epic at
+its explicit edges: `partial_start` once `session.create` returned,
+`opened` once both agents are adopted, `hand_back` for each hand-back, and
+`closed`. A state never moves back (`EpicLifecycle.Advance`), so a
+reconciliation that sees both agents adopted after a hand-back changes
+nothing. It also holds the Epic's name, physical directory, crew, the
+personal agent that opened it, and the op ids that opened and closed it.
+Its writers hold `epic-lifecycle.lock`, taken before the lifecycle lock
+wherever both are held. These records are written at the edges; what Rex
+shows is read live.
+
+`epic --op-id ID` and `epic close --op-id ID` each keep an operation record,
+`epic-ops/<kind>-<sha256(ID)>.json` (`store.EpicOpRecord`), whose
+`request_hash` is a SHA-256 of the request's identity as JSON: for an open,
+the caller's session key, the name, the symlink-resolved directory, the goal
+path, the user's words, the crew, and the harness; for a close, the caller's
+session key and the Epic's session. A record with another hash refuses the
+op id.
+
+- **Open.** The op record is looked up under `epic-lifecycle.lock`, which is
+  held through `session.create` until the new session and its two blocks are
+  recorded (`partial_start`), and released before any wait, so two runs of
+  one op id create one session between them. A retry finds the record and
+  starts nothing (`reconcileOpen`): a session Rex no longer has, or an Epic
+  already closed, is reported; otherwise it records the crew if the first
+  run could not, links the session again, awaits both agents, and moves the
+  lifecycle on (`"replayed":true`). A crash between `session.create`
+  returning and the record being written still leaves a session no record
+  names.
+- **Close.** The op record is looked up before the link, because the run
+  that wrote it may have removed the link before it died. A new close writes
+  it (`closing`) once its guards and the busy check pass, under both locks,
+  before the kill, with the Epic's server; a retry by the same personal
+  agent for the same session finishes the kill (a session already gone is
+  not an error), the parking, and the unlink, and records `closed`. A close
+  without an op id, or under an op id never recorded, of a session not
+  linked stays refused.
 
 The session's watcher, with no orchestrator or narrator live, exits on its
 own. A direct session the user started is never an Epic to close.
@@ -1504,7 +1554,39 @@ excerpts, gaps, limits, the narrator's own `--summary`, and the
 orchestrator's recorded `hand_back`, uncut) is written whole; the
 narrator, the session's orchestrator, a pane with no agent in that session,
 and a personal agent linked to the Epic read it with `view`; anyone else is
-refused.
+refused. Every read puts the stored hand-back and the Epic's `lifecycle` in
+place in memory.
+
+### Cockpit
+
+`view --cockpit [--session S] [--personal H] [--hub DIR]`
+(`app.Env.ReadCockpitView`) is the human's, or a personal agent's, read-only
+view of one personal agent's Epics. Its scope is one live `personal` record
+and the Epics linked to it; it moves no mail, writes no receipt, and starts
+nothing. A pane or shell with no agent in it is not trusted for being one
+(C20: `!hasAgent` is no authorization), and every gate must pass:
+
+1. No harness session the environment names (`CLAUDE_CODE_SESSION_ID`,
+   `CODEX_THREAD_ID`, `PI_SESSION_ID`, `ANTIGRAVITY_CONVERSATION_ID`) is a
+   live agent's of another role, even beside a personal agent's.
+2. The caller resolves (`Caller`): a harness session no hook adopted is
+   refused, and its pane, when it holds a live agent, holds a personal one.
+3. No ancestor of the process is the agent process (`AgentPID`) of a live
+   record of another role, so a command a worker or an orchestrator runs
+   with its environment stripped (`env -i`) is still refused.
+4. `ME_UNATTENDED=1` is refused unless the caller is a personal agent,
+   which may carry it inherited.
+
+A personal caller reads its own scope, and a `--personal` or `--hub` naming
+another is refused. Anyone else names exactly one live personal agent by
+handle, by a directory its working directory is in (symlinks resolved), or
+both; none is usage, and more than one is ambiguous. With `--session S`, S
+must be linked to that agent (`not_linked` otherwise); its view is read with
+the stored hand-back and lifecycle, and an Epic whose narrator has not
+written a view yet but whose lifecycle is recorded reads as that lifecycle
+alone, with a `no_view` coverage gap. Without it the summary lists each
+linked Epic (`session_id`, `name`, `dir`, `lifecycle`, `hand_back`,
+`has_view`). A closed Epic is unlinked, so it leaves the summary.
 
 The narrator takes no member mail. The session's watcher compares a
 deterministic pulse of the session (members, tasks, newest mail id, attention

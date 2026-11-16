@@ -67,7 +67,7 @@ type EpicLifecycle struct {
 	OpenOpID          string        `json:"open_op_id,omitempty"`
 	CloseOpID         string        `json:"close_op_id,omitempty"`
 	State             string        `json:"state"`
-	OpenedAt          time.Time     `json:"opened_at,omitempty"`
+	OpenedAt          time.Time     `json:"opened_at,omitzero"`
 	ClosedAt          *time.Time    `json:"closed_at,omitempty"`
 	UpdatedAt         time.Time     `json:"updated_at"`
 	HandBacks         []HandBackRef `json:"hand_backs,omitempty"`

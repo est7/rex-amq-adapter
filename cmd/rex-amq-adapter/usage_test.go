@@ -22,8 +22,55 @@ func isolate(t *testing.T) {
 	// config: neither may be the host's.
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Chdir(t.TempDir())
-	for _, v := range []string{"CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "PI_SESSION_ID", "ANTIGRAVITY_CONVERSATION_ID"} {
+	// ME_UNATTENDED too: an unattended agent running the tests would make
+	// the cockpit refuse every case.
+	for _, v := range []string{"CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "PI_SESSION_ID", "ANTIGRAVITY_CONVERSATION_ID", "ME_UNATTENDED"} {
 		t.Setenv(v, "")
+	}
+}
+
+// view --cockpit is a command of its own: its scope flags need it, the
+// narrator's verbs do not take it, a shell outside Rex that names no
+// personal agent is usage, and one that names a missing one is refused; an
+// unattended shell is refused even when it names one.
+func TestViewCockpitExitCodes(t *testing.T) {
+	isolate(t)
+	for _, c := range []struct {
+		args []string
+		want int
+	}{
+		{[]string{"view", "--personal", "pi-01"}, 2},
+		{[]string{"view", "--hub", "/tmp"}, 2},
+		{[]string{"view", "refresh", "--cockpit"}, 2},
+		{[]string{"view", "read", "--ids", "x", "--cockpit"}, 2},
+		{[]string{"view", "--cockpit"}, 2},
+		{[]string{"view", "--cockpit", "--session", "session:a"}, 2},
+		{[]string{"view", "--cockpit", "--personal", "pi-01"}, 1},
+		{[]string{"view", "--cockpit", "--hub", t.TempDir()}, 1},
+	} {
+		if code := run(c.args); code != c.want {
+			t.Errorf("%v: exit %d, want %d", c.args, code, c.want)
+		}
+	}
+	t.Setenv("ME_UNATTENDED", "1")
+	code, out := captureStderr(t, func() int { return run([]string{"view", "--cockpit", "--personal", "pi-01"}) })
+	if code != 1 || !strings.Contains(out, "ME_UNATTENDED=1") {
+		t.Errorf("an unattended shell: exit %d\n%s", code, out)
+	}
+}
+
+// epic and epic close take --op-id; one that is not text of at most 256
+// bytes is usage, refused before any caller lookup.
+func TestEpicOpIDFlag(t *testing.T) {
+	isolate(t)
+	for _, args := range [][]string{
+		{"epic", "x", "--asked", "go", "--op-id", strings.Repeat("x", 257)},
+		{"epic", "close", "session:a", "--asked", "close", "--op-id", "a\tb"},
+	} {
+		code, out := captureStderr(t, func() int { return run(args) })
+		if code != 2 || !strings.Contains(out, "--op-id is at most 256 bytes") {
+			t.Errorf("%v: exit %d\n%s", args[:2], code, out)
+		}
 	}
 }
 
@@ -80,6 +127,26 @@ func TestAwaitTimeoutTakesSecondsOrADuration(t *testing.T) {
 			t.Errorf("Set(%q) accepted %v", in, time.Duration(d))
 		}
 	}
+}
+
+// captureStderr runs f with its stderr in a file and returns the exit code
+// and what it printed there.
+func captureStderr(t *testing.T, f func() int) (int, string) {
+	t.Helper()
+	out, err := os.CreateTemp(t.TempDir(), "stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	before := os.Stderr
+	os.Stderr = out
+	code := f()
+	os.Stderr = before
+	b, err := os.ReadFile(out.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return code, string(b)
 }
 
 // capture runs a command with its stdout in a file and returns the exit

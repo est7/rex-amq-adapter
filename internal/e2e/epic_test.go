@@ -84,6 +84,27 @@ func TestPersonalAgentOpensAnEpic(t *testing.T) {
 	if after := w.rex("session", "list"); after != sessions {
 		t.Errorf("the retry changed the sessions:\n%s\nthen\n%s", sessions, after)
 	}
+	// The human's cockpit, from outside Rex, names the personal agent and
+	// reads its linked Epic; run from the orchestrator's pane it is refused.
+	// ME_UNATTENDED is cleared: the agent running the tests may carry it.
+	quiet := []string{"ME_UNATTENDED="}
+	out, code = w.adapterRunEnv(quiet, "view", "--cockpit", "--personal", w.handleOf("me"))
+	var cockpit struct {
+		Epics []struct {
+			Session   string `json:"session_id"`
+			Lifecycle struct {
+				State string `json:"state"`
+				OpID  string `json:"open_op_id"`
+			} `json:"lifecycle"`
+		} `json:"epics"`
+	}
+	if code != 0 || json.Unmarshal([]byte(out), &cockpit) != nil || len(cockpit.Epics) != 1 || cockpit.Epics[0].Session != res.Session ||
+		cockpit.Epics[0].Lifecycle.State != "opened" || cockpit.Epics[0].Lifecycle.OpID != "e2e-open-1" {
+		t.Errorf("the cockpit outside Rex: exit %d\n%s", code, out)
+	}
+	if out, code := w.adapterRunEnv(append(quiet, "REX_BLOCK="+res.Orchestrator.Block), "view", "--cockpit", "--personal", w.handleOf("me")); code != 1 || out != "" {
+		t.Errorf("the cockpit from the orchestrator's pane: exit %d\n%s", code, out)
+	}
 }
 
 // The personal agent closes the Epic it opened, on the user's words: a

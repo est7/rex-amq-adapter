@@ -93,7 +93,7 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 	if utf8.RuneCountInString(name) > maxSessionLabel {
 		return EpicResult{}, fmt.Errorf("%w: an Epic's name is at most %d characters", ErrUsage, maxSessionLabel)
 	}
-	if err := validOpID(r.OpID); err != nil {
+	if err := ValidOpID(r.OpID); err != nil {
 		return EpicResult{}, err
 	}
 	task := core.Task(name)

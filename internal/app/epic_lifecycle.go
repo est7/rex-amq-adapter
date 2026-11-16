@@ -29,9 +29,10 @@ import (
 // maxOpID bounds an operation id, in bytes.
 const maxOpID = 256
 
-// validOpID checks an --op-id: "" is none; otherwise at most maxOpID bytes of
-// UTF-8 with no control characters and not only blanks.
-func validOpID(id string) error {
+// ValidOpID checks an --op-id: "" is none; otherwise at most 256 bytes of
+// UTF-8 with no control characters and not only blanks. An invalid one is
+// ErrUsage.
+func ValidOpID(id string) error {
 	if id == "" {
 		return nil
 	}

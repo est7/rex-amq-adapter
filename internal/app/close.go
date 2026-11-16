@@ -69,7 +69,7 @@ func (e Env) CloseEpic(ctx context.Context, loc Location, r CloseRequest) (Close
 	if strings.TrimSpace(r.Asked) == "" {
 		return res, fmt.Errorf("%w: closing an Epic kills its Rex session and what its panes show; it needs the user's own words asking for it (--asked \"<their words>\")", ErrRefused)
 	}
-	if err := validOpID(r.OpID); err != nil {
+	if err := ValidOpID(r.OpID); err != nil {
 		return res, err
 	}
 	hash := requestHash(closeIdentity{Personal: caller.Endpoint().Session(), Session: r.Session})

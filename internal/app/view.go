@@ -50,14 +50,17 @@ type SessionView struct {
 	Narrative *ViewNarrative `json:"narrative,omitempty"`
 	// HandBack is the orchestrator's latest recorded hand-back, whole: no
 	// excerpt limit applies to it.
-	HandBack     *store.HandBack  `json:"hand_back,omitempty"`
-	Members      []ViewMember     `json:"members"`
-	Obligations  []ViewObligation `json:"obligations"`
-	Activity     []ViewMessage    `json:"activity"`
-	ControlPlane []ViewMessage    `json:"control_plane"`
-	CoverageGaps []CoverageGap    `json:"coverage_gaps"`
-	Limits       ViewLimits       `json:"limits"`
-	Sources      []string         `json:"sources"`
+	HandBack *store.HandBack `json:"hand_back,omitempty"`
+	// Lifecycle is the Epic's recorded lifecycle (store.EpicLifecycle), as
+	// read, never as the narrator last wrote it.
+	Lifecycle    *store.EpicLifecycle `json:"lifecycle,omitempty"`
+	Members      []ViewMember         `json:"members"`
+	Obligations  []ViewObligation     `json:"obligations"`
+	Activity     []ViewMessage        `json:"activity"`
+	ControlPlane []ViewMessage        `json:"control_plane"`
+	CoverageGaps []CoverageGap        `json:"coverage_gaps"`
+	Limits       ViewLimits           `json:"limits"`
+	Sources      []string             `json:"sources"`
 }
 
 // ViewCursor is how current a view is: when it was built, the newest message
@@ -131,6 +134,7 @@ const (
 	GapNotFound     = "not_found"               // amq could not read it
 	GapObligations  = "obligations_truncated"   // amq left obligations out
 	GapMessages     = "messages_truncated"      // older than the view's window
+	GapNoView       = "no_view"                 // the narrator has not written the view yet
 )
 
 // CoverageGap is a set of messages the view does not cover, by reason.
@@ -229,25 +233,35 @@ func (e Env) ReadSessionView(ctx context.Context, loc Location, session string) 
 	if !ok {
 		return nil, ErrNoView
 	}
-	return e.withHandBack(id, b)
+	return e.withStored(id, b)
 }
 
-// withHandBack is view b with session id's stored hand-back in place of the
+// withStored is view b with session id's stored hand-back in place of the
 // one the narrator last wrote, so a hand-back is read whole the moment it is
-// recorded, before any refresh. Nothing is written.
-func (e Env) withHandBack(id string, b json.RawMessage) (json.RawMessage, error) {
-	hb, ok, err := e.Store.HandBack(id)
-	if err != nil || !ok {
-		return b, err
+// recorded, before any refresh, and with the Epic's lifecycle as recorded.
+// Nothing is written.
+func (e Env) withStored(id string, b json.RawMessage) (json.RawMessage, error) {
+	hb, hasHB, err := e.Store.HandBack(id)
+	if err != nil {
+		return nil, err
+	}
+	lc, hasLC, err := e.Store.EpicLifecycle(id)
+	if err != nil {
+		return nil, err
+	}
+	if !hasHB && !hasLC {
+		return b, nil
 	}
 	var v SessionView
 	if err := json.Unmarshal(b, &v); err != nil {
 		return nil, fmt.Errorf("decode the view of %s: %w", id, err)
 	}
-	if v.HandBack != nil && *v.HandBack == hb {
-		return b, nil
+	if hasHB {
+		v.HandBack = &hb
 	}
-	v.HandBack = &hb
+	if hasLC {
+		v.Lifecycle = &lc
+	}
 	out, err := json.Marshal(v)
 	return append(out, '\n'), err
 }

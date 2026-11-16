@@ -113,9 +113,16 @@ Agent and user commands:
                             yourself; refused while it works or holds unread
                             mail, unless --force. Use it, not rex block close
   view [--session S]        print a session's view (view.json): its members, open
-                            obligations, recent mail, and what it could not cover;
-                            the narrator's, orchestrator's, or a linked personal
-                            agent's to read
+                            obligations, recent mail, what it could not cover, the
+                            hand-back, and the Epic's lifecycle; the narrator's,
+                            orchestrator's, or a linked personal agent's to read
+  view --cockpit [--session S] [--personal H] [--hub DIR]
+                            read-only, for the human or a personal agent: the Epics
+                            linked to one live personal agent (its lifecycle, hand-
+                            back, and whether a view exists), or one of them with
+                            --session. From outside its pane, name the agent with
+                            --personal or the directory it works in with --hub.
+                            Refused under any other agent, ME_UNATTENDED=1 included
   hand-back TEXT|@FILE|-     (an orchestrator, when its run ends) record its whole final
                             report (review queue, PR links, Blocked on me, Decided for
                             you, Changed, Found) as the session's hand-back; view shows
@@ -1214,6 +1221,10 @@ func runEpic(args []string) int {
 		fmt.Fprintln(os.Stderr, epicUsage)
 		return 2
 	}
+	if err := app.ValidOpID(*opID); err != nil {
+		fmt.Fprintf(os.Stderr, "rex-amq-adapter: %v\n", err)
+		return 2
+	}
 	if *dir == "" {
 		wd, err := os.Getwd()
 		if err != nil {
@@ -1264,6 +1275,10 @@ func runEpicClose(args []string) int {
 	}
 	if fs.NArg() > 0 {
 		fmt.Fprintln(os.Stderr, epicUsage)
+		return 2
+	}
+	if err := app.ValidOpID(*opID); err != nil {
+		fmt.Fprintf(os.Stderr, "rex-amq-adapter: %v\n", err)
 		return 2
 	}
 	env, loc, err := caller()
