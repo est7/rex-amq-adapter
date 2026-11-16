@@ -21,8 +21,8 @@ func TestRoutingBuiltinMatchesTheChosenTable(t *testing.T) {
 		model, effort string
 	}
 	want := map[string][]h{
-		"orchestrator": {{core.Claude, "opus", "high"}, {core.Agy, "gemini-pro-orchestrator", ""}, {core.Codex, "gpt-5.4", "high"}},
-		"narrator":     {{core.Claude, "haiku", "low"}, {core.Agy, "gemini-4-hydrogen-low", ""}},
+		"orchestrator": {{core.Claude, "opus", "high"}, {core.Agy, "gemini-4-carbon-high", "high"}, {core.Codex, "gpt-5.4", "high"}},
+		"narrator":     {{core.Agy, "gemini-4-hydrogen-low", ""}, {core.Claude, "haiku", "low"}},
 		"architect":    {{core.Claude, "opus", "max"}, {core.Codex, "gpt-5.4", "xhigh"}, {core.Agy, "gemini-4-carbon-high", "high"}},
 		"implementer":  {{core.Claude, "opus", "high"}, {core.Codex, "gpt-5.4", "high"}, {core.Agy, "gemini-4-carbon-high", "high"}},
 		"reviewer":     {{core.Codex, "gpt-5.4", "xhigh"}, {core.Agy, "gemini-4-carbon-high", "high"}, {core.Claude, "opus", "high"}},

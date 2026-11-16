@@ -45,8 +45,12 @@ func TestRoutingFirstHarnessMatchesBuiltinRolesOnly(t *testing.T) {
 	}
 	for _, r := range shared {
 		want := core.Claude
-		if slices.Contains(codexRoles, r) {
+		switch {
+		case slices.Contains(codexRoles, r):
 			want = core.Codex
+		case r == "narrator":
+			// The narrator only reads and relays: the cheap agy model.
+			want = core.Agy
 		}
 		if got := first(r); got != want {
 			t.Errorf("first harness of %q = %v, want %v", r, got, want)

@@ -1069,9 +1069,10 @@ adopts it there. Its subagents run hooks from the parent's pane under their own
 conversation ids, which the adapter ignores (section 4). Without it the record kept the exited
 PID, the doorbell's binding check reported `agent_gone`, and the next collect
 parked the live agent (observed 2026-11-04). Every agy hook prints a JSON object, `{}` when it
-has nothing to say. Its peers start with
-`agy --dangerously-skip-permissions -i "<brief>"`, since agy otherwise asks
-before each `amq` command.
+has nothing to say. Its peers start, and resume, with
+`agy --dangerously-skip-permissions --mode auto -i "<brief>"`: agy otherwise
+asks before each `amq` command, and outside auto mode it may stop in plan
+mode for a review no unattended run gives (F17).
 
 **Pi** has no command hooks. `setup` installs a small JavaScript extension
 (`~/.pi/agent/extensions/rex-amq-adapter.js`, or under `PI_CODING_AGENT_DIR`)

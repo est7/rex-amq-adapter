@@ -241,9 +241,10 @@ this needs is below; no other skill is required.
    the agent takes its role when its first hook runs, and its tab follows
    its pane label. Your own role changes only with `rex-amq-adapter join`. The program after `--` takes the brief as its first
    prompt: `codex --no-daemon "<brief>"`, `claude "<brief>"`, `pi "<brief>"`, or
-   `agy --dangerously-skip-permissions -i "<brief>"` (Antigravity needs `-i`,
-   and without the skip flag it stops to ask before every `amq` command it
-   runs). Pass `--no-daemon` explicitly
+   `agy --dangerously-skip-permissions --mode auto -i "<brief>"` (Antigravity
+   needs `-i`; without the skip flag it stops to ask before every `amq` command
+   it runs, and without `--mode auto` it may stop in plan mode for a review
+   no one gives). Pass `--no-daemon` explicitly
    for Codex: Rex launches the binary without expanding fish abbreviations.
    This mode cannot be combined with `--remote` or `codex agents`. Never take
    focus. A split the user asked for into a pane under 10 rows (`rex block
@@ -337,7 +338,8 @@ rex-amq-adapter epic close <session_id> --asked "<the user's words>"   # only on
 
 It creates the Epic's Rex session with its orchestrator (briefed to run the
 goal contract, or with the user's words) and its narrator, each on its
-role's routing (the narrator on a cheap model, `haiku` for Claude), links the Epic to
+role's routing (the orchestrator on Claude `opus`, the narrator on agy's cheap
+`gemini-4-hydrogen-low`), links the Epic to
 you, and prints one JSON line (`session_id`, each agent's `handle`, `block`
 and `status`, `linked`); it exits 0 only when both agents are adopted and
 linked. Closing is two-phase: the orchestrator records its whole final report

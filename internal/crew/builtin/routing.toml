@@ -19,13 +19,13 @@
 [role.orchestrator]
 harness = ["claude", "agy", "codex"]
 claude = { model = "opus", effort = "high" }
-agy = { model = "gemini-pro-orchestrator" }
+agy = { model = "gemini-4-carbon-high", effort = "high" }
 codex = { model = "gpt-5.4", effort = "high" }
 
 [role.narrator]
-harness = ["claude", "agy"]
-claude = { model = "haiku", effort = "low" }
+harness = ["agy", "claude"]
 agy = { model = "gemini-4-hydrogen-low" }
+claude = { model = "haiku", effort = "low" }
 
 [role.architect]
 harness = ["claude", "codex", "agy"]

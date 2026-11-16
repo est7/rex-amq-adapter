@@ -100,8 +100,9 @@ ships inside the binary. Run it again after moving the binary.
   `unapproved_hooks` before any pane, and `summon` of a reviewer, editor or
   qa without `--harness` starts it in the next ready family instead.
 - **Claude Code** and **Antigravity** run hooks only in folders you trust, and every harness asks once per project. You create that trust; the adapter carries it. `rex-amq-adapter trust grant <dir>...` is your "yes, I trust this folder" for all four harnesses at once: the project's root (its git toplevel, or the main checkout of a linked worktree, by physical path) is recorded in the adapter's `trust.json`, `projects[<root>].hasTrustDialogAccepted` is set in `~/.claude.json` (under Claude's own `.lock`, every other key kept) and `trust_level = "trusted"` in Codex's `config.toml` (comments kept), and an Antigravity or Pi agent the adapter starts there gets it for its session (`agy --settings`, `pi --approve`), so their own files are never written. `rex-amq-adapter trust root add <dir>` declares a root (`ls` and `rm` list and forget them; never `/` or your home directory): a project under it (by physical path, a repository with no `origin` too) is granted the first time an Epic or a summon needs it, unless you said no to it yourself (`trust_level = "untrusted"` in Codex, a `false` entry in Pi's `trust.json`), which only your own `trust grant` overrides. `epic` and `summon` check every harness they would start before creating any Rex session or pane: a working directory that no longer exists is refused (Rex would open the pane in your home instead), and a project nothing trusts and no root covers is refused with `untrusted_folder`, naming the harnesses that would ask and the `trust grant` command that fixes it, so an unattended Epic never leaves a pane waiting on a trust dialog. Every grant is a line in `logs/trust.log`. `summon` and `tab` also start an Antigravity peer in a linked worktree of a repository you trust with `--settings`, extending that trust to the worktree for the peer's session, and `rex-amq-adapter trust <dir>` prints that value for a peer you start by hand.
-- **Antigravity** peers start with `agy --dangerously-skip-permissions -i "<brief>"`;
-  without the skip flag agy stops to ask before every `amq` command it runs.
+- **Antigravity** peers start (and resume) with `agy --dangerously-skip-permissions --mode auto -i "<brief>"`;
+  without the skip flag agy stops to ask before every `amq` command it runs,
+  and without `--mode auto` it may stop in plan mode for a review no one gives.
 - An agent gets its mailbox when its first turn starts; Codex and Antigravity
   start none on their own, so give a peer its brief as the first prompt.
 
@@ -251,7 +252,9 @@ briefed to run the contract (or, with `--asked "<your words>"`, with your
 request), and a narrator in a background tab of its own, each tab following
 its agent's pane label. Both start on their role's routing (below); the
 narrator only reads mail and rewrites the view, so it runs on a cheap tier
-(`claude --model haiku --effort low`), on a resume too; with `--crew C` the session works as crew C. It links
+(`agy --model gemini-4-hydrogen-low`, or `claude --model haiku --effort low`
+when routed to Claude), on a resume too, while the orchestrator starts on
+`claude --model opus --effort high`; with `--crew C` the session works as crew C. It links
 the Epic to the personal agent and waits for both agents (`--timeout`, 90 s
 by default).
 It prints one JSON line and exits 0 only when both are adopted and linked; a
