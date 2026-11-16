@@ -1005,6 +1005,50 @@ cannot change what happens to an agent. The same projection
   in a mailbox the stream first sees later is not told as an event, though
   the message shows its state.
 
+### The human's panel: `rex-amq-adapter panel --json`
+
+`panel --json [--session S]` (`app.Env.Panel`) is the session-scope events
+stream with the session's panel added, for the human's floating panel
+(`rex-amq-ui`), which reads no state file itself. It reads as `events` does:
+no lock, no mail moved, no receipt, no byte written under the state
+directory (tested with a recursive snapshot of path, size, mode, mtime, and
+content hash).
+
+- Gate (`panelGate`), checked before the scope is resolved or Rex is asked,
+  failing closed with `ErrRefused`: any harness session variable
+  (`CLAUDE_CODE_SESSION_ID`, `CODEX_THREAD_ID`, `PI_SESSION_ID`,
+  `ANTIGRAVITY_CONVERSATION_ID`) set, adopted or not; `ME_UNATTENDED=1`; a
+  `REX_BLOCK` holding a live record of any role, the personal agent's,
+  orchestrator's, and narrator's included (the panel runs in a pane of its
+  own); and an ancestor process that is a live record's `AgentPID`
+  (`agentAncestor`, which the cockpit's gate 3 shares), so `env -i` under an
+  agent is refused. The cockpit lets a personal agent in; the panel does
+  not. With no `--session`, the scope is the caller's pane's session.
+- Projection (`PanelProjection`): `session_label` (the Rex session's label,
+  read with the layout on the Rex tick; a session Rex cannot describe keeps
+  its last label); `crew` (`crew.json`'s `crew`, `claimed_by`, `claimed_at`,
+  plus `lead` and `members` from the crew definition the claiming agent's
+  directory sees, left out when it does not resolve); `attention` (handle to
+  `turn_error@<ts>`, `waiting_on_the_human@<ts>`, `stalled@<ts>` for every
+  live agent of the session, narrator or not, `[]` when nothing waits; the
+  narrator's `attention`, which needs no narrator); `view` (as
+  `view --cockpit --session` reads it: view.json through `withStored`, or
+  the lifecycle alone with a `no_view` gap; a session with a hand-back but
+  neither a view nor a lifecycle reads as that hand-back alone, with the same
+  gap); `cockpit`, only when the session holds a live personal record (`[]`
+  when nothing is linked to it): each linked Epic's `CockpitEpic` fields plus
+  its narrator's `narrative`, `active_members` (its live records, narrator
+  and personal agents not counted), `open_attention` (attention marks of its
+  live agents), and `open_obligations` (in its stored view), counted from
+  records and stored files, without asking Rex about another session.
+- Frames: `snapshot` gains `panel`; on each local tick (1 s) a changed
+  panel is told as `upsert` with `entity: "panel"`, `key` the session id,
+  `value` the whole projection, and `changed` its top-level fields that
+  differ. The view's `as_of` cursor and its obligations' `age_seconds`,
+  which move with every narrator refresh, are left out of the comparison,
+  so a quiet session sends only heartbeats. `events --json` never carries a
+  panel.
+
 ## 5. Typed doorbell (injector)
 
 `amq wake` runs
@@ -1754,8 +1798,8 @@ yet" on its first turn, which held the personal agent's Stop hook.
 ## 9. Module layout
 
 ```
-cmd/rex-amq-adapter/   subcommands: hook, inject, env, title, who, events, await, collect, crews, tab, trust, summon, epic, notify-personal, view, hand-back, join, send, reply, read, drain, thread, trace, dlq, list, link, unlink, setup, status, remove, __internal, version
-internal/app/          entry points: observe, ask core, act (adopt, inject, announce, depart, collect, discovery, await, session watcher, narrator view, and watchdog, summon, join, the events stream); who runs a command (Caller); the hook's process ancestry (golang.org/x/sys)
+cmd/rex-amq-adapter/   subcommands: hook, inject, env, title, who, events, panel, await, collect, crews, tab, trust, summon, epic, notify-personal, view, hand-back, join, send, reply, read, drain, thread, trace, dlq, list, link, unlink, setup, status, remove, __internal, version
+internal/app/          entry points: observe, ask core, act (adopt, inject, announce, depart, collect, discovery, await, session watcher, narrator view, and watchdog, summon, join, the events and panel streams); who runs a command (Caller); the hook's process ancestry (golang.org/x/sys)
 internal/core/         pure policy: the gateway (CanExchange), handle choice, roles and pane labels, inject decision, announce decision, session-mates, notice text, the observer's projection and diff
 internal/crew/         crew and role prompt lookup across project, user, and built-in layers; crew headers (lead, members); built-in prompts; routing.toml, each role's harnesses, models, and efforts
 internal/fsutil/       flock and atomic replace

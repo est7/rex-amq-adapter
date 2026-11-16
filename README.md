@@ -323,6 +323,19 @@ agent works in). Any other agent is refused, as is a command running under
 one (`env -i` included, by its process ancestry), a harness session no hook
 adopted, and a shell with `ME_UNATTENDED=1` that is not the personal agent's.
 
+`rex-amq-adapter panel --json [--session S]` is the human's panel on a Rex
+session (the floating `rex-amq-ui` reads it): the `events --json` stream of
+your session, or of S, whose snapshot also carries a `panel` field with the
+session's label, its crew (with lead and members), what waits on each live
+agent (`turn_error`, `waiting_on_the_human`, `stalled`, with or without a
+narrator), its stored view (or its lifecycle or hand-back alone, with a
+`no_view` gap), and, in a personal agent's session, a `cockpit` summary of
+each linked Epic. A change is told as an `upsert` with `entity: "panel"`;
+a narrator refresh that moves only the view's cursor is not a change. It
+reads only, like `events`. It is yours alone: a harness session variable,
+`ME_UNATTENDED=1`, a pane holding a live agent of any role (personal
+included), or a process under one is refused before Rex is asked.
+
 Your own crews and roles override the built-in ones by name: a crew is a
 directory holding `team-conventions.md` and, optionally, `<role>.md` for a
 role that works differently in it; `roles/<role>.md` holds roles for any session.
@@ -353,6 +366,7 @@ rex-amq-adapter who --all    # also this session's departed agents reserved for 
 rex-amq-adapter who --json   # the same agents as JSON ({"agents": [...]}, as events' snapshot)
 rex-amq-adapter view         # a session's view.json (the narrator writes it; its orchestrator and a linked personal agent read it)
 rex-amq-adapter events --json # stream this session's agents and mail as NDJSON (read-only; --tab, --session S, --all)
+rex-amq-adapter panel --json  # (you, not an agent) events of this session plus its panel: label, crew, attention, view, cockpit
 rex-amq-adapter await <block> # wait for an agent you started; prints its outcome as JSON
 rex-amq-adapter collect      # retire agents whose pane closed or process died
 rex-amq-adapter retire <handle> # close a finished peer's pane without a crash report (not rex block close)
