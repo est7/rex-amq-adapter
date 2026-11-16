@@ -140,11 +140,18 @@ func TestPersonalAgentClosesAnEpic(t *testing.T) {
 		t.Fatalf("a refused close killed the session: %v", err)
 	}
 
-	w.typeInto(tb.first, "epic close "+res.Session+" --asked close-it")
+	w.typeInto(tb.first, "epic close "+res.Session+" --asked close-it --op-id e2e-close-1")
 	w.until("the close to finish", 20*time.Second, func() bool { return exits() == 3 })
 	got := w.joined("me")
 	if !strings.HasSuffix(strings.TrimSpace(got), "exit=0") || !strings.Contains(got, `"unlinked":true`) || !strings.Contains(got, orch) {
 		t.Fatalf("close:\n%s\n%s", got, w.dump())
+	}
+	// The same close again, under its op id: the session and the link are
+	// gone, and it finishes as done, with Rex's own answer to a second kill.
+	w.typeInto(tb.first, "epic close "+res.Session+" --asked close-it --op-id e2e-close-1")
+	w.until("the retried close to finish", 20*time.Second, func() bool { return exits() == 4 })
+	if got := w.joined("me"); !strings.HasSuffix(strings.TrimSpace(got), "exit=0") || strings.Count(got, `"replayed":true`) != 1 || !strings.Contains(got, `"lifecycle_state":"closed"`) {
+		t.Fatalf("the retried close:\n%s\n%s", got, w.dump())
 	}
 	if _, err := w.rexErr("session", "inspect", res.Session); err == nil {
 		t.Errorf("the Epic's session %s is still there", res.Session)

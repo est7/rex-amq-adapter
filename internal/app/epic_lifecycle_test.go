@@ -333,3 +333,17 @@ func TestCloseEpicOpIDRecoversAfterTheUnlink(t *testing.T) {
 		t.Errorf("lifecycle %+v", lc)
 	}
 }
+
+// A close without an op id records the Epic's lifecycle closed too, though no
+// lifecycle was recorded before (an Epic opened before lifecycles were).
+func TestCloseEpicRecordsItsLifecycleWithoutAnOpID(t *testing.T) {
+	e, _, loc := closeWorld(t)
+	res, err := closeEpic(e, loc, CloseRequest{Session: "session:epic", Asked: "close it"})
+	if err != nil || res.LifecycleState != store.EpicClosed || res.Replayed {
+		t.Fatalf("close %+v %v", res, err)
+	}
+	lc, ok, err := e.Store.EpicLifecycle("session:epic")
+	if err != nil || !ok || lc.State != store.EpicClosed || lc.ClosedAt == nil || lc.CloseOpID != "" || lc.PersonalHandle != "claude-01" || !lc.OpenedAt.IsZero() {
+		t.Fatalf("lifecycle %+v %v %v", lc, ok, err)
+	}
+}

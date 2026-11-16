@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -35,6 +36,13 @@ func isolate(t *testing.T) {
 // unattended shell is refused even when it names one.
 func TestViewCockpitExitCodes(t *testing.T) {
 	isolate(t)
+	// CI has neither rex nor amq; none of these cases runs either.
+	stub := filepath.Join(t.TempDir(), "stub")
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("REX_AMQ_REX", stub)
+	t.Setenv("REX_AMQ_AMQ", stub)
 	for _, c := range []struct {
 		args []string
 		want int

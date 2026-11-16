@@ -406,6 +406,16 @@ func TestCockpitViewRefusesEveryoneButThePersonalScope(t *testing.T) {
 		t.Errorf("a bare shell with one personal agent live: %v", err)
 	}
 	put(t, e, gone)
+	// Gate 3 against the real process table: this test process is an
+	// implementer's agent.
+	real := e
+	real.Ancestors = nil
+	put(t, real, store.Record{Handle: "claude-08", Kind: core.Claude, Role: "implementer", SessionID: "session:a", AgentPID: os.Getpid()})
+	if _, err := real.ReadCockpitView(ctx, cockpitEnv(nil), CockpitViewRequest{Personal: "pi-05"}); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "claude-08") {
+		t.Errorf("a command under an implementer, by the real process table: %v", err)
+	}
+	r8 := recordOf(t, e, "claude-08")
+	put(t, e, departed(r8, time.Now()))
 	// Two personal agents in one hub are not told apart by it.
 	r := recordOf(t, e, "pi-06")
 	r.Cwd = hub
@@ -489,5 +499,19 @@ func TestCockpitViewReadsOnlyThePersonalAgentsLinkedEpics(t *testing.T) {
 	}
 	if _, err := e.ReadSessionView(ctx, Location{Block: "block:pi-05"}, "session:b"); !errors.Is(err, ErrNoView) {
 		t.Errorf("the plain view of an Epic with no view yet: %v", err)
+	}
+}
+
+// The plain view keeps refusing an Epic's workers, and a roleless agent,
+// another Epic's view and their own: the cockpit opened no way around it.
+func TestSessionViewStillRefusesWorkersAcrossEpics(t *testing.T) {
+	e, _ := cockpitWorld(t)
+	ctx := context.Background()
+	for _, h := range []string{"claude-02", "codex-03", "claude-07"} {
+		for _, session := range []string{"", "session:a", "session:b", "session:c"} {
+			if b, err := e.ReadSessionView(ctx, Location{Block: "block:" + h}, session); !errors.Is(err, ErrRefused) || b != nil {
+				t.Errorf("%s reading %q: %v %s", h, session, err, b)
+			}
+		}
 	}
 }
