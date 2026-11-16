@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/core"
 	"github.com/est7/rex-amq-adapter/internal/crew"
 	"github.com/est7/rex-amq-adapter/internal/store"
@@ -115,11 +117,93 @@ func TestPairEpicLeadHandsBackAndReadsTheView(t *testing.T) {
 	if _, err := e.viewReader(ctx, Location{Block: "block:claude-10"}, "session:dev"); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), core.ReasonCrossEpic) {
 		t.Errorf("the pair lead read another Epic's view: %v", err)
 	}
-	// The narrator still relays no user control to a pair lead: the gateway
-	// knows only an orchestrator as an Epic's control plane.
-	narr, lead := recordOf(t, e, "agy-13").Endpoint(), recordOf(t, e, "claude-10").Endpoint()
-	if d := core.CanExchange(narr, lead, core.Operation{Kind: core.OpControl, ControlRequestID: "req-1"}, nil); d.Allow || d.Reason != core.ReasonNarratorWorker {
-		t.Errorf("narrator control to a pair lead: %+v", d)
+	// The narrator relays user control to the pair lead, which takes the
+	// orchestrator's place as the Epic's control plane; every other
+	// implementer stays a worker it never mails.
+	control := core.Operation{Kind: core.OpControl, ControlRequestID: "req-1"}
+	narr, err := e.endpointOf("agy-13")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		who    core.Handle
+		reason string
+	}{
+		{"claude-10", core.ReasonControl},
+		{"codex-11", core.ReasonNarratorWorker},
+		{"codex-12", core.ReasonNarratorWorker},
+	} {
+		to, err := e.endpointOf(c.who)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d := core.CanExchange(narr, to, control, nil); d.Allow != (c.reason == core.ReasonControl) || d.Reason != c.reason {
+			t.Errorf("narrator control to %s (lead=%v): %+v", c.who, to.Lead, d)
+		}
+	}
+}
+
+// A narrator's --control mail reaches a pair Epic's lead and passes its
+// arrival gate; a plain send to it, control to an implementer the lead
+// summoned, and control to an implementer in an Epic that had an
+// orchestrator are refused. The lead itself still never mails the personal
+// agent, and the refusal names the path that does reach it.
+func TestPairEpicNarratorControlReachesTheLead(t *testing.T) {
+	e := realAmqEnv(t, &fakeTerm{})
+	ctx := context.Background()
+	now := time.Now()
+	for session, c := range map[string]string{"session:pair": pairCrew, "session:had-orch": pairCrew} {
+		if err := e.Store.PutSessionCrew(session, store.SessionCrew{Crew: c, ClaimedBy: "claude-01", ClaimedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put(t, e,
+		store.Record{Handle: "claude-01", Role: core.PersonalRole, SessionID: "session:personal", AdoptedAt: now},
+		store.Record{Handle: "claude-10", Role: implementerRole, SessionID: "session:pair", AdoptedAt: now},
+		store.Record{Handle: "codex-11", Role: implementerRole, SessionID: "session:pair", Parent: "claude-10", Depth: 1, AdoptedAt: now},
+		store.Record{Handle: "agy-13", Role: core.NarratorRole, SessionID: "session:pair", AdoptedAt: now},
+		store.Record{Handle: "claude-20", Role: implementerRole, SessionID: "session:had-orch", AdoptedAt: now},
+		store.Record{Handle: "claude-21", Role: core.OrchestratorRole, SessionID: "session:had-orch", AdoptedAt: now, DepartedAt: &now},
+		store.Record{Handle: "agy-23", Role: core.NarratorRole, SessionID: "session:had-orch", AdoptedAt: now},
+	)
+	if err := e.Store.PutLink(core.Link{Personal: core.SessionKey{Server: fakeServer, SessionID: "session:personal"}, Epic: core.SessionKey{Server: fakeServer, SessionID: "session:pair"}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range []string{"claude-01", "claude-10", "codex-11", "agy-13", "claude-20", "agy-23"} {
+		if err := e.AMQ.EnsureMailbox(ctx, e.Paths.Root(), h); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, c := range []struct {
+		from core.Handle
+		args []string
+	}{
+		{"agy-13", []string{"--to", "claude-10", "--subject", "s", "--body", "b"}},
+		{"agy-13", []string{"--to", "codex-11", "--control", "req-1", "--body", "b"}},
+		{"agy-23", []string{"--to", "claude-20", "--control", "req-2", "--body", "b"}},
+	} {
+		if _, _, err := run(t, e, ctx, c.from, "send", c.args...); !errors.Is(err, ErrRefused) {
+			t.Errorf("%s send %q: %v", c.from, c.args, err)
+		}
+	}
+	out, code, err := run(t, e, ctx, "agy-13", "send", "--to", "claude-10", "--control", "req-3", "--subject", "directive", "--body", "the user: also cover X", "--json")
+	if err != nil || code != 0 {
+		t.Fatalf("control to the pair lead: %d %v %s", code, err, out)
+	}
+	var sent amq.Sent
+	if err := json.Unmarshal([]byte(out), &sent); err != nil || sent.ID == "" {
+		t.Fatalf("output %q", out)
+	}
+	lead := recordOf(t, e, "claude-10")
+	if kept, err := e.admit(lead); err != nil || len(kept) != 1 || kept[0] != sent.ID {
+		t.Fatalf("the pair lead's gate kept %v (%v), want %s", kept, err, sent.ID)
+	}
+	_, _, err = run(t, e, ctx, "claude-10", "send", "--to", "claude-01", "--subject", "done", "--body", "b")
+	if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), core.ReasonPersonalOnly) || !strings.Contains(err.Error(), `report with "rex-amq-adapter hand-back @<file>"`) {
+		t.Errorf("the pair lead mailing the personal agent: %v", err)
+	}
+	if _, _, err := run(t, e, ctx, "claude-01", "send", "--to", "claude-10", "--subject", "s", "--body", "b"); err == nil || strings.Contains(err.Error(), "hand-back") {
+		t.Errorf("the personal agent mailing the pair lead is refused without the members' hint: %v", err)
 	}
 }
 

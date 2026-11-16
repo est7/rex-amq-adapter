@@ -29,7 +29,21 @@ func (e Env) endpointOf(h core.Handle) (core.Endpoint, error) {
 	if err != nil || !ok {
 		return core.Endpoint{Handle: h}, err
 	}
-	return r.Endpoint(), nil
+	return e.gatewayEndpoint(r)
+}
+
+// gatewayEndpoint is rec as the gateway sees it now: its endpoint, marked
+// Lead when rec runs its Epic's goal (an orchestrator, or a pair Epic's lead:
+// pairLead), which is whom a narrator's control mail may reach.
+func (e Env) gatewayEndpoint(rec store.Record) (core.Endpoint, error) {
+	ep := rec.Endpoint()
+	if rec.Role == core.OrchestratorRole {
+		ep.Lead = true
+		return ep, nil
+	}
+	lead, err := e.pairLead(rec)
+	ep.Lead = lead
+	return ep, err
 }
 
 // judge decides whether reader may see a message it received, by what the
@@ -37,7 +51,7 @@ func (e Env) endpointOf(h core.Handle) (core.Endpoint, error) {
 // with amq directly) is judged by its sender's record now, as an unverified
 // send: its header's labels and sender name prove nothing, so it never
 // reaches a personal agent or a narrator.
-func (e Env) judge(reader store.Record, h amq.Header, links []core.Link) (core.Decision, core.Endpoint, error) {
+func (e Env) judge(reader core.Endpoint, h amq.Header, links []core.Link) (core.Decision, core.Endpoint, error) {
 	var ac adapterContext
 	h.ContextOf(store.ProvenanceContextKey, &ac)
 	p, ok, err := e.Store.ProvenanceOf(h.ID, ac.Token, core.Handle(h.From), h.To)
@@ -55,7 +69,7 @@ func (e Env) judge(reader store.Record, h amq.Header, links []core.Link) (core.D
 		// the adapter's.
 		op.Addressed = &core.Endpoint{}
 	}
-	return core.CanExchange(from, reader.Endpoint(), op, links), from, nil
+	return core.CanExchange(from, reader, op, links), from, nil
 }
 
 // admit is the arrival gate: it moves the unread mail rec may not receive
@@ -71,6 +85,10 @@ func (e Env) admit(rec store.Record) ([]string, error) {
 		return ids, err
 	}
 	links, err := e.Store.Links()
+	if err != nil {
+		return nil, err
+	}
+	reader, err := e.gatewayEndpoint(rec)
 	if err != nil {
 		return nil, err
 	}
@@ -90,7 +108,7 @@ func (e Env) admit(rec store.Record) ([]string, error) {
 		case err != nil:
 			d = core.Decision{Reason: core.ReasonUnreadableHeader}
 		default:
-			if d, from, err = e.judge(rec, hdr, links); err != nil {
+			if d, from, err = e.judge(reader, hdr, links); err != nil {
 				return nil, err
 			}
 		}
@@ -98,7 +116,7 @@ func (e Env) admit(rec store.Record) ([]string, error) {
 			kept = append(kept, id)
 			continue
 		}
-		q := store.Quarantined{ID: id, Handle: rec.Handle, From: from, To: rec.Endpoint(), Decision: d, At: e.Now().UTC()}
+		q := store.Quarantined{ID: id, Handle: rec.Handle, From: from, To: reader, Decision: d, At: e.Now().UTC()}
 		if _, err := e.Store.Quarantine(filepath.Join(amq.Inbox(root, h), id+".md"), q); err != nil {
 			return nil, fmt.Errorf("quarantine %s for %s: %w", id, h, err)
 		}
@@ -112,6 +130,17 @@ var ErrRefused = errors.New("refused by the gateway")
 
 func refused(what string, d core.Decision) error {
 	return fmt.Errorf("%w: %s (%s)", ErrRefused, what, d.Reason)
+}
+
+// refusedSend is refused for from's send to to, pointing a member that tried
+// to mail a personal agent at the path that reaches one: an Epic lead's
+// hand-back, which the Epic's narrator relays.
+func refusedSend(from, to core.Endpoint, d core.Decision) error {
+	err := refused(fmt.Sprintf("%s to %s", from.Handle, to.Handle), d)
+	if d.Reason == core.ReasonPersonalOnly && to.Role == core.PersonalRole && from.Role != core.PersonalRole {
+		return fmt.Errorf(`%w: report with "rex-amq-adapter hand-back @<file>" (an Epic lead's path; the Epic's narrator relays it to the personal agent)`, err)
+	}
+	return err
 }
 
 // Outgoing is a message the adapter sends: To for a send, ReplyTo (a message
@@ -177,7 +206,7 @@ func (e Env) post(ctx context.Context, o Outgoing) (amq.Sent, []byte, error) {
 		}
 		if o.Check {
 			if d := core.CanExchange(from, ep, o.Op, links); !d.Allow {
-				return amq.Sent{}, nil, refused(fmt.Sprintf("%s to %s", o.From, h), d)
+				return amq.Sent{}, nil, refusedSend(from, ep, d)
 			}
 		}
 		p.To = append(p.To, ep)
@@ -302,7 +331,11 @@ func (e Env) exposed(reader core.Handle, m located) error {
 	if err != nil {
 		return err
 	}
-	d, _, err := e.judge(rec, m.header, links)
+	ep, err := e.gatewayEndpoint(rec)
+	if err != nil {
+		return err
+	}
+	d, _, err := e.judge(ep, m.header, links)
 	if err != nil {
 		return err
 	}
