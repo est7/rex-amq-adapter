@@ -1283,6 +1283,8 @@ Overridable with `REX_AMQ_ADAPTER_HOME` (tests use a temporary directory).
 │       ├── provenance/<msg_id>.json        sender and recipients (session, generation) at sending, op, system
 │       ├── provenance/pending/<token>.json the same before amq returned the id
 │       ├── quarantine/<handle>/<msg_id>.md (+ .json reason)  mail the gateway took out of an inbox
+│       ├── notifications/<sha256(event id)>.json  the doorbell notify-personal sent for an event (dedup)
+│       ├── notifications.lock      held while notify-personal looks up and sends one event
 │       ├── sessions/<session_id>/view.json  the session's view, written whole by its narrator
 │       ├── sessions/<session_id>/pulse.json what the session's watcher last told the narrator
 │       ├── sessions/<session_id>/crew.json  the crew the session works as (join CREW, epic --crew)
@@ -1343,7 +1345,42 @@ under a token in the message's context before amq delivers it, so an arrival
 checked before amq returns the id is judged by it; when amq fails without an
 id and no outbox copy carries the token, delivery cannot be ruled out and the
 pending record stays. Mail sent with `amq` directly has no provenance and is
-judged by its sender's record now.
+judged by its sender's record now, as unverified (`Operation.Unverified`): it
+never reaches a Personal agent or a narrator (`unverified_sender`), whichever
+handle its header names, so `amq send --me <personal> --to <personal>` is not
+the Personal agent's own mail. Ordinary members still take it as before
+(`sender_outside_rex`, `self`, `same_epic`).
+
+### notify-personal
+
+`rex-amq-adapter notify-personal --ref inbox:<id>|timer:<id> --event-id <id>
+[--hub DIR] [--personal HANDLE] [--summary TEXT]` is the one way a producer
+outside Rex (an Inbox entry, a launchd Timer tick) reaches a Personal agent
+(spec claim C16). It acts as no agent and resolves no caller: the adapter
+collects first (so a crashed pane is parked), takes every live, placed
+`personal` record whose block Rex still shows (a block Rex cannot show, or a
+server it cannot reach, is no target), narrows them by `--personal` (the
+handle) and `--hub` (the agent's directory is the hub or below it, both
+symlink-resolved), and mails the one left in its own name as a system notice,
+`op: notify`. The gateway admits exactly that (`adapter_notify_personal`: a
+system `notify` from a placed Personal agent to itself); a caller can never
+choose the sender. The body frames the signal as untrusted external data,
+never a user grant, with the ref, event id, hub, and summary quoted (the
+summary made one line and capped at 280 bytes), and the subject is
+`notify <ref>`.
+
+It never starts or resumes an agent. With no live Personal agent it sends
+nothing and prints `{"status":"no_live_personal",...}` (exit 0): the producer
+keeps its entry. With more than one left it refuses (exit 1) rather than mail
+them all. Under `notifications.lock` each event id is looked up first: a
+repeat of a notified event answers with the same `to`, `session_id`, and
+`message_id` and `"deduped":true` without sending, even when that agent has
+left since; the id reused for another ref (or another `--personal`) is
+refused. The record is written as soon as amq returns the id, before the
+waker is ensured, so delivery is at least once: only a run that dies between
+the two sends again on retry. `--ref` is `inbox:` or `timer:` and a non-empty
+id; `--ref` and `--event-id` are at most 256 bytes of UTF-8 without control
+characters; a malformed call exits 2.
 
 This is a policy on the supported paths, not a sandbox: any process of the same
 UNIX user can read and write the mailbox files, and `amq` run directly with
@@ -1529,7 +1566,7 @@ yet" on its first turn, which held the personal agent's Stop hook.
 ## 9. Module layout
 
 ```
-cmd/rex-amq-adapter/   subcommands: hook, inject, env, title, who, events, await, collect, crews, tab, trust, summon, epic, view, hand-back, join, send, reply, read, drain, thread, trace, dlq, list, link, unlink, setup, status, remove, __internal, version
+cmd/rex-amq-adapter/   subcommands: hook, inject, env, title, who, events, await, collect, crews, tab, trust, summon, epic, notify-personal, view, hand-back, join, send, reply, read, drain, thread, trace, dlq, list, link, unlink, setup, status, remove, __internal, version
 internal/app/          entry points: observe, ask core, act (adopt, inject, announce, depart, collect, discovery, await, session watcher, narrator view, and watchdog, summon, join, the events stream); who runs a command (Caller); the hook's process ancestry (golang.org/x/sys)
 internal/core/         pure policy: the gateway (CanExchange), handle choice, roles and pane labels, inject decision, announce decision, session-mates, notice text, the observer's projection and diff
 internal/crew/         crew and role prompt lookup across project, user, and built-in layers; crew headers (lead, members); built-in prompts; routing.toml, each role's harnesses, models, and efforts
@@ -1537,7 +1574,7 @@ internal/fsutil/       flock and atomic replace
 internal/rex/          rex CLI client: process, program_status, capture, write, block and window labels, whoami, block list, new window
 internal/amq/          wake check/start/repair/retire, mailbox registration, inbox listing (ported); read-only mailbox, header, and receipt readers
 internal/screen/       input-box classifier (ported from herdr-amq-adapter)
-internal/store/        records, ledger, inject log, window notes, reservations, locks; the gateway's links, provenance, and quarantine
+internal/store/        records, ledger, inject log, window notes, reservations, locks; the gateway's links, provenance, and quarantine; notify-personal's dedup records
 internal/transcript/   reads the end of an agent's own transcript (Claude Code, Codex, Pi JSONL; Antigravity's SQLite through sqlite3) into rows for the watchdog and turn-error routing, and a departed agent's working directory for a resume
 internal/trust/        folder trust: each harness's rule (Check), the user's grants and declared roots (trust.json, logs/trust.log), Claude/Codex store keys via install, agy --settings / pi --approve per session
 internal/e2e/          scripted agents on a private Rex server and real amq wake
