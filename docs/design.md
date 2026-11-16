@@ -1022,13 +1022,16 @@ content hash).
   orchestrator's, and narrator's included (the panel runs in a pane of its
   own); and an ancestor process that is a live record's `AgentPID`
   (`agentAncestor`, which the cockpit's gate 3 shares), so `env -i` under an
-  agent is refused. The cockpit lets a personal agent in; the panel does
+  agent is refused; a walk that reaches its bound of 64 processes is refused
+  too, since an agent may sit above it. The cockpit lets a personal agent in; the panel does
   not. With no `--session`, the scope is the caller's pane's session.
 - Projection (`PanelProjection`): `session_label` (the Rex session's label,
   read with the layout on the Rex tick; a session Rex cannot describe keeps
   its last label); `crew` (`crew.json`'s `crew`, `claimed_by`, `claimed_at`,
-  plus `lead` and `members` from the crew definition the claiming agent's
-  directory sees, left out when it does not resolve); `attention` (handle to
+  plus `lead` and `members` from the crew definition the Epic's recorded
+  directory (`lifecycle.json`'s `dir`, where `epic --crew` resolved it) sees,
+  or, in a session with none recorded, the claiming agent's directory; left
+  out when it does not resolve there); `attention` (handle to
   `turn_error@<ts>`, `waiting_on_the_human@<ts>`, `stalled@<ts>` for every
   live agent of the session, narrator or not, `[]` when nothing waits; the
   narrator's `attention`, which needs no narrator); `view` (as

@@ -102,7 +102,9 @@ func (e Env) Panel(ctx context.Context, w io.Writer, getenv func(string) string,
 //  3. a REX_BLOCK holding a live agent of any role, personal, orchestrator,
 //     and narrator included: the panel runs in a pane of its own;
 //  4. this process descending from a live agent of any role, so `env -i`
-//     under an agent is refused too.
+//     under an agent is refused too; a walk up the process tree that stopped
+//     at its bound (maxAncestors) before the root proves nothing, so it is
+//     refused as well.
 func (e Env) panelGate(getenv func(string) string) error {
 	for _, v := range sessionVars {
 		if getenv(v.name) != "" {
@@ -125,12 +127,18 @@ func (e Env) panelGate(getenv func(string) string) error {
 	if err != nil {
 		return err
 	}
-	rec, ok, err := e.agentAncestor(recs, func(store.Record) bool { return true })
+	ancestors, err := e.ancestors()
 	if err != nil {
 		return fmt.Errorf("tell which agent runs the panel: %w", err)
 	}
-	if ok {
+	if rec, ok := agentAncestor(ancestors, recs, func(store.Record) bool { return true }); ok {
 		return panelRefused(rec)
+	}
+	// The walkers stop at maxAncestors without an error, so a full walk may
+	// have left an agent above it unread. A chain that reaches the root in
+	// exactly maxAncestors steps is refused too: no human's pane is that deep.
+	if len(ancestors) >= maxAncestors {
+		return fmt.Errorf("%w: the panel is the human's, and this command runs at least %d processes deep, too deep to tell that no agent started it", ErrRefused, maxAncestors)
 	}
 	return nil
 }
@@ -211,7 +219,10 @@ func (e Env) panelProjection(sc Scope, label string, held, all []store.Record) (
 }
 
 // panelCrew is session id's crew claim, with its lead and members resolved
-// from the crews the claiming agent's directory sees.
+// from the crews the Epic's directory sees, as epic resolved it when it
+// claimed the crew (the claimant is then the personal agent, which works
+// elsewhere); a session with no Epic directory recorded resolves from the
+// claiming agent's directory.
 func (e Env) panelCrew(id string, all []store.Record) (*PanelCrew, error) {
 	c, ok, err := e.Store.SessionCrew(id)
 	if err != nil || !ok {
@@ -221,8 +232,12 @@ func (e Env) panelCrew(id string, all []store.Record) (*PanelCrew, error) {
 	if e.Crews == nil {
 		return out, nil
 	}
-	dir := ""
-	if i := slices.IndexFunc(all, func(r store.Record) bool { return r.Handle == c.ClaimedBy }); i >= 0 {
+	lc, _, err := e.Store.EpicLifecycle(id)
+	if err != nil {
+		return nil, err
+	}
+	dir := lc.Dir
+	if i := slices.IndexFunc(all, func(r store.Record) bool { return r.Handle == c.ClaimedBy }); dir == "" && i >= 0 {
 		dir = all[i].Cwd
 	}
 	// A definition that is missing or does not parse leaves the claim

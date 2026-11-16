@@ -8,10 +8,13 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
@@ -456,5 +459,120 @@ func TestPanelWritesNothing(t *testing.T) {
 	stopP()
 	if after := stateTree(t, e.Paths.Home); after != before {
 		t.Errorf("the panel changed the state directory:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+// A walk up the process tree that reached its bound (maxAncestors) without
+// reaching the root, and without meeting an agent, cannot tell that no agent
+// started the command: it is refused before Rex or any frame. One short of
+// the bound is served.
+func TestPanelGateRefusesATruncatedProcessWalk(t *testing.T) {
+	e, _ := panelWorld(t)
+	walk := func(n int) func() ([]proc, error) {
+		return func() ([]proc, error) {
+			ps := make([]proc, n)
+			for i := range ps {
+				ps[i] = proc{PID: 20000 + i}
+			}
+			return ps, nil
+		}
+	}
+	refusing := e
+	refusing.Rex = rexless{t: t}
+	refusing.Ancestors = walk(maxAncestors)
+	out := &syncBuffer{}
+	if err := refusing.Panel(context.Background(), out, panelEnv(nil), "session:s", StreamTicks{}); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "too deep") || len(out.frames(t)) != 0 {
+		t.Errorf("a walk stopped at its bound: %v, %d frames", err, len(out.frames(t)))
+	}
+	e.Ancestors = walk(maxAncestors - 1)
+	served, stop := startPanel(t, e, nil, "session:s")
+	await(t, served, "the snapshot", func(f map[string]any) bool { return f["type"] == "snapshot" })
+	stop()
+}
+
+// The real walker: a command more than maxAncestors processes below a live
+// agent (here this test process) is refused as too deep, while one a few
+// processes below it is refused as that agent's. The helper runs at the
+// bottom of a chain of shells.
+func TestPanelRefusesACallerDeeperThanTheRealWalk(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("process ancestry is read on darwin and linux only")
+	}
+	home := t.TempDir()
+	s := store.Store{P: store.Paths{Home: home}}
+	must(t, s.PutRecord(store.Record{Handle: "claude-deep", Kind: core.Claude, Role: "implementer", Server: fakeServer, SessionID: "session:s", BlockID: "block:deep", AgentPID: os.Getpid()}))
+	chain := filepath.Join(t.TempDir(), "chain.sh")
+	// Each shell waits for the next (the exit after it keeps it from being
+	// replaced), so every level is a live process.
+	must(t, os.WriteFile(chain, []byte("n=$1; shift\nif [ \"$n\" -gt 0 ]; then sh \"$0\" $((n-1)) \"$@\"; s=$?; exit $s; fi\nexec \"$@\"\n"), 0o700))
+	for _, c := range []struct {
+		depth int
+		want  string
+	}{{3, "claude-deep (implementer)"}, {maxAncestors + 6, "too deep"}} {
+		cmd := exec.Command("sh", chain, fmt.Sprint(c.depth), os.Args[0], "-test.run=^TestPanelDeepCallerHelper$", "-test.count=1")
+		cmd.Env = append(os.Environ(), "PANEL_DEEP_HELPER=1", "PANEL_DEEP_HOME="+home)
+		b, err := cmd.CombinedOutput()
+		if err != nil || !strings.Contains(string(b), "PANEL_DEEP_REFUSED: ") || !strings.Contains(string(b), c.want) {
+			t.Errorf("%d shells deep: %v\n%s", c.depth, err, b)
+		}
+	}
+}
+
+// TestPanelDeepCallerHelper is the bottom of TestPanelRefusesACallerDeeperThanTheRealWalk's chain.
+func TestPanelDeepCallerHelper(t *testing.T) {
+	if os.Getenv("PANEL_DEEP_HELPER") != "1" {
+		t.Skip("run by TestPanelRefusesACallerDeeperThanTheRealWalk")
+	}
+	paths := store.Paths{Home: os.Getenv("PANEL_DEEP_HOME")}
+	e := Env{Paths: paths, Store: store.Store{P: paths}, Rex: rexless{t: t}, Now: time.Now}
+	out := &syncBuffer{}
+	err := e.Panel(context.Background(), out, panelEnv(nil), "session:s", StreamTicks{})
+	if !errors.Is(err, ErrRefused) || len(out.frames(t)) != 0 {
+		t.Fatalf("PANEL_DEEP_SERVED: %v", err)
+	}
+	fmt.Printf("PANEL_DEEP_REFUSED: %v\n", err)
+}
+
+// A crew is resolved where epic resolved it: the Epic's recorded directory,
+// not the directory of the personal agent that claimed it; a session with no
+// Epic directory resolves from the claimant's. A crew the Epic's directory
+// does not define is not looked up elsewhere.
+func TestPanelCrewResolvesFromTheEpicDirectory(t *testing.T) {
+	e, _ := panelWorld(t)
+	proj, hub := t.TempDir(), t.TempDir()
+	layer := func(dir, name, header string) crew.Library {
+		return crew.Library{{Name: "project", Dir: dir, FS: fstest.MapFS{name + "/team-conventions.md": {Data: []byte("---\n" + header + "---\nconventions\n")}}}}
+	}
+	e.Crews = func(dir string) crew.Library {
+		switch dir {
+		case proj:
+			return append(layer(proj, "pair", "lead: reviewer\nmembers: reviewer, implementer, qa\n"), crew.Builtin()...)
+		case hub:
+			return append(layer(hub, "hubonly", "lead: writer\nmembers: writer\n"), crew.Builtin()...)
+		}
+		return crew.Builtin()
+	}
+	r := recordOf(t, e, "pi-05")
+	r.Cwd = hub
+	put(t, e, r)
+	recs, err := e.Store.Records()
+	must(t, err)
+	lifecycle := func(dir string) {
+		must(t, e.Store.PutEpicLifecycle(store.EpicLifecycle{SessionID: "session:s", Server: fakeServer, Name: "auth-refresh", Dir: dir, State: store.EpicOpened, UpdatedAt: panelT0}))
+	}
+	for _, c := range []struct {
+		name, crew, dir, lead string
+		members               []string
+	}{
+		{"the Epic's project override", "pair", proj, "reviewer", []string{"reviewer", "implementer", "qa"}},
+		{"the claimant's directory, with no Epic directory", "hubonly", "", "writer", []string{"writer"}},
+		{"a crew only the claimant's directory defines", "hubonly", proj, "", nil},
+	} {
+		must(t, e.Store.PutSessionCrew("session:s", store.SessionCrew{Crew: c.crew, ClaimedBy: "pi-05", ClaimedAt: panelT0}))
+		lifecycle(c.dir)
+		pc, err := e.panelCrew("session:s", recs)
+		if err != nil || pc == nil || pc.Lead != c.lead || !slices.Equal(pc.Members, c.members) {
+			t.Errorf("%s: %+v %v", c.name, pc, err)
+		}
 	}
 }

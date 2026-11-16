@@ -142,9 +142,11 @@ func (e Env) cockpitScope(ctx context.Context, getenv func(string) string, req C
 			caller, isPersonal = rec, true
 		}
 	}
-	if r, ok, err := e.agentAncestor(recs, func(r store.Record) bool { return r.Role != core.PersonalRole }); err != nil {
+	ancestors, err := e.ancestors()
+	if err != nil {
 		return store.Record{}, fmt.Errorf("tell which agent runs the cockpit: %w", err)
-	} else if ok {
+	}
+	if r, ok := agentAncestor(ancestors, recs, func(r store.Record) bool { return r.Role != core.PersonalRole }); ok {
 		return store.Record{}, cockpitRefused(r)
 	}
 	if getenv("ME_UNATTENDED") == "1" && !isPersonal {
@@ -185,22 +187,18 @@ func (e Env) cockpitScope(ctx context.Context, getenv func(string) string, req C
 }
 
 // agentAncestor is the live record among recs, of those match accepts, whose
-// agent is this process or one of its ancestors, nearest first: a command an
-// agent runs, even with its environment stripped (`env -i`), descends from
-// that agent's process.
-func (e Env) agentAncestor(recs []store.Record, match func(store.Record) bool) (store.Record, bool, error) {
-	ancestors, err := e.ancestors()
-	if err != nil {
-		return store.Record{}, false, err
-	}
+// agent is one of ancestors (this process and its ancestors, nearest first):
+// a command an agent runs, even with its environment stripped (`env -i`),
+// descends from that agent's process.
+func agentAncestor(ancestors []proc, recs []store.Record, match func(store.Record) bool) (store.Record, bool) {
 	for _, p := range ancestors {
 		for _, r := range recs {
 			if r.Live() && r.AgentPID > 1 && r.AgentPID == p.PID && match(r) {
-				return r, true, nil
+				return r, true
 			}
 		}
 	}
-	return store.Record{}, false, nil
+	return store.Record{}, false
 }
 
 func cockpitRefused(rec store.Record) error {
