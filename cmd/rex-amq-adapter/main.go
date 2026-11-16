@@ -250,6 +250,7 @@ func runHook(args []string) int {
 	}
 	in.SummonToken = os.Getenv(app.SummonEnv)
 	in.Launch = app.LaunchFromEnv(os.LookupEnv)
+	in.Unattended = os.Getenv(app.UnattendedEnv) == "1"
 	loc, err := app.Here()
 	if errors.Is(err, app.ErrNotInRex) {
 		reply(app.Reply{})

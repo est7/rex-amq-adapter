@@ -25,7 +25,8 @@ Each shell needs it; tool calls run in fresh shells:
 eval "$(rex-amq-adapter env)" && rex-amq-adapter who
 ```
 
-That exports `AM_ROOT` and `AM_ME` and checks who you are; the mail commands
+That exports `AM_ROOT` and `AM_ME` (and, for an Epic's agent, which runs
+unattended, `ME_UNATTENDED=1`) and checks who you are; the mail commands
 below need no `env` first. Your identity is your own session's,
 found from the session id your harness sets in each tool shell, so when the
 inherited `REX_BLOCK` names another pane, or none, `env` also sets
@@ -348,7 +349,10 @@ the narrator, woken once that report is stored, reports the hand-back ready;
 you read `hand_back` and ask the user, and only on their words `epic close`
 kills the Epic's Rex session, parks its agents (their handles stay reserved
 for a resume), and unlinks it; it refuses while an agent of the Epic is working or holds unread
-mail, unless `--force`. Only a `personal` agent opens, links, or closes Epics,
+mail, unless `--force`. Every Epic runs unattended: its orchestrator,
+narrator, and every worker it starts or resumes carry `ME_UNATTENDED=1` in
+their own command, so outward writes stage for the user; you, the personal
+agent, never get it, and the adapter never clears one you inherited. Only a `personal` agent opens, links, or closes Epics,
 and the narrator is the only agent of an Epic it mails; your briefing (`crews
 show --role personal`) has the rest.
 

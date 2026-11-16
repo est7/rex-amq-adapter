@@ -113,6 +113,11 @@ type Record struct {
 	Parent      core.Handle `json:"parent,omitempty"`
 	Depth       int         `json:"depth,omitempty"`
 	SummonedFor string      `json:"summoned_for,omitempty"`
+	// Unattended is set when the agent runs unattended for an Epic (never on
+	// a personal agent): it was launched with ME_UNATTENDED=1, or adopted in
+	// a session whose EpicPolicy says so. A resume keeps it, and `env`
+	// exports it to the agent's shells.
+	Unattended bool `json:"unattended,omitempty"`
 	// DepartedAt is set when the agent ended. A departed record keeps its
 	// handle reserved for its agent session (a resume, in any block) until
 	// collected.

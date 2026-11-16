@@ -922,7 +922,8 @@ Every command resolves the caller's record itself (`Caller`), so an agent runs
 `rex-amq-adapter drain`, `send` or `reply` with no setup. No identity files.
 The same resolution places `title`, `who`, `tab`, `join`, `events` and the
 managed mail verbs. `rex-amq-adapter env` prints `export AM_ROOT=… AM_ME=…`
-from it, for a person or a script that runs raw `amq`.
+from it, for a person or a script that runs raw `amq`, with `ME_UNATTENDED=1`
+added for an unattended agent (An Epic runs unattended).
 
 Each harness sets its session id afresh in its tool shells, overwriting an
 inherited value: `CLAUDE_CODE_SESSION_ID`, `CODEX_THREAD_ID`, `PI_SESSION_ID`
@@ -1286,6 +1287,7 @@ Overridable with `REX_AMQ_ADAPTER_HOME` (tests use a temporary directory).
 │       ├── sessions/<session_id>/view.json  the session's view, written whole by its narrator
 │       ├── sessions/<session_id>/pulse.json what the session's watcher last told the narrator
 │       ├── sessions/<session_id>/crew.json  the crew the session works as (join CREW, epic --crew)
+│       ├── sessions/<session_id>/policy.json the Epic's external-write policy (epic; ME_UNATTENDED)
 │       └── sessions/<session_id>/hand-back.json the orchestrator's latest hand-back, whole (hand-back)
 ├── bin/inject                the wrapper amq wake runs as --inject-via
 ├── records/<handle>.json     one record per handle
@@ -1374,6 +1376,43 @@ agent's block and startup, `linked`) is printed even when part of it failed;
 nothing started is torn down, and the command exits 0 only when both agents
 are adopted and linked. The Epic's agents start outside any summon chain, as
 the user's own would: the orchestrator is depth 0 in its session.
+
+### An Epic runs unattended
+
+Every Epic carries a durable external-write policy (Claim C23): asking for
+engineering work authorizes no later outward message, so an Epic's agents
+stage those for the human, who approves them in the attended personal
+flow. `newEpicSession` records `sessions/<id>/policy.json`
+(`store.EpicPolicy`: `session_id`, `server`, `unattended`, `created_by`,
+`created_at`) as soon as `session.create` returns, for every Epic, whoever
+asked for it; a failure to record it is reported like the crew's, and the
+session stands. The marker is `ME_UNATTENDED=1` (`app.UnattendedEnv`), put
+in each launched command's own `env` prefix (`withUnattendedEnv`), never
+assumed from a pane inheriting the adapter's environment, which Rex panes do
+not:
+
+- `epic` sets it on both the narrator's and the orchestrator's command.
+- `summon`'s start and resume (`launchUnattended`) set it on every target
+  that is not `personal` when the target is an orchestrator or narrator, the
+  caller or the departed agent is recorded unattended, or the session has an
+  unattended policy. An unreadable policy starts nothing (the reservation is
+  released); it never makes a launch attended. `REX_AMQ_SUMMON` stays the
+  first assignment.
+- Adoption (`adoptUnattended`) records `store.Record.Unattended` on an agent
+  that is not `personal` when its hook's environment carries the marker, the
+  handle ran unattended before, or its session's policy is unattended.
+- `rex-amq-adapter env` adds `ME_UNATTENDED=1` to its export line for such a
+  record.
+
+A `personal` agent never gets the marker: nothing sets, reads, or clears it
+for one, and the adapter never changes its own process environment, so a
+personal agent that inherited the marker (a scheduled one) keeps it. This
+guard is not run-goal's attended or supervised decision mode, and the trust,
+dialog, and close gates are unchanged. The private-Rex test
+(`internal/e2e/unattended_test.go`) reads the variable in each pane's tool
+shell, after stripping it from the test's own environment. An Epic opened
+before this version has no policy, so only its orchestrator and narrator
+roles, and workers of an unattended caller, get the marker.
 
 ### Closing an Epic
 
