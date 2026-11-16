@@ -1773,8 +1773,9 @@ or reads a mailbox as its owner (`view refresh`):
 2. Bodies by exact id: `amq thread --id <thread> --agents <session> --message-ids
    <ids> --include-body --json`, which reads every copy (inbox new and cur,
    outbox sent), only for messages whose send-time provenance places sender
-   and every recipient in the session. By default that is the orchestrator's
-   control-plane mail; `view read --ids` reads named peer mail on demand.
+   and every recipient in the session. By default that is the Epic lead's
+   control-plane mail (mail its orchestrator, or a pair Epic's implementer
+   lead, sent or received: the `lead` the provenance recorded); `view read --ids` reads named peer mail on demand.
 
 What was not read is listed in `coverage_gaps` (`peer_mail_body_not_read`,
 `unverified_provenance` for mail sent without the adapter, `other_session`,

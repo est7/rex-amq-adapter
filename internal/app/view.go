@@ -339,13 +339,16 @@ func inSession(p store.Provenance, key core.SessionKey) bool {
 	return true
 }
 
-// controlPlane reports whether the orchestrator sent or received p's message.
+// controlPlane reports whether the Epic's lead (its orchestrator, or a pair
+// Epic's implementer: Endpoint.Lead as recorded at sending) sent or received
+// p's message. The role check keeps provenance recorded before Lead was.
 func controlPlane(p store.Provenance) bool {
-	if p.From.Role == core.OrchestratorRole {
+	lead := func(e core.Endpoint) bool { return e.Lead || e.Role == core.OrchestratorRole }
+	if lead(p.From) {
 		return true
 	}
 	for _, t := range p.To {
-		if t.Role == core.OrchestratorRole {
+		if lead(t) {
 			return true
 		}
 	}
