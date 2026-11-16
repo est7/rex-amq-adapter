@@ -65,6 +65,7 @@ type fakeTerm struct {
 	sessionLabels  map[string]string                     // session -> label NewSession gave it, overriding sessionLabel
 	blockLabels    map[string]string                     // block -> label NewSession gave it
 	newSessionErr  error                                 // NewSession fails
+	createThenFail error                                 // NewSession creates the session, then fails, as a call timing out after the server finished would
 	killed         []string                              // sessions KillSession ended, in order
 	killErr        error                                 // KillSession fails
 	statusGone     bool                                  // ProgramStatus of a block not in windows is ErrNotFound, as Rex's
@@ -805,6 +806,9 @@ func (f *fakeTerm) NewSession(_ context.Context, label string, panes []rex.Pane)
 		}
 		f.windows[b], f.tabs[w], f.sessions[w], f.blockLabels[b] = w, p.Tab, session, p.Label
 		windows, blocks = append(windows, w), append(blocks, b)
+	}
+	if f.createThenFail != nil {
+		return "", nil, nil, f.createThenFail
 	}
 	if f.sessionStarted != nil {
 		started := f.sessionStarted

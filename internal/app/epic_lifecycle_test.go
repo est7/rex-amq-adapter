@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -350,22 +352,18 @@ func TestCloseEpicRecordsItsLifecycleWithoutAnOpID(t *testing.T) {
 	}
 }
 
-// breakOpRecord makes the op records of e unwritable from the moment the
+// breakOpRecord makes the record of opID unwritable from the moment the
 // Epic's session is created, as a full disk or a crash right after
-// session.create would leave them: the record of the op id that is there
-// (its intent, store.EpicCreating) becomes a directory. The returned repair
+// session.create would leave it: its intent (store.EpicCreating) becomes a
+// directory. The returned repair
 // puts it back as it was.
-func breakOpRecord(t *testing.T, e Env, term *fakeTerm) (repair func()) {
+func breakOpRecord(t *testing.T, e Env, term *fakeTerm, opID string) (repair func()) {
 	t.Helper()
-	var path string
+	sum := sha256.Sum256([]byte(opID))
+	path := filepath.Join(e.Paths.Extensions(), "epic-ops", "open-"+hex.EncodeToString(sum[:])+".json")
 	var saved []byte
 	term.sessionStarted = func(string, []string) {
-		paths, err := filepath.Glob(filepath.Join(e.Paths.Extensions(), "epic-ops", "open-*.json"))
-		if err != nil || len(paths) != 1 {
-			t.Errorf("op records as the session started: %v %v", paths, err)
-			return
-		}
-		path = paths[0]
+		var err error
 		if saved, err = os.ReadFile(path); err != nil {
 			t.Error(err)
 		}
@@ -410,7 +408,7 @@ func TestOpenEpicOpIDFindsItsSessionAfterTheRecordFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	req := EpicRequest{Name: "login revamp", Dir: dir, Goal: goal, OpID: "me:board:epic-8#open"}
-	repair := breakOpRecord(t, e, term)
+	repair := breakOpRecord(t, e, term, req.OpID)
 	first, err := openWithin(e, loc, req, time.Second)
 	if err == nil || !strings.Contains(err.Error(), "retry with the same op id") || first.SessionID != "session:epic-2" {
 		t.Fatalf("first run %+v: %v", first, err)
@@ -445,10 +443,12 @@ func TestOpenEpicOpIDFindsItsSessionAfterTheRecordFails(t *testing.T) {
 	}
 }
 
-// An `epic --op-id` whose session.create failed, or never answered, leaves
-// its intent and no session; Rex showing no new session for it, the retry
-// creates the Epic, once. A new session of the same name that another
-// `epic` opened since, and recorded as its own, is not taken for it.
+// An `epic --op-id` whose session.create failed, with Rex listing no new
+// session, drops its intent: nothing was created, and a retry creates the
+// Epic once. A new session of the same name that another `epic` opened
+// since, and recorded as its own, is not taken for it. One whose
+// session.create failed after the server made the session keeps its intent,
+// and its retry finds that session.
 func TestOpenEpicOpIDCreatesOnceWhenRexMadeNone(t *testing.T) {
 	e, term, loc, goal := openEpicWorld(t)
 	req := EpicRequest{Name: "login revamp", Dir: filepath.Dir(goal), Goal: goal, OpID: "me:board:epic-9#open"}
@@ -456,8 +456,8 @@ func TestOpenEpicOpIDCreatesOnceWhenRexMadeNone(t *testing.T) {
 	if _, err := openWithin(e, loc, req, time.Second); err == nil {
 		t.Fatal("a failed session.create opened an Epic")
 	}
-	if op, ok, err := e.Store.EpicOp(store.EpicOpOpen, req.OpID); err != nil || !ok || op.State != store.EpicCreating || op.SessionID != "" {
-		t.Fatalf("the intent %+v %v %v", op, ok, err)
+	if op, ok, err := e.Store.EpicOp(store.EpicOpOpen, req.OpID); err != nil || ok {
+		t.Fatalf("an op that created nothing kept its record: %+v %v", op, err)
 	}
 	term.newSessionErr = nil
 	other := EpicRequest{Name: req.Name, Dir: req.Dir, Asked: "open login revamp"}
@@ -482,7 +482,7 @@ func TestOpenEpicOpIDRefusesToGuessItsSession(t *testing.T) {
 	dir := filepath.Dir(goal)
 	ctx := context.Background()
 	req := EpicRequest{Name: "login revamp", Dir: dir, Goal: goal, OpID: "me:board:epic-10#open"}
-	repair := breakOpRecord(t, e, term)
+	repair := breakOpRecord(t, e, term, req.OpID)
 	if _, err := openWithin(e, loc, req, time.Second); err == nil {
 		t.Fatal("the record did not fail")
 	}
@@ -553,5 +553,235 @@ func TestHandBackKeepsTheReportItReplacesInTheLifecycle(t *testing.T) {
 	}
 	if hb, _, _ := e.Store.HandBack(key.SessionID); hb.Seq != 2 || hb.Body != "updated report" {
 		t.Fatalf("stored hand-back %+v", hb)
+	}
+}
+
+// openEpicFailingAfterCreate runs an open whose session.create made the
+// session and then failed, as a call that timed out after the server
+// finished would.
+func openEpicFailingAfterCreate(t *testing.T, e Env, term *fakeTerm, loc Location, req EpicRequest) {
+	t.Helper()
+	term.createThenFail = errors.New("rex: session.create: context deadline exceeded")
+	defer func() { term.createThenFail = nil }()
+	if _, err := openWithin(e, loc, req, time.Second); err == nil {
+		t.Fatal("a failed session.create opened an Epic")
+	}
+}
+
+// An `epic --op-id` whose session.create failed after Rex made the session
+// keeps its intent, as Rex lists a session it did not before, and its retry
+// finds that session.
+func TestOpenEpicOpIDFindsTheSessionACreateThatFailedMade(t *testing.T) {
+	e, term, loc, goal := openEpicWorld(t)
+	req := EpicRequest{Name: "login revamp", Dir: filepath.Dir(goal), Goal: goal, OpID: "me:board:epic-11#open"}
+	openEpicFailingAfterCreate(t, e, term, loc, req)
+	if op, ok, err := e.Store.EpicOp(store.EpicOpOpen, req.OpID); err != nil || !ok || op.State != store.EpicCreating {
+		t.Fatalf("the intent of a create Rex may have done: %+v %v %v", op, ok, err)
+	}
+	again, _ := openWithin(e, loc, req, 100*time.Millisecond)
+	if !again.Replayed || again.SessionID != "session:epic-1" || len(term.sessions_) != 1 {
+		t.Fatalf("retry %+v; sessions %d", again, len(term.sessions_))
+	}
+}
+
+// Two opens of the same Epic name under different op ids: A's
+// session.create fails having made nothing (its intent is dropped), B's
+// makes session:epic-1 and fails to record it. A's retry does not take B's
+// session for its own but creates its own; B's retry then finds epic-1, past
+// A's Epic (known by A's op record alone) and a lifecycle that only a
+// hand-back wrote.
+func TestOpenEpicOpIDDoesNotTakeAnotherOpsSession(t *testing.T) {
+	e, term, loc, goal := openEpicWorld(t)
+	a := EpicRequest{Name: "same label", Dir: filepath.Dir(goal), Asked: "execute goal A", OpID: "open-A"}
+	b := EpicRequest{Name: "same label", Dir: filepath.Dir(goal), Asked: "execute goal B", OpID: "open-B"}
+	term.newSessionErr = errors.New("rex: session.create: refused")
+	if _, err := openWithin(e, loc, a, time.Second); err == nil {
+		t.Fatal("A opened")
+	}
+	term.newSessionErr = nil
+	repair := breakOpRecord(t, e, term, b.OpID)
+	if res, err := openWithin(e, loc, b, time.Second); err == nil || res.SessionID != "session:epic-1" {
+		t.Fatalf("B: %+v %v", res, err)
+	}
+	repair()
+	retryA, _ := openWithin(e, loc, a, 100*time.Millisecond)
+	if retryA.Replayed || retryA.SessionID != "session:epic-2" || len(term.sessions_) != 2 {
+		t.Fatalf("A's retry %+v; sessions %d", retryA, len(term.sessions_))
+	}
+	// A's Epic known by its op record alone, as when its lifecycle write
+	// failed; B's session with a lifecycle only a hand-back wrote.
+	if err := os.Remove(filepath.Join(e.Paths.SessionDir("session:epic-2"), "lifecycle.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Store.PutEpicLifecycle(store.EpicLifecycle{SessionID: "session:epic-1", State: store.EpicHandBack, HandBacks: []store.HandBackRef{{Seq: 1, Digest: "sha256:x"}}}); err != nil {
+		t.Fatal(err)
+	}
+	retryB, _ := openWithin(e, loc, b, 100*time.Millisecond)
+	if !retryB.Replayed || retryB.SessionID != "session:epic-1" || len(term.sessions_) != 2 {
+		t.Fatalf("B's retry %+v; sessions %d", retryB, len(term.sessions_))
+	}
+	if op, _, _ := e.Store.EpicOp(store.EpicOpOpen, a.OpID); op.SessionID != "session:epic-2" {
+		t.Fatalf("A's op %+v", op)
+	}
+}
+
+// Two unfinished opens of the same Epic name, neither able to say which new
+// session is its own (A's session.create failed after Rex may have made its
+// session, since closed; B's made one and failed to record it): each retry
+// is refused, claims nothing, and creates nothing.
+func TestOpenEpicOpIDRefusesASessionTwoUnfinishedOpsCouldOwn(t *testing.T) {
+	e, term, loc, goal := openEpicWorld(t)
+	a := EpicRequest{Name: "same label", Dir: filepath.Dir(goal), Asked: "execute goal A", OpID: "open-A"}
+	b := EpicRequest{Name: "same label", Dir: filepath.Dir(goal), Asked: "execute goal B", OpID: "open-B"}
+	openEpicFailingAfterCreate(t, e, term, loc, a)
+	term.killed = append(term.killed, "session:epic-1")
+	repair := breakOpRecord(t, e, term, b.OpID)
+	if res, err := openWithin(e, loc, b, time.Second); err == nil || res.SessionID != "session:epic-2" {
+		t.Fatalf("B: %+v %v", res, err)
+	}
+	repair()
+	for _, r := range []EpicRequest{b, a} {
+		res, err := openWithin(e, loc, r, 100*time.Millisecond)
+		if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "cannot tell whether session session:epic-2") || res.Replayed {
+			t.Fatalf("%s's retry: %+v %v", r.OpID, res, err)
+		}
+		if op, _, _ := e.Store.EpicOp(store.EpicOpOpen, r.OpID); op.State != store.EpicCreating || op.SessionID != "" {
+			t.Fatalf("%s's op after a refused retry %+v", r.OpID, op)
+		}
+	}
+	if len(term.sessions_) != 2 || len(mustLinks(t, e)) != 0 {
+		t.Fatalf("refused retries created or linked: sessions %d, links %+v", len(term.sessions_), mustLinks(t, e))
+	}
+}
+
+// handBackStoreFails records two reports, the second listed in the Epic's
+// lifecycle but not stored (hand-back.json unwritable from its first clock
+// read on, after its reads), then repairs the store.
+func handBackStoreFails(t *testing.T) (Env, core.SessionKey, store.HandBack, store.HandBack) {
+	t.Helper()
+	e, _, key := watcherWorld(t)
+	ctx := context.Background()
+	orch := Location{Block: "block:o"}
+	first, err := e.RecordHandBack(ctx, orch, "report one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(e.Paths.SessionDir(key.SessionID), "hand-back.json")
+	saved, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock := e.Now
+	broken := false
+	e.Now = func() time.Time {
+		if !broken {
+			broken = true
+			if err := os.Remove(path); err != nil {
+				t.Error(err)
+			}
+			if err := os.Mkdir(path, 0o700); err != nil {
+				t.Error(err)
+			}
+		}
+		return clock()
+	}
+	second, err := e.RecordHandBack(ctx, orch, "report two")
+	if err == nil || second.Seq != 2 || !strings.Contains(err.Error(), "lists hand-back 2, but storing it failed") {
+		t.Fatalf("second, its store failing: %+v %v", second, err)
+	}
+	e.Now = clock
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, saved, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return e, key, first, second
+}
+
+// A Seq the lifecycle lists keeps its digest: after a report listed but not
+// stored, a different report takes the Seq after it, and the history keeps
+// all three.
+func TestHandBackAfterAFailedStoreTakesTheNextSeq(t *testing.T) {
+	e, key, first, second := handBackStoreFails(t)
+	third, err := e.RecordHandBack(context.Background(), Location{Block: "block:o"}, "report three")
+	if err != nil || third.Seq != 3 {
+		t.Fatalf("third: %+v %v", third, err)
+	}
+	lc, _, _ := e.Store.EpicLifecycle(key.SessionID)
+	if got := lc.HandBacks; len(got) != 3 || got[0].Digest != first.Digest || got[1].Seq != 2 || got[1].Digest != second.Digest || got[2].Seq != 3 || got[2].Digest != third.Digest {
+		t.Fatalf("hand-backs in the lifecycle %+v", got)
+	}
+	if hb, _, _ := e.Store.HandBack(key.SessionID); hb.Seq != 3 || hb.Body != "report three" {
+		t.Fatalf("stored hand-back %+v", hb)
+	}
+}
+
+// The report that was listed but not stored, recorded again, is stored under
+// its Seq and time, and nothing new is numbered.
+func TestHandBackRetryStoresTheReportTheLifecycleLists(t *testing.T) {
+	e, key, _, second := handBackStoreFails(t)
+	again, err := e.RecordHandBack(context.Background(), Location{Block: "block:o"}, "report two")
+	if err != nil || again.Seq != 2 || again.Digest != second.Digest || !again.At.Equal(second.At) {
+		t.Fatalf("retry of the second: %+v %v; first try %+v", again, err, second)
+	}
+	if hb, _, _ := e.Store.HandBack(key.SessionID); hb.Seq != 2 || hb.Body != "report two" {
+		t.Fatalf("stored hand-back %+v", hb)
+	}
+	if lc, _, _ := e.Store.EpicLifecycle(key.SessionID); len(lc.HandBacks) != 2 {
+		t.Fatalf("hand-backs in the lifecycle %+v", lc.HandBacks)
+	}
+}
+
+// Another unfinished open of the same name does not stand in the way of a
+// session it cannot have created: one Rex already listed when it asked for
+// its own. B made session:epic-1 and failed to record it; A asked Rex after
+// that, made epic-2 and failed (since closed); B's retry finds epic-1.
+func TestOpenEpicOpIDTakesASessionOlderThanAnotherOpsIntent(t *testing.T) {
+	e, term, loc, goal := openEpicWorld(t)
+	a := EpicRequest{Name: "same label", Dir: filepath.Dir(goal), Asked: "execute goal A", OpID: "open-A"}
+	b := EpicRequest{Name: "same label", Dir: filepath.Dir(goal), Asked: "execute goal B", OpID: "open-B"}
+	repair := breakOpRecord(t, e, term, b.OpID)
+	if res, err := openWithin(e, loc, b, time.Second); err == nil || res.SessionID != "session:epic-1" {
+		t.Fatalf("B: %+v %v", res, err)
+	}
+	repair()
+	openEpicFailingAfterCreate(t, e, term, loc, a)
+	if op, _, _ := e.Store.EpicOp(store.EpicOpOpen, a.OpID); op.State != store.EpicCreating || !slices.Contains(op.PriorSessions, "session:epic-1") {
+		t.Fatalf("A's intent %+v", op)
+	}
+	term.killed = append(term.killed, "session:epic-2")
+	retryB, err := openWithin(e, loc, b, 100*time.Millisecond)
+	if !retryB.Replayed || retryB.SessionID != "session:epic-1" || len(term.sessions_) != 2 {
+		t.Fatalf("B's retry %+v (%v); sessions %d", retryB, err, len(term.sessions_))
+	}
+}
+
+// A different report whose lifecycle write fails, after both were read,
+// leaves the stored one in place.
+func TestHandBackIsNotReplacedWhenTheLifecycleWriteFails(t *testing.T) {
+	e, _, key := watcherWorld(t)
+	ctx := context.Background()
+	orch := Location{Block: "block:o"}
+	if _, err := e.RecordHandBack(ctx, orch, "report one"); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(e.Paths.SessionDir(key.SessionID), "lifecycle.json")
+	clock := e.Now
+	e.Now = func() time.Time {
+		e.Now = clock
+		if err := os.Remove(path); err != nil {
+			t.Error(err)
+		}
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Error(err)
+		}
+		return clock()
+	}
+	if _, err := e.RecordHandBack(ctx, orch, "report two"); err == nil || !strings.Contains(err.Error(), "not stored, and 1 stays") {
+		t.Fatalf("report two, its lifecycle unwritable: %v", err)
+	}
+	if hb, _, _ := e.Store.HandBack(key.SessionID); hb.Seq != 1 || hb.Body != "report one" {
+		t.Fatalf("the stored report was replaced: %+v", hb)
 	}
 }

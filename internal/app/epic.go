@@ -188,7 +188,7 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 			return e.reconcileOpen(ctx, loc, prev, seed)
 		}
 		release = unlock
-		op = &store.EpicOpRecord{Kind: store.EpicOpOpen, OpID: r.OpID, RequestHash: hash, Server: caller.Server, PersonalHandle: caller.Handle, PersonalSessionID: caller.SessionID, CreatedAt: e.Now().UTC()}
+		op = &store.EpicOpRecord{Kind: store.EpicOpOpen, OpID: r.OpID, RequestHash: hash, Name: name, Server: caller.Server, PersonalHandle: caller.Handle, PersonalSessionID: caller.SessionID, CreatedAt: e.Now().UTC()}
 	}
 	// Both agents' folder trust before the session exists: an Epic either
 	// starts with no dialog in its panes or does not start.
@@ -220,7 +220,10 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 	}
 	session, blocks, crewErr, err := e.newEpicSession(ctx, name, panes, crewName, caller.Handle)
 	if err != nil {
-		return EpicResult{}, fmt.Errorf("create the Epic's session: %w", err)
+		if op != nil {
+			e.dropUnstartedOp(ctx, *op)
+		}
+		return EpicResult{OpID: r.OpID}, fmt.Errorf("create the Epic's session: %w", err)
 	}
 	res := EpicResult{SessionID: session, Narrator: EpicAgent{Block: blocks[0]}, Orchestrator: EpicAgent{Block: blocks[1]}, OpID: r.OpID}
 	var errs []error

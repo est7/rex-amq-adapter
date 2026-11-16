@@ -173,16 +173,41 @@ func (e Env) reconcileOpen(ctx context.Context, loc Location, op store.EpicOpRec
 	return res, errors.Join(errs...)
 }
 
+// dropUnstartedOp removes the intent of op, an open whose session.create
+// failed, when Rex lists no session it did not list before: nothing was
+// created, so no retry needs the intent, and no other open's session is
+// taken for its (adoptCreated). With any doubt the intent stays for the retry
+// to settle. The caller holds LockEpicLifecycle.
+func (e Env) dropUnstartedOp(ctx context.Context, op store.EpicOpRecord) {
+	after, err := e.Rex.ListSessions(ctx)
+	if err != nil {
+		return
+	}
+	for _, id := range after {
+		if !slices.Contains(op.PriorSessions, id) {
+			return
+		}
+	}
+	// Best effort: an intent left behind only makes a retry more careful.
+	_ = e.Store.DeleteEpicOp(store.EpicOpOpen, op.OpID)
+}
+
 // adoptCreated settles an open op whose first run asked Rex for its session
 // and ended before recording which (store.EpicCreating). The session it
 // created is the one Rex has now and did not have then (op.PriorSessions),
 // labelled name, holding the Epic's narrator and orchestrator, and not
-// another open's Epic: that one is recorded in op, and its lifecycle moved
-// to partial_start, and found is true. With none, Rex created nothing and
-// found is false: the op may create it. More than one, or one that is not an
-// Epic's, is an error, and nothing is created. The caller holds
-// LockEpicLifecycle.
+// another open's Epic (recorded in that op, or in a lifecycle it opened):
+// that one is recorded in op, and its lifecycle moved to partial_start, and
+// found is true. With none, Rex created nothing and found is false: the op
+// may create it. More than one, one that is not an Epic's, or one that
+// another unfinished open of the same name could have created as well, is an
+// error, and nothing is created. The caller holds LockEpicLifecycle.
 func (e Env) adoptCreated(ctx context.Context, op *store.EpicOpRecord, seed store.EpicLifecycle, name string) (found bool, err error) {
+	ops, err := e.Store.EpicOps(store.EpicOpOpen)
+	if err != nil {
+		return false, err
+	}
+	others := slices.DeleteFunc(ops, func(o store.EpicOpRecord) bool { return o.OpID == op.OpID })
 	ids, err := e.Rex.ListSessions(ctx)
 	if err != nil {
 		return false, fmt.Errorf("list Rex's sessions for the one --op-id %q created: %w", op.OpID, err)
@@ -202,9 +227,14 @@ func (e Env) adoptCreated(ctx context.Context, op *store.EpicOpRecord, seed stor
 		if s.Label != name {
 			continue
 		}
+		if slices.ContainsFunc(others, func(o store.EpicOpRecord) bool { return o.SessionID == id }) {
+			continue
+		}
+		// A lifecycle an open wrote; a hand-back alone writes one too, and
+		// says nothing of who opened the session.
 		if lc, ok, err := e.Store.EpicLifecycle(id); err != nil {
 			return false, err
-		} else if ok && lc.OpenOpID != op.OpID {
+		} else if ok && lc.OpenOpID != op.OpID && (lc.OpenOpID != "" || !lc.OpenedAt.IsZero()) {
 			continue
 		}
 		fresh = append(fresh, id)
@@ -215,6 +245,11 @@ func (e Env) adoptCreated(ctx context.Context, op *store.EpicOpRecord, seed stor
 	case 1:
 	default:
 		return false, fmt.Errorf("--op-id %q: Rex has %d new sessions labelled %q (%s) and nothing tells which one this op created; nothing was started (close the ones that are not its Epic and retry)", op.OpID, len(fresh), name, strings.Join(fresh, ", "))
+	}
+	for _, o := range others {
+		if o.State == store.EpicCreating && (o.Name == "" || o.Name == name) && (o.Server == "" || op.Server == "" || o.Server == op.Server) && !slices.Contains(o.PriorSessions, fresh[0]) {
+			return false, fmt.Errorf("%w: --op-id %q cannot tell whether session %s (labelled %q) is its own or unfinished --op-id %q's; nothing was started", ErrRefused, op.OpID, fresh[0], name, o.OpID)
+		}
 	}
 	blocks, err := e.Rex.ListBlocks(ctx, fresh[0])
 	if err != nil {

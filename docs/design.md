@@ -1389,15 +1389,19 @@ refused rather than cut). It is written atomically to
 `sessions/<id>/hand-back.json` (`store.HandBack`: `by`, `at`, `body`,
 `seq`, `digest`), replacing the one before only once the Epic's lifecycle
 lists both (below; a lifecycle that cannot be written keeps the stored one
-and fails the command), and the view carries it uncut as
+and fails the command; a report whose store fails after the lifecycle listed
+it is stored when the same report is recorded again, under its `seq` and
+`at`),
+and the view carries it uncut as
 `hand_back`. `digest` is `sha256:` of the body with CRLF made LF and the
 surrounding blanks trimmed; the same report recorded again leaves the stored
 one as it was, `at` included, so the pulse below does not change, and a new
-one takes `seq` + 1 (a file from before `seq` counts as the first). Under
+one takes the next `seq` (a file from before `seq` counts as the first). Under
 `epic-lifecycle.lock` the hand-back is also listed in the Epic's lifecycle
 (`hand_backs`: `seq`, `digest`, `by`, `at`; one entry per `seq`, the stored
-hand-back backfilled when an earlier failure left it out), which moves to
-`hand_back`:
+hand-back backfilled when an earlier failure left it out), which numbers
+the hand-backs: a new report takes the `seq` after its latest, and a `seq`
+never changes its digest. The lifecycle moves to `hand_back`:
 the narrator's refresh writes it into `view.json`, and every `view` read puts
 the stored one in place in memory, so it is whole the moment it is recorded.
 The session's pulse marks its author with the hand-back's time and a digest
@@ -1458,16 +1462,22 @@ op id.
   held through `session.create` until the new session and its two blocks are
   recorded (`partial_start`), and released before any wait, so two runs of
   one op id create one session between them. Before `session.create` the
-  record is written as `creating`, with `prior_sessions`, every session Rex
-  listed then, so no failure after it leaves a session that no record can
-  lead back to. A retry of a `creating` record (`adoptCreated`) looks for
-  the session the first run created: the one Rex lists now and did not
-  then, labelled with the Epic's name, holding one narrator and one
-  orchestrator block (by their labels' role), and not recorded as another
-  open's Epic. Found, it is recorded (`partial_start`) and reconciled as
-  below; none means Rex created nothing, and the retry creates the session,
-  once; two such sessions, or one that is not shaped like an Epic, are
-  reported and nothing is created. A retry of a record that names its
+  record is written as `creating`, with the Epic's `name` and
+  `prior_sessions`, every session Rex listed then, so no failure after it
+  leaves a session that no record can lead back to. A `session.create` that
+  fails with Rex listing no session it did not before created nothing, and
+  its record is removed; with any doubt it stays. A retry of a `creating`
+  record (`adoptCreated`) looks for the session the first run created: the
+  one Rex lists now and did not then, labelled with the Epic's name,
+  holding one narrator and one orchestrator block (by their labels' role),
+  and not another open's Epic (named in that op's record, or in a lifecycle
+  an open wrote; one only a hand-back wrote says nothing). Found, it is
+  recorded (`partial_start`) and reconciled as below; none means Rex created
+  nothing, and the retry creates the session, once. Two such sessions, one
+  that is not shaped like an Epic, or one that another `creating` op of the
+  same name could have created too (its `prior_sessions` lack it) are
+  reported, and nothing is claimed or created; every op record is read for
+  this, and one that cannot be is an error. A retry of a record that names its
   session starts nothing (`reconcileOpen`): a session Rex no longer has, or
   an Epic already closed, is reported; otherwise it records the crew if the
   first run could not, links the session again, awaits both agents, and

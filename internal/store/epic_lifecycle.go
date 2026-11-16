@@ -93,10 +93,15 @@ func (l *EpicLifecycle) Advance(state string, at time.Time) bool {
 }
 
 // NoteHandBack records h among the lifecycle's hand-backs: the entry of the
-// same sequence number is replaced, wherever it is; a new one is appended.
+// same sequence number is replaced, wherever it is; a new one is appended. A
+// Seq once given a digest keeps it: noting another digest under it panics,
+// so the caller numbers a different report after the latest (LatestHandBack).
 func (l *EpicLifecycle) NoteHandBack(h HandBack) {
 	ref := HandBackRef{Seq: h.Seq, Digest: h.Digest, By: h.By, At: h.At}
 	if i := slices.IndexFunc(l.HandBacks, func(r HandBackRef) bool { return r.Seq == h.Seq }); i >= 0 {
+		if l.HandBacks[i].Digest != h.Digest {
+			panic(fmt.Sprintf("store: hand-back seq %d already has digest %s, not %s", h.Seq, l.HandBacks[i].Digest, h.Digest))
+		}
 		l.HandBacks[i] = ref
 	} else {
 		l.HandBacks = append(l.HandBacks, ref)
@@ -105,6 +110,17 @@ func (l *EpicLifecycle) NoteHandBack(h HandBack) {
 	if h.At.After(l.UpdatedAt) {
 		l.UpdatedAt = h.At
 	}
+}
+
+// LatestHandBack is the lifecycle's hand-back of the highest Seq; ok is
+// false when it lists none.
+func (l EpicLifecycle) LatestHandBack() (latest HandBackRef, ok bool) {
+	for _, r := range l.HandBacks {
+		if !ok || r.Seq > latest.Seq {
+			latest, ok = r, true
+		}
+	}
+	return latest, ok
 }
 
 func (p Paths) lifecyclePath(id string) string {
@@ -161,10 +177,12 @@ const (
 // far it got. RequestHash identifies the request (who asked for what), so
 // the same op id reused for another request is told apart from a retry.
 type EpicOpRecord struct {
-	Kind              string      `json:"kind"`
-	OpID              string      `json:"op_id"`
-	RequestHash       string      `json:"request_hash"`
-	SessionID         string      `json:"session_id"`
+	Kind        string `json:"kind"`
+	OpID        string `json:"op_id"`
+	RequestHash string `json:"request_hash"`
+	SessionID   string `json:"session_id"`
+	// Name is the Epic an open asked for, its session's label.
+	Name              string      `json:"name,omitempty"`
 	Server            string      `json:"server,omitempty"`
 	PersonalHandle    core.Handle `json:"personal_handle"`
 	PersonalSessionID string      `json:"personal_session_id"`
@@ -237,6 +255,43 @@ func HandBackDigest(body string) string {
 }
 
 // readJSON decodes path into v; ok is false when there is no file.
+// EpicOps reads every recorded operation of kind. A record that cannot be
+// read is an error, never skipped: a caller deciding whose a session is must
+// see every op that could claim it.
+func (s Store) EpicOps(kind string) ([]EpicOpRecord, error) {
+	entries, err := os.ReadDir(s.P.epicOps())
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("the %s operations: %w", kind, err)
+	}
+	var out []EpicOpRecord
+	for _, ent := range entries {
+		if !strings.HasPrefix(ent.Name(), kind+"-") || !strings.HasSuffix(ent.Name(), ".json") {
+			continue
+		}
+		var r EpicOpRecord
+		if _, err := readJSON(filepath.Join(s.P.epicOps(), ent.Name()), &r); err != nil {
+			return nil, fmt.Errorf("the %s operations: %w", kind, err)
+		}
+		if r.Kind != kind {
+			return nil, fmt.Errorf("the %s operations: %s names a %s operation", kind, ent.Name(), r.Kind)
+		}
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+// DeleteEpicOp removes the record of operation opID of kind; none is not an
+// error.
+func (s Store) DeleteEpicOp(kind, opID string) error {
+	if err := os.Remove(s.epicOpPath(kind, opID)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
 func readJSON(path string, v any) (bool, error) {
 	b, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
