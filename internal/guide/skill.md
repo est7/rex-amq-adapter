@@ -327,6 +327,14 @@ of its own under a built-in role (`architect`, `reviewer`, `qa`, `writer`,
 - **Several Slices.** One implementer per Slice, in that Slice's worktree
   (`summon implementer --cwd <worktree>`), and one reviewer or QA kept open
   across Slices (`summon reviewer` without `--cwd` reaches it).
+- **Council.** A review role reads a Slice worktree without writing it, so
+  up to one seat per harness may share it: `summon reviewer --cwd <worktree>`
+  again starts the next seat on a harness not yet seated there, or name one
+  with `--harness` (`codex`, `agy`, `claude`). A second seat on the same
+  harness, and any writer role, is still refused. Each seat replies
+  `VERDICT: APPROVE | CHANGES`, `SCORE: <n>/10` when asked, and `S1
+  [blocker|should|nit] <file>:<line> <claim>. Fix: <suggestion>`, and builds
+  or tests only in a temporary detached worktree of its own.
 - **Another Epic.** A goal that is a separate Epic gets its own Rex session
   with its own orchestrator, not more panes here (Start a peer, step 3).
 
@@ -338,7 +346,7 @@ a narrator. Take the role in your pane with
 `rex-amq-adapter join --role personal`. One command opens an Epic:
 
 ```bash
-rex-amq-adapter epic "<name>" -c <repo> --goal <contract> --op-id <id>   # or --asked "<the user's words>"; --crew <crew> to work as one
+rex-amq-adapter epic "<name>" -c <repo> --goal <contract> --asked "<the user's words>" --op-id <id>   # either alone also works; --goal - reads the contract from stdin; --crew <crew> to work as one
 rex-amq-adapter epic close <session_id> --asked "<the user's words>" --op-id <id>   # only once the user says so
 rex-amq-adapter view --cockpit                  # read-only: your linked Epics' lifecycle, hand-back, and whether a view exists
 ```
@@ -349,10 +357,17 @@ role's routing (the orchestrator on Claude `opus`, the narrator on agy's cheap
 `gemini-4-hydrogen-low`), links the Epic to
 you, and prints one JSON line (`session_id`, each agent's `handle`, `block`
 and `status`, `linked`, and `lead`, the role that runs the goal); it exits 0
-only when both agents are adopted and linked. With `--crew pair` the Epic is
+only when both agents are adopted and linked. The user's words and the
+contract are notarized read-only (`0444`, written once) in the Epic's
+`grant.json` and `grant.md`; `--goal -` keeps a piped contract as its
+`goal.md`. The JSON and the view name them as `goal_path` and `grant_path`,
+and the lead's start notice ends with `Goal: <path>` and `Grant: <path> (user's
+words relayed verbatim by personal <handle>, recorded by rex-amq-adapter)`.
+With `--crew pair` the Epic is
 one Slice with no orchestrator: an implementer leads in its place, on the
 implementer's routing, runs the goal itself (Checkpoints, its own `summon
-reviewer`), and records the hand-back. Closing is two-phase: the orchestrator records its whole final report
+reviewer`), records the hand-back, and takes the narrator's `--control`
+directives as an orchestrator would. Closing is two-phase: the orchestrator records its whole final report
 (review queue with PR links, Blocked on me, Decided for you, Changed, Found)
 last, once every PR is open, with `rex-amq-adapter hand-back @<file>` (`-`
 reads stdin; a new one replaces it), which `view` shows whole as `hand_back`;
@@ -418,7 +433,8 @@ without its own; the JSON names the `harness` started and each one
 brief, in your directory or the one `--cwd` names (a Slice worktree), and told
 once it is adopted. With `--cwd` it only ever starts a new agent there, a
 second one of a live role included: it refuses a handle and a directory a live
-agent of the role already works in, and a departed one is not resumed. The guards decide, and a refusal says
+agent of the role already works in (a review role only on the same harness:
+see Council), and a departed one is not resumed. The guards decide, and a refusal says
 why; never retry a refused summon with other words:
 
 - a personal agent never summons: it opens an Epic (`epic`), and the refusal
