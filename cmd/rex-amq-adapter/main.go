@@ -70,7 +70,7 @@ Agent and user commands:
                             the role's prompt, and the harnesses, models and
                             efforts it starts on (routing.toml, and from which
                             layer); without --role, the crew's lead
-  summon <handle|role> --subject S --body B [--kind K] [--grant FILE | --asked "WORDS"] [--harness H] [--cwd DIR] [--split]
+  summon <handle|role> --subject S --body B [--kind K] [--grant FILE | --asked "WORDS"] [--harness H | --council] [--cwd DIR] [--split]
                             send to a peer by handle or role: a live one gets the
                             mail; a departed one of this session is resumed in a
                             tab of its own, then gets it; none starts one for the
@@ -78,7 +78,11 @@ Agent and user commands:
                             then delivers. --split opens it in a pane beside you
                             instead, when the human asked (never a narrator). Guards: never from a personal agent (it runs epic), a request kind only, no cycle,
                             depth 2 at most, 6 live agents per session at most, and
-                            a new agent only with the user's words or grant file
+                            a new agent only with the user's words or grant file.
+                            --council (reviewer, editor, qa): one seat per harness
+                            of the role's routing, each asked for SCORE: <n>/10;
+                            live seats get the mail, the rest resume or start, and
+                            when any seat cannot, none is mailed or launched
   send|reply|read|drain|thread|trace|dlq|list [AMQ FLAGS...]
                             amq's mail commands, run as you on the adapter's
                             root after the gateway allows them: Epics do not
@@ -685,14 +689,26 @@ func runSummon(args []string) int {
 	harness := fs.String("harness", "", "claude, codex, agy, or pi for a start (default: by role; a review role takes the first ready family other than yours)")
 	cwd := fs.String("cwd", "", "the working directory of a started agent, such as its Slice worktree (default: yours)")
 	split := fs.Bool("split", false, "open a launched agent in a pane beside yours, when the human asked for one (default: a tab of its own)")
+	council := fs.Bool("council", false, "a review role only: one seat per harness of its routing, each asked for a score; refused, with nothing mailed or launched, when any seat cannot be seated")
 	timeout := fs.Duration("timeout", 45*time.Second, "how long to wait for a launched agent's adoption")
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		fmt.Fprintln(os.Stderr, "usage: rex-amq-adapter summon <handle|role> --subject S --body B [--kind K] [--grant FILE | --asked WORDS] [--harness H] [--cwd DIR] [--split]")
+		fmt.Fprintln(os.Stderr, "usage: rex-amq-adapter summon <handle|role> --subject S --body B [--kind K] [--grant FILE | --asked WORDS] [--harness H | --council] [--cwd DIR] [--split]")
+		if len(args) > 0 && (args[0] == "-h" || args[0] == "--help") {
+			fs.SetOutput(os.Stderr)
+			fs.PrintDefaults()
+		}
 		return 2
 	}
 	target := args[0]
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
+	}
+	if *council {
+		// Settled before the caller is: a usage error is one anywhere.
+		if err := app.CouncilUsage(target, *harness); err != nil {
+			fmt.Fprintf(os.Stderr, "rex-amq-adapter: %v\n", err)
+			return 2
+		}
 	}
 	if strings.HasPrefix(*body, "@") {
 		b, err := os.ReadFile((*body)[1:])
@@ -709,10 +725,25 @@ func runSummon(args []string) int {
 		return fail(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	res, err := env.Summon(ctx, loc, app.SummonRequest{Target: target, Kind: *kind, Subject: *subject, Body: *body, Grant: *grant, Asked: *asked, Harness: *harness, Cwd: *cwd, Split: *split})
+	req := app.SummonRequest{Target: target, Kind: *kind, Subject: *subject, Body: *body, Grant: *grant, Asked: *asked, Harness: *harness, Cwd: *cwd, Split: *split, Council: *council}
+	res, err := env.Summon(ctx, loc, req)
 	cancel()
+	if errors.Is(err, app.ErrUsage) {
+		fmt.Fprintf(os.Stderr, "rex-amq-adapter: %v\n", err)
+		return 2
+	}
 	if err != nil {
+		if len(res.Seats) > 0 {
+			// A council that failed midway: say which seats were mailed or launched.
+			out := summonOutput(res)
+			out["seats"] = res.Seats
+			b, _ := json.Marshal(out)
+			fmt.Println(string(b))
+		}
 		return fail(err)
+	}
+	if *council {
+		return summonCouncil(env, loc, req, res, *timeout)
 	}
 	out := summonOutput(res)
 	if res.Block != "" {
@@ -745,6 +776,33 @@ func runSummon(args []string) int {
 		return 1 // launched, not adopted: the mail waits, the user must look at the pane
 	}
 	return 0
+}
+
+// summonCouncil awaits the seats a council launched, prints one JSON line
+// with every seat's outcome, and exits 3 when refused, 1 when a launched
+// seat was not adopted (its pane needs the user), else 0.
+func summonCouncil(env app.Env, loc app.Location, req app.SummonRequest, res app.SummonResult, timeout time.Duration) int {
+	code := 0
+	if res.Action == "refused" {
+		code = 3
+	} else {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout+20*time.Second)
+		err := env.AwaitCouncil(ctx, loc, req, &res, timeout)
+		cancel()
+		if err != nil {
+			return fail(err)
+		}
+		for _, st := range res.Seats {
+			if st.Block != "" && st.Startup != core.StartupAdopted {
+				code = 1
+			}
+		}
+	}
+	out := summonOutput(res)
+	out["seats"] = res.Seats
+	b, _ := json.Marshal(out)
+	fmt.Println(string(b))
+	return code
 }
 
 const trustUsage = `usage: rex-amq-adapter trust <dir>          (prints agy's --settings value for dir; exit 1 when there is none)
