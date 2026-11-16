@@ -32,6 +32,9 @@ type EpicRequest struct {
 	Harness     string // the orchestrator's CLI; "" is the role's default
 	// Crew is the crew the Epic's session works as (Env.Join); "" for none.
 	Crew string
+	// OpID names this request, so a retry with the same OpID reconciles the
+	// Epic the first run started instead of starting another; "" for none.
+	OpID string
 }
 
 // EpicAgent is where one of the Epic's agents was started and how its
@@ -42,12 +45,17 @@ type EpicAgent struct {
 }
 
 // EpicResult is what was started. A failure part way leaves what started
-// running: nothing is torn down.
+// running: nothing is torn down. Replayed says a retry of OpID found the Epic
+// its first run started and started nothing; LifecycleState is the Epic's
+// lifecycle state when the command ended (store.EpicLifecycle).
 type EpicResult struct {
-	SessionID    string    `json:"session_id"`
-	Orchestrator EpicAgent `json:"orchestrator"`
-	Narrator     EpicAgent `json:"narrator"`
-	Linked       bool      `json:"linked"`
+	SessionID      string    `json:"session_id"`
+	Orchestrator   EpicAgent `json:"orchestrator"`
+	Narrator       EpicAgent `json:"narrator"`
+	Linked         bool      `json:"linked"`
+	OpID           string    `json:"op_id,omitempty"`
+	LifecycleState string    `json:"lifecycle_state,omitempty"`
+	Replayed       bool      `json:"replayed,omitempty"`
 }
 
 // Ready reports whether the Epic is fully up: both agents adopted, and the
@@ -59,7 +67,12 @@ func (r EpicResult) Ready() bool {
 // OpenEpic starts an Epic for the personal agent in loc: a session labelled
 // r.Name with a tab for its orchestrator, briefed with the goal contract or
 // the user's words, and one for its narrator, told whom it narrates for; then it links the session to the caller and
-// waits, until ctx ends, for both agents to be adopted.
+// waits, until ctx ends, for both agents to be adopted. The Epic's lifecycle
+// is partial_start from the moment its session exists, opened once both
+// agents are adopted. With r.OpID, the session and its blocks are recorded
+// under the op id before any wait, so a retry of the same request, however
+// the first run ended, reconciles that session (reconcileOpen) and never
+// creates another; the op id reused for another request is refused.
 func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicResult, error) {
 	caller, ok, err := e.Store.Record(loc.Block)
 	if err != nil {
@@ -79,6 +92,9 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 	}
 	if utf8.RuneCountInString(name) > maxSessionLabel {
 		return EpicResult{}, fmt.Errorf("%w: an Epic's name is at most %d characters", ErrUsage, maxSessionLabel)
+	}
+	if err := validOpID(r.OpID); err != nil {
+		return EpicResult{}, err
 	}
 	task := core.Task(name)
 	dir, err := filepath.Abs(r.Dir)
@@ -121,6 +137,48 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 			return EpicResult{}, fmt.Errorf("%w: no crew %q in %s: `rex-amq-adapter crews` lists them", ErrUsage, crewName, dir)
 		}
 	}
+	physical, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return EpicResult{}, err
+	}
+	seed := store.EpicLifecycle{Name: name, Dir: physical, PersonalHandle: caller.Handle, PersonalSessionID: caller.SessionID, Server: caller.Server, Crew: crewName, OpenOpID: r.OpID}
+	var op *store.EpicOpRecord
+	// release frees LockEpicLifecycle when an op id took it: once the new
+	// session is recorded, or on any return before.
+	release := func() {}
+	defer func() { release() }()
+	if r.OpID != "" {
+		id := openIdentity{Personal: caller.Endpoint().Session(), Name: name, Dir: physical, Asked: r.Asked, Crew: crewName}
+		if r.Goal != "" {
+			if id.Goal, err = filepath.Abs(r.Goal); err != nil {
+				return EpicResult{}, err
+			}
+		}
+		if r.Harness != "" {
+			id.Harness = string(kind)
+		}
+		hash := requestHash(id)
+		// Held from the look-up until the new session is recorded, so two
+		// runs of one op id create one session between them.
+		unlock, err := e.Store.LockEpicLifecycle(ctx)
+		if err != nil {
+			return EpicResult{}, err
+		}
+		prev, found, err := e.Store.EpicOp(store.EpicOpOpen, r.OpID)
+		if err != nil || found {
+			unlock()
+			switch {
+			case err != nil:
+				return EpicResult{}, err
+			case prev.RequestHash != hash:
+				return EpicResult{OpID: r.OpID}, errOpConflict(store.EpicOpOpen, r.OpID)
+			}
+			seed.SessionID = prev.SessionID
+			return e.reconcileOpen(ctx, loc, prev, seed)
+		}
+		release = unlock
+		op = &store.EpicOpRecord{Kind: store.EpicOpOpen, OpID: r.OpID, RequestHash: hash, Server: caller.Server, PersonalHandle: caller.Handle, PersonalSessionID: caller.SessionID, CreatedAt: e.Now().UTC()}
+	}
 	// Both agents' folder trust before the session exists: an Epic either
 	// starts with no dialog in its panes or does not start.
 	if err := e.trustGate().Preflight(ctx, dir, narrator, kind); err != nil {
@@ -141,10 +199,29 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 	if err != nil {
 		return EpicResult{}, fmt.Errorf("create the Epic's session: %w", err)
 	}
-	res := EpicResult{SessionID: session, Narrator: EpicAgent{Block: blocks[0]}, Orchestrator: EpicAgent{Block: blocks[1]}}
+	res := EpicResult{SessionID: session, Narrator: EpicAgent{Block: blocks[0]}, Orchestrator: EpicAgent{Block: blocks[1]}, OpID: r.OpID}
 	var errs []error
 	if crewErr != nil {
 		errs = append(errs, fmt.Errorf("record the crew: %w", crewErr))
+	}
+	// Recorded before any wait, so a run that dies or times out from here on
+	// leaves the session to reconcile.
+	seed.SessionID = session
+	if op != nil {
+		op.SessionID, op.NarratorBlock, op.OrchestratorBlock = session, blocks[0], blocks[1]
+		lc, err := e.advanceEpic(seed, store.EpicPartialStart, op)
+		release()
+		release = func() {}
+		if err != nil {
+			// Without its record a retry would start a second Epic: say so
+			// rather than wait on this one.
+			return res, fmt.Errorf("the Epic session %s started, but recording it under --op-id %q failed, so a retry would start another: %w", session, r.OpID, err)
+		}
+		res.LifecycleState = lc.State
+	} else if lc, err := e.lockedAdvanceEpic(ctx, seed, store.EpicPartialStart, nil); err != nil {
+		errs = append(errs, fmt.Errorf("record the lifecycle: %w", err))
+	} else {
+		res.LifecycleState = lc.State
 	}
 	// Linked before the narrator is adopted, so the caller can mail it the
 	// moment it is.
@@ -153,13 +230,13 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 	} else {
 		res.Linked = true
 	}
-	for _, a := range []*EpicAgent{&res.Orchestrator, &res.Narrator} {
-		s, err := e.AwaitStartup(ctx, a.Block)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("await %s: %w", a.Block, err))
-			continue
+	errs = append(errs, e.awaitEpicAgents(ctx, &res)...)
+	if res.Orchestrator.Status == core.StartupAdopted && res.Narrator.Status == core.StartupAdopted {
+		if lc, err := e.lockedAdvanceEpic(ctx, seed, store.EpicOpened, op); err != nil {
+			errs = append(errs, fmt.Errorf("record the lifecycle: %w", err))
+		} else {
+			res.LifecycleState = lc.State
 		}
-		a.Startup = s
 	}
 	return res, errors.Join(errs...)
 }

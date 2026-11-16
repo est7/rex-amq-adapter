@@ -11,14 +11,17 @@ import (
 
 // A personal agent opens an Epic with one command, in a private Rex server:
 // the Epic's session gets an orchestrator and a narrator, both adopted, and
-// the link between the personal agent and the Epic is recorded.
+// the link between the personal agent and the Epic is recorded. The same
+// command run again under its --op-id starts nothing: it reports the same
+// session, replayed and opened.
 func TestPersonalAgentOpensAnEpic(t *testing.T) {
 	w := newWorld(t)
 	tb := w.newTab("me", "personal")
 	w.ready("me")
 	goal := filepath.Join(w.dir, "goal.md")
 	w.write(goal, "GOAL: ship it\n")
-	w.typeInto(tb.first, "epic e2e-login -c "+w.project("app")+" --goal "+goal+" --timeout 40")
+	open := "epic e2e-login -c " + w.project("app") + " --goal " + goal + " --timeout 40 --op-id e2e-open-1"
+	w.typeInto(tb.first, open)
 	w.until("the epic command to finish", 50*time.Second, func() bool { return strings.Contains(w.joined("me"), "exit=") })
 	out := w.joined("me")
 	if !strings.Contains(out, "exit=0") {
@@ -64,6 +67,22 @@ func TestPersonalAgentOpensAnEpic(t *testing.T) {
 	who, code := w.who(res.Orchestrator.Block, "--all", "--json")
 	if code != 0 || !strings.Contains(who, `"role": "orchestrator"`) || !strings.Contains(who, `"role": "narrator"`) || !strings.Contains(who, `"tab": "narrator(`+res.Narrator.Handle+`) | e2e-login"`) {
 		t.Errorf("who in the Epic: %d\n%s", code, who)
+	}
+
+	sessions := w.rex("session", "list")
+	w.typeInto(tb.first, open)
+	w.until("the retried epic command to finish", 50*time.Second, func() bool { return strings.Count(w.joined("me"), "exit=") == 2 })
+	lines := strings.Split(strings.TrimSpace(w.joined("me")), "\n")
+	var again struct {
+		Session  string `json:"session_id"`
+		Replayed bool   `json:"replayed"`
+		State    string `json:"lifecycle_state"`
+	}
+	if len(lines) != 4 || lines[3] != "exit=0" || json.Unmarshal([]byte(lines[2]), &again) != nil || again.Session != res.Session || !again.Replayed || again.State != "opened" {
+		t.Fatalf("the retry:\n%s\n%s", w.joined("me"), w.dump())
+	}
+	if after := w.rex("session", "list"); after != sessions {
+		t.Errorf("the retry changed the sessions:\n%s\nthen\n%s", sessions, after)
 	}
 }
 

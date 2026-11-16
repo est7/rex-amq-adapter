@@ -205,6 +205,9 @@ func (f *fakeTerm) ListSessions(context.Context) ([]string, error) {
 func (f *fakeTerm) InspectSession(_ context.Context, id string) (rex.Session, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if slices.Contains(f.killed, id) {
+		return rex.Session{}, rex.ErrNotFound
+	}
 	s := rex.Session{ID: id, Label: f.sessionLabel}
 	for w, label := range f.tabs {
 		if f.sessionOf(w) == id {

@@ -169,6 +169,26 @@ type EpicOpRecord struct {
 	UpdatedAt         time.Time   `json:"updated_at"`
 }
 
+// opRank orders the states of each kind of operation.
+var opRank = map[string]map[string]int{
+	EpicOpOpen:  {EpicPartialStart: 1, EpicOpened: 2},
+	EpicOpClose: {EpicClosing: 1, EpicClosed: 2},
+}
+
+// Advance moves the operation to state at, unless it is already as far or
+// further. It reports whether the state moved.
+func (r *EpicOpRecord) Advance(state string, at time.Time) bool {
+	rank := opRank[r.Kind]
+	if rank[state] == 0 {
+		panic("store: no state " + state + " for an Epic " + r.Kind + " operation")
+	}
+	if rank[r.State] >= rank[state] {
+		return false
+	}
+	r.State, r.UpdatedAt = state, at
+	return true
+}
+
 func (s Store) epicOpPath(kind, opID string) string {
 	sum := sha256.Sum256([]byte(opID))
 	return filepath.Join(s.P.epicOps(), kind+"-"+hex.EncodeToString(sum[:])+".json")
@@ -190,8 +210,8 @@ func (s Store) EpicOp(kind, opID string) (EpicOpRecord, bool, error) {
 
 // PutEpicOp records r whole. The caller holds LockEpicLifecycle.
 func (s Store) PutEpicOp(r EpicOpRecord) error {
-	if (r.Kind != EpicOpOpen && r.Kind != EpicOpClose) || r.OpID == "" || r.RequestHash == "" || r.SessionID == "" {
-		return errors.New("an Epic operation needs its kind, its op id, its request hash, and its session")
+	if opRank[r.Kind][r.State] == 0 || r.OpID == "" || r.RequestHash == "" || r.SessionID == "" {
+		return errors.New("an Epic operation needs its kind and a state of it, its op id, its request hash, and its session")
 	}
 	return writeJSON(s.epicOpPath(r.Kind, r.OpID), r)
 }

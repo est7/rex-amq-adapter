@@ -86,19 +86,23 @@ Agent and user commands:
                             narrator of Epic session EPIC_SESSION exchange
                             mail; without one, list your links
   unlink EPIC_SESSION       revoke such a link; both take effect at once
-  epic <name> [-c DIR] (--goal FILE | --asked "WORDS") [--crew C] [--harness H] [--timeout D]
+  epic <name> [-c DIR] (--goal FILE | --asked "WORDS") [--crew C] [--harness H] [--timeout D] [--op-id ID]
                             (a personal agent) open an Epic: a Rex session named
                             <name> with its orchestrator (briefed with the goal
                             contract, or the user's words) and its narrator,
                             linked to you, working as crew C when given; prints
                             one JSON line and exits 0 only when both are adopted
-                            and linked
-  epic close <session_id> --asked "WORDS" [--force]
+                            and linked. --op-id ID makes a retry reconcile the
+                            Epic the first run started (replayed: true) instead
+                            of starting another; ID reused for another request
+                            is refused
+  epic close <session_id> --asked "WORDS" [--force] [--op-id ID]
                             (a personal agent, on the user's words) close a linked
                             Epic: kill its Rex session, park its agents (their
                             handles stay reserved for a resume), and unlink it;
                             refused while one of its agents is not at rest or
-                            holds unread mail, unless --force
+                            holds unread mail, unless --force. --op-id ID makes a
+                            retry finish the close, even once the link is gone
   retire <handle> [--force] close a finished peer of this Rex session: mark it
                             departed (depart_reason "retired"), retire its waker,
                             and close its pane, telling nobody it left; a pane that
@@ -1180,8 +1184,8 @@ func printCrewsJSON(lib crew.Library, entries []crew.Entry) int {
 	return printJSON(out)
 }
 
-const epicUsage = `usage: rex-amq-adapter epic <name> [-c DIR] (--goal FILE | --asked "WORDS") [--crew C] [--harness H] [--timeout D]
-       rex-amq-adapter epic close <session_id> --asked "WORDS" [--force]`
+const epicUsage = `usage: rex-amq-adapter epic <name> [-c DIR] (--goal FILE | --asked "WORDS") [--crew C] [--harness H] [--timeout D] [--op-id ID]
+       rex-amq-adapter epic close <session_id> --asked "WORDS" [--force] [--op-id ID]`
 
 // runEpic opens an Epic for the personal agent running it (app.OpenEpic)
 // and prints what was started, even when part of it failed.
@@ -1200,6 +1204,7 @@ func runEpic(args []string) int {
 	asked := fs.String("asked", "", "the user's own words asking for the Epic, its brief when there is no contract")
 	harness := fs.String("harness", "", "the orchestrator's CLI: claude (default), codex, agy, or pi")
 	crewName := fs.String("crew", "", "the crew the Epic's session works as (rex-amq-adapter crews lists them)")
+	opID := fs.String("op-id", "", "names this request: a retry with the same id reconciles the Epic the first run started instead of starting another")
 	timeout := timeoutFlag(90 * time.Second)
 	fs.Var(&timeout, "timeout", "how long to wait for both agents: a duration (2m) or seconds (120)")
 	if err := fs.Parse(args[1:]); err != nil {
@@ -1222,7 +1227,7 @@ func runEpic(args []string) int {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout))
 	defer cancel()
-	res, err := env.OpenEpic(ctx, loc, app.EpicRequest{Name: name, Dir: *dir, Goal: *goal, Asked: *asked, Harness: *harness, Crew: *crewName})
+	res, err := env.OpenEpic(ctx, loc, app.EpicRequest{Name: name, Dir: *dir, Goal: *goal, Asked: *asked, Harness: *harness, Crew: *crewName, OpID: *opID})
 	if res.SessionID != "" {
 		out, merr := json.Marshal(res)
 		if merr != nil {
@@ -1253,6 +1258,7 @@ func runEpicClose(args []string) int {
 	fs := flag.NewFlagSet("epic close", flag.ContinueOnError)
 	asked := fs.String("asked", "", "the user's own words asking to close the Epic: its grant")
 	force := fs.Bool("force", false, "close even while an agent of the Epic is not at rest or holds unread mail")
+	opID := fs.String("op-id", "", "names this request: a retry with the same id finishes the close the first run started, even once the link is gone")
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
 	}
@@ -1266,7 +1272,7 @@ func runEpicClose(args []string) int {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	res, err := env.CloseEpic(ctx, loc, app.CloseRequest{Session: session, Asked: *asked, Force: *force})
+	res, err := env.CloseEpic(ctx, loc, app.CloseRequest{Session: session, Asked: *asked, Force: *force, OpID: *opID})
 	if errors.Is(err, app.ErrUsage) {
 		fmt.Fprintf(os.Stderr, "rex-amq-adapter: %v\n", err)
 		return 2
