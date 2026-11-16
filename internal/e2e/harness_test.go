@@ -29,7 +29,10 @@ import (
 // `epic ARGS`, `summon ARGS`) runs rex-amq-adapter join ARGS from its shell,
 // its output to <name>.join. With <name>.obey present, a typed AMQ doorbell is obeyed:
 // the command after its "Run " runs from the agent's shell, its output to
-// <name>.drained.
+// <name>.drained. Before it reports ready, its tool shell's ME_UNATTENDED
+// ("unset" when it has none) goes to <name>.unattended, the output of
+// rex-amq-adapter env to <name>.env, and ME_UNATTENDED after evaluating that
+// output to <name>.unattended-env.
 const agentScript = `name=$1
 harness=${2:-claude}
 glyph='❯'
@@ -46,6 +49,10 @@ hook() {
 }
 stty -echo
 hook session-start
+probe() { /bin/sh -c 'printf "%s" "${ME_UNATTENDED:-unset}"'; }
+probe >"$DIR/$name.unattended"
+"$ADAPTER" env >"$DIR/$name.env" 2>&1
+( eval "$(cat "$DIR/$name.env")" 2>/dev/null; probe ) >"$DIR/$name.unattended-env"
 status idle
 draw
 : >"$DIR/$name.ready"
@@ -144,8 +151,10 @@ func newWorld(t *testing.T) *world {
 		// CLAUDE* and the other harnesses' session ids: the agent running the
 		// tests may be a harness session, whose pid and session id must not
 		// stand for the scripted agents'.
+		// ME_UNATTENDED: the agent running the tests may be an Epic's, and
+		// the marker an agent shell reads must come from its own launch.
 		switch name {
-		case "HOME", "SHELL", "XDG_CONFIG_HOME", "CODEX_THREAD_ID", "PI_SESSION_ID", "ANTIGRAVITY_CONVERSATION_ID":
+		case "HOME", "SHELL", "XDG_CONFIG_HOME", "CODEX_THREAD_ID", "PI_SESSION_ID", "ANTIGRAVITY_CONVERSATION_ID", "ME_UNATTENDED":
 			continue
 		}
 		if name == "PATH" {
@@ -182,13 +191,17 @@ func newWorld(t *testing.T) *world {
 	}
 	w.write(script, preamble+agentScript)
 	// A launched "claude" or "agy" is a scripted agent of that harness named
-	// by its brief: an Epic's narrator is told to narrate, anything else is
-	// its orchestrator.
+	// by its brief: an Epic's narrator is told to narrate, a brief naming
+	// e2e-worker starts the worker, anything else is its orchestrator; a
+	// resume (claude --resume, agy --conversation) takes back the session it
+	// names, which is the agent's name.
 	if err := os.MkdirAll(filepath.Join(dir, "bin"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	for _, h := range []string{"claude", "agy"} {
-		w.write(filepath.Join(dir, "bin", h), "#!/bin/sh\ncase \"$*\" in *Narrate*) n=narrator ;; *) n=orchestrator ;; esac\nexec /bin/sh '"+script+"' \"$n\" "+h+"\n")
+	for h, resume := range map[string]string{"claude": "--resume", "agy": "--conversation"} {
+		w.write(filepath.Join(dir, "bin", h), "#!/bin/sh\ncase \"$*\" in *Narrate*) n=narrator ;; *e2e-worker*) n=worker ;; *) n=orchestrator ;; esac\n"+
+			"prev=\nfor a in \"$@\"; do [ \"$prev\" = "+resume+" ] && n=$a; prev=$a; done\n"+
+			"exec /bin/sh '"+script+"' \"$n\" "+h+"\n")
 	}
 	w.startServer()
 	return w

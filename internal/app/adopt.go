@@ -216,6 +216,9 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	if in.Launch != nil {
 		rec.Launched, rec.Model, rec.Effort = true, in.Launch.Model, in.Launch.Effort
 	}
+	if rec.Unattended, err = e.adoptUnattended(rec, in, hasOwn && own.Unattended); err != nil {
+		return Adoption{}, err
+	}
 	sm, summoned, err := e.Store.Summon(in.SummonToken)
 	if err != nil {
 		fmt.Fprintf(Diagnostics, "read the summon of %s: %v\n", in.SummonToken, err)
@@ -494,7 +497,13 @@ func (e Env) Exports(loc Location) (string, error) {
 	if !ok || !rec.Live() {
 		return "", fmt.Errorf("no AMQ identity for this Rex block (%s); it is assigned when an agent's first turn starts here with the adapter's hooks installed", loc.Block)
 	}
-	return fmt.Sprintf("export AM_ROOT=%s AM_ME=%s\n", shellQuote(e.Paths.Root()), shellQuote(string(rec.Handle))), nil
+	// An unattended agent's shells carry the marker even when its harness
+	// dropped it; nothing here ever clears it (unattended.go).
+	unattended := ""
+	if rec.Unattended && rec.Role != core.PersonalRole {
+		unattended = " " + UnattendedEnv + "=1"
+	}
+	return fmt.Sprintf("export AM_ROOT=%s AM_ME=%s%s\n", shellQuote(e.Paths.Root()), shellQuote(string(rec.Handle)), unattended), nil
 }
 
 func shellQuote(s string) string {

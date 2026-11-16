@@ -196,6 +196,9 @@ type HookInput struct {
 	// Launch is LaunchModelEnv and LaunchEffortEnv in the hook's
 	// environment, nil when the adapter did not launch the agent.
 	Launch *core.Launch `json:"-"`
+	// Unattended is UnattendedEnv=1 in the hook's environment: the agent was
+	// launched unattended (or inherited the marker).
+	Unattended bool `json:"-"`
 	// Idle: the agent is at rest (sent by Pi's extension when it rescans
 	// between runs), so only an announcement can start it.
 	Idle bool `json:"idle"`

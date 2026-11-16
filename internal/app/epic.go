@@ -147,16 +147,20 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 	// The narrator's tab first and the orchestrator's last, which Rex makes
 	// the session's active tab; both keep Rex's placeholder name, so each
 	// follows its agent (core.FollowTab).
+	// Both run unattended, named in their own commands (unattended.go).
 	panes := []rex.Pane{
-		{Label: core.NarratorRole + core.PaneSeparator + task, Dir: dir, Command: withLaunchEnv(narrLaunch, e.withTrust(dir, narrLaunch.Args(narrator, startCommand(narrator, narrate))))},
-		{Label: lead + core.PaneSeparator + task, Dir: dir, Command: withLaunchEnv(orchLaunch, e.withTrust(dir, orchLaunch.Args(kind, startCommand(kind, brief))))},
+		{Label: core.NarratorRole + core.PaneSeparator + task, Dir: dir, Command: withUnattendedEnv(withLaunchEnv(narrLaunch, e.withTrust(dir, narrLaunch.Args(narrator, startCommand(narrator, narrate)))))},
+		{Label: lead + core.PaneSeparator + task, Dir: dir, Command: withUnattendedEnv(withLaunchEnv(orchLaunch, e.withTrust(dir, orchLaunch.Args(kind, startCommand(kind, brief)))))},
 	}
-	session, blocks, crewErr, err := e.newEpicSession(ctx, name, panes, crewName, caller.Handle)
+	session, blocks, policyErr, crewErr, err := e.newEpicSession(ctx, name, panes, crewName, caller)
 	if err != nil {
 		return EpicResult{}, fmt.Errorf("create the Epic's session: %w", err)
 	}
 	res := EpicResult{SessionID: session, Narrator: EpicAgent{Block: blocks[0]}, Orchestrator: EpicAgent{Block: blocks[1]}, Lead: lead}
 	var errs []error
+	if policyErr != nil {
+		errs = append(errs, fmt.Errorf("record the Epic policy: %w", policyErr))
+	}
 	if crewErr != nil {
 		errs = append(errs, fmt.Errorf("record the crew: %w", crewErr))
 	}
@@ -178,24 +182,31 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 	return res, errors.Join(errs...)
 }
 
-// newEpicSession creates the Epic's session and, with crewName, records it
-// as the session's crew. The panes' agents start as the session is created,
-// so with a crew both steps run under the lifecycle lock that adoption
-// takes: neither agent is adopted, and briefed, before the crew is recorded.
-// crewErr is a crew that could not be recorded; the session stands.
-func (e Env) newEpicSession(ctx context.Context, name string, panes []rex.Pane, crewName string, by core.Handle) (session string, blocks []string, crewErr, err error) {
+// newEpicSession creates the Epic's session, records its unattended Epic
+// policy (every Epic's, whoever asked for it: Claim C23) and, with crewName,
+// records it as the session's crew. The panes' agents start as the session
+// is created, so with a crew the steps run under the lifecycle lock that
+// adoption takes: neither agent is adopted, and briefed, before the crew is
+// recorded. policyErr and crewErr are what could not be recorded; the
+// session stands.
+func (e Env) newEpicSession(ctx context.Context, name string, panes []rex.Pane, crewName string, by store.Record) (session string, blocks []string, policyErr, crewErr, err error) {
 	if crewName != "" {
 		unlock, err := e.Store.LockLifecycle(ctx)
 		if err != nil {
-			return "", nil, nil, err
+			return "", nil, nil, nil, err
 		}
 		defer unlock()
 	}
 	session, _, blocks, err = e.Rex.NewSession(ctx, name, panes)
-	if err != nil || crewName == "" {
-		return session, blocks, nil, err
+	if err != nil {
+		return session, blocks, nil, nil, err
 	}
-	return session, blocks, e.Store.PutSessionCrew(session, store.SessionCrew{Crew: crewName, ClaimedBy: by, ClaimedAt: e.Now().UTC()}), nil
+	now := e.Now().UTC()
+	policyErr = e.Store.PutEpicPolicy(store.EpicPolicy{SessionID: session, Server: by.Server, Unattended: true, CreatedBy: by.Handle, CreatedAt: now})
+	if crewName == "" {
+		return session, blocks, policyErr, nil, nil
+	}
+	return session, blocks, policyErr, e.Store.PutSessionCrew(session, store.SessionCrew{Crew: crewName, ClaimedBy: by.Handle, ClaimedAt: now}), nil
 }
 
 // maxSessionLabel is the longest session label Rex takes (session.create).

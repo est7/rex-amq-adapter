@@ -261,7 +261,15 @@ records the hand-back and reads the view as an orchestrator does. It links
 the Epic to the personal agent and waits for both agents (`--timeout`, 90 s
 by default).
 It prints one JSON line and exits 0 only when both are adopted and linked; a
-failure part way reports what started and tears nothing down. From then on
+failure part way reports what started and tears nothing down.
+Every Epic runs unattended, whoever asked for it: `epic` records the
+session's external-write policy (`sessions/<id>/policy.json`), and its
+orchestrator, its narrator, and every worker the session starts or resumes
+run with `ME_UNATTENDED=1` set in their own command (an `env` prefix, since
+Rex panes do not inherit the adapter's environment), so their shell tools
+stage outward writes for you instead of sending them. A personal agent never
+gets the marker, and the adapter never clears one it inherited;
+`rex-amq-adapter env` exports it to an unattended agent's shells. From then on
 the personal agent reads the Epic with `view --session` and asks or directs it
 only through the narrator, which relays your decisions to the orchestrator
 verbatim; the Epic's workers never see either of them. The narrator's report
