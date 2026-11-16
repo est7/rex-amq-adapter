@@ -96,73 +96,90 @@ type proc struct {
 }
 
 // runsUnder reports whether ancestors, this process first, place the hook
-// under the agent process agent. Descent is enough for most kinds. A Codex
-// hook must also run in agent itself, not in another Codex process below it:
-// without --no-daemon, Codex runs every pane's threads in one shared daemon,
-// which the first terminal client started and which inherited that pane's
-// Rex location. Another pane's thread then fires hooks that descend from the
-// first pane's agent and name its block. A Codex hook runs under shells its
-// harness starts (observed: hook ← zsh ← codex), so the first process above
-// them is the harness; a process of the harness's own name further up, the
-// agent included, means the harness is a second Codex. A launcher of another
-// name (node running a native codex) is the agent itself.
+// in the agent process agent itself: the first process above the hook's own
+// shells must be agent, or a launcher of agent's that runs it without a
+// shell (node running a native codex is the agent itself).
 //
-// An agy hook must run in agent itself, the first process above its shells
-// (observed: hook ← sh ← agy). agy's user hooks fire for a headless `agy -p`
-// too, which inherits REX_BLOCK from whatever ran it and so descends from the
-// pane's agent without being it (observed: hook ← sh ← agy -p ← timeout ←
-// bash ← claude). agy is a native binary the pane runs directly, so no
-// launcher is allowed: one that spawns agy without a shell (a program's
-// subprocess, `sh -c` exec'ing its only command) looks the same as the
-// pane's agent running `agy -p`.
+// A harness between them is another agent. One under a shell of the agent's
+// was started by a command in the pane: a tool shell's `codex exec`,
+// `claude -p`, `agy -p`, or `pi -p`, which inherits REX_BLOCK and so names
+// the agent's pane (observed: hook ← sh ← codex exec ← bash ← claude, F14;
+// hook ← sh ← agy -p ← timeout ← bash ← claude). A Codex hook under another
+// Codex process with no shell between is Codex's shared daemon: without
+// --no-daemon, Codex runs every pane's threads in one daemon, which the first
+// terminal client started and which inherited that pane's Rex location
+// (observed: hook ← zsh ← codex ← codex). Another kind's harness of its own
+// name with no shell between was started by the agent itself.
+//
+// agy is a native binary the pane runs directly, so no launcher is allowed:
+// one that spawns agy without a shell (a program's subprocess, `sh -c`
+// exec'ing its only command) looks the same as the pane's agent running
+// `agy -p`.
 func runsUnder(kind core.Kind, ancestors []proc, agent int) error {
-	under := slices.ContainsFunc(ancestors, func(p proc) bool { return p.PID == agent })
-	if kind == core.Agy && under {
-		return agyRunsIn(ancestors, agent)
-	}
-	if kind != core.Codex {
-		if under {
-			return nil
-		}
+	if !slices.ContainsFunc(ancestors, func(p proc) bool { return p.PID == agent }) {
 		return errNotUnder
 	}
 	var harness *proc
 	for i, p := range ancestors {
-		if p.PID != agent && (i == 0 || isShell(p.Name)) {
+		if harness == nil {
+			if p.PID == agent {
+				return nil
+			}
+			if i == 0 || isShell(p.Name) {
+				continue
+			}
+			harness = &ancestors[i]
+			if kind == core.Agy {
+				break
+			}
 			continue
 		}
 		switch {
-		case harness == nil && p.PID == agent:
-			return nil
-		case harness == nil:
-			harness = &ancestors[i]
-		case p.Name == harness.Name:
+		case p.Name == harness.Name && kind == core.Codex:
 			return fmt.Errorf("%w (%s pid %d runs under %s pid %d; the agent is pid %d)", ErrSharedHarness, harness.Name, harness.PID, p.Name, p.PID, agent)
+		case p.Name == harness.Name:
+			return fmt.Errorf("%w (%s pid %d runs under %s pid %d; the pane's agent is pid %d)", ErrStartedInPane, harness.Name, harness.PID, p.Name, p.PID, agent)
 		case p.PID == agent:
 			return nil
+		case isShell(p.Name):
+			return fmt.Errorf("%w (%s pid %d runs under the shell %s pid %d; the pane's agent is pid %d)", ErrStartedInPane, harness.Name, harness.PID, p.Name, p.PID, agent)
 		}
 	}
-	return errNotUnder
+	return fmt.Errorf("%w (%s pid %d runs the hook; the pane's agent is pid %d)", ErrStartedInPane, harness.Name, harness.PID, agent)
 }
 
-// agyRunsIn reports whether the first process above the hook's shells is
-// agent, for an ancestry that holds agent.
-func agyRunsIn(ancestors []proc, agent int) error {
-	for i, p := range ancestors {
-		if p.PID != agent && (i == 0 || isShell(p.Name)) {
-			continue
-		}
-		if p.PID == agent {
-			return nil
-		}
-		return fmt.Errorf("%w (%s pid %d runs the hook; the pane's agent is pid %d)", ErrStartedInPane, p.Name, p.PID, agent)
+// ErrStartedInPane: a hook comes from a harness that a command in the pane
+// started (a headless `agy -p`, `codex exec`, `claude -p`, `pi -p`), not
+// from the pane's agent.
+var ErrStartedInPane = errors.New("this hook comes from a harness a command in the pane started (agy -p, codex exec, claude -p, pi -p?), not from the pane's agent")
+
+// startedUnderOwner reports whether this hook comes from a harness that a
+// command started under the live agent recorded in block: its tool shell's
+// `codex exec`, `claude -p`, `agy -p`, or `pi -p`, whose hooks name the
+// agent's pane because they inherit REX_BLOCK. Such a hook is no agent of the
+// pane's: it must not adopt, park, flag, or read anything there (F14). The
+// agent's own hooks, a harness that does not run under the agent, and a hook
+// whose ancestry cannot be read are not: muting the pane's agent costs more
+// than a stray adoption, which the agent's next hook takes back.
+func (e Env) startedUnderOwner(kind core.Kind, block string) (store.Record, bool) {
+	rec, ok, err := e.Store.Record(block)
+	if err != nil || !ok || !rec.Live() || rec.AgentPID <= 0 || !localServer(rec.Server) {
+		return rec, false
 	}
-	return errNotUnder
+	ancestors, err := e.ancestors()
+	if err != nil || len(ancestors) < 2 {
+		return rec, false
+	}
+	// The hook itself is never its own agent: a test process standing in
+	// for an agent is ancestors[0].
+	if !slices.ContainsFunc(ancestors[1:], func(p proc) bool { return p.PID == rec.AgentPID }) {
+		return rec, false
+	}
+	if kind != rec.Kind {
+		return rec, true
+	}
+	return rec, errors.Is(runsUnder(kind, ancestors, rec.AgentPID), ErrStartedInPane)
 }
-
-// ErrStartedInPane: an agy hook comes from an agy that a command in the pane
-// started (a headless `agy -p`), not from the pane's agent.
-var ErrStartedInPane = errors.New("this agy hook comes from an agy started by a command in the pane (agy -p?), not from the pane's agent")
 
 var errNotUnder = errors.New("this hook does not descend from the agent")
 

@@ -445,7 +445,28 @@ exec'ing its only command) looks the same as the pane's agent running
 `agy -p`, and agy is a native binary the pane runs directly. A refused print
 run says so in `hooks.log` and does not make the pane's agent back off its
 own adoption; an ancestry that cannot be read adopts the foreground, as
-above. Pi keeps plain descent: its hooks run in its extension, with its pid.
+above.
+
+The same holds for every kind (`runsUnder`): above the hook's own shells the
+first process is its harness, which must be the agent or a launcher of the
+agent's that runs it without a shell. A harness under a shell of the agent's
+was started by a command in the pane, and one of the agent's own name above it
+without a shell is Codex's shared daemon for Codex and the agent's own child
+for the others. Before any hook does anything (F14), it checks the block's live
+record: when that agent's pid is a strict ancestor of the hook, and the hook is
+another kind's or `runsUnder` says it was started in the pane, the hook is a
+tool shell's `codex exec`, `claude -p`, `agy -p`, or `pi -p`, and every event
+returns nothing, successfully: no adoption, no park as `replaced` or
+`session_end`, no turn-error mark set or cleared, no mail announced, no failed
+adoption recorded. On 2026-11-15 a live orchestrator's `codex exec` probe took
+its pane as `codex-13`..`codex-15`, parked it as `replaced`, and its narrator
+told the personal agent the orchestrator had left. The check needs no Rex call
+and fails open: an ancestry that cannot be read, a remote record, or an owner
+that is not an ancestor (one that exited, or a harness the pane now shows)
+lets the hook through as before. A tool shell that execs its only command
+(`zsh -c 'codex exec …'`) leaves no shell between a nested Codex and a Codex
+agent: that is refused as the shared daemon, which still keeps the pane's
+record (`env -u REX_BLOCK -u REX_SESSION` avoids both).
 
 Another session from the record's own process is trusted, not taken as a
 switch. agy runs each subagent as a conversation of its own inside the
@@ -1069,9 +1090,10 @@ adopts it there. Its subagents run hooks from the parent's pane under their own
 conversation ids, which the adapter ignores (section 4). Without it the record kept the exited
 PID, the doorbell's binding check reported `agent_gone`, and the next collect
 parked the live agent (observed 2026-11-04). Every agy hook prints a JSON object, `{}` when it
-has nothing to say. Its peers start with
-`agy --dangerously-skip-permissions -i "<brief>"`, since agy otherwise asks
-before each `amq` command.
+has nothing to say. Its peers start, and resume, with
+`agy --dangerously-skip-permissions --mode auto -i "<brief>"`: agy otherwise
+asks before each `amq` command, and outside auto mode it may stop in plan
+mode for a review no unattended run gives (F17).
 
 **Pi** has no command hooks. `setup` installs a small JavaScript extension
 (`~/.pi/agent/extensions/rex-amq-adapter.js`, or under `PI_CODING_AGENT_DIR`)
@@ -1413,6 +1435,22 @@ agent's block and startup, `linked`) is printed even when part of it failed;
 nothing started is torn down, and the command exits 0 only when both agents
 are adopted and linked. The Epic's agents start outside any summon chain, as
 the user's own would: the orchestrator is depth 0 in its session.
+
+With `--crew pair` the Epic is one Slice and has no orchestrator: the second
+pane is an `implementer`, on the implementer's routing (`--harness` still
+overrides it) and briefed as the orchestrator would be, and the result's
+`lead` says so (`orchestrator` keeps its key and reports that agent). The
+pair crew's conventions tell it to run the contract with `run-goal`, commit
+Checkpoints, summon its own reviewer, and hand back. `pairLead` lets it do
+what only an orchestrator does: an implementer nobody summoned, in a session
+whose crew is `pair` and that holds no orchestrator record, live or
+departed, records the hand-back and reads its own Epic's view; an
+implementer an orchestrator summoned, or one in an Epic that had an
+orchestrator, stays a worker. The narrator wakes on its hand-back and its
+departure as on an orchestrator's (the pulse is role-blind), but the gateway
+still knows only an orchestrator as an Epic's control plane: a narrator's
+`send --control` to a pair lead is refused (`narrator_never_mails_workers`),
+and the orchestrator watchdog does not run for it.
 
 ### Closing an Epic
 

@@ -90,9 +90,10 @@ Agent and user commands:
                             (a personal agent) open an Epic: a Rex session named
                             <name> with its orchestrator (briefed with the goal
                             contract, or the user's words) and its narrator,
-                            linked to you, working as crew C when given; prints
-                            one JSON line and exits 0 only when both are adopted
-                            and linked
+                            linked to you, working as crew C when given (with
+                            --crew pair an implementer leads in the
+                            orchestrator's place); prints one JSON line and
+                            exits 0 only when both are adopted and linked
   epic close <session_id> --asked "WORDS" [--force]
                             (a personal agent, on the user's words) close a linked
                             Epic: kill its Rex session, park its agents (their
@@ -1210,7 +1211,7 @@ func runEpic(args []string) int {
 	dir := fs.String("c", "", "the repository the Epic's agents work in (default: the current directory)")
 	goal := fs.String("goal", "", "the goal contract the orchestrator runs: its grant")
 	asked := fs.String("asked", "", "the user's own words asking for the Epic, its brief when there is no contract")
-	harness := fs.String("harness", "", "the orchestrator's CLI: claude (default), codex, agy, or pi")
+	harness := fs.String("harness", "", "the orchestrator's CLI (with --crew pair, the implementer's): claude (default), codex, agy, or pi")
 	crewName := fs.String("crew", "", "the crew the Epic's session works as (rex-amq-adapter crews lists them)")
 	timeout := timeoutFlag(90 * time.Second)
 	fs.Var(&timeout, "timeout", "how long to wait for both agents: a duration (2m) or seconds (120)")

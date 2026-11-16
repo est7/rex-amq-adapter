@@ -45,8 +45,12 @@ func TestRoutingFirstHarnessMatchesBuiltinRolesOnly(t *testing.T) {
 	}
 	for _, r := range shared {
 		want := core.Claude
-		if slices.Contains(codexRoles, r) {
+		switch {
+		case slices.Contains(codexRoles, r):
 			want = core.Codex
+		case r == "narrator":
+			// The narrator only reads and relays: the cheap agy model.
+			want = core.Agy
 		}
 		if got := first(r); got != want {
 			t.Errorf("first harness of %q = %v, want %v", r, got, want)
@@ -94,6 +98,21 @@ func TestProbeBeforeAskingRulesPresent(t *testing.T) {
 	if strings.Contains(orch.Text, "Close an agent when its work is done") {
 		t.Errorf("orchestrator prompt still closes every agent as soon as its work is done: %s", orch.Text)
 	}
+	// F16: an orchestrator that may "do the work yourself" codes its Slices
+	// itself (3/3 agy orchestrators did); it delegates every Slice instead,
+	// and on agy never stops for a plan or feedback review.
+	if strings.Contains(orch.Text, "or do the work yourself") {
+		t.Errorf("orchestrator prompt still lets it do the work itself: %s", orch.Text)
+	}
+	for _, want := range []string{
+		"You never edit a Slice's code or tests yourself",
+		"its coding and rework go to an implementer (`rex-amq-adapter summon implementer --cwd <worktree>`)",
+		"never call `EnterPlanMode` or set `RequestFeedback: true`",
+	} {
+		if !strings.Contains(orch.Text, want) {
+			t.Errorf("orchestrator prompt missing delegation rule %q: %s", want, orch.Text)
+		}
+	}
 
 	design, ok, err := lib.Conventions("design")
 	if err != nil || !ok {
@@ -101,5 +120,27 @@ func TestProbeBeforeAskingRulesPresent(t *testing.T) {
 	}
 	if !strings.Contains(design.Text, "safe, self-cleaning probes outside the repository") {
 		t.Errorf("design conventions missing disposable probe allowance: %s", design.Text)
+	}
+	// A pair Epic (epic --crew pair --goal) has no orchestrator: its
+	// implementer runs the goal, commits as it goes, and hands back.
+	pair, ok, err := lib.Conventions("pair")
+	if err != nil || !ok {
+		t.Fatalf("pair conventions: ok=%v err=%v", ok, err)
+	}
+	for _, want := range []string{
+		"`rex-amq-adapter epic <name> --crew pair --goal <file>`",
+		"The contract replaces steps 2 to 4 and the working-tree review of the role prompt",
+		"committing green Checkpoints as it goes",
+		"`rex-amq-adapter summon reviewer --grant <file> --kind todo",
+		"`rex-amq-adapter hand-back @<file>`",
+	} {
+		if !strings.Contains(pair.Text, want) {
+			t.Errorf("pair conventions missing goal-mode rule %q: %s", want, pair.Text)
+		}
+	}
+	// F15: a member's `nmem t` search during the seal surfaced the lead's
+	// unsent proposal from a live session summary.
+	if !strings.Contains(design.Text, "until then nobody searches session transcripts (`nmem t`, `rex-history`, transcript files)") {
+		t.Errorf("design conventions do not seal session transcripts before the Ledger: %s", design.Text)
 	}
 }

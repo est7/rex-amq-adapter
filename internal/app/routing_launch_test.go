@@ -122,7 +122,7 @@ func TestSummonResumeLaunchChecksTheRecord(t *testing.T) {
 		t.Fatalf("effort claude does not take: %+v", res)
 	}
 	add(t, e, old(e, "agy-07", core.Agy, "reviewer", "", ""))
-	if res := summon(t, e, loc, "agy-07"); res.Action != "resume" || !slices.Equal(launchProgram(term.launches[0])[:5], []string{"agy", "--model", "gemini-4-carbon-high", "--effort", "high"}) {
+	if res := summon(t, e, loc, "agy-07"); res.Action != "resume" || !slices.Equal(launchProgram(term.launches[0])[:10], []string{"agy", "--model", "gemini-4-carbon-high", "--effort", "high", "--dangerously-skip-permissions", "--mode", "auto", "--conversation", "s-agy-07"}) {
 		t.Fatalf("old reviewer: %+v %q", res, term.launches)
 	}
 	// A narrator takes no member's mail, so its resume is read directly.
@@ -152,7 +152,9 @@ func TestSummonReviewerFamilyFollowsTheModels(t *testing.T) {
 	if res := summon(t, e, loc, "reviewer", func(r *SummonRequest) { r.Asked = "review it" }); res.Action != "start" || res.Harness != core.Agy || len(res.Passed) != 1 || !strings.HasPrefix(res.Passed[0], "codex: not installed") {
 		t.Fatalf("agy on claude: %+v %v", res, term.launches)
 	}
-	if got := launchProgram(term.launches[0])[:5]; !slices.Equal(got, []string{"agy", "--model", "gemini-4-carbon-high", "--effort", "high"}) {
+	// agy starts in auto mode (F17): a plan-mode or approval prompt would
+	// stall an agent no one watches.
+	if got := launchProgram(term.launches[0])[:9]; !slices.Equal(got, []string{"agy", "--model", "gemini-4-carbon-high", "--effort", "high", "--dangerously-skip-permissions", "--mode", "auto", "-i"}) {
 		t.Fatalf("argv %q", got)
 	}
 	e2, term2, loc2 := summonWorld(t)
@@ -182,13 +184,13 @@ func TestSummonRoutingFromTheProject(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	wt := t.TempDir()
 	p := filepath.Join(wt, ".agents", "crews", crew.RoutingFile)
-	writeFile(t, p, "[role.implementer]\nharness = [\"codex\"]\ncodex = { model = \"gpt-5.4-mini\", effort = \"off\" }\n")
+	writeFile(t, p, "[role.implementer]\nharness = [\"codex\"]\ncodex = { model = \"gpt-6.1-sol-mini\", effort = \"off\" }\n")
 	e, term, loc := summonWorld(t)
 	e.Crews = crew.Load
 	if res := summon(t, e, loc, "implementer", func(r *SummonRequest) { r.Asked = "build it"; r.Cwd = wt }); res.Action != "start" || res.Harness != core.Codex {
 		t.Fatalf("%+v", res)
 	}
-	if got := launchProgram(term.launches[0])[:6]; !slices.Equal(got, []string{"codex", "-m", "gpt-5.4-mini", "-c", "model_reasoning_effort=none", "--no-daemon"}) {
+	if got := launchProgram(term.launches[0])[:6]; !slices.Equal(got, []string{"codex", "-m", "gpt-6.1-sol-mini", "-c", "model_reasoning_effort=none", "--no-daemon"}) {
 		t.Fatalf("argv %q", got)
 	}
 	writeFile(t, p, "[role.implementer]\nharness = [\"codex\"]\ncodex = { model = \"-c\" }\n")
@@ -200,37 +202,48 @@ func TestSummonRoutingFromTheProject(t *testing.T) {
 }
 
 // An Epic's narrator and orchestrator start on their roles' first harness
-// with its model and effort in their flags and their environment; --harness
-// moves the orchestrator to another harness with that harness's routing.
+// with its model and effort in their flags and their environment: the
+// narrator on agy, the orchestrator on claude; --harness moves the
+// orchestrator to another harness with that harness's routing, and leaves
+// the narrator on its own.
 func TestOpenEpicLaunchesOnTheRouting(t *testing.T) {
 	for _, tc := range []struct {
 		harness  string
 		orchArgv []string
+		effort   string
 	}{
-		{"", []string{"claude", "--model", "opus", "--effort", "high"}},
-		{"codex", []string{"codex", "-m", "gpt-5.4", "-c", "model_reasoning_effort=high"}},
+		{"", []string{"claude", "--model", "opus", "--effort", "high"}, "high"},
+		{"claude", []string{"claude", "--model", "opus", "--effort", "high"}, "high"},
+		{"agy", []string{"agy", "--model", "gemini-4-carbon-high", "--effort", "high", "--dangerously-skip-permissions", "--mode", "auto", "-i"}, "high"},
+		{"codex", []string{"codex", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=high"}, "high"},
 	} {
-		e, term, loc, goal := openEpicWorld(t)
-		adoptPane(t, e, "block:epic-1-1", "claude-02", core.NarratorRole)
-		adoptPane(t, e, "block:epic-1-2", "claude-03", core.OrchestratorRole)
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if _, err := e.OpenEpic(ctx, loc, EpicRequest{Name: "routed", Dir: filepath.Dir(goal), Goal: goal, Harness: tc.harness}); err != nil {
-			t.Fatal(err)
-		}
-		cancel()
-		narr, orch := term.sessions_[0].panes[0].Command, term.sessions_[0].panes[1].Command
-		if got := program(narr)[:5]; !slices.Equal(got, []string{"claude", "--model", "haiku", "--effort", "low"}) {
-			t.Errorf("narrator %q", narr)
-		}
-		if m, _ := launchEnvOf(narr)(LaunchModelEnv); m != "haiku" {
-			t.Errorf("narrator env %q", narr)
-		}
-		if got := program(orch)[:len(tc.orchArgv)]; !slices.Equal(got, tc.orchArgv) {
-			t.Errorf("orchestrator %q", orch)
-		}
-		if ef, ok := launchEnvOf(orch)(LaunchEffortEnv); !ok || ef != "high" {
-			t.Errorf("orchestrator env %q", orch)
-		}
+		t.Run("harness="+tc.harness, func(t *testing.T) {
+			e, term, loc, goal := openEpicWorld(t)
+			adoptPane(t, e, "block:epic-1-1", "claude-02", core.NarratorRole)
+			adoptPane(t, e, "block:epic-1-2", "claude-03", core.OrchestratorRole)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if _, err := e.OpenEpic(ctx, loc, EpicRequest{Name: "routed", Dir: filepath.Dir(goal), Goal: goal, Harness: tc.harness}); err != nil {
+				t.Fatal(err)
+			}
+			narr, orch := term.sessions_[0].panes[0].Command, term.sessions_[0].panes[1].Command
+			if got := program(narr)[:6]; !slices.Equal(got, []string{"agy", "--model", "gemini-4-hydrogen-low", "--dangerously-skip-permissions", "--mode", "auto"}) {
+				t.Errorf("narrator %q", narr)
+			}
+			if m, _ := launchEnvOf(narr)(LaunchModelEnv); m != "gemini-4-hydrogen-low" {
+				t.Errorf("narrator env %q", narr)
+			}
+			if got := program(orch)[:len(tc.orchArgv)]; !slices.Equal(got, tc.orchArgv) {
+				t.Errorf("orchestrator %q", orch)
+			}
+			if ef, ok := launchEnvOf(orch)(LaunchEffortEnv); !ok || ef != tc.effort {
+				t.Errorf("orchestrator env %q", orch)
+			}
+			// Only Claude Code reads the brief as its /goal command.
+			if brief := orch[len(orch)-1]; strings.HasPrefix(brief, "/goal ") != (program(orch)[0] == "claude") {
+				t.Errorf("orchestrator brief %q", brief)
+			}
+		})
 	}
 }
 
@@ -278,7 +291,7 @@ func TestSummonResumeLaunchKeepsALaunchOnTheDefaults(t *testing.T) {
 func TestSummonReviewerChecksASingleRoutedHarnessIsInstalled(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
-	writeFile(t, filepath.Join(xdg, "rex-amq-adapter", "crews", crew.RoutingFile), "[role.reviewer]\nharness = [\"codex\"]\ncodex = { model = \"gpt-5.4\" }\n")
+	writeFile(t, filepath.Join(xdg, "rex-amq-adapter", "crews", crew.RoutingFile), "[role.reviewer]\nharness = [\"codex\"]\ncodex = { model = \"gpt-6-astra\" }\n")
 	e, term, loc := summonWorld(t)
 	e.Crews = crew.Load
 	e.LookPath = installedOnly(core.Claude)
