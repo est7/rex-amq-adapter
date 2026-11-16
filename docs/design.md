@@ -445,7 +445,28 @@ exec'ing its only command) looks the same as the pane's agent running
 `agy -p`, and agy is a native binary the pane runs directly. A refused print
 run says so in `hooks.log` and does not make the pane's agent back off its
 own adoption; an ancestry that cannot be read adopts the foreground, as
-above. Pi keeps plain descent: its hooks run in its extension, with its pid.
+above.
+
+The same holds for every kind (`runsUnder`): above the hook's own shells the
+first process is its harness, which must be the agent or a launcher of the
+agent's that runs it without a shell. A harness under a shell of the agent's
+was started by a command in the pane, and one of the agent's own name above it
+without a shell is Codex's shared daemon for Codex and the agent's own child
+for the others. Before any hook does anything (F14), it checks the block's live
+record: when that agent's pid is a strict ancestor of the hook, and the hook is
+another kind's or `runsUnder` says it was started in the pane, the hook is a
+tool shell's `codex exec`, `claude -p`, `agy -p`, or `pi -p`, and every event
+returns nothing, successfully: no adoption, no park as `replaced` or
+`session_end`, no turn-error mark set or cleared, no mail announced, no failed
+adoption recorded. On 2026-11-15 a live orchestrator's `codex exec` probe took
+its pane as `codex-13`..`codex-15`, parked it as `replaced`, and its narrator
+told the personal agent the orchestrator had left. The check needs no Rex call
+and fails open: an ancestry that cannot be read, a remote record, or an owner
+that is not an ancestor (one that exited, or a harness the pane now shows)
+lets the hook through as before. A tool shell that execs its only command
+(`zsh -c 'codex exec …'`) leaves no shell between a nested Codex and a Codex
+agent: that is refused as the shared daemon, which still keeps the pane's
+record (`env -u REX_BLOCK -u REX_SESSION` avoids both).
 
 Another session from the record's own process is trusted, not taken as a
 switch. agy runs each subagent as a conversation of its own inside the
@@ -1070,9 +1091,10 @@ adopts it there. Its subagents run hooks from the parent's pane under their own
 conversation ids, which the adapter ignores (section 4). Without it the record kept the exited
 PID, the doorbell's binding check reported `agent_gone`, and the next collect
 parked the live agent (observed 2026-11-04). Every agy hook prints a JSON object, `{}` when it
-has nothing to say. Its peers start with
-`agy --dangerously-skip-permissions -i "<brief>"`, since agy otherwise asks
-before each `amq` command.
+has nothing to say. Its peers start, and resume, with
+`agy --dangerously-skip-permissions --mode auto -i "<brief>"`: agy otherwise
+asks before each `amq` command, and outside auto mode it may stop in plan
+mode for a review no unattended run gives (F17).
 
 **Pi** has no command hooks. `setup` installs a small JavaScript extension
 (`~/.pi/agent/extensions/rex-amq-adapter.js`, or under `PI_CODING_AGENT_DIR`)
@@ -1284,6 +1306,8 @@ Overridable with `REX_AMQ_ADAPTER_HOME` (tests use a temporary directory).
 │       ├── provenance/<msg_id>.json        sender and recipients (session, generation) at sending, op, system
 │       ├── provenance/pending/<token>.json the same before amq returned the id
 │       ├── quarantine/<handle>/<msg_id>.md (+ .json reason)  mail the gateway took out of an inbox
+│       ├── notifications/<sha256(event id)>.json  the doorbell notify-personal sent for an event (dedup)
+│       ├── notifications.lock      held while notify-personal looks up and sends one event
 │       ├── sessions/<session_id>/view.json  the session's view, written whole by its narrator
 │       ├── sessions/<session_id>/pulse.json what the session's watcher last told the narrator
 │       ├── sessions/<session_id>/crew.json  the crew the session works as (join CREW, epic --crew)
@@ -1345,7 +1369,44 @@ under a token in the message's context before amq delivers it, so an arrival
 checked before amq returns the id is judged by it; when amq fails without an
 id and no outbox copy carries the token, delivery cannot be ruled out and the
 pending record stays. Mail sent with `amq` directly has no provenance and is
-judged by its sender's record now.
+judged by its sender's record now, as unverified (`Operation.Unverified`): it
+never reaches a Personal agent or a narrator (`unverified_sender`), whichever
+handle its header names, so `amq send --me <personal> --to <personal>` is not
+the Personal agent's own mail. Ordinary members still take it as before
+(`sender_outside_rex`, `self`, `same_epic`).
+
+### notify-personal
+
+`rex-amq-adapter notify-personal --ref inbox:<id>|timer:<id> --event-id <id>
+[--hub DIR] [--personal HANDLE] [--summary TEXT]` is the one way a producer
+outside Rex (an Inbox entry, a launchd Timer tick) reaches a Personal agent
+(spec claim C16). It acts as no agent and resolves no caller: the adapter
+collects first (so a crashed pane is parked), takes every live, placed
+`personal` record whose block Rex still shows (a block Rex cannot show, or a
+server it cannot reach, is no target), narrows them by `--personal` (the
+handle) and `--hub` (the agent's directory is the hub or below it, both
+symlink-resolved), and mails the one left in its own name as a system notice,
+`op: notify`. The gateway admits exactly that (`adapter_notify_personal`: a
+system `notify` from a placed Personal agent to itself); a caller can never
+choose the sender. The body frames the signal as untrusted external data,
+never a user grant, with the ref, event id, hub, and summary quoted (the
+summary made one line and capped at 280 bytes), and the subject is
+`notify <ref>`.
+
+It never starts or resumes an agent. With no live Personal agent it sends
+nothing and prints `{"status":"no_live_personal",...}` (exit 0): the producer
+keeps its entry. With more than one left it refuses (exit 1) rather than mail
+them all. Under `notifications.lock` each event id is looked up first: a
+repeat of a notified event (the same `--ref`, `--hub`, and `--personal`; the
+hub compared after resolving symlinks) answers with the same `to`,
+`session_id`, and `message_id` and `"deduped":true` without sending, even
+when that agent has left since; the id with any of the three changed, given,
+or dropped is refused, so a replay never acknowledges a delivery outside what
+it asked for. The record is written as soon as amq returns the id, before the
+waker is ensured, so delivery is at least once: only a run that dies between
+the two sends again on retry. `--ref` is `inbox:` or `timer:` and a non-empty
+id; `--ref` and `--event-id` are at most 256 bytes of UTF-8 without control
+characters; a malformed call exits 2.
 
 This is a policy on the supported paths, not a sandbox: any process of the same
 UNIX user can read and write the mailbox files, and `amq` run directly with
@@ -1377,6 +1438,22 @@ nothing started is torn down, and the command exits 0 only when both agents
 are adopted and linked. The Epic's agents start outside any summon chain, as
 the user's own would: the orchestrator is depth 0 in its session.
 
+With `--crew pair` the Epic is one Slice and has no orchestrator: the second
+pane is an `implementer`, on the implementer's routing (`--harness` still
+overrides it) and briefed as the orchestrator would be, and the result's
+`lead` says so (`orchestrator` keeps its key and reports that agent). The
+pair crew's conventions tell it to run the contract with `run-goal`, commit
+Checkpoints, summon its own reviewer, and hand back. `pairLead` lets it do
+what only an orchestrator does: an implementer nobody summoned, in a session
+whose crew is `pair` and that holds no orchestrator record, live or
+departed, records the hand-back and reads its own Epic's view; an
+implementer an orchestrator summoned, or one in an Epic that had an
+orchestrator, stays a worker. The narrator wakes on its hand-back and its
+departure as on an orchestrator's (the pulse is role-blind), but the gateway
+still knows only an orchestrator as an Epic's control plane: a narrator's
+`send --control` to a pair lead is refused (`narrator_never_mails_workers`),
+and the orchestrator watchdog does not run for it.
+
 ### An Epic runs unattended
 
 Every Epic carries a durable external-write policy (Claim C23): asking for
@@ -1391,7 +1468,8 @@ in each launched command's own `env` prefix (`withUnattendedEnv`), never
 assumed from a pane inheriting the adapter's environment, which Rex panes do
 not:
 
-- `epic` sets it on both the narrator's and the orchestrator's command.
+- `epic` sets it on both the narrator's and the orchestrator's (a pair Epic's
+  implementer's) command.
 - `summon`'s start and resume (`launchUnattended`) set it on every target
   that is not `personal` when the target is an orchestrator or narrator, the
   caller or the departed agent is recorded unattended, or the session has an
@@ -1568,7 +1646,7 @@ yet" on its first turn, which held the personal agent's Stop hook.
 ## 9. Module layout
 
 ```
-cmd/rex-amq-adapter/   subcommands: hook, inject, env, title, who, events, await, collect, crews, tab, trust, summon, epic, view, hand-back, join, send, reply, read, drain, thread, trace, dlq, list, link, unlink, setup, status, remove, __internal, version
+cmd/rex-amq-adapter/   subcommands: hook, inject, env, title, who, events, await, collect, crews, tab, trust, summon, epic, notify-personal, view, hand-back, join, send, reply, read, drain, thread, trace, dlq, list, link, unlink, setup, status, remove, __internal, version
 internal/app/          entry points: observe, ask core, act (adopt, inject, announce, depart, collect, discovery, await, session watcher, narrator view, and watchdog, summon, join, the events stream); who runs a command (Caller); the hook's process ancestry (golang.org/x/sys)
 internal/core/         pure policy: the gateway (CanExchange), handle choice, roles and pane labels, inject decision, announce decision, session-mates, notice text, the observer's projection and diff
 internal/crew/         crew and role prompt lookup across project, user, and built-in layers; crew headers (lead, members); built-in prompts; routing.toml, each role's harnesses, models, and efforts
@@ -1576,7 +1654,7 @@ internal/fsutil/       flock and atomic replace
 internal/rex/          rex CLI client: process, program_status, capture, write, block and window labels, whoami, block list, new window
 internal/amq/          wake check/start/repair/retire, mailbox registration, inbox listing (ported); read-only mailbox, header, and receipt readers
 internal/screen/       input-box classifier (ported from herdr-amq-adapter)
-internal/store/        records, ledger, inject log, window notes, reservations, locks; the gateway's links, provenance, and quarantine
+internal/store/        records, ledger, inject log, window notes, reservations, locks; the gateway's links, provenance, and quarantine; notify-personal's dedup records
 internal/transcript/   reads the end of an agent's own transcript (Claude Code, Codex, Pi JSONL; Antigravity's SQLite through sqlite3) into rows for the watchdog and turn-error routing, and a departed agent's working directory for a resume
 internal/trust/        folder trust: each harness's rule (Check), the user's grants and declared roots (trust.json, logs/trust.log), Claude/Codex store keys via install, agy --settings / pi --approve per session
 internal/e2e/          scripted agents on a private Rex server and real amq wake

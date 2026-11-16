@@ -72,6 +72,15 @@ func (e Env) Hook(ctx context.Context, event string, kind core.Kind, loc Locatio
 	if kind == core.Agy && e.agySubagent(in.SessionID) {
 		return Reply{}, nil
 	}
+	// A harness that a command started under the pane's live agent (its tool
+	// shell's `codex exec`, `claude -p`, `agy -p`, `pi -p`) inherited the
+	// pane's REX_BLOCK: none of its hooks speaks for the pane (F14).
+	if owner, nested := e.startedUnderOwner(kind, loc.Block); nested {
+		if event == EventSessionStart || event == EventSessionEnd {
+			fmt.Fprintf(Diagnostics, "ignored %s %s started under %s's agent (pid %d) in its pane (%s)\n", kind, in.SessionID, owner.Handle, owner.AgentPID, event)
+		}
+		return Reply{}, nil
+	}
 	switch event {
 	case EventSessionStart, EventPrompt, EventPreInvocation:
 		// A new turn or session: the agent can act again.
@@ -166,6 +175,11 @@ func (e Env) abnormalStop(ctx context.Context, kind core.Kind, loc Location, in 
 
 func (e Env) sessionStart(ctx context.Context, kind core.Kind, loc Location, in HookInput) (Reply, error) {
 	a, err := e.adopt(ctx, loc, kind, in)
+	if errors.Is(err, ErrStartedInPane) {
+		// Not the pane's agent, and nothing is wrong: it gets no identity.
+		fmt.Fprintf(Diagnostics, "%v\n", err)
+		return Reply{}, nil
+	}
 	if err != nil {
 		return Reply{}, err
 	}
@@ -218,6 +232,8 @@ func (e Env) announce(ctx context.Context, kind core.Kind, loc Location, in Hook
 			if !a.Known {
 				identity = e.identityNotice(ctx, a, 0)
 			}
+		case !hasMailbox && errors.Is(err, ErrStartedInPane):
+			return Reply{}, nil
 		case !hasMailbox:
 			return Reply{}, err
 		case err != nil:

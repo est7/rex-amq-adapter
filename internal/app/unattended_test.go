@@ -50,7 +50,7 @@ func TestOpenEpicRunsItsAgentsUnattended(t *testing.T) {
 			e, term, loc, goal := openEpicWorld(t)
 			now := time.Date(2026, 11, 15, 1, 0, 0, 0, time.UTC)
 			e.Now = func() time.Time { return now }
-			adoptPane(t, e, "block:epic-1-1", "claude-02", core.NarratorRole)
+			adoptPane(t, e, "block:epic-1-1", "agy-02", core.NarratorRole)
 			adoptPane(t, e, "block:epic-1-2", "claude-03", core.OrchestratorRole)
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
@@ -58,9 +58,9 @@ func TestOpenEpicRunsItsAgentsUnattended(t *testing.T) {
 				t.Fatal(err)
 			}
 			panes := term.sessions_[0].panes
-			for i, role := range []string{"narrator", "orchestrator"} {
-				if cmd := panes[i].Command; !unattendedPrefix(cmd) || program(cmd)[0] != "claude" {
-					t.Errorf("%s command %q: want %s=1 in its env prefix before claude", role, cmd, UnattendedEnv)
+			for i, agent := range []struct{ role, harness string }{{"narrator", "agy"}, {"orchestrator", "claude"}} {
+				if cmd := panes[i].Command; !unattendedPrefix(cmd) || program(cmd)[0] != agent.harness {
+					t.Errorf("%s command %q: want %s=1 in its env prefix before %s", agent.role, cmd, UnattendedEnv, agent.harness)
 				}
 			}
 			p, ok, err := e.Store.EpicPolicy("session:epic-1")

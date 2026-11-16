@@ -552,7 +552,7 @@ func startCommand(kind core.Kind, brief string) []string {
 	case core.Codex:
 		return []string{"codex", "--no-daemon", "--", brief}
 	case core.Agy:
-		return []string{"agy", "--dangerously-skip-permissions", "-i", brief}
+		return []string{"agy", "--dangerously-skip-permissions", "--mode", "auto", "-i", brief}
 	case core.Pi:
 		return []string{"pi", "--", brief}
 	}
@@ -652,7 +652,7 @@ func resumeCommand(kind core.Kind, session, prompt string) ([]string, bool) {
 	case core.Codex:
 		return []string{"codex", "--no-daemon", "resume", session, prompt}, true
 	case core.Agy:
-		return []string{"agy", "--dangerously-skip-permissions", "--conversation", session, "-i", prompt}, true
+		return []string{"agy", "--dangerously-skip-permissions", "--mode", "auto", "--conversation", session, "-i", prompt}, true
 	case core.Pi:
 		return []string{"pi", "--session", session, prompt}, true
 	}

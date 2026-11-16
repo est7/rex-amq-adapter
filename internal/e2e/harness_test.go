@@ -21,8 +21,9 @@ import (
 	"time"
 )
 
-// agentScript is a scripted agent. It adopts itself with a real hook, reports
-// idle, draws an empty box, and for each line typed reports working, appends
+// agentScript is a scripted agent: of the harness its second argument names,
+// claude (the default) or agy, whose hooks it fires and whose input box it
+// draws. It adopts itself with a real hook, reports idle, draws an empty box, and for each line typed reports working, appends
 // the line to <name>.got, and reports idle again. Sending it `quit` runs
 // SessionEnd; `crash` exits without running any hook; `join ARGS` (or
 // `epic ARGS`, `summon ARGS`) runs rex-amq-adapter join ARGS from its shell,
@@ -33,10 +34,19 @@ import (
 // rex-amq-adapter env to <name>.env, and ME_UNATTENDED after evaluating that
 // output to <name>.unattended-env.
 const agentScript = `name=$1
+harness=${2:-claude}
+glyph='❯'
+if [ "$harness" = agy ]; then glyph='>'; fi
 status() { printf '\033]7501;state=%s:app=claude-code\033\\' "$1"; }
 rule() { printf '%s\r\n' '────────────────────────────────────────'; }
-draw() { printf '\033[2J\033[H'; printf 'scripted agent %s\r\n' "$name"; rule; printf '❯ \r\n'; rule; printf '\033[3;3H'; }
-hook() { printf '{"session_id":"%s"}' "$name" | "$ADAPTER" hook "$1" --agent claude >>"$DIR/$name.hook" 2>&1; }
+draw() { printf '\033[2J\033[H'; printf 'scripted agent %s\r\n' "$name"; rule; printf '%s \r\n' "$glyph"; rule; printf '\033[3;3H'; }
+hook() {
+	if [ "$harness" = agy ]; then
+		printf '{"conversationId":"%s"}' "$name" | "$ADAPTER" hook "$1" --agent agy >>"$DIR/$name.hook" 2>&1
+	else
+		printf '{"session_id":"%s"}' "$name" | "$ADAPTER" hook "$1" --agent claude >>"$DIR/$name.hook" 2>&1
+	fi
+}
 stty -echo
 hook session-start
 probe() { /bin/sh -c 'printf "%s" "${ME_UNATTENDED:-unset}"'; }
@@ -180,16 +190,19 @@ func newWorld(t *testing.T) *world {
 		preamble += "export '" + kv + "'\n"
 	}
 	w.write(script, preamble+agentScript)
-	// A launched "claude" is a scripted agent named by its brief: an Epic's
-	// narrator is told to narrate, a brief naming e2e-worker starts the
-	// worker, anything else is its orchestrator; a resume takes back the
-	// session it names, which is the agent's name.
+	// A launched "claude" or "agy" is a scripted agent of that harness named
+	// by its brief: an Epic's narrator is told to narrate, a brief naming
+	// e2e-worker starts the worker, anything else is its orchestrator; a
+	// resume (claude --resume, agy --conversation) takes back the session it
+	// names, which is the agent's name.
 	if err := os.MkdirAll(filepath.Join(dir, "bin"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	w.write(filepath.Join(dir, "bin", "claude"), "#!/bin/sh\ncase \"$*\" in *Narrate*) n=narrator ;; *e2e-worker*) n=worker ;; *) n=orchestrator ;; esac\n"+
-		"prev=\nfor a in \"$@\"; do [ \"$prev\" = --resume ] && n=$a; prev=$a; done\n"+
-		"exec /bin/sh '"+script+"' \"$n\"\n")
+	for h, resume := range map[string]string{"claude": "--resume", "agy": "--conversation"} {
+		w.write(filepath.Join(dir, "bin", h), "#!/bin/sh\ncase \"$*\" in *Narrate*) n=narrator ;; *e2e-worker*) n=worker ;; *) n=orchestrator ;; esac\n"+
+			"prev=\nfor a in \"$@\"; do [ \"$prev\" = "+resume+" ] && n=$a; prev=$a; done\n"+
+			"exec /bin/sh '"+script+"' \"$n\" "+h+"\n")
+	}
 	w.startServer()
 	return w
 }

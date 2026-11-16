@@ -121,6 +121,7 @@ func TestNameFoldsTabLabels(t *testing.T) {
 // The orchestrator role is the shared prompt; a crew's goal.md is Runner's mission
 // description and stays out of the role lookup.
 func TestOrchestratorRoleComesFromTheSharedPromptOnly(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	builtin := Load("")
 	p, ok, err := builtin.Role("pair", "orchestrator")
 	if err != nil || !ok || !strings.Contains(p.Text, "coordinate") {
@@ -240,6 +241,7 @@ func TestPurposeSaysMoreThanWhoItIs(t *testing.T) {
 // seconds of every Epic's start). The role prompt says what a first turn and
 // a routine wake do, and that they mail nobody.
 func TestNarratorPromptForbidsUnsolicitedMailToPersonal(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	p, ok, err := Load("").Role("", "narrator")
 	if err != nil || !ok {
 		t.Fatalf("built-in narrator role: %v %v", ok, err)
