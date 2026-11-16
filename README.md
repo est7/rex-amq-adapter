@@ -235,7 +235,7 @@ Whether the human stays is the brief's to say, not the role's: an orchestrator h
 rex run --label orchestrator --focus=false -- claude "/goal Load skill run-goal. Execute the goal contract at /abs/path/.goal/20261110-ship-42.md; it is the grant. …"
 ```
 
-An agent reaches a peer that may not be running with `rex-amq-adapter summon <handle|role> --subject S --body B [--cwd DIR]`: a live agent of that handle or role gets the mail; a departed one of this session is resumed in a tab of its own (in the directory it ran in, which adoption now records; `--split` puts a started or resumed agent beside the caller instead, when you asked, never a narrator or personal agent) and its mail waits for it; with `--harness H` and no `--cwd`, only an agent of the role on `H` counts, so one on another harness, live or departed, gets no mail and is not resumed; with none, a new agent is started for the role with the message as its brief and told once adopted; a started agent runs on its role's routing (below); a reviewer, editor or qa starts, unless `--harness` names one, on the first harness of its routing whose model is another family than the caller's model, installed, and passes the preflight (the result's `harness` and `passed_over` say which and why), and is refused, naming each reason, when none is. The guards are the boundary: a personal agent never summons (it opens an Epic with `epic`, and nothing is mailed or launched); only a request kind summons; no handle or role already in the caller's summon chain; depth 2 at most, the user's agents being 0; 6 live agents per session at most; a new agent only when the brief cites the user's grant file (`--grant`, which the caller checks; the adapter does not read it) or the caller quotes the user's own words asking for it (`--asked`, an attestation the log keeps); no start or resume when the caller's own summon chain cannot be traced back to the user. A launch carries a token in its environment (`REX_AMQ_SUMMON`) that binds its adoption to the summon. It holds its place in the cap until then; a resume starts with a fixed prompt that makes the agent drain its mailbox. The message keeps the kind the caller gave it. A summoned agent's record carries its parent and depth; every summon is logged in `logs/summon.log` and listed in the summoner's hand-back.
+An agent reaches a peer that may not be running with `rex-amq-adapter summon <handle|role> --subject S --body B [--cwd DIR]`: a live agent of that handle or role gets the mail; a departed one of this session is resumed in a tab of its own (in the directory it ran in, which adoption now records; `--split` puts a started or resumed agent beside the caller instead, when you asked, never a narrator or personal agent) and its mail waits for it; with `--harness H` and no `--cwd`, only an agent of the role on `H` counts, so one on another harness, live or departed, gets no mail and is not resumed; with none, a new agent is started for the role with the message as its brief and told once adopted; a started agent runs on its role's routing (below); a reviewer, editor or qa starts, unless `--harness` names one, on the first harness of its routing whose model is another family than the caller's model, installed, and passes the preflight (the result's `harness` and `passed_over` say which and why), and is refused, naming each reason, when none is. The guards are the boundary: a personal agent never summons (it opens an Epic with `epic`, and nothing is mailed or launched); only a request kind summons; no handle or role already in the caller's summon chain; depth 2 at most, the user's agents being 0; 6 live agents per session at most; `--cwd` into a directory where a live agent of the role works is refused, except that a reviewer, editor or qa on another harness may share it (a council seats one per harness: a second `summon reviewer --cwd <worktree>` starts on a harness not yet seated there, or name one with `--harness`); a new agent only when the brief cites the user's grant file (`--grant`, which the caller checks; the adapter does not read it) or the caller quotes the user's own words asking for it (`--asked`, an attestation the log keeps); no start or resume when the caller's own summon chain cannot be traced back to the user. A launch carries a token in its environment (`REX_AMQ_SUMMON`) that binds its adoption to the summon. It holds its place in the cap until then; a resume starts with a fixed prompt that makes the agent drain its mailbox. The message keeps the kind the caller gave it. A summoned agent's record carries its parent and depth; every summon is logged in `logs/summon.log` and listed in the summoner's hand-back.
 
 A personal agent runs Epics without working in them. Give an agent in a Rex
 session of its own (your `~/me`, say) the role with `rex-amq-adapter join
@@ -244,11 +244,17 @@ session of its own (your `~/me`, say) the role with `rex-amq-adapter join
 started and that you can ask it about it:
 
 ```bash
-rex-amq-adapter epic "login revamp" -c ~/src/app --goal ~/src/app/.goal/20261112-login.md
+rex-amq-adapter epic "login revamp" -c ~/src/app --goal ~/src/app/.goal/20261112-login.md --asked "<your words>"
 ```
 
-`epic` creates the Epic's Rex session (named after it) with the orchestrator,
-briefed to run the contract (or, with `--asked "<your words>"`, with your
+`epic` needs `--goal`, `--asked`, or both. `--goal -` reads the contract from
+stdin and keeps it read-only as the Epic's `goal.md`. Either way the adapter
+notarizes your words and the contract (with its SHA-256) once, read-only, in
+the Epic's `grant.json` and `grant.md`; the JSON line and the view name them as
+`goal_path` and `grant_path`, and the lead's start notice ends with `Goal:` and
+`Grant:` lines pointing at them, so the run cites your words rather than an
+agent's retelling. `epic` creates the Epic's Rex session (named after it) with the orchestrator,
+briefed to run the contract (or, with only `--asked`, with your
 request), and a narrator in a background tab of its own, each tab following
 its agent's pane label. Both start on their role's routing (below); the
 narrator only reads mail and rewrites the view, so it runs on a cheap tier
@@ -257,7 +263,8 @@ when routed to Claude), on a resume too, while the orchestrator starts on
 `claude --model opus --effort high`; with `--crew C` the session works as crew C, and
 with `--crew pair` it is one Slice with no orchestrator: an implementer, on
 its own routing, leads, runs the goal (Checkpoints, its own reviewer), and
-records the hand-back and reads the view as an orchestrator does. It links
+records the hand-back, reads the view, and takes the narrator's `--control`
+directives as an orchestrator does. It links
 the Epic to the personal agent and waits for both agents (`--timeout`, 90 s
 by default).
 It prints one JSON line and exits 0 only when both are adopted and linked; a

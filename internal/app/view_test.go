@@ -515,3 +515,35 @@ func TestSessionViewStillRefusesWorkersAcrossEpics(t *testing.T) {
 		}
 	}
 }
+
+// In a pair Epic the implementer lead is the control plane: the narrator's
+// directive to it and its review traffic reach view.control_plane, while
+// mail between two workers it summoned stays a coverage gap, unread.
+func TestSessionViewPairEpicLeadIsTheControlPlane(t *testing.T) {
+	e := viewWorld(t)
+	noOpenObligations(e)
+	ctx := context.Background()
+	if err := e.Store.DeleteRecord("claude-01"); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Store.PutSessionCrew("session:a", store.SessionCrew{Crew: pairCrew, ClaimedBy: "pi-05", ClaimedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	put(t, e, store.Record{Handle: "claude-07", Kind: core.Claude, Role: "implementer", SessionID: "session:a", Parent: "claude-02", Depth: 1})
+	if err := e.AMQ.EnsureMailbox(ctx, e.Paths.Root(), "claude-07"); err != nil {
+		t.Fatal(err)
+	}
+	directive := sendID(t, e, "pi-04", "--to", "claude-02", "--control", "req-1", "--subject", "directive", "--body", "CONTROL: the user: also cover X")
+	review := sendID(t, e, "claude-02", "--to", "codex-03", "--kind", "review_request", "--subject", "review", "--body", "CONTROL: please review")
+	peer := sendID(t, e, "codex-03", "--to", "claude-07", "--subject", "aside", "--body", "PEER: between workers")
+	v, err := e.RefreshSessionView(ctx, Location{Block: "block:pi-04"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := refs(v.ControlPlane); !slices.Contains(got, directive) || !slices.Contains(got, review) || slices.Contains(got, peer) {
+		t.Fatalf("control plane %v: want the directive %s and the review %s, not the peer mail %s", got, directive, review, peer)
+	}
+	if !slices.Contains(gapRefs(v.CoverageGaps, GapPeerBody), peer) {
+		t.Fatalf("worker-to-worker mail is not a gap: %+v", v.CoverageGaps)
+	}
+}

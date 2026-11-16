@@ -14,6 +14,8 @@ func TestCanExchangeMatrix(t *testing.T) {
 	implA := at("claude-04", "implementer", epicA)
 	revA := at("codex-05", "reviewer", epicA)
 	plainA := at("pi-06", "", epicA)
+	pairLeadA := at("claude-09", "implementer", epicA)
+	pairLeadA.Lead = true
 	narrB := at("agy-07", NarratorRole, epicB)
 	orchB := at("claude-08", OrchestratorRole, epicB)
 	linkA := []Link{{Personal: me.Session(), Epic: narrA.Session()}}
@@ -46,6 +48,12 @@ func TestCanExchangeMatrix(t *testing.T) {
 		{"narrator routine mail to its orchestrator", narrA, orchA, send, nil, false, ReasonNarratorRoutine},
 		{"narrator control without a request id", narrA, orchA, Operation{Kind: OpControl}, nil, false, ReasonNarratorRoutine},
 		{"narrator reply to its orchestrator", narrA, orchA, Operation{Kind: OpReply}, nil, false, ReasonNarratorRoutine},
+		{"narrator control to its pair lead", narrA, pairLeadA, control, nil, true, ReasonControl},
+		{"narrator routine mail to its pair lead", narrA, pairLeadA, send, nil, false, ReasonNarratorRoutine},
+		{"narrator control to a worker implementer", narrA, implA, control, nil, false, ReasonNarratorWorker},
+		{"cross-epic narrator control to a pair lead", narrB, pairLeadA, control, nil, false, ReasonCrossEpic},
+		{"pair lead to personal", pairLeadA, me, send, linkA, false, ReasonPersonalOnly},
+		{"personal control to a pair lead", me, pairLeadA, control, linkA, false, ReasonPersonalOnly},
 		{"narrator to implementer", narrA, implA, send, nil, false, ReasonNarratorWorker},
 		{"narrator control to reviewer", narrA, revA, control, nil, false, ReasonNarratorWorker},
 		{"orchestrator to narrator", orchA, narrA, send, nil, false, ReasonNarratorObserves},

@@ -25,11 +25,14 @@ import (
 type EpicRequest struct {
 	Name string // the Epic: its Rex session's label
 	Dir  string // the repository its agents work in
-	// Goal is the goal contract the orchestrator runs (its grant), Asked the
-	// user's own words asking for the Epic, its brief when there is no
-	// contract; starting agents needs one of them, as summon does.
-	Goal, Asked string
-	Harness     string // the orchestrator's CLI; "" is the role's default
+	// Goal is the file of the goal contract the lead runs (its grant), and
+	// GoalText the text of one piped in (epic --goal -), which the Epic keeps
+	// as its goal.md; at most one of them. Asked is the user's own words
+	// asking for the Epic: the lead's brief when there is no contract, and
+	// notarized beside one when there is (store.Grant). Starting agents needs
+	// a contract or the words, as summon does, and takes both.
+	Goal, GoalText, Asked string
+	Harness               string // the orchestrator's CLI; "" is the role's default
 	// Crew is the crew the Epic's session works as (Env.Join); "" for none.
 	Crew string
 	// OpID names this request, so a retry with the same OpID reconciles the
@@ -60,7 +63,15 @@ type EpicResult struct {
 	// Orchestrator reports: an orchestrator, or a pair Epic's implementer
 	// (epicLead).
 	Lead string `json:"lead"`
+	// GoalPath is the goal contract the lead runs, and GrantPath the Epic's
+	// notarized grant (grant.md), once written.
+	GoalPath  string `json:"goal_path,omitempty"`
+	GrantPath string `json:"grant_path,omitempty"`
 }
+
+// EpicGoalMax bounds a goal contract piped in with --goal -, as handBackMax
+// bounds a hand-back.
+const EpicGoalMax = handBackMax
 
 // A pair Epic (epic --crew pair) runs one Slice with no orchestrator: its
 // implementer leads, runs the goal itself, and hands back (pairLead).
@@ -146,10 +157,11 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 	}
 	narrator := narrRoute.Harnesses[0]
 	orchLaunch, narrLaunch := orchRoute.Launch(kind), narrRoute.Launch(narrator)
-	brief, err := orchestratorBrief(kind, r)
+	grant, err := readEpicGrant(r)
 	if err != nil {
 		return EpicResult{}, err
 	}
+	brief := orchestratorBrief(kind, grant)
 	if crewName != "" {
 		if e.Crews == nil {
 			return EpicResult{}, fmt.Errorf("%w: no crews are available", ErrUsage)
@@ -171,11 +183,9 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 	release := func() {}
 	defer func() { release() }()
 	if r.OpID != "" {
-		id := openIdentity{Personal: caller.Endpoint().Session(), Name: name, Dir: physical, Asked: r.Asked, Crew: crewName}
-		if r.Goal != "" {
-			if id.Goal, err = filepath.Abs(r.Goal); err != nil {
-				return EpicResult{}, err
-			}
+		id := openIdentity{Personal: caller.Endpoint().Session(), Name: name, Dir: physical, Asked: r.Asked, Crew: crewName, Goal: grant.goal}
+		if grant.piped {
+			id.GoalSHA256 = store.ContractDigest([]byte(grant.text))
 		}
 		if r.Harness != "" {
 			id.Harness = string(kind)
@@ -206,7 +216,7 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 		if found {
 			unlock()
 			seed.SessionID = prev.SessionID
-			return e.reconcileOpen(ctx, loc, prev, seed)
+			return e.reconcileOpen(ctx, loc, prev, seed, grant)
 		}
 		release = unlock
 		op = &store.EpicOpRecord{Kind: store.EpicOpOpen, OpID: r.OpID, RequestHash: hash, Name: name, Server: caller.Server, PersonalHandle: caller.Handle, PersonalSessionID: caller.SessionID, CreatedAt: e.Now().UTC()}
@@ -240,7 +250,7 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 			return EpicResult{OpID: r.OpID}, fmt.Errorf("record --op-id %q before creating the Epic's session: %w", r.OpID, err)
 		}
 	}
-	session, blocks, policyErr, crewErr, err := e.newEpicSession(ctx, name, panes, crewName, caller)
+	session, blocks, policyErr, crewErr, notaryErr, err := e.newEpicSession(ctx, name, panes, crewName, caller, grant)
 	if err != nil {
 		if op != nil {
 			e.dropUnstartedOp(ctx, *op)
@@ -254,6 +264,11 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 	}
 	if crewErr != nil {
 		errs = append(errs, fmt.Errorf("record the crew: %w", crewErr))
+	}
+	if notaryErr != nil {
+		errs = append(errs, fmt.Errorf("notarize the grant: %w", notaryErr))
+	} else {
+		res.GoalPath, res.GrantPath = e.grantPaths(session)
 	}
 	// Recorded before any wait, so a run that dies or times out from here on
 	// leaves the session to reconcile.
@@ -293,60 +308,130 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 }
 
 // newEpicSession creates the Epic's session, records its unattended Epic
-// policy (every Epic's, whoever asked for it: Claim C23) and, with crewName,
-// records it as the session's crew. The panes' agents start as the session
-// is created, so with a crew the steps run under the lifecycle lock that
-// adoption takes: neither agent is adopted, and briefed, before the crew is
-// recorded. policyErr and crewErr are what could not be recorded; the
+// policy (every Epic's, whoever asked for it: Claim C23), with crewName
+// records it as the session's crew, and notarizes grant (notarize). The
+// panes' agents start as the session is created, so the steps run under the
+// lifecycle lock that adoption takes: neither agent is adopted, and briefed,
+// before its crew and the grant its start notice names are recorded.
+// policyErr, crewErr, and notaryErr are what could not be recorded; the
 // session stands.
-func (e Env) newEpicSession(ctx context.Context, name string, panes []rex.Pane, crewName string, by store.Record) (session string, blocks []string, policyErr, crewErr, err error) {
-	if crewName != "" {
-		unlock, err := e.Store.LockLifecycle(ctx)
-		if err != nil {
-			return "", nil, nil, nil, err
-		}
-		defer unlock()
+func (e Env) newEpicSession(ctx context.Context, name string, panes []rex.Pane, crewName string, by store.Record, grant epicGrant) (session string, blocks []string, policyErr, crewErr, notaryErr, err error) {
+	unlock, err := e.Store.LockLifecycle(ctx)
+	if err != nil {
+		return "", nil, nil, nil, nil, err
 	}
+	defer unlock()
 	session, _, blocks, err = e.Rex.NewSession(ctx, name, panes)
 	if err != nil {
-		return session, blocks, nil, nil, err
+		return session, blocks, nil, nil, nil, err
 	}
 	now := e.Now().UTC()
 	policyErr = e.Store.PutEpicPolicy(store.EpicPolicy{SessionID: session, Server: by.Server, Unattended: true, CreatedBy: by.Handle, CreatedAt: now})
-	if crewName == "" {
-		return session, blocks, policyErr, nil, nil
+	if crewName != "" {
+		crewErr = e.Store.PutSessionCrew(session, store.SessionCrew{Crew: crewName, ClaimedBy: by.Handle, ClaimedAt: now})
 	}
-	return session, blocks, policyErr, e.Store.PutSessionCrew(session, store.SessionCrew{Crew: crewName, ClaimedBy: by.Handle, ClaimedAt: now}), nil
+	return session, blocks, policyErr, crewErr, e.notarize(session, by.Handle, grant), nil
 }
 
 // maxSessionLabel is the longest session label Rex takes (session.create).
 const maxSessionLabel = 128
 
-// orchestratorBrief is the orchestrator's first prompt: run the goal
-// contract, which is its grant, or the user's words as they asked.
-func orchestratorBrief(kind core.Kind, r EpicRequest) (string, error) {
-	if r.Goal == "" {
-		if r.Asked == "" {
-			return "", fmt.Errorf("%w: starting an Epic needs its goal contract (--goal <file>) or the user's own words asking for it (--asked \"<their words>\")", ErrRefused)
+// epicGrant is what an Epic is opened on, read once before its session
+// exists: the user's words and the goal contract, from its file (goal) or
+// piped in (piped), with the contract's text as read then.
+type epicGrant struct {
+	asked string
+	goal  string // the contract file's absolute path; "" when piped or none
+	text  string // the contract's text; "" when there is none
+	piped bool
+}
+
+// readEpicGrant reads r's grant: a contract file must be a readable regular
+// file, a piped contract non-blank UTF-8 of at most EpicGoalMax bytes, and
+// one of a contract or the user's words is needed.
+func readEpicGrant(r EpicRequest) (epicGrant, error) {
+	g := epicGrant{asked: r.Asked}
+	switch {
+	case r.Goal != "" && r.GoalText != "":
+		return g, fmt.Errorf("%w: pass the goal contract as a file or piped in (--goal -), not both", ErrUsage)
+	case r.GoalText != "":
+		if len(r.GoalText) > EpicGoalMax || !utf8.ValidString(r.GoalText) || strings.TrimSpace(r.GoalText) == "" {
+			return g, fmt.Errorf("%w: a goal contract piped in with --goal - is non-blank UTF-8 of at most %d bytes", ErrUsage, EpicGoalMax)
 		}
-		return r.Asked, nil
+		g.text, g.piped = r.GoalText, true
+	case r.Goal != "":
+		goal, err := filepath.Abs(r.Goal)
+		if err != nil {
+			return g, err
+		}
+		info, err := os.Stat(goal)
+		if err != nil || !info.Mode().IsRegular() {
+			return g, fmt.Errorf("%w: the goal contract %s is not a readable file, so it grants nothing", ErrRefused, r.Goal)
+		}
+		b, err := os.ReadFile(goal)
+		if err != nil {
+			return g, fmt.Errorf("%w: the goal contract %s is not a readable file, so it grants nothing", ErrRefused, r.Goal)
+		}
+		g.goal, g.text = goal, string(b)
+	case r.Asked == "":
+		return g, fmt.Errorf("%w: starting an Epic needs its goal contract (--goal <file>, or --goal - to pipe it in) or the user's own words asking for it (--asked \"<their words>\"), or both", ErrRefused)
 	}
-	goal, err := filepath.Abs(r.Goal)
-	if err != nil {
-		return "", err
-	}
-	if info, err := os.Stat(goal); err != nil || !info.Mode().IsRegular() {
-		return "", fmt.Errorf("%w: the goal contract %s is not a readable file, so it grants nothing", ErrRefused, r.Goal)
+	return g, nil
+}
+
+// orchestratorBrief is the lead's first prompt: run the goal contract, which
+// is its grant, or the user's words as they asked. A piped contract has no
+// path until the session exists, so the lead finds it on the Goal: line of
+// its start notice (grantNotice), which adoption gives it only once the
+// grant is notarized.
+func orchestratorBrief(kind core.Kind, g epicGrant) string {
+	var at string
+	switch {
+	case g.goal != "":
+		at = "at " + g.goal
+	case g.piped:
+		at = "at the path on the `Goal:` line of your AMQ start notice"
+	default:
+		return g.asked
 	}
 	// make-goal's prompt for a contract kept in a file, whole: run-goal ends
 	// at either exit, so a run whose Slices are all blocked hands back.
-	run := "Load skill run-goal. Execute the goal contract at " + goal + "; it is the grant. " +
+	run := "Load skill run-goal. Execute the goal contract " + at + "; it is the grant. " +
 		"Done when every DONE WHEN line holds on fresh evidence, or when every Slice left is blocked " +
 		"(a thrash fuse, a Boundaries item, or a Slice it builds on) and the hand-back lists each under Blocked on me."
 	if kind == core.Claude {
 		run = "/goal " + run
 	}
-	return run, nil
+	return run
+}
+
+// notarize keeps g for session as the personal agent by relayed it: a piped
+// contract as the session's goal.md, then the read-only grant
+// (store.PutGrant), once; a retry keeps what the first run wrote.
+func (e Env) notarize(session string, by core.Handle, g epicGrant) error {
+	contract := g.goal
+	if g.piped {
+		if err := e.Store.PutGoal(session, g.text); err != nil {
+			return err
+		}
+		contract = e.Paths.GoalPath(session)
+	}
+	rec := store.Grant{Asked: g.asked, RelayedBy: by, RelayedAt: e.Now().UTC(), SessionID: session, Contract: contract}
+	if contract != "" {
+		rec.ContractSHA256 = store.ContractDigest([]byte(g.text))
+	}
+	_, err := e.Store.PutGrant(rec)
+	return err
+}
+
+// grantPaths are the goal contract and grant.md of session's notarized
+// grant; both "" when it has none (or it cannot be read).
+func (e Env) grantPaths(session string) (goal, grant string) {
+	g, ok, err := e.Store.Grant(session)
+	if err != nil || !ok {
+		return "", ""
+	}
+	return g.Contract, e.Paths.GrantPath(session)
 }
 
 // withTrust carries into an Antigravity or Pi session in dir the trust the

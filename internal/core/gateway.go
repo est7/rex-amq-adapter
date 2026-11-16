@@ -41,13 +41,16 @@ type SessionKey struct {
 // Endpoint is an agent as the gateway sees it at one moment: its handle and
 // role, and where it is. Generation counts the moves of the handle between
 // sessions (store.Record.Generation), so mail addressed to it before a move
-// is told from mail addressed to it now.
+// is told from mail addressed to it now. Lead marks the agent that runs its
+// Epic's goal: the orchestrator, or a pair Epic's implementer, which takes
+// the orchestrator's place (the app layer knows which).
 type Endpoint struct {
 	Handle     Handle `json:"handle"`
 	Role       string `json:"role,omitempty"`
 	Server     string `json:"server,omitempty"`
 	SessionID  string `json:"session_id,omitempty"`
 	Generation int    `json:"generation,omitempty"`
+	Lead       bool   `json:"lead,omitempty"`
 }
 
 // Session is the session e is in.
@@ -70,7 +73,8 @@ const (
 	OpSend  OpKind = "send"
 	OpReply OpKind = "reply"
 	// OpControl relays a user-control directive (a change of requirement, a
-	// start, a decision) to an Epic's Orchestrator, under ControlRequestID.
+	// start, a decision) to an Epic's lead (its Orchestrator, or a pair
+	// Epic's implementer), under ControlRequestID.
 	OpControl OpKind = "control"
 	// OpNotify is notify-personal's doorbell: the adapter mails a Personal
 	// agent in its own name for an outside producer (an Inbox or Timer
@@ -167,7 +171,7 @@ func CanExchange(sender, recipient Endpoint, op Operation, links []Link) Decisio
 			return allow(ReasonSystem)
 		}
 		return deny(ReasonNarratorObserves)
-	case sender.Role == NarratorRole && recipient.Role == OrchestratorRole:
+	case sender.Role == NarratorRole && (recipient.Role == OrchestratorRole || recipient.Lead):
 		if op.Kind == OpControl && op.ControlRequestID != "" {
 			return allow(ReasonControl)
 		}

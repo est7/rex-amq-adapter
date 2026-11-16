@@ -149,3 +149,48 @@ func TestSummonFallbackIsLogged(t *testing.T) {
 		t.Fatalf("summon.log %s %v", b, err)
 	}
 }
+
+// A council seats three reviewers in one Slice worktree, one per harness:
+// with --harness omitted the second seat passes over the harness already
+// seated there, a third names its own, and a second seat on a harness that
+// already has one, or a default start with every other family seated, is
+// refused. A writer role still never shares the directory.
+func TestSummonCouncilSeatsReviewersOnDistinctHarnessesInOneWorktree(t *testing.T) {
+	e, term, loc := summonWorld(t)
+	e.LookPath = installedOnly(core.Codex, core.Agy, core.Claude)
+	wt := workDir(t, e, "app-s1")
+	trustAgy(t, e, workDir(t, e, "app"), wt)
+	seat := func(harness string, want core.Kind, session string) {
+		t.Helper()
+		n := len(term.launches)
+		res := summon(t, e, loc, "reviewer", func(r *SummonRequest) { r.Asked = "council review"; r.Cwd = wt; r.Harness = harness })
+		if res.Action != "start" || res.Harness != want || len(term.launches) != n+1 || term.launches[n].Dir != wt {
+			t.Fatalf("seat --harness=%q: %+v launches %+v", harness, res, term.launches)
+		}
+		rec := adoptLaunch(t, e, term, term.launches[n], want, session)
+		rec.Cwd = wt
+		add(t, e, rec)
+	}
+	seat("", core.Codex, "sess-codex")
+	seat("", core.Agy, "sess-agy")
+	seat("claude", core.Claude, "sess-claude")
+	n := len(term.launches)
+	for _, c := range []struct{ harness, reason string }{
+		{"codex", "already works in"},
+		{"", "already has a live reviewer"},
+	} {
+		res := summon(t, e, loc, "reviewer", func(r *SummonRequest) { r.Asked = "council review"; r.Cwd = wt; r.Harness = c.harness })
+		if res.Action != "refused" || !strings.Contains(res.Reason, c.reason) || len(term.launches) != n {
+			t.Errorf("a fourth seat --harness=%q: %+v", c.harness, res)
+		}
+	}
+	if res := summon(t, e, loc, "implementer", func(r *SummonRequest) { r.Asked = "build it"; r.Cwd = wt }); res.Action != "start" {
+		t.Fatalf("setup the writer: %+v", res)
+	}
+	w := adoptLaunch(t, e, term, term.launches[n], core.Claude, "sess-writer")
+	w.Cwd = wt
+	add(t, e, w)
+	if res := summon(t, e, loc, "implementer", func(r *SummonRequest) { r.Asked = "build it"; r.Cwd = wt; r.Harness = "codex" }); res.Action != "refused" || !strings.Contains(res.Reason, "would edit the same files") {
+		t.Errorf("a second writer on another harness in the council's worktree: %+v", res)
+	}
+}

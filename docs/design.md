@@ -662,6 +662,13 @@ learns both with its identity, at adoption:
 - A session without a crew gives role prompts only, so a reviewer started
   anywhere is still briefed. An agent without a role in such a session hears
   nothing more.
+- The built-in reviewer (borrowing tstack's `sol-loop` and `council` and
+  pstack's `interrogate`) replies `VERDICT: APPROVE | CHANGES`, `SCORE:
+  <n>/10` when the request asks (a council), and findings with ids stable
+  across rounds, `S1 [blocker|should|nit] <file>:<line> <claim>. Fix: …`; a
+  `blocker` or `should` needs a run or a traced path, else it is a `nit`. It
+  builds or tests only in a temporary detached worktree of its own, since
+  council seats share one checkout.
 - Briefings are advice, like mates: a lookup that fails is logged and left
   out. A prompt over 4 000 bytes is named by path instead of inlined.
   `SessionStart` always briefs, so an agent keeps its briefing across a
@@ -780,7 +787,13 @@ running. The target is resolved in the caller's Rex session:
 3. Otherwise a new agent is started for the role, the message as its brief,
    in the caller's directory or `--cwd` (`start`); the caller awaits its
    adoption and then delivers. `--cwd` always means a new agent there: it
-   refuses a handle, and a directory a live agent of the role works in.
+   refuses a handle, and a directory a live agent of the role works in. A
+   review role (`core.ReviewRole`: reviewer, editor, qa) only reads the
+   checkout, so a council seats one per harness there: it is refused only
+   when a live seat on the same harness works in that directory (`--harness`
+   names the harness), and a start with no `--harness` passes over the
+   harnesses already seated (`busy`), refusing when none of its families is
+   left. Writer roles keep the plain refusal.
 
 A resumed or started agent gets a tab of its own, opened in the background
 and recorded as a follower (see **Tab labels**), whatever the size of the
@@ -1361,6 +1374,9 @@ Overridable with `REX_AMQ_ADAPTER_HOME` (tests use a temporary directory).
 │       ├── sessions/<session_id>/policy.json the Epic's external-write policy (epic; ME_UNATTENDED)
 │       ├── sessions/<session_id>/hand-back.json the orchestrator's latest hand-back, whole, with seq and digest (hand-back)
 │       ├── sessions/<session_id>/lifecycle.json the Epic's lifecycle: partial_start, opened, hand_back, closed
+│       ├── sessions/<session_id>/goal.md     a goal contract piped in with epic --goal - (0444, written once)
+│       ├── sessions/<session_id>/grant.json  the Epic's notarized grant: asked, relayed_by, relayed_at, contract, contract_sha256 (0444, written once)
+│       ├── sessions/<session_id>/grant.md    the same grant for agents to read, the user's words quoted verbatim (0444)
 │       └── epic-ops/<open|close>-<sha256(op_id)>.json  one epic or epic close --op-id request and how far it got
 ├── bin/inject                the wrapper amq wake runs as --inject-via
 ├── records/<handle>.json     one record per handle
@@ -1397,11 +1413,14 @@ an Epic its session is linked with (`link`/`unlink`) mail each other, and
 nothing else crosses sessions. The narrator takes no member mail, only the
 adapter's own notices (provenance `system`, never a header label or a sender
 named `system`); its one message into the Epic is a control directive to the
-orchestrator carrying a request id, sent with the managed `send --control
+Epic's lead (`Endpoint.Lead`: its orchestrator, or a pair Epic's implementer
+lead, which the app layer marks with `pairLead`) carrying a request id, sent with the managed `send --control
 <request id>` (the only path that records `op: control`, and refused to any
 caller but a narrator; a plain send from a narrator is refused). A handle the adapter never adopted (the
 user, a script) still reaches ordinary members, never a narrator or a Personal
-agent. A move of a handle to another session starts a generation
+agent. A member's send refused for `personal_reaches_only_a_linked_narrator`
+names the path that does reach the personal agent: an Epic lead's
+`rex-amq-adapter hand-back @<file>`, which the narrator relays. A move of a handle to another session starts a generation
 (`Record.Generation`), and mail addressed to an earlier one is fenced.
 
 The adapter applies the policy where it sends (`summon`, notices, and the
@@ -1464,13 +1483,32 @@ another `--me` names any sender. `events` only reads and applies no gate.
 
 ### Opening an Epic
 
-`rex-amq-adapter epic <name> -c DIR (--goal FILE | --asked "WORDS") [--crew C]`
+`rex-amq-adapter epic <name> -c DIR [--goal FILE|-] [--asked "WORDS"] [--crew C]`
 (`app.Env.OpenEpic`) is the whole start, so a personal agent runs one command
 and its user sees no steps. It refuses a caller that is not a live `personal`
-agent, and needs a grant as `summon` does: a goal contract that is a regular
-file, which the orchestrator's brief runs (make-goal's prompt for a contract
-in a file, whole, so the run ends at either of its exits, `/goal`-prefixed for
-Claude Code), or the user's own words, which become the brief. One
+agent, and needs a grant as `summon` does: a goal contract, which the lead's
+brief runs (make-goal's prompt for a contract in a file, whole, so the run
+ends at either of its exits, `/goal`-prefixed for Claude Code), or the user's
+own words, which become the brief when there is no contract; both may be
+given. The contract is a regular file, or with `--goal -` non-blank UTF-8 of
+at most 256 KB read from stdin (`EpicGoalMax`), whose digest joins the
+`--op-id` request hash in place of a path.
+
+**Grant notary.** Under the same lock, `notarize` keeps a piped contract as
+`sessions/<id>/goal.md` and writes `grant.json` and `grant.md`
+(`store.Grant`: `asked`, `relayed_by`, `relayed_at`, `session_id`,
+`contract`, `contract_sha256`), each `0444` and written once (`writeOnce`
+links a finished temporary file into place, so a reader never sees half of
+one and a second writer cannot replace it); an `--op-id` replay keeps the
+first run's grant and writes only what is missing. Rex assigns the session id
+in `session.create`, after the lead's command line is fixed, so its brief
+cannot name these files: the lead's start notice does instead
+(`grantNotice`, `core.GrantNotice`), ending with `Goal: <contract>` and
+`Grant: <grant.md> (user's words relayed verbatim by personal <handle>,
+recorded by rex-amq-adapter)`, and a piped contract's brief points the lead
+at that `Goal:` line. Only an orchestrator nobody summoned or a pair lead
+gets the lines. `EpicResult` and `SessionView` carry `goal_path` and
+`grant_path`. One
 `session.create` makes the Epic's Rex session, labelled with the whole name
 (pane labels shorten it to their task width), with two windows, all or none: the narrator's tab,
 whose agent is told whose personal agent it narrates for, and the
@@ -1478,9 +1516,9 @@ orchestrator's tab, last and so active, both left with Rex's placeholder name
 so each follows its agent. With `--crew`, the crew is checked against the
 crews found from DIR before anything is created and recorded as the session's
 before either agent is adopted, so both are briefed with it (the narrator, a
-Stealth agent, takes none): creating the session and recording its crew run
-under the lifecycle lock that adoption takes, since the panes' agents start
-as the session is created. Then the session is linked to the
+Stealth agent, takes none): creating the session and recording its crew and
+its grant run under the lifecycle lock that adoption takes, for every Epic,
+since the panes' agents start as the session is created. Then the session is linked to the
 caller (before adoption, so the caller can mail the narrator at once), and
 both startups are awaited (`AwaitStartup`). The result (`session_id`, each
 agent's block and startup, `linked`) is printed even when part of it failed;
@@ -1499,10 +1537,12 @@ whose crew is `pair` and that holds no orchestrator record, live or
 departed, records the hand-back and reads its own Epic's view; an
 implementer an orchestrator summoned, or one in an Epic that had an
 orchestrator, stays a worker. The narrator wakes on its hand-back and its
-departure as on an orchestrator's (the pulse is role-blind), but the gateway
-still knows only an orchestrator as an Epic's control plane: a narrator's
-`send --control` to a pair lead is refused (`narrator_never_mails_workers`),
-and the orchestrator watchdog does not run for it.
+departure as on an orchestrator's (the pulse is role-blind), and the gateway
+takes the pair lead as the Epic's control plane: `gatewayEndpoint` marks it
+`Lead`, so a narrator's `send --control` reaches it (`narrator_control`)
+while one to any other implementer is refused
+(`narrator_never_mails_workers`). The orchestrator watchdog does not run for
+it.
 
 ### An Epic runs unattended
 
@@ -1733,8 +1773,9 @@ or reads a mailbox as its owner (`view refresh`):
 2. Bodies by exact id: `amq thread --id <thread> --agents <session> --message-ids
    <ids> --include-body --json`, which reads every copy (inbox new and cur,
    outbox sent), only for messages whose send-time provenance places sender
-   and every recipient in the session. By default that is the orchestrator's
-   control-plane mail; `view read --ids` reads named peer mail on demand.
+   and every recipient in the session. By default that is the Epic lead's
+   control-plane mail (mail its orchestrator, or a pair Epic's implementer
+   lead, sent or received: the `lead` the provenance recorded); `view read --ids` reads named peer mail on demand.
 
 What was not read is listed in `coverage_gaps` (`peer_mail_body_not_read`,
 `unverified_provenance` for mail sent without the adapter, `other_session`,
