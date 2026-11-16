@@ -97,6 +97,10 @@ func (e Env) council(ctx context.Context, loc Location, caller store.Record, r S
 		case len(live) == 1:
 			seats = append(seats, seat{kind: k, live: &live[0]})
 		case departed != nil:
+			if !e.installed(k) {
+				missing = append(missing, fmt.Sprintf("%s: not installed", k))
+				continue
+			}
 			p, refusal, err := e.planResume(ctx, caller, *departed)
 			if err != nil {
 				return res, err

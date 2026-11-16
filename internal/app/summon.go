@@ -565,12 +565,20 @@ func (e Env) pickHarness(ctx context.Context, cwd string, kinds []core.Kind, cho
 // ready is why kind cannot start an agent in cwd, or "": it is not
 // installed (when the Env can look it up), or its preflight refuses.
 func (e Env) ready(ctx context.Context, cwd string, kind core.Kind) (string, error) {
-	if e.LookPath != nil {
-		if _, err := e.LookPath(string(kind)); err != nil {
-			return "not installed", nil
-		}
+	if !e.installed(kind) {
+		return "not installed", nil
 	}
 	return e.preflight(ctx, cwd, kind)
+}
+
+// installed reports whether this process's PATH finds kind's CLI; true when
+// the Env cannot look it up.
+func (e Env) installed(kind core.Kind) bool {
+	if e.LookPath == nil {
+		return true
+	}
+	_, err := e.LookPath(string(kind))
+	return err == nil
 }
 
 // preflight checks, before a pane opens, that kind meets no trust screen in

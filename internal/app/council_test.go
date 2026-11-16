@@ -178,6 +178,12 @@ func TestSummonCouncilRefusesWithoutPartialLaunch(t *testing.T) {
 		{"codex hooks unapproved", "codex: unapproved_hooks", seatOn(core.Claude, 12), func(t *testing.T, e *Env) { unapprovedCodexHook(t, *e) }},
 		{"two live codex seats", "codex: 2 live reviewer seats", seatOn(core.Codex, 12), func(t *testing.T, e *Env) { add(t, *e, seatOn(core.Codex, 13)) }},
 		{"no authority to start", "user's own words", seatOn(core.Codex, 12), nil},
+		{"departed agy seat not installed", "agy: not installed", seatOn(core.Codex, 12), func(t *testing.T, e *Env) {
+			gone := seatOn(core.Agy, 14)
+			gone.AgentSessionID, gone.Cwd = "agy-14", workDir(t, *e, "app")
+			add(t, *e, departed(gone, e.Now()))
+			e.LookPath = installedOnly(core.Codex, core.Claude)
+		}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			e, term, loc := summonWorld(t)
