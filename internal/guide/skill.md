@@ -360,7 +360,7 @@ names before acting on it. The command never starts an agent; producers run
 `notify-personal --ref inbox:<id>|timer:<id> --event-id <id> [--hub DIR]
 [--personal HANDLE] [--summary TEXT]`, which prints `notified` or
 `no_live_personal` as JSON (exit 0), answers a repeated event id `deduped`
-without sending, and refuses when more than one personal agent is live.
+without sending (a repeat must name the same ref, hub, and personal), and refuses when more than one personal agent is live.
 Mail written with `amq` directly never reaches a personal agent or a narrator.
 
 ## Summon on send

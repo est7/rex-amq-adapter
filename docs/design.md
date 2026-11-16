@@ -1373,10 +1373,12 @@ It never starts or resumes an agent. With no live Personal agent it sends
 nothing and prints `{"status":"no_live_personal",...}` (exit 0): the producer
 keeps its entry. With more than one left it refuses (exit 1) rather than mail
 them all. Under `notifications.lock` each event id is looked up first: a
-repeat of a notified event answers with the same `to`, `session_id`, and
-`message_id` and `"deduped":true` without sending, even when that agent has
-left since; the id reused for another ref (or another `--personal`) is
-refused. The record is written as soon as amq returns the id, before the
+repeat of a notified event (the same `--ref`, `--hub`, and `--personal`; the
+hub compared after resolving symlinks) answers with the same `to`,
+`session_id`, and `message_id` and `"deduped":true` without sending, even
+when that agent has left since; the id with any of the three changed, given,
+or dropped is refused, so a replay never acknowledges a delivery outside what
+it asked for. The record is written as soon as amq returns the id, before the
 waker is ensured, so delivery is at least once: only a run that dies between
 the two sends again on retry. `--ref` is `inbox:` or `timer:` and a non-empty
 id; `--ref` and `--event-id` are at most 256 bytes of UTF-8 without control

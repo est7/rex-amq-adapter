@@ -105,9 +105,10 @@ Agent and user commands:
                             adapter, the summary quoted as untrusted data; never
                             starts an agent. Prints {"status":"notified",...} or
                             {"status":"no_live_personal",...} (exit 0); a repeated
-                            event id is not sent again (deduped), one reused for
-                            another ref is refused, and so is more than one live
-                            personal agent that --hub or --personal leaves
+                            event id is not sent again (deduped), one reused with
+                            another ref, --hub, or --personal is refused, and so
+                            is more than one live personal agent that --hub or
+                            --personal leaves
   retire <handle> [--force] close a finished peer of this Rex session: mark it
                             departed (depart_reason "retired"), retire its waker,
                             and close its pane, telling nobody it left; a pane that

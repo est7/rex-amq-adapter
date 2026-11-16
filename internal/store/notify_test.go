@@ -16,7 +16,7 @@ func TestNotifyRecordRoundTrips(t *testing.T) {
 	if _, ok, err := s.Notification(id); ok || err != nil {
 		t.Fatalf("before any: ok=%v err=%v", ok, err)
 	}
-	n := Notification{EventID: id, Ref: "inbox:42", Handle: "claude-01", SessionID: "session:p", MessageID: "m1", At: time.Unix(100, 0).UTC()}
+	n := Notification{EventID: id, Ref: "inbox:42", Hub: "/hub", Personal: "claude-01", Handle: "claude-01", SessionID: "session:p", MessageID: "m1", At: time.Unix(100, 0).UTC()}
 	if err := s.PutNotification(n); err != nil {
 		t.Fatal(err)
 	}

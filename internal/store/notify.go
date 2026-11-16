@@ -25,11 +25,14 @@ import (
 func (p Paths) notifications() string { return filepath.Join(p.Extensions(), "notifications") }
 
 // Notification is the doorbell notify-personal sent for one event of an
-// outside producer (an Inbox or Timer entry): the ref it named, and the
+// outside producer (an Inbox or Timer entry): the request (the ref, and the
+// --hub and --personal it was narrowed by, empty when not given), and the
 // personal agent, session, and message it reached.
 type Notification struct {
 	EventID   string      `json:"event_id"`
 	Ref       string      `json:"ref"`
+	Hub       string      `json:"hub,omitempty"`      // symlink-resolved
+	Personal  core.Handle `json:"personal,omitempty"` // as asked, not the one reached
 	Handle    core.Handle `json:"handle"`
 	SessionID string      `json:"session_id"`
 	MessageID string      `json:"message_id"`

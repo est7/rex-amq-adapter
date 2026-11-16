@@ -344,7 +344,8 @@ mails it in its own name as the adapter's notice, the summary quoted as
 untrusted data. It never starts an agent: with none live it prints
 `{"status":"no_live_personal",...}` and exits 0; with more than one it
 refuses. A repeated `--event-id` is answered `"deduped":true` without sending
-again, and one reused for another `--ref` is refused.
+again, and one reused with another `--ref`, `--hub`, or `--personal` is
+refused.
 
 An agent shows what it is working on after its role and handle in its pane's
 label (`reviewer(claude-01) | fix login redirect`) with `rex-amq-adapter title

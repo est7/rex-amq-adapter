@@ -126,35 +126,61 @@ func TestNotifyPersonalDeliversAdapterMail(t *testing.T) {
 	noLaunches(t, term)
 }
 
-// One event id rings once: a replay answers as the first run did without
-// sending, also after the personal agent left; the id reused for another
-// ref or another --personal is refused.
+// One event id rings once: a replay of the same request (ref, --hub,
+// --personal; the hub through any path that resolves to it) answers as the
+// first run did without sending, also after the personal agent left. The id
+// with the ref, the hub, or the personal changed, given, or dropped is
+// refused: a replay never acknowledges a delivery outside what it asks for.
 func TestNotifyPersonalDedupesAnEventID(t *testing.T) {
-	e, _ := notifyWorld(t, t.TempDir())
-	first, err := notify(t, e, NotifyRequest{Ref: "timer:7", EventID: "tick-1"})
-	if err != nil {
+	hubA, hubB := t.TempDir(), t.TempDir()
+	e, _ := notifyWorld(t, hubA, hubB)
+	first, err := notify(t, e, NotifyRequest{Ref: "timer:7", EventID: "tick-1", Hub: hubA})
+	if err != nil || first.To != "claude-01" {
+		t.Fatalf("first %+v %v", first, err)
+	}
+	link := filepath.Join(t.TempDir(), "hub")
+	if err := os.Symlink(hubA, link); err != nil {
 		t.Fatal(err)
 	}
-	again, err := notify(t, e, NotifyRequest{Ref: "timer:7", EventID: "tick-1", Personal: "claude-01"})
 	want := first
 	want.Deduped = true
-	if err != nil || again != want {
-		t.Fatalf("replay %+v %v, want %+v", again, err, want)
+	for _, hub := range []string{hubA, link} {
+		if again, err := notify(t, e, NotifyRequest{Ref: "timer:7", EventID: "tick-1", Hub: hub}); err != nil || again != want {
+			t.Fatalf("replay with --hub %s: %+v %v, want %+v", hub, again, err, want)
+		}
 	}
-	if mail := unreadMail(t, e, "claude-01"); len(mail) != 1 {
-		t.Fatalf("a replay sent again: %d messages", len(mail))
-	}
-	for _, r := range []NotifyRequest{{Ref: "timer:8", EventID: "tick-1"}, {Ref: "timer:7", EventID: "tick-1", Personal: "codex-09"}} {
+	for _, r := range []NotifyRequest{
+		{Ref: "timer:8", EventID: "tick-1", Hub: hubA},
+		{Ref: "timer:7", EventID: "tick-1", Hub: hubB},
+		{Ref: "timer:7", EventID: "tick-1"},
+		{Ref: "timer:7", EventID: "tick-1", Hub: hubA, Personal: "claude-01"},
+		{Ref: "timer:7", EventID: "tick-1", Hub: hubA, Personal: "codex-09"},
+	} {
 		if res, err := notify(t, e, r); !errors.Is(err, ErrRefused) || res.Status != "" {
 			t.Errorf("%+v: %+v %v, want refused", r, res, err)
 		}
 	}
 	leave(t, e, "claude-01")
-	if late, err := notify(t, e, NotifyRequest{Ref: "timer:7", EventID: "tick-1"}); err != nil || late != want {
+	if late, err := notify(t, e, NotifyRequest{Ref: "timer:7", EventID: "tick-1", Hub: hubA}); err != nil || late != want {
 		t.Errorf("replay after the agent left: %+v %v", late, err)
 	}
-	if mail := unreadMail(t, e, "claude-01"); len(mail) != 1 {
-		t.Fatalf("%d messages after the replays", len(mail))
+	for h, n := range map[core.Handle]int{"claude-01": 1, "codex-02": 0} {
+		if mail := unreadMail(t, e, h); len(mail) != n {
+			t.Errorf("%s holds %d messages after the replays, want %d", h, len(mail), n)
+		}
+	}
+
+	// Without --hub the replay may not add one, and --personal binds the same way.
+	if _, err := notify(t, e, NotifyRequest{Ref: "inbox:9", EventID: "ev-9", Personal: "codex-02"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range []NotifyRequest{{Ref: "inbox:9", EventID: "ev-9"}, {Ref: "inbox:9", EventID: "ev-9", Personal: "codex-02", Hub: hubB}} {
+		if res, err := notify(t, e, r); !errors.Is(err, ErrRefused) || res.Status != "" {
+			t.Errorf("%+v: %+v %v, want refused", r, res, err)
+		}
+	}
+	if res, err := notify(t, e, NotifyRequest{Ref: "inbox:9", EventID: "ev-9", Personal: "codex-02"}); err != nil || !res.Deduped || res.To != "codex-02" {
+		t.Errorf("same replay: %+v %v", res, err)
 	}
 }
 

@@ -156,9 +156,10 @@ type NotifyResult struct {
 }
 
 // NotifyPersonal rings the live personal agent for n's event, once per event
-// id. A replay of a notified event answers as before without sending, even
-// when that personal agent has left since; an event id reused for another
-// ref (or another --personal) is refused. With no live personal agent it
+// id. A replay of a notified event (the same ref, --hub, and --personal)
+// answers as before without sending, even when that personal agent has left
+// since; the event id with any of the three changed is refused, so a replay
+// never reports a delivery outside what it asked for. With no live personal agent it
 // sends nothing and says so (no error); with more than one that --hub and
 // --personal leave, it refuses rather than mail them all.
 //
@@ -179,8 +180,9 @@ func (e Env) NotifyPersonal(ctx context.Context, n Notify) (NotifyResult, error)
 		return res, err
 	}
 	if ok {
-		if prior.Ref != n.ref || n.personal != "" && prior.Handle != n.personal {
-			return res, fmt.Errorf("%w: event id %q already notified %s of %s", ErrRefused, n.eventID, prior.Handle, prior.Ref)
+		if prior.Ref != n.ref || prior.Hub != n.hub || prior.Personal != n.personal {
+			return res, fmt.Errorf("%w: event id %q already notified %s of %s (--hub %q, --personal %q); a replay asks the same",
+				ErrRefused, n.eventID, prior.Handle, prior.Ref, prior.Hub, prior.Personal)
 		}
 		res.Status, res.To, res.SessionID, res.MessageID, res.Deduped = NotifyNotified, prior.Handle, prior.SessionID, prior.MessageID, true
 		return res, nil
@@ -223,7 +225,7 @@ func (e Env) NotifyPersonal(ctx context.Context, n Notify) (NotifyResult, error)
 	res.Status, res.To, res.SessionID, res.MessageID = NotifyNotified, target.Handle, target.SessionID, sent.ID
 	// The record first: a waker that fails to start must not make a retry
 	// send the event again.
-	if err := e.Store.PutNotification(store.Notification{EventID: n.eventID, Ref: n.ref, Handle: target.Handle, SessionID: target.SessionID, MessageID: sent.ID, At: e.Now().UTC()}); err != nil {
+	if err := e.Store.PutNotification(store.Notification{EventID: n.eventID, Ref: n.ref, Hub: n.hub, Personal: n.personal, Handle: target.Handle, SessionID: target.SessionID, MessageID: sent.ID, At: e.Now().UTC()}); err != nil {
 		return res, fmt.Errorf("delivered %s but could not record it: %w", sent.ID, err)
 	}
 	if err := e.ensureWaker(ctx, target); err != nil {
