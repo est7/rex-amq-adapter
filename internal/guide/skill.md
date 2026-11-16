@@ -297,7 +297,7 @@ Rex session, lead first:
 | `ship` | `pair`, then QA runs the reviewed candidate and reports a verdict | implementer, reviewer, qa |
 | `dev` | an architect splits a goal into tasks for an implementer and reviewer | architect, implementer, reviewer |
 | `docs` | writers draft, an editor checks them against the code (an architect, when present, partitions and leads) | architect, writer, editor |
-| `design` | architects argue a design to a decision through sealed proposals and a claim ledger | architect, architect |
+| `design` | architects argue a design to a decision through sealed proposals (no session-transcript search before the ledger) and a claim ledger | architect, architect |
 
 `rex-amq-adapter crews` adds the project's and user's own crews and roles
 (`crews --json` gives each one's members and purpose as data); read one with

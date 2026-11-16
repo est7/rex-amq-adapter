@@ -166,7 +166,7 @@ conventions, shared by every agent of the session, in any tab:
 | crew `ship` | `pair`, then QA runs the reviewed candidate and reports a verdict with evidence |
 | crew `dev` | an architect decomposes the goal into tasks for an implementer and reviewer |
 | crew `docs` | writers draft, an editor checks against the code; an optional architect partitions |
-| crew `design` | architects send sealed proposals to the lead, debate a shared claim ledger, vote per claim, and report the agreed design and each split claim's crux |
+| crew `design` | architects send sealed proposals to the lead (no session-transcript search, `nmem t` or `rex-history`, until the ledger is broadcast), debate a shared claim ledger, vote per claim, and report the agreed design and each split claim's crux |
 
 ```bash
 rex-amq-adapter join pair    # claim crew pair for this Rex session and take its lead, implementer
