@@ -100,6 +100,16 @@ Agent and user commands:
                             handles stay reserved for a resume), and unlink it;
                             refused while one of its agents is not at rest or
                             holds unread mail, unless --force
+  notify-personal --ref inbox:<id>|timer:<id> --event-id ID [--hub DIR] [--personal H] [--summary TEXT]
+                            (an outside producer: an Inbox entry, a Timer tick) ring
+                            the live personal agent, mailed in its own name by the
+                            adapter, the summary quoted as untrusted data; never
+                            starts an agent. Prints {"status":"notified",...} or
+                            {"status":"no_live_personal",...} (exit 0); a repeated
+                            event id is not sent again (deduped), one reused with
+                            another ref, --hub, or --personal is refused, and so
+                            is more than one live personal agent that --hub or
+                            --personal leaves
   retire <handle> [--force] close a finished peer of this Rex session: mark it
                             departed (depart_reason "retired"), retire its waker,
                             and close its pane, telling nobody it left; a pane that
@@ -187,6 +197,8 @@ func run(args []string) int {
 		return runLink(cmd == "link", rest)
 	case "epic":
 		return runEpic(rest)
+	case "notify-personal":
+		return runNotifyPersonal(rest)
 	case "retire":
 		return runRetire(rest)
 	case "view":

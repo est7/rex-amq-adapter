@@ -143,7 +143,8 @@ func TestQuarantineLeavesNothingToRingFor(t *testing.T) {
 
 // A Narrator takes no member mail: only the adapter's own notices, proven by
 // the provenance the adapter wrote, reach it through the hook. A system label
-// a member puts on its own send proves nothing.
+// a member puts on its own send proves nothing: mail written with amq
+// directly has no provenance, so it is refused as unverified.
 func TestQuarantineAtHookForANarrator(t *testing.T) {
 	e := realAmqEnv(t, &fakeTerm{state: "working"})
 	ctx := context.Background()
@@ -185,7 +186,7 @@ func TestQuarantineAtHookForANarrator(t *testing.T) {
 		t.Fatalf("quarantine %v", got)
 	}
 	for _, reason := range quarantined(t, e, "agy-02") {
-		if reason != core.ReasonNarratorObserves {
+		if reason != core.ReasonUnverified {
 			t.Fatalf("reason %s", reason)
 		}
 	}
@@ -340,5 +341,44 @@ func TestLinkedNarratorSendsToItsPersonalAgentUnasked(t *testing.T) {
 	}
 	if kept, err := e.admit(me); err != nil || len(kept) != 1 {
 		t.Fatalf("the personal agent admitted %v %v", kept, err)
+	}
+}
+
+// Mail with no adapter provenance (written with amq directly) proves nothing
+// about its sender: `amq send --me <personal> --to <personal>` once passed as
+// the personal agent's own mail. To a personal agent or a narrator it is
+// quarantined, whoever it names; a worker still gets the queue's and its
+// own raw mail, as before.
+func TestGatewayQuarantinesUnverifiedMailToPersonalAndNarrator(t *testing.T) {
+	f := &fakeTerm{state: "idle", submit: true}
+	e := fixture(t, f)
+	put(t, e,
+		store.Record{Handle: "claude-01", Role: core.PersonalRole, SessionID: "session:p"},
+		store.Record{Handle: "agy-02", Role: core.NarratorRole, SessionID: "session:a"},
+		store.Record{Handle: "codex-03", Role: "implementer", SessionID: "session:a"},
+	)
+	if err := e.Store.PutLink(core.Link{Personal: core.SessionKey{Server: fakeServer, SessionID: "session:p"}, Epic: core.SessionKey{Server: fakeServer, SessionID: "session:a"}}); err != nil {
+		t.Fatal(err)
+	}
+	headed(t, e, "claude-01", "p-self", "claude-01")
+	headed(t, e, "claude-01", "p-narr", "agy-02")
+	headed(t, e, "agy-02", "n-self", "agy-02", amq.SystemLabel)
+	headed(t, e, "codex-03", "w-self", "codex-03")
+	headed(t, e, "codex-03", "w-queue", "alice")
+	for h, want := range map[core.Handle]map[string]string{
+		"claude-01": {"p-self": core.ReasonUnverified, "p-narr": core.ReasonUnverified},
+		"agy-02":    {"n-self": core.ReasonUnverified},
+		"codex-03":  {},
+	} {
+		rec := recordOf(t, e, h)
+		if _, err := e.admit(rec); err != nil {
+			t.Fatal(err)
+		}
+		if got := quarantined(t, e, h); !maps.Equal(got, want) {
+			t.Errorf("quarantine of %s %v, want %v", h, got, want)
+		}
+	}
+	if got, _ := amq.Unread(e.Paths.Root(), "codex-03"); !slices.Equal(got, []string{"w-queue", "w-self"}) {
+		t.Errorf("worker inbox %v", got)
 	}
 }

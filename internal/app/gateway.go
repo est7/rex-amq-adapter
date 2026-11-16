@@ -34,8 +34,9 @@ func (e Env) endpointOf(h core.Handle) (core.Endpoint, error) {
 
 // judge decides whether reader may see a message it received, by what the
 // adapter recorded at sending. A message the adapter has no record of (sent
-// with amq directly) is judged by its sender's record now, as an ordinary
-// send: its header's labels and sender name prove nothing.
+// with amq directly) is judged by its sender's record now, as an unverified
+// send: its header's labels and sender name prove nothing, so it never
+// reaches a personal agent or a narrator.
 func (e Env) judge(reader store.Record, h amq.Header, links []core.Link) (core.Decision, core.Endpoint, error) {
 	var ac adapterContext
 	h.ContextOf(store.ProvenanceContextKey, &ac)
@@ -48,7 +49,7 @@ func (e Env) judge(reader store.Record, h amq.Header, links []core.Link) (core.D
 		if from, err = e.endpointOf(core.Handle(h.From)); err != nil {
 			return core.Decision{}, core.Endpoint{}, err
 		}
-		op = core.Operation{Kind: core.OpSend}
+		op = core.Operation{Kind: core.OpSend, Unverified: true}
 	} else if op.Addressed == nil {
 		// The adapter sent it to others: it is in this inbox by no send of
 		// the adapter's.

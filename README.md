@@ -334,11 +334,24 @@ rex-amq-adapter unlink <epic-session>  # revoke it
 rex-amq-adapter view --session <id>    # an Epic's view.json (its narrator, orchestrator, or a linked personal agent)
 rex-amq-adapter view refresh --summary "<what changed>"   # (the narrator) rebuild the view; `view read --ids …` reads named mail
 rex-amq-adapter hand-back @report.md   # (the orchestrator, last) record its final report; view shows it as hand_back
+rex-amq-adapter notify-personal --ref inbox:42 --event-id ev-1 [--hub ~/me] [--summary "…"]   # (an outside producer) ring the live personal agent
 ```
 
 `--me`, `--root`, `--session`, and `--project` are the adapter's to set and
 are refused. Mail an agent arrives at is checked again before it is
-announced: what the policy refuses moves to a quarantine, unread.
+announced: what the policy refuses moves to a quarantine, unread. Mail sent
+with `amq` directly carries no record of who sent it, so it never reaches a
+personal agent or a narrator (`unverified_sender`), whatever `--me` it names.
+
+`notify-personal` is how a producer outside Rex (an Inbox entry, a launchd
+timer) wakes the personal agent. It runs from anywhere, finds the live
+personal agent itself (narrowed by `--hub DIR` or `--personal HANDLE`), and
+mails it in its own name as the adapter's notice, the summary quoted as
+untrusted data. It never starts an agent: with none live it prints
+`{"status":"no_live_personal",...}` and exits 0; with more than one it
+refuses. A repeated `--event-id` is answered `"deduped":true` without sending
+again, and one reused with another `--ref`, `--hub`, or `--personal` is
+refused.
 
 An agent shows what it is working on after its role and handle in its pane's
 label (`reviewer(claude-01) | fix login redirect`) with `rex-amq-adapter title

@@ -131,3 +131,58 @@ func TestCanExchangeFollowsLinks(t *testing.T) {
 		t.Fatal("link matched another server")
 	}
 }
+
+// Mail without adapter provenance (Unverified) never reaches a Personal agent
+// or a Narrator, even under their own or a linked handle; a worker still
+// takes it as before. notify-personal's doorbell (OpNotify, System, the
+// Personal agent's own name) reaches a placed Personal agent and nothing
+// else; the fence of prior placements still comes first.
+func TestGatewayUnverifiedAndNotifyRules(t *testing.T) {
+	const srv = "unix:///rex.sock"
+	at := func(h Handle, role, session string) Endpoint {
+		return Endpoint{Handle: h, Role: role, Server: srv, SessionID: session}
+	}
+	me := at("claude-01", PersonalRole, "session:personal")
+	narrA := at("agy-02", NarratorRole, "session:a")
+	implA := at("claude-04", "implementer", "session:a")
+	orchA := at("claude-03", OrchestratorRole, "session:a")
+	linkA := []Link{{Personal: me.Session(), Epic: narrA.Session()}}
+	raw := Operation{Kind: OpSend, Unverified: true}
+	notify := Operation{Kind: OpNotify, System: true}
+	moved := me
+	moved.Generation = 1
+
+	for _, c := range []struct {
+		name     string
+		from, to Endpoint
+		op       Operation
+		links    []Link
+		allow    bool
+		reason   string
+	}{
+		{"raw personal to itself", me, me, raw, linkA, false, ReasonUnverified},
+		{"raw linked narrator to personal", narrA, me, raw, linkA, false, ReasonUnverified},
+		{"raw narrator to itself", narrA, narrA, raw, nil, false, ReasonUnverified},
+		{"raw outsider to personal", Endpoint{Handle: "alice"}, me, raw, nil, false, ReasonUnverified},
+		{"raw member to narrator", orchA, narrA, raw, nil, false, ReasonUnverified},
+		{"raw outsider to a worker", Endpoint{Handle: "alice"}, implA, raw, nil, true, ReasonOutside},
+		{"raw worker to itself", implA, implA, raw, nil, true, ReasonSelf},
+		{"raw peer to a worker", orchA, implA, raw, nil, true, ReasonSameEpic},
+		{"adapter-sent personal to itself", me, me, Operation{Kind: OpSend}, nil, true, ReasonSelf},
+		{"narrator's own pulse notice", narrA, narrA, Operation{Kind: OpSend, System: true}, nil, true, ReasonSelf},
+		{"notify to a placed personal", me, me, notify, nil, true, ReasonNotify},
+		{"notify to an unplaced personal", Endpoint{Handle: "claude-01", Role: PersonalRole}, Endpoint{Handle: "claude-01", Role: PersonalRole}, notify, nil, false, ReasonUnplaced},
+		{"notify not marked system", me, me, Operation{Kind: OpNotify}, nil, true, ReasonSelf},
+		{"notify to another personal", me, at("claude-09", PersonalRole, "session:q"), notify, nil, false, ReasonPersonalOnly},
+		{"notify to a worker under its own name", implA, implA, notify, nil, true, ReasonSelf},
+		{"notify across a narrator", me, narrA, notify, linkA, true, ReasonLinked},
+		{"notify addressed to a prior placement", me, moved, Operation{Kind: OpNotify, System: true, Addressed: &me}, nil, false, ReasonFenced},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			d := CanExchange(c.from, c.to, c.op, c.links)
+			if d.Allow != c.allow || d.Reason != c.reason {
+				t.Errorf("CanExchange = %+v, want allow=%v reason=%s", d, c.allow, c.reason)
+			}
+		})
+	}
+}
