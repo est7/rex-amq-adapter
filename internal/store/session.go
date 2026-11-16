@@ -23,6 +23,8 @@ import (
 //     (SessionCrew), claimed by join CREW or epic --crew.
 //   - sessions/<session_id>/hand-back.json: the orchestrator's latest
 //     hand-back (HandBack), which the view carries whole.
+//   - sessions/<session_id>/policy.json: the Epic's external-write policy
+//     (EpicPolicy), written when epic creates the session.
 //   - sessions/<session_id>/lifecycle.json: the Epic's lifecycle
 //     (EpicLifecycle, epic_lifecycle.go).
 

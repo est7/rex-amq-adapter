@@ -53,3 +53,14 @@ func trustAgy(t *testing.T, e Env, dirs ...string) {
 		t.Fatal(err)
 	}
 }
+
+// physical is dir with its symlinks resolved, the path a harness keys its
+// folder trust by (os.TempDir is under /var, a symlink, on macOS).
+func physical(t *testing.T, dir string) string {
+	t.Helper()
+	p, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}

@@ -16,7 +16,7 @@ func TestLaunchArgsPerHarness(t *testing.T) {
 	}{
 		{Claude, Launch{"opus", "high"}, []string{"claude", "--", "brief"}, []string{"claude", "--model", "opus", "--effort", "high", "--", "brief"}},
 		{Claude, Launch{"haiku", ""}, []string{"claude", "--resume", "s", "p"}, []string{"claude", "--model", "haiku", "--resume", "s", "p"}},
-		{Codex, Launch{"gpt-5.4", "xhigh"}, []string{"codex", "--no-daemon", "resume", "t", "p"}, []string{"codex", "-m", "gpt-5.4", "-c", "model_reasoning_effort=xhigh", "--no-daemon", "resume", "t", "p"}},
+		{Codex, Launch{"gpt-6-astra", "xhigh"}, []string{"codex", "--no-daemon", "resume", "t", "p"}, []string{"codex", "-m", "gpt-6-astra", "-c", "model_reasoning_effort=xhigh", "--no-daemon", "resume", "t", "p"}},
 		{Codex, Launch{"", "off"}, []string{"codex", "--no-daemon", "--", "b"}, []string{"codex", "-c", "model_reasoning_effort=none", "--no-daemon", "--", "b"}},
 		{Agy, Launch{"gemini-4-carbon-high", "high"}, []string{"agy", "-i", "b"}, []string{"agy", "--model", "gemini-4-carbon-high", "--effort", "high", "-i", "b"}},
 		{Pi, Launch{"anthropic/claude-sonnet-4", "minimal"}, []string{"pi", "--", "b"}, []string{"pi", "--model", "anthropic/claude-sonnet-4", "--thinking", "minimal", "--", "b"}},
@@ -48,7 +48,7 @@ func TestLaunchParseRejectsFlagPrefixedModels(t *testing.T) {
 	for _, tc := range []struct {
 		kind          Kind
 		model, effort string
-	}{{Claude, "opus", "max"}, {Codex, "gpt-5.4", "minimal"}, {Pi, "openai/gpt-5.4:high", "off"}, {Agy, "gemini-pro-orchestrator", ""}} {
+	}{{Claude, "opus", "max"}, {Codex, "gpt-6-astra", "minimal"}, {Pi, "openai/gpt-6.1-sol:high", "off"}, {Agy, "gemini-pro-orchestrator", ""}} {
 		if l, err := ParseLaunch(tc.kind, tc.model, tc.effort); err != nil || l != (Launch{tc.model, tc.effort}) {
 			t.Errorf("%s %s/%s: %+v %v", tc.kind, tc.model, tc.effort, l, err)
 		}
@@ -66,7 +66,7 @@ func TestFamilyFollowsTheModel(t *testing.T) {
 		{Claude, "", Anthropic}, {Codex, "", OpenAI}, {Agy, "", Google}, {Pi, "", ""},
 		{Agy, "claude-opus-4", Anthropic}, {Agy, "gemini-4-carbon-high", Google}, {Agy, "gpt-oss-120b", OpenAI},
 		{Claude, "Opus", Anthropic}, {Claude, "fable", Anthropic}, {Codex, "o3", OpenAI}, {Codex, "o4-mini", OpenAI},
-		{Pi, "openai/gpt-5.4", OpenAI}, {Pi, "anthropic/claude-sonnet-4", Anthropic}, {Pi, "sonnet:high", Anthropic}, {Pi, "llama-4", ""},
+		{Pi, "openai/gpt-6.1-sol", OpenAI}, {Pi, "anthropic/claude-sonnet-4", Anthropic}, {Pi, "sonnet:high", Anthropic}, {Pi, "llama-4", ""},
 		{Codex, "llama-4", OpenAI},
 	} {
 		if got := Family(tc.kind, tc.model); got != tc.want {

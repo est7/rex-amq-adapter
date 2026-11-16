@@ -21,21 +21,38 @@ import (
 	"time"
 )
 
-// agentScript is a scripted agent. It adopts itself with a real hook, reports
-// idle, draws an empty box, and for each line typed reports working, appends
+// agentScript is a scripted agent: of the harness its second argument names,
+// claude (the default) or agy, whose hooks it fires and whose input box it
+// draws. It adopts itself with a real hook, reports idle, draws an empty box, and for each line typed reports working, appends
 // the line to <name>.got, and reports idle again. Sending it `quit` runs
 // SessionEnd; `crash` exits without running any hook; `join ARGS` (or
 // `epic ARGS`, `summon ARGS`) runs rex-amq-adapter join ARGS from its shell,
 // its output to <name>.join. With <name>.obey present, a typed AMQ doorbell is obeyed:
 // the command after its "Run " runs from the agent's shell, its output to
-// <name>.drained.
+// <name>.drained. Before it reports ready, its tool shell's ME_UNATTENDED
+// ("unset" when it has none) goes to <name>.unattended, the output of
+// rex-amq-adapter env to <name>.env, and ME_UNATTENDED after evaluating that
+// output to <name>.unattended-env.
 const agentScript = `name=$1
+harness=${2:-claude}
+glyph='❯'
+if [ "$harness" = agy ]; then glyph='>'; fi
 status() { printf '\033]7501;state=%s:app=claude-code\033\\' "$1"; }
 rule() { printf '%s\r\n' '────────────────────────────────────────'; }
-draw() { printf '\033[2J\033[H'; printf 'scripted agent %s\r\n' "$name"; rule; printf '❯ \r\n'; rule; printf '\033[3;3H'; }
-hook() { printf '{"session_id":"%s"}' "$name" | "$ADAPTER" hook "$1" --agent claude >>"$DIR/$name.hook" 2>&1; }
+draw() { printf '\033[2J\033[H'; printf 'scripted agent %s\r\n' "$name"; rule; printf '%s \r\n' "$glyph"; rule; printf '\033[3;3H'; }
+hook() {
+	if [ "$harness" = agy ]; then
+		printf '{"conversationId":"%s"}' "$name" | "$ADAPTER" hook "$1" --agent agy >>"$DIR/$name.hook" 2>&1
+	else
+		printf '{"session_id":"%s"}' "$name" | "$ADAPTER" hook "$1" --agent claude >>"$DIR/$name.hook" 2>&1
+	fi
+}
 stty -echo
 hook session-start
+probe() { /bin/sh -c 'printf "%s" "${ME_UNATTENDED:-unset}"'; }
+probe >"$DIR/$name.unattended"
+"$ADAPTER" env >"$DIR/$name.env" 2>&1
+( eval "$(cat "$DIR/$name.env")" 2>/dev/null; probe ) >"$DIR/$name.unattended-env"
 status idle
 draw
 : >"$DIR/$name.ready"
@@ -134,8 +151,10 @@ func newWorld(t *testing.T) *world {
 		// CLAUDE* and the other harnesses' session ids: the agent running the
 		// tests may be a harness session, whose pid and session id must not
 		// stand for the scripted agents'.
+		// ME_UNATTENDED: the agent running the tests may be an Epic's, and
+		// the marker an agent shell reads must come from its own launch.
 		switch name {
-		case "HOME", "SHELL", "XDG_CONFIG_HOME", "CODEX_THREAD_ID", "PI_SESSION_ID", "ANTIGRAVITY_CONVERSATION_ID":
+		case "HOME", "SHELL", "XDG_CONFIG_HOME", "CODEX_THREAD_ID", "PI_SESSION_ID", "ANTIGRAVITY_CONVERSATION_ID", "ME_UNATTENDED":
 			continue
 		}
 		if name == "PATH" {
@@ -171,12 +190,19 @@ func newWorld(t *testing.T) *world {
 		preamble += "export '" + kv + "'\n"
 	}
 	w.write(script, preamble+agentScript)
-	// A launched "claude" is a scripted agent named by its brief: an Epic's
-	// narrator is told to narrate, anything else is its orchestrator.
+	// A launched "claude" or "agy" is a scripted agent of that harness named
+	// by its brief: an Epic's narrator is told to narrate, a brief naming
+	// e2e-worker starts the worker, anything else is its orchestrator; a
+	// resume (claude --resume, agy --conversation) takes back the session it
+	// names, which is the agent's name.
 	if err := os.MkdirAll(filepath.Join(dir, "bin"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	w.write(filepath.Join(dir, "bin", "claude"), "#!/bin/sh\ncase \"$*\" in *Narrate*) n=narrator ;; *) n=orchestrator ;; esac\nexec /bin/sh '"+script+"' \"$n\"\n")
+	for h, resume := range map[string]string{"claude": "--resume", "agy": "--conversation"} {
+		w.write(filepath.Join(dir, "bin", h), "#!/bin/sh\ncase \"$*\" in *Narrate*) n=narrator ;; *e2e-worker*) n=worker ;; *) n=orchestrator ;; esac\n"+
+			"prev=\nfor a in \"$@\"; do [ \"$prev\" = "+resume+" ] && n=$a; prev=$a; done\n"+
+			"exec /bin/sh '"+script+"' \"$n\" "+h+"\n")
+	}
 	w.startServer()
 	return w
 }

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
@@ -270,22 +269,15 @@ func (e Env) cockpitEpic(epic core.SessionKey) (CockpitEpic, error) {
 }
 
 // dirWithin reports whether dir is hub or inside it, symbolic links
-// resolved; a directory that cannot be resolved is in no hub.
+// resolved; a directory that cannot be resolved is in no hub
+// (sameOrWithin, which notify-personal's --hub uses too).
 func dirWithin(dir, hub string) bool {
-	if dir == "" || hub == "" {
+	if hub == "" {
 		return false
 	}
-	d, err := filepath.EvalSymlinks(dir)
+	h, err := resolvedDir(hub)
 	if err != nil {
 		return false
 	}
-	h, err := filepath.Abs(hub)
-	if err != nil {
-		return false
-	}
-	if h, err = filepath.EvalSymlinks(h); err != nil {
-		return false
-	}
-	rel, err := filepath.Rel(h, d)
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+	return sameOrWithin(dir, h)
 }

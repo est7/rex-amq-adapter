@@ -348,8 +348,13 @@ func (e Env) resume(ctx context.Context, caller store.Record, s Session, r Summo
 		e.summonLog(caller, r, res)
 		return res, nil
 	}
+	unattended, err := e.launchUnattended(s.id, departed.Role, caller, &departed)
+	if err != nil {
+		_ = e.Store.DeleteSummon(res.Token)
+		return res, err
+	}
 	label := core.PaneLabel(departed.Handle, departed.Role, departed.Task)
-	block, err := e.launch(ctx, caller, s, r.Split, label, cwd, res.Token, launch, launch.Args(departed.Kind, cmd))
+	block, err := e.launch(ctx, caller, s, r.Split, label, cwd, res.Token, unattended, launch, launch.Args(departed.Kind, cmd))
 	if err != nil {
 		_ = e.Store.DeleteSummon(res.Token)
 		return res, err
@@ -429,8 +434,13 @@ func (e Env) start(ctx context.Context, caller store.Record, s Session, r Summon
 	if len(cmd) == 0 {
 		return refuse(fmt.Sprintf("unsupported harness %q; no agent was started", kind))
 	}
+	unattended, err := e.launchUnattended(s.id, role, caller, nil)
+	if err != nil {
+		_ = e.Store.DeleteSummon(res.Token)
+		return res, err
+	}
 	launch := route.Launch(kind)
-	block, err := e.launch(ctx, caller, s, r.Split, label, cwd, res.Token, launch, launch.Args(kind, cmd))
+	block, err := e.launch(ctx, caller, s, r.Split, label, cwd, res.Token, unattended, launch, launch.Args(kind, cmd))
 	if err != nil {
 		_ = e.Store.DeleteSummon(res.Token)
 		return res, err
@@ -501,17 +511,23 @@ func (e Env) preflight(ctx context.Context, cwd string, kind core.Kind) (refusal
 }
 
 // launch opens a tab of its own, which follows the agent's pane label from
-// its adoption on (core.FollowTab), running cmd with the token and what it
-// is launched on (l, already in cmd's flags) in its environment; with split,
-// the human's choice, a pane beside the caller instead. A new tab is opened
-// in the background, so the human's view stays where it is.
-func (e Env) launch(ctx context.Context, caller store.Record, s Session, split bool, label, cwd, token string, l core.Launch, cmd []string) (string, error) {
+// its adoption on (core.FollowTab), running cmd with the token, what it is
+// launched on (l, already in cmd's flags) and, when unattended, UnattendedEnv
+// in its environment; with split, the human's choice, a pane beside the
+// caller instead. A new tab is opened in the background, so the human's view
+// stays where it is.
+func (e Env) launch(ctx context.Context, caller store.Record, s Session, split bool, label, cwd, token string, unattended bool, l core.Launch, cmd []string) (string, error) {
 	if cwd == "" {
 		cwd, _ = os.Getwd()
 	}
 	// Trust Antigravity and Pi keep no route for goes in for the session.
 	cmd = e.trustGate().Args(cwd, cmd)
-	cmd = append([]string{"env", SummonEnv + "=" + token}, withLaunchEnv(l, cmd)[1:]...)
+	cmd = withLaunchEnv(l, cmd)
+	if unattended {
+		cmd = withUnattendedEnv(cmd)
+	}
+	// The token stays the first assignment, where a reader of the command finds it.
+	cmd = append([]string{"env", SummonEnv + "=" + token}, cmd[1:]...)
 	if split {
 		return e.Rex.NewSplit(ctx, s.id, caller.BlockID, label, cwd, cmd)
 	}
@@ -536,7 +552,7 @@ func startCommand(kind core.Kind, brief string) []string {
 	case core.Codex:
 		return []string{"codex", "--no-daemon", "--", brief}
 	case core.Agy:
-		return []string{"agy", "--dangerously-skip-permissions", "-i", brief}
+		return []string{"agy", "--dangerously-skip-permissions", "--mode", "auto", "-i", brief}
 	case core.Pi:
 		return []string{"pi", "--", brief}
 	}
@@ -636,7 +652,7 @@ func resumeCommand(kind core.Kind, session, prompt string) ([]string, bool) {
 	case core.Codex:
 		return []string{"codex", "--no-daemon", "resume", session, prompt}, true
 	case core.Agy:
-		return []string{"agy", "--dangerously-skip-permissions", "--conversation", session, "-i", prompt}, true
+		return []string{"agy", "--dangerously-skip-permissions", "--mode", "auto", "--conversation", session, "-i", prompt}, true
 	case core.Pi:
 		return []string{"pi", "--session", session, prompt}, true
 	}

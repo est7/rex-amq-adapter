@@ -256,3 +256,21 @@ func TestRetireUsage(t *testing.T) {
 		t.Error("usage does not list retire")
 	}
 }
+
+// notify-personal needs a typed --ref and an --event-id and takes nothing
+// else; a malformed call exits 2 before anything is resolved, and the
+// command is listed in usage.
+func TestNotifyPersonalUsage(t *testing.T) {
+	isolate(t)
+	for _, args := range [][]string{nil, {"--ref", "inbox:1"}, {"--event-id", "e"}, {"--ref", "todo:1", "--event-id", "e"},
+		{"--ref", "inbox:", "--event-id", "e"}, {"--ref", "inbox:1", "--event-id", "a\nb"}, {"--ref", "inbox:1", "--event-id", "e", "extra"},
+		{"--ref", "inbox:1", "--event-id", "e", "--nope"}, {"--ref", "inbox:1", "--event-id", "e", "--personal", "Bad Handle"},
+		{"--ref", "inbox:1", "--event-id", "e", "--hub", "/nonexistent/hub"}} {
+		if code := runNotifyPersonal(args); code != 2 {
+			t.Errorf("notify-personal %q: exit %d, want 2", args, code)
+		}
+	}
+	if !strings.Contains(usage, "notify-personal --ref inbox:<id>|timer:<id> --event-id ID") {
+		t.Error("usage does not list notify-personal")
+	}
+}

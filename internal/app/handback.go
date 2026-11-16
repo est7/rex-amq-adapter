@@ -24,8 +24,8 @@ import (
 const handBackMax = 256 << 10
 
 // RecordHandBack records body as the hand-back of the live orchestrator in
-// loc's session, replacing the one before, and marks the session's Epic
-// lifecycle hand_back. The lifecycle numbers the hand-backs, and a Seq never
+// loc's session, or of a pair Epic's lead (pairLead), replacing the one
+// before, and marks the session's Epic lifecycle hand_back. The lifecycle numbers the hand-backs, and a Seq never
 // changes its digest. The same report recorded again (the same
 // store.HandBackDigest) leaves the stored one as it was, time included, so
 // the narrator is not told twice and its Seq stays; a different one takes the
@@ -42,8 +42,12 @@ func (e Env) RecordHandBack(ctx context.Context, loc Location, body string) (sto
 	if !ok || !rec.Live() || !placed(rec) {
 		return h, fmt.Errorf("no AMQ identity in a Rex session for this block (%s), so there is no run to hand back", loc.Block)
 	}
-	if rec.Role != core.OrchestratorRole {
-		return h, fmt.Errorf("%w: only a session's %s records its hand-back, and %s is %q", ErrRefused, core.OrchestratorRole, rec.Handle, rec.Role)
+	lead, err := e.pairLead(rec)
+	if err != nil {
+		return h, err
+	}
+	if rec.Role != core.OrchestratorRole && !lead {
+		return h, fmt.Errorf("%w: only a session's %s, or a pair Epic's own %s, records its hand-back, and %s is %q", ErrRefused, core.OrchestratorRole, implementerRole, rec.Handle, rec.Role)
 	}
 	if strings.TrimSpace(body) == "" {
 		return h, errors.New("a hand-back needs its report: TEXT, @FILE, or - for stdin")
@@ -151,4 +155,29 @@ func numbered(h store.HandBack) store.HandBack {
 		h.Digest = store.HandBackDigest(h.Body)
 	}
 	return h
+}
+
+// pairLead reports whether rec leads its pair Epic: an implementer nobody
+// summoned, in a session working as crew pair that has no orchestrator, live
+// or departed. It runs the goal in the orchestrator's place, so it records
+// the hand-back and reads the view; an implementer an orchestrator summoned,
+// or one in an Epic whose orchestrator left, does neither.
+func (e Env) pairLead(rec store.Record) (bool, error) {
+	if rec.Role != implementerRole || rec.Parent != "" || !placed(rec) {
+		return false, nil
+	}
+	c, ok, err := e.Store.SessionCrew(rec.SessionID)
+	if err != nil || !ok || c.Crew != pairCrew {
+		return false, err
+	}
+	recs, err := e.Store.Records()
+	if err != nil {
+		return false, err
+	}
+	for _, r := range recs {
+		if r.Role == core.OrchestratorRole && r.Server == rec.Server && r.SessionID == rec.SessionID {
+			return false, nil
+		}
+	}
+	return true, nil
 }

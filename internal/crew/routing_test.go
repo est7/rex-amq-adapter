@@ -21,14 +21,14 @@ func TestRoutingBuiltinMatchesTheChosenTable(t *testing.T) {
 		model, effort string
 	}
 	want := map[string][]h{
-		"orchestrator": {{core.Claude, "opus", "high"}, {core.Agy, "gemini-pro-orchestrator", ""}, {core.Codex, "gpt-5.4", "high"}},
-		"narrator":     {{core.Claude, "haiku", "low"}, {core.Agy, "gemini-4-hydrogen-low", ""}},
-		"architect":    {{core.Claude, "opus", "max"}, {core.Codex, "gpt-5.4", "xhigh"}, {core.Agy, "gemini-4-carbon-high", "high"}},
-		"implementer":  {{core.Claude, "opus", "high"}, {core.Codex, "gpt-5.4", "high"}, {core.Agy, "gemini-4-carbon-high", "high"}},
-		"reviewer":     {{core.Codex, "gpt-5.4", "xhigh"}, {core.Agy, "gemini-4-carbon-high", "high"}, {core.Claude, "opus", "high"}},
-		"qa":           {{core.Codex, "gpt-5.4", "high"}, {core.Agy, "gemini-4-carbon-medium", "medium"}, {core.Claude, "sonnet", "high"}},
-		"editor":       {{core.Codex, "gpt-5.4", "high"}, {core.Agy, "gemini-4-carbon-high", "high"}, {core.Claude, "opus", "high"}},
-		"*":            {{core.Claude, "opus", "high"}, {core.Agy, "gemini-4-carbon-medium", "medium"}, {core.Codex, "gpt-5.4", "medium"}},
+		"orchestrator": {{core.Claude, "opus", "high"}, {core.Agy, "gemini-4-carbon-high", "high"}, {core.Codex, "gpt-6.1-sol", "high"}},
+		"narrator":     {{core.Agy, "gemini-4-hydrogen-low", ""}, {core.Claude, "haiku", "low"}},
+		"architect":    {{core.Claude, "opus", "max"}, {core.Codex, "gpt-6-astra", "xhigh"}, {core.Agy, "gemini-4-carbon-high", "high"}},
+		"implementer":  {{core.Claude, "opus", "high"}, {core.Codex, "gpt-6.1-sol", "high"}, {core.Agy, "gemini-4-carbon-high", "high"}},
+		"reviewer":     {{core.Codex, "gpt-6-astra", "xhigh"}, {core.Agy, "gemini-4-carbon-high", "high"}, {core.Claude, "opus", "high"}},
+		"qa":           {{core.Codex, "gpt-6.1-sol", "high"}, {core.Agy, "gemini-4-carbon-medium", "medium"}, {core.Claude, "sonnet", "high"}},
+		"editor":       {{core.Codex, "gpt-6.1-sol", "high"}, {core.Agy, "gemini-4-carbon-high", "high"}, {core.Claude, "opus", "high"}},
+		"*":            {{core.Claude, "opus", "high"}, {core.Agy, "gemini-4-carbon-medium", "medium"}, {core.Codex, "gpt-6.1-sol", "medium"}},
 	}
 	lib := crew.Load("")
 	for role, hs := range want {
@@ -87,15 +87,15 @@ harness = ["codex"]
 	project := writeRouting(t, filepath.Join(repo, ".agents", "crews"), `
 [role.implementer]
 harness = ["pi", "claude"]
-pi = { model = "openai/gpt-5.4", effort = "off" }
+pi = { model = "openai/gpt-6.1-sol", effort = "off" }
 
 [role."*"]
 harness = ["codex"]
-codex = { model = "gpt-5.4-mini" }
+codex = { model = "gpt-6.1-sol-mini" }
 `)
 	lib := crew.Load(filepath.Join(repo, "sub"))
 	impl, err := lib.Routing("implementer")
-	if err != nil || impl.Path != project || impl.Layer != "project" || !slices.Equal(impl.Harnesses, []core.Kind{core.Pi, core.Claude}) || impl.Launch(core.Pi) != (core.Launch{Model: "openai/gpt-5.4", Effort: "off"}) || impl.Launch(core.Claude) != (core.Launch{}) {
+	if err != nil || impl.Path != project || impl.Layer != "project" || !slices.Equal(impl.Harnesses, []core.Kind{core.Pi, core.Claude}) || impl.Launch(core.Pi) != (core.Launch{Model: "openai/gpt-6.1-sol", Effort: "off"}) || impl.Launch(core.Claude) != (core.Launch{}) {
 		t.Fatalf("implementer: %+v %v", impl, err)
 	}
 	rev, err := lib.Routing("reviewer")
@@ -123,7 +123,7 @@ func TestRoutingRejectsInvalidFiles(t *testing.T) {
 		"unknown effort":    "[role.reviewer]\nharness = [\"codex\"]\ncodex = { effort = \"ultra\" }\n",
 		"effort claude off": "[role.reviewer]\nharness = [\"claude\"]\nclaude = { effort = \"off\" }\n",
 		"effort agy min":    "[role.reviewer]\nharness = [\"agy\"]\nagy = { effort = \"minimal\" }\n",
-		"misspelt key":      "[role.reviewer]\nharness = [\"codex\"]\ncodex = { modle = \"gpt-5.4\" }\n",
+		"misspelt key":      "[role.reviewer]\nharness = [\"codex\"]\ncodex = { modle = \"gpt-6-astra\" }\n",
 		"unknown harness":   "[role.reviewer]\nharness = [\"gpt\"]\n",
 		"empty harness":     "[role.reviewer]\nharness = []\n",
 		"twice":             "[role.reviewer]\nharness = [\"codex\", \"codex\"]\n",

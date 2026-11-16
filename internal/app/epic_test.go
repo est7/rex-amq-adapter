@@ -23,6 +23,7 @@ func openEpicWorld(t *testing.T) (Env, *fakeTerm, Location, string) {
 	t.Helper()
 	term := &fakeTerm{state: "idle", windows: map[string]string{"block:me": "window:me"}, tabs: map[string]string{"window:me": "me"}}
 	e := fixture(t, term)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	e.TranscriptHome = t.TempDir()
 	trustTemp(t, e)
 	// Routing comes from the user's config too: never the host's.
@@ -35,6 +36,10 @@ func openEpicWorld(t *testing.T) (Env, *fakeTerm, Location, string) {
 	if err := os.WriteFile(goal, []byte("GOAL: x\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// The Epic's narrator starts on agy in the goal's directory, and
+	// Antigravity keys its trust by the physical path (/private/var, not
+	// /var, on macOS).
+	trustAgy(t, e, physical(t, filepath.Dir(goal)))
 	return e, term, Location{Block: "block:me"}, goal
 }
 
@@ -234,9 +239,11 @@ func TestOpenEpicBriefsAnAgentAdoptedAtOnceWithItsCrew(t *testing.T) {
 		case <-time.After(500 * time.Millisecond):
 		}
 	}
+	dir := t.TempDir()
+	trustAgy(t, e, physical(t, dir))
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := e.OpenEpic(ctx, Location{Block: "block:me"}, EpicRequest{Name: "x", Dir: t.TempDir(), Asked: "open it", Crew: "pair"}); err != nil {
+	if _, err := e.OpenEpic(ctx, Location{Block: "block:me"}, EpicRequest{Name: "x", Dir: dir, Asked: "open it", Crew: "pair"}); err != nil {
 		t.Fatal(err)
 	}
 	a := <-done

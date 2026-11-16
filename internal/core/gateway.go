@@ -7,6 +7,12 @@ package core
 // a linked Epic. The Narrator observes its Epic without being mailed; its one
 // write into the Epic is a user-control directive to the Orchestrator.
 //
+// A message the adapter has no provenance record of (written with amq
+// directly) names a sender it cannot vouch for, so it never reaches a
+// Personal agent or a Narrator, whichever handle it names. The one way an
+// outside producer reaches a Personal agent is notify-personal: the adapter
+// sends it in the Personal agent's own name, as a system notice.
+//
 // The policy holds for every supported path (the adapter's managed mail
 // commands and its arrival gate). Any process of the same UNIX user can still
 // write the mailbox files directly: the gateway is not a sandbox.
@@ -66,18 +72,24 @@ const (
 	// OpControl relays a user-control directive (a change of requirement, a
 	// start, a decision) to an Epic's Orchestrator, under ControlRequestID.
 	OpControl OpKind = "control"
+	// OpNotify is notify-personal's doorbell: the adapter mails a Personal
+	// agent in its own name for an outside producer (an Inbox or Timer
+	// entry).
+	OpNotify OpKind = "notify"
 )
 
 // Operation is a message as it was sent. System is true only when the
 // adapter's own provenance record says the adapter sent it; a header label or
 // a "system" sender name never sets it. Addressed, for a message already
 // sent, is the recipient as it was when the message was sent: a reader that
-// has moved since is no longer it.
+// has moved since is no longer it. Unverified marks a message the adapter has
+// no provenance record of: its sender is only the name in its header.
 type Operation struct {
 	Kind             OpKind    `json:"op"`
 	ControlRequestID string    `json:"control_request_id,omitempty"`
 	System           bool      `json:"system,omitempty"`
 	Addressed        *Endpoint `json:"-"`
+	Unverified       bool      `json:"-"`
 }
 
 // Decision is the gateway's answer; Reason names the rule that decided.
@@ -102,6 +114,8 @@ const (
 	ReasonNarratorObserves = "narrator_takes_no_member_mail"
 	ReasonNarratorRoutine  = "narrator_sends_orchestrator_control_only"
 	ReasonNarratorWorker   = "narrator_never_mails_workers"
+	ReasonUnverified       = "unverified_sender"
+	ReasonNotify           = "adapter_notify_personal"
 	// ReasonUnreadableHeader: a file in an inbox whose header cannot be read
 	// names no sender to judge, so it is refused (the gate fails closed).
 	ReasonUnreadableHeader = "unreadable_header"
@@ -116,6 +130,15 @@ func deny(reason string) Decision  { return Decision{Reason: reason} }
 func CanExchange(sender, recipient Endpoint, op Operation, links []Link) Decision {
 	if a := op.Addressed; a != nil && (a.Server != recipient.Server || a.SessionID != recipient.SessionID || a.Generation != recipient.Generation) {
 		return deny(ReasonFenced)
+	}
+	if op.Unverified && (recipient.Role == PersonalRole || recipient.Role == NarratorRole) {
+		return deny(ReasonUnverified)
+	}
+	if op.Kind == OpNotify && op.System && sender.Handle == recipient.Handle && recipient.Role == PersonalRole {
+		if !recipient.Placed() {
+			return deny(ReasonUnplaced)
+		}
+		return allow(ReasonNotify)
 	}
 	if sender.Handle == recipient.Handle {
 		return allow(ReasonSelf)

@@ -90,12 +90,14 @@ Agent and user commands:
                             (a personal agent) open an Epic: a Rex session named
                             <name> with its orchestrator (briefed with the goal
                             contract, or the user's words) and its narrator,
-                            linked to you, working as crew C when given; prints
-                            one JSON line and exits 0 only when both are adopted
-                            and linked. --op-id ID makes a retry reconcile the
-                            Epic the first run started (replayed: true) instead
-                            of starting another; ID reused for another request
-                            is refused
+                            linked to you, working as crew C when given (with
+                            --crew pair an implementer leads in the
+                            orchestrator's place); prints one JSON line and
+                            exits 0 only when both are adopted and linked.
+                            --op-id ID makes a retry reconcile the Epic the
+                            first run started (replayed: true) instead of
+                            starting another; ID reused for another request is
+                            refused
   epic close <session_id> --asked "WORDS" [--force] [--op-id ID]
                             (a personal agent, on the user's words) close a linked
                             Epic: kill its Rex session, park its agents (their
@@ -103,6 +105,16 @@ Agent and user commands:
                             refused while one of its agents is not at rest or
                             holds unread mail, unless --force. --op-id ID makes a
                             retry finish the close, even once the link is gone
+  notify-personal --ref inbox:<id>|timer:<id> --event-id ID [--hub DIR] [--personal H] [--summary TEXT]
+                            (an outside producer: an Inbox entry, a Timer tick) ring
+                            the live personal agent, mailed in its own name by the
+                            adapter, the summary quoted as untrusted data; never
+                            starts an agent. Prints {"status":"notified",...} or
+                            {"status":"no_live_personal",...} (exit 0); a repeated
+                            event id is not sent again (deduped), one reused with
+                            another ref, --hub, or --personal is refused, and so
+                            is more than one live personal agent that --hub or
+                            --personal leaves
   retire <handle> [--force] close a finished peer of this Rex session: mark it
                             departed (depart_reason "retired"), retire its waker,
                             and close its pane, telling nobody it left; a pane that
@@ -197,6 +209,8 @@ func run(args []string) int {
 		return runLink(cmd == "link", rest)
 	case "epic":
 		return runEpic(rest)
+	case "notify-personal":
+		return runNotifyPersonal(rest)
 	case "retire":
 		return runRetire(rest)
 	case "view":
@@ -261,6 +275,7 @@ func runHook(args []string) int {
 	}
 	in.SummonToken = os.Getenv(app.SummonEnv)
 	in.Launch = app.LaunchFromEnv(os.LookupEnv)
+	in.Unattended = os.Getenv(app.UnattendedEnv) == "1"
 	loc, err := app.Here()
 	if errors.Is(err, app.ErrNotInRex) {
 		reply(app.Reply{})
@@ -1209,7 +1224,7 @@ func runEpic(args []string) int {
 	dir := fs.String("c", "", "the repository the Epic's agents work in (default: the current directory)")
 	goal := fs.String("goal", "", "the goal contract the orchestrator runs: its grant")
 	asked := fs.String("asked", "", "the user's own words asking for the Epic, its brief when there is no contract")
-	harness := fs.String("harness", "", "the orchestrator's CLI: claude (default), codex, agy, or pi")
+	harness := fs.String("harness", "", "the orchestrator's CLI (with --crew pair, the implementer's): claude (default), codex, agy, or pi")
 	crewName := fs.String("crew", "", "the crew the Epic's session works as (rex-amq-adapter crews lists them)")
 	opID := fs.String("op-id", "", "names this request: a retry with the same id reconciles the Epic the first run started instead of starting another")
 	timeout := timeoutFlag(90 * time.Second)
