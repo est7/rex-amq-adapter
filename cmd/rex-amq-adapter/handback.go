@@ -63,7 +63,7 @@ func runHandBack(args []string, stdin io.Reader) int {
 	if err != nil {
 		return fail(err)
 	}
-	out, _ := json.Marshal(map[string]any{"by": h.By, "at": h.At, "bytes": len(h.Body), "view": "hand_back"})
+	out, _ := json.Marshal(map[string]any{"by": h.By, "at": h.At, "bytes": len(h.Body), "seq": h.Seq, "digest": h.Digest, "view": "hand_back"})
 	fmt.Println(string(out))
 	return 0
 }
