@@ -184,13 +184,13 @@ func TestSummonRoutingFromTheProject(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	wt := t.TempDir()
 	p := filepath.Join(wt, ".agents", "crews", crew.RoutingFile)
-	writeFile(t, p, "[role.implementer]\nharness = [\"codex\"]\ncodex = { model = \"gpt-5.4-mini\", effort = \"off\" }\n")
+	writeFile(t, p, "[role.implementer]\nharness = [\"codex\"]\ncodex = { model = \"gpt-6.1-sol-mini\", effort = \"off\" }\n")
 	e, term, loc := summonWorld(t)
 	e.Crews = crew.Load
 	if res := summon(t, e, loc, "implementer", func(r *SummonRequest) { r.Asked = "build it"; r.Cwd = wt }); res.Action != "start" || res.Harness != core.Codex {
 		t.Fatalf("%+v", res)
 	}
-	if got := launchProgram(term.launches[0])[:6]; !slices.Equal(got, []string{"codex", "-m", "gpt-5.4-mini", "-c", "model_reasoning_effort=none", "--no-daemon"}) {
+	if got := launchProgram(term.launches[0])[:6]; !slices.Equal(got, []string{"codex", "-m", "gpt-6.1-sol-mini", "-c", "model_reasoning_effort=none", "--no-daemon"}) {
 		t.Fatalf("argv %q", got)
 	}
 	writeFile(t, p, "[role.implementer]\nharness = [\"codex\"]\ncodex = { model = \"-c\" }\n")
@@ -215,7 +215,7 @@ func TestOpenEpicLaunchesOnTheRouting(t *testing.T) {
 		{"", []string{"claude", "--model", "opus", "--effort", "high"}, "high"},
 		{"claude", []string{"claude", "--model", "opus", "--effort", "high"}, "high"},
 		{"agy", []string{"agy", "--model", "gemini-4-carbon-high", "--effort", "high", "--dangerously-skip-permissions", "--mode", "auto", "-i"}, "high"},
-		{"codex", []string{"codex", "-m", "gpt-5.4", "-c", "model_reasoning_effort=high"}, "high"},
+		{"codex", []string{"codex", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=high"}, "high"},
 	} {
 		t.Run("harness="+tc.harness, func(t *testing.T) {
 			e, term, loc, goal := openEpicWorld(t)
@@ -291,7 +291,7 @@ func TestSummonResumeLaunchKeepsALaunchOnTheDefaults(t *testing.T) {
 func TestSummonReviewerChecksASingleRoutedHarnessIsInstalled(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
-	writeFile(t, filepath.Join(xdg, "rex-amq-adapter", "crews", crew.RoutingFile), "[role.reviewer]\nharness = [\"codex\"]\ncodex = { model = \"gpt-5.4\" }\n")
+	writeFile(t, filepath.Join(xdg, "rex-amq-adapter", "crews", crew.RoutingFile), "[role.reviewer]\nharness = [\"codex\"]\ncodex = { model = \"gpt-6-astra\" }\n")
 	e, term, loc := summonWorld(t)
 	e.Crews = crew.Load
 	e.LookPath = installedOnly(core.Claude)

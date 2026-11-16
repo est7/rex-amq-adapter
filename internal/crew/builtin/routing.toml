@@ -20,7 +20,7 @@
 harness = ["claude", "agy", "codex"]
 claude = { model = "opus", effort = "high" }
 agy = { model = "gemini-4-carbon-high", effort = "high" }
-codex = { model = "gpt-5.4", effort = "high" }
+codex = { model = "gpt-6.1-sol", effort = "high" }
 
 [role.narrator]
 harness = ["agy", "claude"]
@@ -30,30 +30,30 @@ claude = { model = "haiku", effort = "low" }
 [role.architect]
 harness = ["claude", "codex", "agy"]
 claude = { model = "opus", effort = "max" }
-codex = { model = "gpt-5.4", effort = "xhigh" }
+codex = { model = "gpt-6-astra", effort = "xhigh" }
 agy = { model = "gemini-4-carbon-high", effort = "high" }
 
 [role.implementer]
 harness = ["claude", "codex", "agy"]
 claude = { model = "opus", effort = "high" }
-codex = { model = "gpt-5.4", effort = "high" }
+codex = { model = "gpt-6.1-sol", effort = "high" }
 agy = { model = "gemini-4-carbon-high", effort = "high" }
 
 [role.reviewer]
 harness = ["codex", "agy", "claude"]
-codex = { model = "gpt-5.4", effort = "xhigh" }
+codex = { model = "gpt-6-astra", effort = "xhigh" }
 agy = { model = "gemini-4-carbon-high", effort = "high" }
 claude = { model = "opus", effort = "high" }
 
 [role.qa]
 harness = ["codex", "agy", "claude"]
-codex = { model = "gpt-5.4", effort = "high" }
+codex = { model = "gpt-6.1-sol", effort = "high" }
 agy = { model = "gemini-4-carbon-medium", effort = "medium" }
 claude = { model = "sonnet", effort = "high" }
 
 [role.editor]
 harness = ["codex", "agy", "claude"]
-codex = { model = "gpt-5.4", effort = "high" }
+codex = { model = "gpt-6.1-sol", effort = "high" }
 agy = { model = "gemini-4-carbon-high", effort = "high" }
 claude = { model = "opus", effort = "high" }
 
@@ -61,4 +61,4 @@ claude = { model = "opus", effort = "high" }
 harness = ["claude", "agy", "codex"]
 claude = { model = "opus", effort = "high" }
 agy = { model = "gemini-4-carbon-medium", effort = "medium" }
-codex = { model = "gpt-5.4", effort = "medium" }
+codex = { model = "gpt-6.1-sol", effort = "medium" }

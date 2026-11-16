@@ -24,14 +24,14 @@ func TestPairEpicOpensItsImplementerAndNarrator(t *testing.T) {
 		crew, harness, lead string
 		argv                []string
 	}{
-		{"pair", "", implementerRole, []string{"codex", "-m", "gpt-5.4-mini", "-c", "model_reasoning_effort=low"}},
+		{"pair", "", implementerRole, []string{"codex", "-m", "gpt-6.1-sol-mini", "-c", "model_reasoning_effort=low"}},
 		{"pair", "claude", implementerRole, []string{"claude", "--"}},
 		{"", "", core.OrchestratorRole, []string{"claude", "--model", "opus", "--effort", "high"}},
 	} {
 		t.Run("crew="+tc.crew+"/harness="+tc.harness, func(t *testing.T) {
 			e, term, loc, goal := openEpicWorld(t)
 			dir := filepath.Dir(goal)
-			writeFile(t, filepath.Join(dir, ".agents", "crews", crew.RoutingFile), "[role.implementer]\nharness = [\"codex\"]\ncodex = { model = \"gpt-5.4-mini\", effort = \"low\" }\n")
+			writeFile(t, filepath.Join(dir, ".agents", "crews", crew.RoutingFile), "[role.implementer]\nharness = [\"codex\"]\ncodex = { model = \"gpt-6.1-sol-mini\", effort = \"low\" }\n")
 			e.Crews = crew.Load
 			adoptPane(t, e, "block:epic-1-1", "agy-02", core.NarratorRole)
 			adoptPane(t, e, "block:epic-1-2", "claude-03", tc.lead)

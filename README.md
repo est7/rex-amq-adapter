@@ -187,7 +187,7 @@ table for each; `[role."*"]` routes a role without one:
 ```toml
 [role.reviewer]
 harness = ["codex", "agy", "claude"]
-codex = { model = "gpt-5.4", effort = "xhigh" }
+codex = { model = "gpt-6-astra", effort = "xhigh" }
 agy = { model = "gemini-4-carbon-high", effort = "high" }
 claude = { model = "opus", effort = "high" }
 ```
