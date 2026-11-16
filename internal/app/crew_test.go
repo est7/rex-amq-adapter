@@ -17,6 +17,7 @@ func briefed(t *testing.T, tab, label string) (Env, *string) {
 	term := &fakeTerm{state: "idle", label: label, cwd: "/work/app",
 		windows: map[string]string{"block:a": "window:1"}, tabs: map[string]string{"window:1": tab}}
 	e := realAmqEnv(t, term)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	var dir string
 	project := fstest.MapFS{"pair/reviewer.md": {Data: []byte("Project pair reviewer prompt.")}}
 	e.Crews = func(d string) crew.Library {
