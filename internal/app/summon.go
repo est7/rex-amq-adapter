@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -130,6 +131,7 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 		e.summonLog(caller, r, res)
 		return res, nil
 	}
+	var busy []core.Kind
 	if r.Cwd != "" {
 		// --cwd always means a new agent in that directory: a live one would get
 		// the mail in its own directory and a departed one would resume in its
@@ -141,14 +143,27 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 			e.summonLog(caller, r, res)
 			return res, nil
 		}
+		// A review role only reads the checkout, so seats on distinct
+		// harnesses may share it (a council): only a second live seat of the
+		// same harness there is refused, and a start that names no harness
+		// passes over the harnesses already seated (busy).
 		for _, rec := range live {
-			if sameDir(rec.Cwd, r.Cwd) {
-				res.Action, res.Reason = "refused", fmt.Sprintf("a live %s (%s) already works in %s; two agents of one role in one directory would edit the same files", target, rec.Handle, r.Cwd)
-				e.summonLog(caller, r, res)
-				return res, nil
+			if !sameDir(rec.Cwd, r.Cwd) {
+				continue
 			}
+			if core.ReviewRole(target) && (r.Harness == "" || string(rec.Kind) != r.Harness) {
+				busy = append(busy, rec.Kind)
+				continue
+			}
+			if core.ReviewRole(target) {
+				res.Action, res.Reason = "refused", fmt.Sprintf("a live %s on %s (%s) already works in %s; name another harness with --harness for another seat", target, rec.Kind, rec.Handle, r.Cwd)
+			} else {
+				res.Action, res.Reason = "refused", fmt.Sprintf("a live %s (%s) already works in %s; two agents of one role in one directory would edit the same files", target, rec.Handle, r.Cwd)
+			}
+			e.summonLog(caller, r, res)
+			return res, nil
 		}
-		live, departed = nil, nil // a second agent of the role, in its own directory
+		live, departed = nil, nil // a second agent of the role, in its own directory or seat
 	}
 	if len(live) > 1 {
 		names := make([]string, len(live))
@@ -198,7 +213,7 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 	if departed != nil {
 		return e.resume(ctx, caller, s, r, *departed, res)
 	}
-	return e.start(ctx, caller, s, r, target, res)
+	return e.start(ctx, caller, s, r, target, busy, res)
 }
 
 func (e Env) refused(caller store.Record, r SummonRequest, res SummonResult, departed *store.Record) (SummonResult, error) {
@@ -366,7 +381,7 @@ func (e Env) resume(ctx context.Context, caller store.Record, s Session, r Summo
 
 // start launches a new agent for a role (launch), with the message
 // as its brief. A handle that names no agent cannot be started.
-func (e Env) start(ctx context.Context, caller store.Record, s Session, r SummonRequest, role string, res SummonResult) (SummonResult, error) {
+func (e Env) start(ctx context.Context, caller store.Record, s Session, r SummonRequest, role string, busy []core.Kind, res SummonResult) (SummonResult, error) {
 	refuse := func(reason string) (SummonResult, error) {
 		_ = e.Store.DeleteSummon(res.Token)
 		res.Action, res.Reason = "refused", reason
@@ -419,6 +434,13 @@ func (e Env) start(ctx context.Context, caller store.Record, s Session, r Summon
 		mine := core.Family(caller.Kind, caller.Model)
 		if kinds = otherFamilies(route, mine); len(kinds) == 0 {
 			return refuse(fmt.Sprintf("no harness in the routing of %s (%s) runs a model family known to differ from yours (%s %s), so no agent was started; name one with --harness", role, strings.Join(kindNames(route.Harnesses), ", "), caller.Kind, orUnknown(mine)))
+		}
+		if len(busy) > 0 {
+			free := slices.DeleteFunc(slices.Clone(kinds), func(k core.Kind) bool { return slices.Contains(busy, k) })
+			if len(free) == 0 {
+				return refuse(fmt.Sprintf("every harness the routing of %s offers you (%s) already has a live %s in %s, so no agent was started; name another with --harness", role, strings.Join(kindNames(kinds), ", "), role, cwd))
+			}
+			kinds = free
 		}
 	}
 	kind, passed, refusal, err := e.pickHarness(ctx, cwd, kinds, r.Harness == "" && core.ReviewRole(role))
