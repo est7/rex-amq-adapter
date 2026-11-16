@@ -880,8 +880,8 @@ handle, or with `--harness`. Each seat is planned before anything is mailed
 or launched: the live seat of that harness in the scope (in `--cwd`, or
 anywhere in the session without it; two live seats of one harness refuse)
 is a `deliver`; without `--cwd` the latest departed seat is a `resume`
-(`planResume`: its directory, its resume command, its launch, its
-preflight); any other harness is a `start` (`ready`: on the PATH, past the
+(`installed`: on the PATH; `planResume`: its directory, its resume
+command, its launch, its preflight); any other harness is a `start` (`ready`: on the PATH, past the
 preflight; `planStart`). When any seat cannot be seated, the council is
 refused naming each, and nothing is mailed, launched, or reserved: no other
 harness stands in. Then a start needs `--grant` or `--asked`, the chain must
