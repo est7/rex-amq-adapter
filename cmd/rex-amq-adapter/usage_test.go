@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/est7/rex-amq-adapter/internal/app"
 )
 
 // isolate points the adapter at an empty state directory and no Rex pane,
@@ -234,7 +236,7 @@ func TestEpicRejectsBadUsage(t *testing.T) {
 	isolate(t)
 	for _, args := range [][]string{nil, {"--goal", "g.md"}, {"x", "--nope"}, {"x", "extra"}, {"x", "--timeout", "soon"},
 		{"close"}, {"close", "--asked", "x"}, {"close", "s", "--nope"}, {"close", "s", "extra"}} {
-		if code := runEpic(args); code != 2 {
+		if code := runEpic(args, strings.NewReader("")); code != 2 {
 			t.Errorf("epic %v: exit %d, want 2", args, code)
 		}
 	}
@@ -272,5 +274,29 @@ func TestNotifyPersonalUsage(t *testing.T) {
 	}
 	if !strings.Contains(usage, "notify-personal --ref inbox:<id>|timer:<id> --event-id ID") {
 		t.Error("usage does not list notify-personal")
+	}
+}
+
+// epic --goal - pipes the contract for the Epic's grant in on stdin: read
+// whole up to one byte past the limit (so the open refuses an oversized one
+// rather than a cut one), passed as text, never as a path; empty stdin is a
+// usage error before anything is resolved. A file stays a path. The usage
+// says --goal and --asked go together.
+func TestEpicGoalStdinFeedsTheGrant(t *testing.T) {
+	isolate(t)
+	if file, text, err := epicGoal("-", strings.NewReader("GOAL: x\n")); err != nil || file != "" || text != "GOAL: x\n" {
+		t.Errorf("piped: %q %q %v", file, text, err)
+	}
+	if _, text, err := epicGoal("-", strings.NewReader(strings.Repeat("x", app.EpicGoalMax+10))); err != nil || len(text) != app.EpicGoalMax+1 {
+		t.Errorf("oversized: %d bytes, %v", len(text), err)
+	}
+	if file, text, err := epicGoal("g.md", strings.NewReader("ignored")); err != nil || file != "g.md" || text != "" {
+		t.Errorf("a file: %q %q %v", file, text, err)
+	}
+	if code := runEpic([]string{"x", "--goal", "-", "--asked", "go"}, strings.NewReader("")); code != 2 {
+		t.Errorf("empty stdin: exit %d, want 2", code)
+	}
+	if !strings.Contains(epicUsage, `[--goal FILE|-] [--asked "WORDS"]`) || !strings.Contains(epicUsage, "both are allowed") {
+		t.Errorf("epic usage:\n%s", epicUsage)
 	}
 }

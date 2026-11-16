@@ -86,6 +86,17 @@ func OrchestratorNotice(mates []Peer) string {
 	return fmt.Sprintf("An orchestrator coordinates this session. Where your crew's conventions, your role prompt, your brief, or the project's instructions (AGENTS.md, CLAUDE.md) would take a question, a report, or a decision to the human or user, send it to %s instead; this overrides those texts. Keep your crew's own report chain: only what would reach the human goes there. What still waits for the human is the orchestrator's to say, and a permission or trust dialog always does: nobody approves it or works around it for them.", to)
 }
 
+// GrantNotice tells an Epic's lead where its notarized grant is: the goal
+// contract it runs (contract, "" when it has none) and grant.md, which
+// quotes the user's words as the personal agent by relayed them.
+func GrantNotice(contract, grant string, by Handle) string {
+	line := fmt.Sprintf("Grant: %s (user's words relayed verbatim by personal %s, recorded by rex-amq-adapter)", grant, by)
+	if contract == "" {
+		return line
+	}
+	return "Goal: " + contract + "\n" + line
+}
+
 // LeftNotice tells a session-mate that p's agent session ended. Its handle stays
 // reserved for a resume, so mail still reaches it then.
 func LeftNotice(p Peer) string {

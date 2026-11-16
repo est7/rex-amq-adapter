@@ -53,14 +53,19 @@ type SessionView struct {
 	HandBack *store.HandBack `json:"hand_back,omitempty"`
 	// Lifecycle is the Epic's recorded lifecycle (store.EpicLifecycle), as
 	// read, never as the narrator last wrote it.
-	Lifecycle    *store.EpicLifecycle `json:"lifecycle,omitempty"`
-	Members      []ViewMember         `json:"members"`
-	Obligations  []ViewObligation     `json:"obligations"`
-	Activity     []ViewMessage        `json:"activity"`
-	ControlPlane []ViewMessage        `json:"control_plane"`
-	CoverageGaps []CoverageGap        `json:"coverage_gaps"`
-	Limits       ViewLimits           `json:"limits"`
-	Sources      []string             `json:"sources"`
+	Lifecycle *store.EpicLifecycle `json:"lifecycle,omitempty"`
+	// GoalPath is the goal contract the Epic's lead runs and GrantPath its
+	// notarized grant (grant.md), as recorded when the Epic opened; a
+	// personal agent closing the Epic re-checks GoalPath's DONE WHEN.
+	GoalPath     string           `json:"goal_path,omitempty"`
+	GrantPath    string           `json:"grant_path,omitempty"`
+	Members      []ViewMember     `json:"members"`
+	Obligations  []ViewObligation `json:"obligations"`
+	Activity     []ViewMessage    `json:"activity"`
+	ControlPlane []ViewMessage    `json:"control_plane"`
+	CoverageGaps []CoverageGap    `json:"coverage_gaps"`
+	Limits       ViewLimits       `json:"limits"`
+	Sources      []string         `json:"sources"`
 }
 
 // ViewCursor is how current a view is: when it was built, the newest message
@@ -253,7 +258,11 @@ func (e Env) withStored(id string, b json.RawMessage) (json.RawMessage, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !hasHB && !hasLC {
+	g, hasGrant, err := e.Store.Grant(id)
+	if err != nil {
+		return nil, err
+	}
+	if !hasHB && !hasLC && !hasGrant {
 		return b, nil
 	}
 	var v SessionView
@@ -265,6 +274,9 @@ func (e Env) withStored(id string, b json.RawMessage) (json.RawMessage, error) {
 	}
 	if hasLC {
 		v.Lifecycle = &lc
+	}
+	if hasGrant {
+		v.GoalPath, v.GrantPath = g.Contract, e.Paths.GrantPath(id)
 	}
 	out, err := json.Marshal(v)
 	return append(out, '\n'), err
@@ -413,6 +425,12 @@ func (e Env) buildView(ctx context.Context, narr store.Record, key core.SessionK
 	} else if ok {
 		v.HandBack = &hb
 		v.Sources = append(v.Sources, "hand-back.json")
+	}
+	if g, ok, err := e.Store.Grant(key.SessionID); err != nil {
+		return v, err
+	} else if ok {
+		v.GoalPath, v.GrantPath = g.Contract, e.Paths.GrantPath(key.SessionID)
+		v.Sources = append(v.Sources, "grant.json")
 	}
 	var g gaps
 

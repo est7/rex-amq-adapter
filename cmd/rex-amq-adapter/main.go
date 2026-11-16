@@ -92,7 +92,7 @@ Agent and user commands:
                             narrator of Epic session EPIC_SESSION exchange
                             mail; without one, list your links
   unlink EPIC_SESSION       revoke such a link; both take effect at once
-  epic <name> [-c DIR] (--goal FILE | --asked "WORDS") [--crew C] [--harness H] [--timeout D] [--op-id ID]
+  epic <name> [-c DIR] [--goal FILE|-] [--asked "WORDS"] [--crew C] [--harness H] [--timeout D] [--op-id ID]
                             (a personal agent) open an Epic: a Rex session named
                             <name> with its orchestrator (briefed with the goal
                             contract, or the user's words) and its narrator,
@@ -100,6 +100,12 @@ Agent and user commands:
                             --crew pair an implementer leads in the
                             orchestrator's place); prints one JSON line and
                             exits 0 only when both are adopted and linked.
+                            Needs --goal, --asked, or both: --goal - reads the
+                            contract from stdin and keeps it as the Epic's
+                            goal.md, and the user's words and the contract are
+                            notarized read-only in its grant.md (goal_path and
+                            grant_path in the JSON and the view; the lead's
+                            start notice names both).
                             --op-id ID makes a retry reconcile the Epic the
                             first run started (replayed: true) instead of
                             starting another; ID reused for another request is
@@ -216,7 +222,7 @@ func run(args []string) int {
 	case "link", "unlink":
 		return runLink(cmd == "link", rest)
 	case "epic":
-		return runEpic(rest)
+		return runEpic(rest, os.Stdin)
 	case "notify-personal":
 		return runNotifyPersonal(rest)
 	case "retire":
@@ -1240,12 +1246,13 @@ func printCrewsJSON(lib crew.Library, entries []crew.Entry) int {
 	return printJSON(out)
 }
 
-const epicUsage = `usage: rex-amq-adapter epic <name> [-c DIR] (--goal FILE | --asked "WORDS") [--crew C] [--harness H] [--timeout D] [--op-id ID]
+const epicUsage = `usage: rex-amq-adapter epic <name> [-c DIR] [--goal FILE|-] [--asked "WORDS"] [--crew C] [--harness H] [--timeout D] [--op-id ID]
+       (at least one of --goal and --asked; both are allowed, and --goal - reads the contract from stdin)
        rex-amq-adapter epic close <session_id> --asked "WORDS" [--force] [--op-id ID]`
 
 // runEpic opens an Epic for the personal agent running it (app.OpenEpic)
 // and prints what was started, even when part of it failed.
-func runEpic(args []string) int {
+func runEpic(args []string, stdin io.Reader) int {
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
 		fmt.Fprintln(os.Stderr, epicUsage)
 		return 2
@@ -1256,8 +1263,8 @@ func runEpic(args []string) int {
 	name := args[0]
 	fs := flag.NewFlagSet("epic", flag.ContinueOnError)
 	dir := fs.String("c", "", "the repository the Epic's agents work in (default: the current directory)")
-	goal := fs.String("goal", "", "the goal contract the orchestrator runs: its grant")
-	asked := fs.String("asked", "", "the user's own words asking for the Epic, its brief when there is no contract")
+	goal := fs.String("goal", "", "the goal contract the lead runs, its grant: a file, or - to read it from stdin")
+	asked := fs.String("asked", "", "the user's own words asking for the Epic: notarized in its grant, and the lead's brief when there is no contract")
 	harness := fs.String("harness", "", "the orchestrator's CLI (with --crew pair, the implementer's): claude (default), codex, agy, or pi")
 	crewName := fs.String("crew", "", "the crew the Epic's session works as (rex-amq-adapter crews lists them)")
 	opID := fs.String("op-id", "", "names this request: a retry with the same id reconciles the Epic the first run started instead of starting another")
@@ -1274,6 +1281,11 @@ func runEpic(args []string) int {
 		fmt.Fprintf(os.Stderr, "rex-amq-adapter: %v\n", err)
 		return 2
 	}
+	goalFile, goalText, err := epicGoal(*goal, stdin)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "rex-amq-adapter: %v\n", err)
+		return 2
+	}
 	if *dir == "" {
 		wd, err := os.Getwd()
 		if err != nil {
@@ -1287,7 +1299,7 @@ func runEpic(args []string) int {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout))
 	defer cancel()
-	res, err := env.OpenEpic(ctx, loc, app.EpicRequest{Name: name, Dir: *dir, Goal: *goal, Asked: *asked, Harness: *harness, Crew: *crewName, OpID: *opID})
+	res, err := env.OpenEpic(ctx, loc, app.EpicRequest{Name: name, Dir: *dir, Goal: goalFile, GoalText: goalText, Asked: *asked, Harness: *harness, Crew: *crewName, OpID: *opID})
 	if res.SessionID != "" {
 		out, merr := json.Marshal(res)
 		if merr != nil {
@@ -1305,6 +1317,24 @@ func runEpic(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+// epicGoal is the goal contract --goal names: a file's path as given, or
+// with "-" the text piped in on stdin, read to one byte past app.EpicGoalMax
+// so OpenEpic refuses an oversized one whole rather than a cut one. Empty
+// stdin is refused here: it would leave the Epic with no contract.
+func epicGoal(goal string, stdin io.Reader) (file, text string, err error) {
+	if goal != "-" {
+		return goal, "", nil
+	}
+	b, err := io.ReadAll(io.LimitReader(stdin, app.EpicGoalMax+1))
+	if err != nil {
+		return "", "", fmt.Errorf("read the goal contract from stdin: %w", err)
+	}
+	if len(b) == 0 {
+		return "", "", errors.New("--goal - read no goal contract on stdin")
+	}
+	return "", string(b), nil
 }
 
 // runEpicClose closes a linked Epic for the personal agent running it

@@ -374,7 +374,38 @@ func (e Env) identityNotice(ctx context.Context, a Adoption, unread int) string 
 	if a.Record.Role != core.OrchestratorRole && !core.Stealth(a.Record.Role) {
 		tail = core.OrchestratorNotice(a.Mates)
 	}
+	if g := e.grantNotice(a.Record); g != "" {
+		tail = strings.TrimPrefix(tail+"\n\n"+g, "\n\n")
+	}
 	return core.StartNotice(head, e.briefing(ctx, a), tail)
+}
+
+// grantNotice is the Goal and Grant lines of rec's start notice when rec
+// leads an Epic that has a notarized grant (an orchestrator nobody summoned,
+// or a pair Epic's lead); "" for every other agent. Like the briefing it is
+// advice: what cannot be read is reported and left out.
+func (e Env) grantNotice(rec store.Record) string {
+	if rec.Parent != "" || !placed(rec) {
+		return ""
+	}
+	lead := rec.Role == core.OrchestratorRole
+	if !lead {
+		var err error
+		if lead, err = e.pairLead(rec); err != nil {
+			fmt.Fprintf(Diagnostics, "tell whether %s leads its Epic: %v\n", rec.Handle, err)
+		}
+	}
+	if !lead {
+		return ""
+	}
+	g, ok, err := e.Store.Grant(rec.SessionID)
+	if err != nil {
+		fmt.Fprintf(Diagnostics, "read the grant of %s: %v\n", rec.SessionID, err)
+	}
+	if !ok {
+		return ""
+	}
+	return core.GrantNotice(g.Contract, e.Paths.GrantPath(rec.SessionID), g.RelayedBy)
 }
 
 // briefing finds the agent's crew (its Rex session's, sessionCrew) and its

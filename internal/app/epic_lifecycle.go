@@ -64,6 +64,9 @@ type openIdentity struct {
 	Asked    string          `json:"asked"`
 	Crew     string          `json:"crew"`
 	Harness  string          `json:"harness"`
+	// GoalSHA256 is the digest of a contract piped in (--goal -), which has
+	// no path; omitted otherwise, so earlier requests keep their hash.
+	GoalSHA256 string `json:"goal_sha256,omitempty"`
 }
 
 // closeIdentity is what makes two `epic close` requests the same one.
@@ -131,7 +134,7 @@ func fill[T comparable](dst *T, v T) {
 // records the session's unattended policy and crew if the first run could
 // not, waits as the first run did for both agents, and moves the lifecycle
 // on.
-func (e Env) reconcileOpen(ctx context.Context, loc Location, op store.EpicOpRecord, seed store.EpicLifecycle) (EpicResult, error) {
+func (e Env) reconcileOpen(ctx context.Context, loc Location, op store.EpicOpRecord, seed store.EpicLifecycle, grant epicGrant) (EpicResult, error) {
 	res := EpicResult{SessionID: op.SessionID, OpID: op.OpID, Replayed: true, Lead: epicLead(seed.Crew),
 		Orchestrator: EpicAgent{Block: op.OrchestratorBlock}, Narrator: EpicAgent{Block: op.NarratorBlock}}
 	lc, ok, err := e.Store.EpicLifecycle(op.SessionID)
@@ -158,6 +161,12 @@ func (e Env) reconcileOpen(ctx context.Context, loc Location, op store.EpicOpRec
 		if err := e.ensureSessionCrew(ctx, op.SessionID, seed.Crew, op.PersonalHandle); err != nil {
 			errs = append(errs, fmt.Errorf("record the crew: %w", err))
 		}
+	}
+	// The first run's grant stands; one it never wrote is written now.
+	if err := e.notarize(op.SessionID, op.PersonalHandle, grant); err != nil {
+		errs = append(errs, fmt.Errorf("notarize the grant: %w", err))
+	} else {
+		res.GoalPath, res.GrantPath = e.grantPaths(op.SessionID)
 	}
 	if _, _, err := e.Link(ctx, loc, op.SessionID, true); err != nil {
 		errs = append(errs, fmt.Errorf("link: %w", err))
