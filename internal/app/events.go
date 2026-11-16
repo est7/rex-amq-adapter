@@ -43,6 +43,8 @@ type snapshotFrame struct {
 	Scope    Scope          `json:"scope"`
 	Agents   []core.Agent   `json:"agents"`
 	Messages []core.Message `json:"messages"`
+	// Panel is the session's panel (`panel --json`); events leaves it out.
+	Panel *PanelProjection `json:"panel,omitempty"`
 }
 
 type entityFrame struct {
@@ -89,6 +91,10 @@ type streamer struct {
 	recs      []store.Record
 	recsStamp time.Time
 
+	// panel is the panel's state when the stream is `panel --json`'s; nil
+	// for `events --json`.
+	panel *panelState
+
 	// What has been told already, so a reread file or a box listed again
 	// tells nothing twice.
 	doorbellAt map[core.Handle]time.Time
@@ -98,6 +104,12 @@ type streamer struct {
 
 // Stream writes the stream of sc to w until ctx ends or a write fails.
 func (e Env) Stream(ctx context.Context, w io.Writer, sc Scope, ticks StreamTicks) error {
+	return e.stream(ctx, w, sc, ticks, false)
+}
+
+// stream is Stream, with the session's panel (PanelProjection) in its
+// snapshot and its changes as panel upserts when withPanel is set.
+func (e Env) stream(ctx context.Context, w io.Writer, sc Scope, ticks StreamTicks, withPanel bool) error {
 	if ticks.Local <= 0 {
 		ticks.Local = time.Second
 	}
@@ -129,7 +141,17 @@ func (e Env) Stream(ctx context.Context, w io.Writer, sc Scope, ticks StreamTick
 		return err
 	}
 	s.seed(held, obs)
-	if err := s.emit(snapshotFrame{envelope: s.next("snapshot"), Scope: sc, Agents: snap.Agents, Messages: snap.Messages}); err != nil {
+	frame := snapshotFrame{Scope: sc, Agents: snap.Agents, Messages: snap.Messages}
+	if withPanel {
+		s.panel = &panelState{}
+		p, err := s.panelNow(held)
+		if err != nil {
+			return err
+		}
+		frame.Panel = &p
+	}
+	frame.envelope = s.next("snapshot")
+	if err := s.emit(frame); err != nil {
 		return err
 	}
 	s.prev = snap
@@ -230,6 +252,11 @@ func (s *streamer) tick() error {
 		}
 	}
 	s.prev = snap
+	if s.panel != nil {
+		if err := s.panelTick(held); err != nil {
+			return err
+		}
+	}
 	for _, ev := range s.events(held, obs) {
 		ev.envelope = s.next("event")
 		if err := s.emit(ev); err != nil {

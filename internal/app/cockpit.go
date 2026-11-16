@@ -146,12 +146,8 @@ func (e Env) cockpitScope(ctx context.Context, getenv func(string) string, req C
 	if err != nil {
 		return store.Record{}, fmt.Errorf("tell which agent runs the cockpit: %w", err)
 	}
-	for _, p := range ancestors {
-		for _, r := range recs {
-			if r.Live() && r.AgentPID > 1 && r.AgentPID == p.PID && r.Role != core.PersonalRole {
-				return store.Record{}, cockpitRefused(r)
-			}
-		}
+	if r, ok := agentAncestor(ancestors, recs, func(r store.Record) bool { return r.Role != core.PersonalRole }); ok {
+		return store.Record{}, cockpitRefused(r)
 	}
 	if getenv("ME_UNATTENDED") == "1" && !isPersonal {
 		return store.Record{}, fmt.Errorf("%w: the cockpit is the human's or a personal agent's, and this command runs unattended (ME_UNATTENDED=1)", ErrRefused)
@@ -188,6 +184,21 @@ func (e Env) cockpitScope(ctx context.Context, getenv func(string) string, req C
 		handles[i] = string(r.Handle)
 	}
 	return store.Record{}, fmt.Errorf("%w: %d live %s agents match %s (%s); name one with --personal", ErrUsage, len(found), core.PersonalRole, cockpitTarget(req), strings.Join(handles, ", "))
+}
+
+// agentAncestor is the live record among recs, of those match accepts, whose
+// agent is one of ancestors (this process and its ancestors, nearest first):
+// a command an agent runs, even with its environment stripped (`env -i`),
+// descends from that agent's process.
+func agentAncestor(ancestors []proc, recs []store.Record, match func(store.Record) bool) (store.Record, bool) {
+	for _, p := range ancestors {
+		for _, r := range recs {
+			if r.Live() && r.AgentPID > 1 && r.AgentPID == p.PID && match(r) {
+				return r, true
+			}
+		}
+	}
+	return store.Record{}, false
 }
 
 func cockpitRefused(rec store.Record) error {
