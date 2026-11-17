@@ -502,7 +502,10 @@ func (s Store) AgentsChanged() (time.Time, error) {
 	return newest, nil
 }
 
-// readDir calls f with each JSON file of dir; a missing dir has none.
+// readDir calls f with each JSON file of dir; a missing dir has none. A file
+// removed between the listing and its read (a lockless reader racing
+// ReleaseLease or ForgetIdentity) is skipped: it was gone by the time it was
+// read. Any other unreadable or undecodable file is an error.
 func readDir(dir string, f func(name string, b []byte) error) error {
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -516,6 +519,9 @@ func readDir(dir string, f func(name string, b []byte) error) error {
 			continue
 		}
 		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
 		if err != nil {
 			return err
 		}
