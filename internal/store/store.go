@@ -141,14 +141,6 @@ const (
 	Departing Transition = "departure"
 )
 
-// Reasons a departure records that are not a binding check's code.
-const (
-	DepartSessionEnd = "session_end" // the harness ended the session
-	DepartReplaced   = "replaced"    // another agent or session took the block
-	DepartEpicClosed = "epic_closed" // the personal agent closed its Epic's session
-	DepartRetired    = "retired"     // a session-mate retired it as finished (rex-amq-adapter retire)
-)
-
 // Live reports whether the record describes a running agent.
 func (r Record) Live() bool { return r.DepartedAt == nil }
 

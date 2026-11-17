@@ -21,3 +21,14 @@ func processAncestors() ([]proc, error) {
 	}
 	return procs, nil
 }
+
+// processStartTime is when pid started, in microseconds of the Unix epoch:
+// the same sysctl record processAncestors reads.
+func processStartTime(pid int) (int64, error) {
+	k, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
+	if err != nil {
+		return 0, err
+	}
+	t := k.Proc.P_starttime
+	return int64(t.Sec)*1e6 + int64(t.Usec), nil
+}
