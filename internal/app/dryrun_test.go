@@ -188,3 +188,85 @@ func TestPreviewJoin(t *testing.T) {
 		t.Errorf("the preview claimed crew %q", c)
 	}
 }
+
+// A summon's --dry-run takes the real summon's decisions (harness
+// readiness, hooks and trust, the review family, council seats, the
+// user's authority, the cap) and reports them: the harness it would start
+// and each it passed over, or each council seat, or the refusal; nothing
+// is launched, reserved, mailed, or written.
+func TestSummonDryRunMatchesTheRealDecision(t *testing.T) {
+	asked := func(r *SummonRequest) { r.Asked = "review it" }
+	dry := func(r *SummonRequest) { r.DryRun = true }
+	nothing := func(t *testing.T, e Env, term *fakeTerm, before map[string]string) {
+		t.Helper()
+		sameState(t, "summon --dry-run", before, stateFiles(t, e))
+		if len(term.launches) != 0 || len(term.newTabs) != 0 {
+			t.Errorf("launched %+v tabs %v", term.launches, term.newTabs)
+		}
+		if n, _ := e.Store.PendingSummons("session:s", e.Now()); n != 0 {
+			t.Errorf("pending reservations: %d", n)
+		}
+	}
+	t.Run("falls back past unapproved Codex hooks", func(t *testing.T) {
+		e, term, loc := summonWorld(t)
+		e.LookPath = installedOnly(core.Codex, core.Agy, core.Claude)
+		unapprovedCodexHook(t, e)
+		before := stateFiles(t, e)
+		res := summon(t, e, loc, "reviewer", asked, dry)
+		if res.Action != "start" || res.Harness != core.Agy || len(res.Passed) != 1 || !strings.HasPrefix(res.Passed[0], "codex: unapproved_hooks") || !res.DryRun {
+			t.Fatalf("%+v", res)
+		}
+		nothing(t, e, term, before)
+	})
+	t.Run("an explicit Codex with unapproved hooks is refused", func(t *testing.T) {
+		e, term, loc := summonWorld(t)
+		unapprovedCodexHook(t, e)
+		before := stateFiles(t, e)
+		res := summon(t, e, loc, "reviewer", asked, dry, func(r *SummonRequest) { r.Harness = "codex" })
+		if res.Action != "refused" || !strings.Contains(res.Reason, "unapproved_hooks") {
+			t.Fatalf("%+v", res)
+		}
+		nothing(t, e, term, before)
+	})
+	t.Run("no installed harness is refused", func(t *testing.T) {
+		e, term, loc := summonWorld(t)
+		e.LookPath = installedOnly(core.Claude)
+		before := stateFiles(t, e)
+		res := summon(t, e, loc, "reviewer", asked, dry)
+		if res.Action != "refused" || !strings.Contains(res.Reason, "not installed") {
+			t.Fatalf("%+v", res)
+		}
+		nothing(t, e, term, before)
+	})
+	t.Run("a council plans every seat", func(t *testing.T) {
+		e, term, loc := summonWorld(t)
+		e.LookPath = installedOnly(core.Codex, core.Agy, core.Claude)
+		live := seed{Handle: "codex-12", Kind: core.Codex, Server: "unix:///fake.sock", BlockID: "block:codex-12", SessionID: "session:s", Role: "reviewer", AgentPID: 42, AdoptedAt: e.Now()}
+		add(t, e, live)
+		before := stateFiles(t, e)
+		res := summon(t, e, loc, "reviewer", councilOf(asked), dry)
+		if res.Action != "council" || !res.DryRun || len(res.Seats) < 2 || seatActions(res) == "" {
+			t.Fatalf("%+v", res)
+		}
+		for _, s := range res.Seats {
+			if s.Mailed || s.Block != "" {
+				t.Errorf("seat %+v was mailed or launched", s)
+			}
+		}
+		if n := len(unread(t, e, "codex-12")); n != 0 {
+			t.Errorf("the live seat got %d mails", n)
+		}
+		nothing(t, e, term, before)
+	})
+	t.Run("a council with a seat that cannot start is refused", func(t *testing.T) {
+		e, term, loc := summonWorld(t)
+		e.LookPath = installedOnly(core.Codex, core.Agy, core.Claude)
+		unapprovedCodexHook(t, e)
+		before := stateFiles(t, e)
+		res := summon(t, e, loc, "reviewer", councilOf(asked), dry)
+		if res.Action != "refused" || !strings.Contains(res.Reason, "codex: unapproved_hooks") || len(res.Seats) != 0 {
+			t.Fatalf("%+v", res)
+		}
+		nothing(t, e, term, before)
+	})
+}

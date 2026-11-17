@@ -113,3 +113,36 @@ func TestTrustPreflightNeverOverridesTheUsersNo(t *testing.T) {
 		t.Fatalf("after the user's own grant: %v", err)
 	}
 }
+
+// PreviewPreflight decides as Preflight does and writes nothing: a project
+// outside every root is untrusted_folder, one under a declared root passes
+// without the grant Preflight would record, and the stores stay unwritten.
+func TestTrustPreviewPreflightWritesNothing(t *testing.T) {
+	g, home := world(t)
+	ctx := context.Background()
+	side := mkdir(t, home, "projects", "side")
+	repoDir := mkdir(t, side, "app")
+	gitInit(t, repoDir)
+	var u Untrusted
+	if err := g.PreviewPreflight(repoDir, core.Claude, core.Codex); !errors.As(err, &u) {
+		t.Fatalf("outside every root: %v", err)
+	}
+	if _, err := g.AddRoots(ctx, side); err != nil {
+		t.Fatal(err)
+	}
+	book, _ := os.ReadFile(g.bookPath())
+	if err := g.PreviewPreflight(repoDir, core.Claude, core.Codex); err != nil {
+		t.Fatalf("under a declared root: %v", err)
+	}
+	if after, _ := os.ReadFile(g.bookPath()); string(after) != string(book) {
+		t.Errorf("the preview recorded a grant:\n%s", after)
+	}
+	for _, f := range []string{g.Stores.Claude, g.Stores.Codex} {
+		if _, err := os.Stat(f); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("the preview wrote %s", f)
+		}
+	}
+	if err := g.PreviewPreflight(home, core.Claude); err == nil {
+		t.Error("the preview passed the home directory, which a grant refuses")
+	}
+}

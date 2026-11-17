@@ -116,11 +116,11 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 			return SummonResult{}, fmt.Errorf("%q is neither a handle (<kind>-<NN>) nor a role", r.Target)
 		}
 	}
+	// A dry run takes every real decision on this copy of the Env, whose
+	// trust preflight only reads, and stops before it reserves, mails, or
+	// launches.
+	e.preview = r.DryRun
 	if r.Council {
-		if r.DryRun {
-			return SummonResult{Action: "council", DryRun: true, Parent: caller.Handle, Depth: caller.Depth + 1,
-				Reason: "a council's seats are resolved when it runs; --dry-run checked its usage and the summoner"}, nil
-		}
 		return e.council(ctx, loc, caller, r, target)
 	}
 	s, err := e.FindSession(ctx, loc.Block)
@@ -245,10 +245,9 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 		}
 		return res, err
 	}
-	if r.DryRun {
-		return e.planDry(caller, r, target, busy, departed, res)
+	if !r.DryRun {
+		res.Token = tokens[0]
 	}
-	res.Token = tokens[0]
 	if departed != nil {
 		return e.resume(ctx, caller, s, r, *departed, res)
 	}
@@ -370,48 +369,11 @@ func (e Env) reserve(ctx context.Context, caller agent, s Session, kind string, 
 	return tokens, nil
 }
 
-// planDry is what a summon that passed every guard would launch: a resume
-// of departed, or a start of role on the harness its routing names first
-// (or --harness). It reads the routing only.
-func (e Env) planDry(caller agent, r SummonRequest, role string, busy []core.Kind, departed *agent, res SummonResult) (SummonResult, error) {
-	if departed != nil {
-		res.Action, res.Harness = "resume", departed.Kind
-		return res, nil
+// dropToken gives back the reservation a summon took; a dry run took none.
+func (e Env) dropToken(token string) {
+	if token != "" {
+		_ = e.Store.DeleteSummon(token)
 	}
-	refuse := func(reason string) (SummonResult, error) {
-		res.Action, res.Reason = "refused", reason
-		return res, nil
-	}
-	if core.LooksLikeHandle(r.Target) {
-		return refuse(fmt.Sprintf("no agent %s in this session, live or departed; a new agent is started by role, not by handle", r.Target))
-	}
-	if refusal := startAuthorized(r); refusal != "" {
-		return refuse(refusal)
-	}
-	cwd := caller.Cwd
-	if r.Cwd != "" {
-		cwd = r.Cwd
-	}
-	route, err := e.route(cwd, role)
-	if err != nil {
-		return refuse(fmt.Sprintf("the routing of role %s cannot be read: %v", role, err))
-	}
-	kinds := route.Harnesses[:1]
-	switch {
-	case r.Harness != "":
-		kind, err := core.ParseKind(r.Harness)
-		if err != nil {
-			return refuse(err.Error())
-		}
-		kinds = []core.Kind{kind}
-	case core.ReviewRole(role):
-		kinds = slices.DeleteFunc(otherFamilies(route, core.Family(caller.Kind, caller.Model)), func(k core.Kind) bool { return slices.Contains(busy, k) })
-		if len(kinds) == 0 {
-			return refuse(fmt.Sprintf("no free harness in the routing of %s runs a model family known to differ from yours", role))
-		}
-	}
-	res.Action, res.Harness, res.Cwd = "start", kinds[0], cwd
-	return res, nil
 }
 
 // release gives back reservations whose launches will not happen.
@@ -437,12 +399,20 @@ func newToken() (string, error) {
 func (e Env) resume(ctx context.Context, caller agent, s Session, r SummonRequest, departed agent, res SummonResult) (SummonResult, error) {
 	p, refusal, err := e.planResume(ctx, caller, departed)
 	if err != nil || refusal != "" {
-		_ = e.Store.DeleteSummon(res.Token)
+		e.dropToken(res.Token)
 		if err != nil {
 			return res, err
 		}
-		res.Action, res.Reason = "refused", refusal+"; the message waits in "+string(departed.Handle)+"'s mailbox"
+		res.Action, res.Reason = "refused", refusal
+		if !r.DryRun {
+			res.Reason += "; the message waits in " + string(departed.Handle) + "'s mailbox"
+		}
 		e.summonLog(caller, r, res)
+		return res, nil
+	}
+	res.Harness = p.kind
+	if r.DryRun {
+		res.Action, res.Label, res.Cwd = "resume", p.label, p.cwd
 		return res, nil
 	}
 	block, err := e.launchPlanned(ctx, caller, s, r.Split, p, res.Token)
@@ -505,7 +475,7 @@ func (e Env) launchPlanned(ctx context.Context, caller agent, s Session, split b
 // as its brief. A handle that names no agent cannot be started.
 func (e Env) start(ctx context.Context, caller agent, s Session, r SummonRequest, role string, busy []core.Kind, res SummonResult) (SummonResult, error) {
 	refuse := func(reason string) (SummonResult, error) {
-		_ = e.Store.DeleteSummon(res.Token)
+		e.dropToken(res.Token)
 		res.Action, res.Reason = "refused", reason
 		e.summonLog(caller, r, res)
 		return res, nil
@@ -556,7 +526,7 @@ func (e Env) start(ctx context.Context, caller agent, s Session, r SummonRequest
 	}
 	kind, passed, refusal, err := e.pickHarness(ctx, cwd, kinds, r.Harness == "" && core.ReviewRole(role))
 	if err != nil {
-		_ = e.Store.DeleteSummon(res.Token)
+		e.dropToken(res.Token)
 		return res, err
 	} else if refusal != "" {
 		res.Passed = passed
@@ -566,6 +536,10 @@ func (e Env) start(ctx context.Context, caller agent, s Session, r SummonRequest
 	p, ok := e.planStart(caller, route, kind, role, r.Subject, r.Body, cwd)
 	if !ok {
 		return refuse(fmt.Sprintf("unsupported harness %q; no agent was started", kind))
+	}
+	if r.DryRun {
+		res.Action, res.Label, res.Cwd = "start", p.label, p.cwd
+		return res, nil
 	}
 	block, err := e.launchPlanned(ctx, caller, s, r.Split, p, res.Token)
 	if err != nil {
@@ -691,7 +665,11 @@ func (e Env) preflight(ctx context.Context, cwd string, kind core.Kind) (refusal
 	if info, err := os.Stat(cwd); err != nil || !info.IsDir() {
 		return fmt.Sprintf("the working directory %s does not exist (a removed worktree?), so no agent was started; name another with --cwd", cwd), nil
 	}
-	err = e.trustGate().Preflight(ctx, cwd, kind)
+	if e.preview {
+		err = e.trustGate().PreviewPreflight(cwd, kind)
+	} else {
+		err = e.trustGate().Preflight(ctx, cwd, kind)
+	}
 	if trust.Refusal(err) {
 		return err.Error(), nil
 	}

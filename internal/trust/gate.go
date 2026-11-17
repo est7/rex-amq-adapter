@@ -692,6 +692,16 @@ func (g Gate) distrusted(p Project) (string, error) {
 // checks again; otherwise it returns Untrusted and changes nothing.
 // A root never overrides the user's explicit "no" in a harness's store.
 func (g Gate) Preflight(ctx context.Context, dir string, kinds ...core.Kind) error {
+	return g.preflight(ctx, dir, kinds, false)
+}
+
+// PreviewPreflight is Preflight's every check with nothing written: a
+// project a declared root covers passes as the grant Preflight would make.
+func (g Gate) PreviewPreflight(dir string, kinds ...core.Kind) error {
+	return g.preflight(context.Background(), dir, kinds, true)
+}
+
+func (g Gate) preflight(ctx context.Context, dir string, kinds []core.Kind, preview bool) error {
 	if slices.Contains(kinds, core.Codex) {
 		if err := g.codexHooks(); err != nil {
 			return err
@@ -717,6 +727,9 @@ func (g Gate) Preflight(ctx context.Context, dir string, kinds ...core.Kind) err
 		return err
 	} else if no != "" {
 		return Untrusted{Dir: p.Dir, Root: p.Root, Asking: asking, Distrusted: no}
+	}
+	if preview {
+		return g.unbounded(p.Root)
 	}
 	if _, err := g.Grant(ctx, dir, "root:"+root); err != nil {
 		return err
