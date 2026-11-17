@@ -169,9 +169,10 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	// repeated start hook or a compaction: nothing changes, unless the adoption
 	// that leased it never finished. Then the agent was not told, and nor was
 	// its window. One that departed was announced as gone, so taking its handle
-	// back is news again.
+	// back is news again. A handle never placed (its adoption died before its
+	// lease) was never told either.
 	again := hasOwn && own.Live() && own.BlockID == loc.Block
-	unfinished := hasOwn && own.Live() && !own.Adopted()
+	unfinished := hasOwn && !own.Adopted() && own.departure() == nil
 	arrived := !again || unfinished
 	if moved {
 		arrived = !together(own, shownAt) || unfinished // a move within the session is no news
