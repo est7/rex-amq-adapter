@@ -324,6 +324,21 @@ func TestClaudeSelfDenyingCountdown(t *testing.T) {
 		// Quoted in the transcript, above an idle input box.
 		"quoted above the box": {dialog(one) + fixture(t, "claude-empty"), false},
 		"empty":                {"", false},
+		// Narrow, with three options wrapped as Claude Code draws them.
+		"three options wrapped": {"╌╌╌╌\n│ rm -rf /tmp/x\n╌╌╌╌\n⚠ Claude Code will\nautomatically block this\nrequest in 0:45, to avoid\nholding up an unattended\nsession\nDo you want to proceed?\n❯ 1. Yes\n  2. Yes, and don't ask again for\n  rex-amq-adapter commands in\n  /Users/est9/projects/side\n  3. No, and tell Claude what to\n  do differently\nEsc to cancel · Tab to amend\n────\n implementer(claude-07)\n", true},
+		// The question wraps too.
+		"question wrapped": {"╌╌╌╌\n│ +x\n╌╌╌╌\n" + one + "\nDo you want to make this edit to\ncountdown.go?\n❯ 1. Yes\n  2. No\nEsc to cancel · Tab to amend\n", true},
+		// An empty input box earlier in the scrollback does not matter.
+		"box in the scrollback": {fixture(t, "claude-empty") + dialog(one), true},
+		// A transcript line quotes it right above an attended dialog.
+		"transcript above a prompt": {"⏺ Saw log: \"Claude Code will automatically block this request in 1:24\"\n" + dialog(""), false},
+		// The dialog's diff preview holds the whole warning.
+		"in the preview": {"╌╌╌╌\n│ +one := \"⚠ Claude Code will automatically block this request in 1:24, to avoid holding up an unattended session\"\n╌╌╌╌\nDo you want to make this edit to screen_test.go?\n❯ 1. Yes\n  2. No\nEsc to cancel · Tab to amend\n", false},
+		// Below a quoted countdown dialog: another harness's prompt, a Claude
+		// question whose footer wraps, a draft in the input box.
+		"codex prompt below":   {dialog(one) + "Would you like to run the following command?\n› 1. Yes, proceed\n  2. No (esc)\n", false},
+		"wrapped footer below": {dialog(one) + "☐ Pick one\nWhich branch?\n❯ 1. main\n  2. dev\nEnter to select · ↑/↓ to navigate · Esc\nto cancel\n", false},
+		"draft below":          {dialog(one) + "────\n❯ half-typed reply\n────\n", false},
 	} {
 		if got := SelfDenyingCountdown(tc.screen); got != tc.want {
 			t.Errorf("%s: got %v want %v", name, got, tc.want)

@@ -37,7 +37,7 @@ func (e Env) blocked(ctx context.Context, orch agent, s Session, rec agent) erro
 	what := ""
 	blocked := reports && core.AgentState(st.State) == core.StateBlocked
 	switch {
-	case blocked && screen.SelfDenyingCountdown(vt):
+	case blocked && rec.Kind == core.Claude && screen.SelfDenyingCountdown(vt):
 		// Claude Code's unattended permission dialog blocks the request
 		// itself when its clock runs out: nobody needs to answer it.
 	case blocked:

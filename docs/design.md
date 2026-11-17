@@ -1064,13 +1064,15 @@ failing look is logged and swallowed, so it never stops the watcher.
    another run in the pane starts its own. Once per episode it writes a line in
    `logs/blocked.log` with the time and the last screen lines, and tells the
    orchestrator; a permission prompt also reaches the desktop. The episode ends
-   when the prompt is gone. Claude Code's permission dialog in an unattended
-   session, whose countdown line ("Claude Code will automatically block this
-   request in M:SS, to avoid holding up an unattended session") starts on a
-   line of its own right above the question of the dialog at the bottom of
-   the screen, blocks the request itself when the clock runs out, so it is no
-   episode (`screen.SelfDenyingCountdown`); the phrase anywhere else, the
-   command or description the dialog asks about included, does not count.
+   when the prompt is gone. A Claude Code agent's permission dialog in an
+   unattended session blocks the request itself when its clock runs out, so
+   it is no episode (`screen.SelfDenyingCountdown`): the dialog's footer is
+   the last one near the bottom with only the pane's chrome below it, and
+   its countdown warning ("Claude Code will automatically block this request
+   in M:SS, to avoid holding up an unattended session") starts on a line of
+   its own right above the dialog's question and options. The phrase anywhere
+   else, the command or description the dialog asks about included, does not
+   count.
 
 A transcript or blocked finding about the orchestrator itself goes to a live,
 unflagged agent of another model family, since a blocked orchestrator cannot

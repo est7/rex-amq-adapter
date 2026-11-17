@@ -282,3 +282,17 @@ func TestACountdownInTheApprovedCommandDoesNotHideABlockedPrompt(t *testing.T) {
 		t.Fatalf("a genuine prompt whose command prints the countdown: attention %v desktop %v blocked.log %v", a, *desktop, blockedLines(t, e))
 	}
 }
+
+// The countdown is Claude Code's: a blocked agent of another harness is told
+// whatever its screen quotes.
+func TestACountdownOnAnotherHarnessIsStillBlocked(t *testing.T) {
+	e, term, orch, s, now, _ := healthWorld(t)
+	term.states = map[string]rex.Status{block: {State: "blocked", Kind: "permission"}}
+	term.box = claudeAutoBlockDialog
+	e.watchdog(context.Background(), orch, s)
+	*now = now.Add(core.StuckFor + time.Second)
+	e.watchdog(context.Background(), orch, s)
+	if len(inboxOf(t, e, "orch-01")) != 1 || len(blockedLines(t, e)) != 1 {
+		t.Fatalf("a blocked codex peer: orchestrator inbox %v blocked.log %v", inboxOf(t, e, "orch-01"), blockedLines(t, e))
+	}
+}
