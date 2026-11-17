@@ -375,3 +375,37 @@ func TestDuplicateOfABackgroundJobReadsNoneOfItsMail(t *testing.T) {
 		t.Errorf("the job's lease changed: %+v -> %+v", before, after)
 	}
 }
+
+// Who holds a lease, as the hook of process inc in block:b on local sees it.
+func TestLeaseHeldElsewhereIsAnotherProcessOrServer(t *testing.T) {
+	const local, remote = "unix:///fake.sock", "tcp://remote.example:7070"
+	held := func(server, block string, inc store.Incarnation) agent {
+		l := store.Lease{Handle: "claude-01", Place: store.Place{Server: server, BlockID: block}, Incarnation: inc}
+		return newAgent(store.Identity{Handle: "claude-01"}, &l)
+	}
+	p := store.Incarnation{PID: 42, StartTime: 7}
+	for _, c := range []struct {
+		name string
+		own  agent
+		want bool
+	}{
+		{"departed", newAgent(store.Identity{Handle: "claude-01"}, nil), false},
+		{"this process, this block", held(local, "block:b", p), false},
+		{"this process, another block (a job's move)", held(local, "block:a", p), false},
+		{"another pid", held(local, "block:a", store.Incarnation{PID: 43, StartTime: 7}), true},
+		{"the pid reused", held(local, "block:b", store.Incarnation{PID: 42, StartTime: 8}), true},
+		{"the same pid on another server", held(remote, "block:a", store.Incarnation{PID: 42}), true},
+		{"an unknown process in this block", held(local, "block:b", store.Incarnation{}), true},
+	} {
+		if got := heldElsewhere(c.own, local, "block:b", p); got != c.want {
+			t.Errorf("%s: heldElsewhere = %v, want %v", c.name, got, c.want)
+		}
+	}
+	unknown := store.Incarnation{}
+	if heldElsewhere(held(local, "block:b", unknown), local, "block:b", unknown) {
+		t.Error("an unknown process in this block, seen by a hook that knows none: want its own")
+	}
+	if !heldElsewhere(held(local, "block:a", unknown), local, "block:b", unknown) {
+		t.Error("an unknown process in another block: want another")
+	}
+}

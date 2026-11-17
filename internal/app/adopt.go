@@ -105,7 +105,7 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	own, hasOwn := resolveIdentity(recs, loc.Block, inc, kind, lineage(recs, kind, in))
 	// Who speaks for the conversation is settled before anything changes: a
 	// refused pane parks no agent, names no handle, and makes no mailbox.
-	if hasOwn && heldElsewhere(own, loc.Block, inc) {
+	if hasOwn && heldElsewhere(own, server, loc.Block, inc) {
 		reason, gone := e.holderGone(ctx, own)
 		if !gone {
 			return Adoption{}, duplicateOf(in.SessionID, own)

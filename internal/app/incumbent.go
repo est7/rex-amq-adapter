@@ -66,14 +66,15 @@ func resolveIdentity(recs []agent, block string, inc store.Incarnation, kind cor
 }
 
 // heldElsewhere reports whether own's lease is held by another process than
-// inc, the hook's. A lease in this block whose process is unknown (pid 0) is
-// taken as the hook's own, as before incarnations were recorded; in another
-// block an unknown process proves nothing, and is another.
-func heldElsewhere(own agent, block string, inc store.Incarnation) bool {
+// inc, the hook's, on server. A pid on another server is another machine's
+// process. A lease in this block whose process is unknown (pid 0) is taken as
+// the hook's own, as before incarnations were recorded; in another block an
+// unknown process proves nothing, and is another.
+func heldElsewhere(own agent, server, block string, inc store.Incarnation) bool {
 	if !own.Live() {
 		return false
 	}
-	if !own.lease.Incarnation.Same(inc) {
+	if own.Server != server || !own.lease.Incarnation.Same(inc) {
 		return true
 	}
 	return own.BlockID != block && (inc.PID <= 0 || own.pid() <= 0)
