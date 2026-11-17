@@ -34,8 +34,12 @@ var sessionVars = []struct {
 // another agent runs, an Antigravity subagent) or a job no pane shows has no
 // identity, and is refused rather than given the outer agent's or REX_BLOCK's.
 // When several adopted sessions are named (an agent another agent started),
-// the command is the nearest one's. Only a command no harness runs is located
-// by REX_BLOCK.
+// the command is the nearest one's. On this machine the command must run under
+// that agent's process, the incarnation its lease records: a pane that resumed
+// the conversation while another pane's agent holds it names the same session
+// and is refused (callerUnder), so its env, drain, and send fail and never
+// touch the incumbent's mailbox. Only a command no harness runs is located by
+// REX_BLOCK.
 func (e Env) Caller(ctx context.Context, getenv func(string) string) (Location, error) {
 	type named struct {
 		kind    core.Kind
@@ -58,12 +62,16 @@ func (e Env) Caller(ctx context.Context, getenv func(string) string) (Location, 
 		}
 		found = append(found, rec)
 	}
-	rec := found[0]
+	rec, session := found[0], sessions[0].session
 	if len(found) > 1 {
 		var err error
 		if rec, err = e.nearest(found); err != nil {
 			return Location{}, err
 		}
+		session = sessions[slices.IndexFunc(found, func(r agent) bool { return r.Handle == rec.Handle })].session
+	}
+	if err := e.callerUnder(rec, session); err != nil {
+		return Location{}, err
 	}
 	return Location{Server: rec.Server, Block: rec.BlockID}, nil
 }

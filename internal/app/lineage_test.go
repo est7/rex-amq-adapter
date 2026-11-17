@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
+	"github.com/est7/rex-amq-adapter/internal/rex"
 )
 
 // A pid no process holds: the agent that held it has exited.
@@ -112,29 +113,58 @@ func TestNearestAncestorWinsTheHandle(t *testing.T) {
 	}
 }
 
-// A handle is never shared: while the ancestor runs in another pane, this
-// conversation is a second agent.
+// A handle is never shared, and a conversation is one identity: while the
+// ancestor runs in another pane, the conversation resumed here is the same
+// agent, which the incumbent keeps. This pane gets no identity of its own,
+// and is told why (§3.1, §3.2).
 func TestAncestorRunningElsewhereKeepsItsHandle(t *testing.T) {
-	e := realAmqEnv(t, &fakeTerm{})
+	a, b := sbAgent(t), sbAgent(t)
+	e := realAmqEnv(t, &fakeTerm{fgs: map[string]rex.Process{
+		"block:a": {PID: a.Process.Pid, Name: "claude"},
+		"block:b": {PID: b.Process.Pid, Name: "claude"},
+	}})
 	running := startClaude(t, e, "block:a", HookInput{SessionID: "old", Source: "startup"})
 
-	other := startClaude(t, e, "block:b", HookInput{SessionID: "new", Source: "resume", TranscriptPath: transcriptOf(t, "old", "new")})
-	if other.Handle == running.Handle {
-		t.Fatalf("%s is held twice", other.Handle)
+	r, err := e.Hook(context.Background(), EventSessionStart, core.Claude, Location{Block: "block:b"}, HookInput{SessionID: "new", Source: "resume", TranscriptPath: transcriptOf(t, "old", "new")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "conversation new is live as " + string(running.Handle) + " in block:a; this pane has no AMQ identity until that pane closes"; r.Notice != want {
+		t.Errorf("notice %q, want %q", r.Notice, want)
+	}
+	if other, ok, _ := e.agentAt("block:b"); ok {
+		t.Fatalf("the resumed conversation's pane holds %s", other.Handle)
+	}
+	if now := recordOf(t, e, running.Handle); !now.Live() || now.BlockID != "block:a" || now.Session() != "old" {
+		t.Fatalf("the running ancestor lost its pane or session: %+v", now)
 	}
 }
 
-// A nearer ancestor still running means this conversation forked off it. An
-// older ancestor's handle is not this agent's either.
-func TestRunningAncestorStopsTheWalk(t *testing.T) {
-	e := realAmqEnv(t, &fakeTerm{})
+// The nearest ancestor is the conversation's identity even while it runs: an
+// older ancestor's handle is not this agent's, and the running one keeps its
+// pane.
+func TestRunningNearestAncestorIsTheIdentityAndKeepsItsPane(t *testing.T) {
+	near, c := sbAgent(t), sbAgent(t)
+	e := realAmqEnv(t, &fakeTerm{fgs: map[string]rex.Process{
+		"block:b": {PID: near.Process.Pid, Name: "claude"},
+		"block:c": {PID: c.Process.Pid, Name: "claude"},
+	}})
 	far := startClaude(t, e, "block:a", HookInput{SessionID: "far", Source: "startup"})
 	depart(t, e, "block:a", "far")
-	near := startClaude(t, e, "block:b", HookInput{SessionID: "near", Source: "startup"})
+	running := startClaude(t, e, "block:b", HookInput{SessionID: "near", Source: "startup"})
 
-	other := startClaude(t, e, "block:c", HookInput{SessionID: "new", Source: "resume", TranscriptPath: transcriptOf(t, "far", "near", "new")})
-	if other.Handle == far.Handle || other.Handle == near.Handle {
-		t.Fatalf("took %s; far=%s near=%s", other.Handle, far.Handle, near.Handle)
+	r, err := e.Hook(context.Background(), EventSessionStart, core.Claude, Location{Block: "block:c"}, HookInput{SessionID: "new", Source: "resume", TranscriptPath: transcriptOf(t, "far", "near", "new")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(r.Notice, "is live as "+string(running.Handle)+" in block:b") {
+		t.Errorf("notice %q does not name %s in block:b", r.Notice, running.Handle)
+	}
+	if other, ok, _ := e.agentAt("block:c"); ok {
+		t.Fatalf("took %s; far=%s near=%s", other.Handle, far.Handle, running.Handle)
+	}
+	if rec := recordOf(t, e, far.Handle); rec.Live() {
+		t.Fatalf("the older ancestor %s was taken: %+v", far.Handle, rec)
 	}
 }
 

@@ -171,8 +171,17 @@ its process ran, unannounced by its hooks, and its restart looked like a new
 agent. Adoption, in order:
 
 1. **Resume.** A record of a session in the agent's lineage, nearest first, and
-   of the same kind takes its handle back, in this pane or any other, unless
-   another pane's agent is running it. The lineage is the agent's own session
+   of the same kind takes its handle back, in this pane or any other: a
+   conversation is one identity. When another pane's agent still holds that
+   handle's lease, the pane holding it wins (incumbent-wins): this pane gets no
+   identity and is told `conversation <sid> is live as <handle> in <block>;
+   this pane has no AMQ identity until that pane closes` at SessionStart and at
+   each prompt (also in `hooks.log`), and nothing changes before that refusal.
+   It takes the handle over, at the lease's next epoch, at its first hook after
+   the holder is provably gone: its process exited or its pid names another
+   process, its Rex server restarted (another instance id), its block is gone,
+   or its block's foreground is no longer it (a job: its pane no longer shows
+   it). A server that cannot be reached proves nothing. The lineage is the agent's own session
    and, for a Claude session with no record, the other session ids in the
    entries its transcript copied from the conversation it continues. An
    official `--fork-session` leaves no such entries (executed 2026-11-01,
@@ -398,7 +407,8 @@ session in its payload, and the process it descends from. The announcing hooks
 (`UserPromptSubmit`, `PostToolUse`, `PreInvocation`, `Stop`, Pi's mail and
 settle) compare them with the block's record (`recordFit`) and adopt again
 when they disagree; `SessionStart` always adopts, and `SessionEnd` departs only
-the session it names:
+the session it names, and only from the process that holds its lease (a pane
+refused as a duplicate holds none, so its end ends nothing):
 
 | The record | Means | Then |
 |---|---|---|
@@ -1009,7 +1019,7 @@ names whichever pane started the process hosting the session. So:
 | The command's environment | Identity |
 |---|---|
 | no harness session id | the live record of `REX_BLOCK`; no `REX_BLOCK` is not Rex |
-| harness session ids, each with a live record of its kind | that record, wherever `REX_BLOCK` points or whether it is set; with several (an agent another agent started), the one whose agent pid is the nearest ancestor of the command, an error when none is |
+| harness session ids, each with a live record of its kind | that record, wherever `REX_BLOCK` points or whether it is set; with several (an agent another agent started), the one whose agent pid is the nearest ancestor of the command, an error when none is. On a local server the command must run under the record's agent process (pid and start time): a pane that resumed the conversation another pane holds is refused with the duplicate notice, so its `env`, `drain`, and `send` fail |
 | any harness session id without one | none, even with `REX_BLOCK` set: a `claude -p` an adopted Codex runs, an `agy -p` any agent runs, an Antigravity subagent (its own conversation id), a Codex thread its hooks refused |
 
 A record located by session rather than by `REX_BLOCK` comes with
@@ -2007,7 +2017,7 @@ and Claude Code 2.1.316, adapter state isolated by `REX_AMQ_ADAPTER_HOME`:
 | Rex upgrade moves the rex binary | Resolved at run time, never baked into the waker target |
 | A hook in one Rex session sees every agent in another as gone | rex resolves `-b` within `$REX_SESSION`, which hooks inherit; collection then parked live agents, whose next hook re-adopted them and spawned a fresh waker, over and over. Every rex call names its target by id, so the client drops `REX_SESSION` (executed: old and new `collect` on a copy of real state) |
 | A parked record is re-adopted by its own still-running session, and the agent is told its identity again | The identity notice goes only to a session that did not hold the handle before. Pi's mail watcher turns any notice into a turn of its own, so a repeated identity cost Pi a whole turn (reproduced; executed in `resume_test.go`) |
-| A conversation changes session id and its restart loses the handle | Claude's transcript proves the lineage, read only for a session with no record; a parent running elsewhere keeps its handle (executed in `lineage_test.go`, and read-only against the real 2026-11-01 transcript) |
+| A conversation changes session id and its restart loses the handle | Claude's transcript proves the lineage, read only for a session with no record; a parent running elsewhere keeps its handle and pane, and the resumed pane gets none until it is gone (executed in `lineage_test.go`, `incumbent_test.go`, and read-only against the real 2026-11-01 transcript) |
 | Mail goes to a departed handle and nobody notices | The sender's next hook checks its outbox and says so once, naming who took the pane (executed in `undelivered_test.go`) |
 | A new agent inherits stale mail | New names skip mailboxes with undrained mail and reserved handles |
 | A hook trusts a record that is no longer its agent's: an agy conversation resumed in a new process (collection then parked the live agent), another kind in the pane before its SessionStart, a reused pid | Each announcing hook compares the record's kind and, for a local record with a pid, its process with its own, and adopts again on a mismatch; while that adoption fails, a record found to be another agent's is not read (executed in `lease_test.go`, each check ablated). Remote records are not checked |
