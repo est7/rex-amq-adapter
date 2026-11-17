@@ -277,7 +277,7 @@ func fixture(t *testing.T, term *fakeTerm, unread ...string) Env {
 }
 
 func inject(e Env) core.Outcome {
-	return e.Inject(context.Background(), InjectRequest{Block: block, Handle: "codex", Root: e.Paths.Root()})
+	return e.Inject(context.Background(), InjectRequest{Handle: "codex", Root: e.Paths.Root()})
 }
 
 func TestFakeScreenClassifies(t *testing.T) {
@@ -368,7 +368,7 @@ func TestCleanupSurvivesErrorsAndCancellationAfterTheWrite(t *testing.T) {
 	e := fixture(t, f, "m1")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	o := e.Inject(ctx, InjectRequest{Block: block, Handle: "codex", Root: e.Paths.Root()})
+	o := e.Inject(ctx, InjectRequest{Handle: "codex", Root: e.Paths.Root()})
 	if len(f.writes) != 1 {
 		t.Fatalf("expected one write, got %q", f.writes)
 	}
@@ -395,7 +395,7 @@ func TestBindingOutcomes(t *testing.T) {
 	}{
 		{"block gone", &fakeTerm{gone: true}, os.Getpid(), core.Failed, "block_gone"},
 		{"agent alive behind an editor", &fakeTerm{fgPID: 1, state: "idle"}, os.Getpid(), core.Deferred, "agent_not_foreground"},
-		{"agent process exited", &fakeTerm{fgPID: 1, state: "idle"}, 0x3ffffff0, core.Failed, "agent_gone"},
+		{"agent process exited", &fakeTerm{fgPID: 1, state: "idle"}, 0x3ffffff0, core.Failed, "holder_gone"},
 	}
 	for _, c := range cases {
 		e := fixture(t, c.term, "m1")

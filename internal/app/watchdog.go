@@ -234,7 +234,7 @@ func (e Env) handOff(ctx context.Context, orch agent, rec agent, ep *core.Episod
 	if v != ready {
 		return nil
 	}
-	o := e.Inject(ctx, InjectRequest{Block: rec.BlockID, Handle: rec.Handle, Root: e.Paths.Root()})
+	o := e.Inject(ctx, InjectRequest{Handle: rec.Handle, Root: e.Paths.Root()})
 	e.wdLog(orch, rec, "inject", ep.ID, string(o.Progress)+" "+o.Code)
 	return nil
 }

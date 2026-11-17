@@ -59,7 +59,6 @@ type Terminal interface {
 type Queue interface {
 	EnsureMailbox(ctx context.Context, root, handle string) error
 	Ensure(ctx context.Context, w amq.Waker, logDir string) (amq.WakeState, amq.WakeDecision, error)
-	RetireFor(ctx context.Context, root, handle, block string) (bool, error)
 	RetireHandle(ctx context.Context, root, handle string) (bool, error)
 	ConfigureHolds(ctx context.Context, root, handle string, normal, low time.Duration) error
 	Post(ctx context.Context, root, verb string, args ...string) (amq.Sent, []byte, error)

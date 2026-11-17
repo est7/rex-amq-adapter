@@ -153,8 +153,8 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 			}
 		}
 	}
-	// The moved job's waker follows it: amq.Ensure below replaces the one
-	// that targets its old block.
+	// The moved agent keeps its waker: the waker names the handle, and finds
+	// the block from the lease when it rings (amq.Ensure below keeps it).
 	shownAt := agent{SessionID: blk.SessionID}
 	if moved && !together(own, shownAt) {
 		e.leaveSession(ctx, own)
@@ -230,9 +230,9 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 		id.Parent, id.Depth, id.SummonedFor = sm.Parent, sm.Depth, sm.For
 	}
 	// Leased before the waker starts: whatever happens next, departure and
-	// collection find this lease and retire the block's waker, which amq
-	// identifies by the block its saved target names, and a later hook finishes
-	// the adoption.
+	// collection find this lease and retire the handle's waker, which amq
+	// identifies by the handle its saved target names, and a later hook
+	// finishes the adoption.
 	if err := e.Store.PutIdentity(id); err != nil {
 		return Adoption{}, err
 	}
@@ -254,9 +254,9 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	e.alignHolds(ctx, rec, own.Role)
 	var decision amq.WakeDecision
 	if kind.InProcess() {
-		// The agent's own extension delivers. A waker left from an earlier
-		// agent in this block would type doorbells into it: remove it.
-		if _, err := e.AMQ.RetireFor(ctx, e.Paths.Root(), string(handle), loc.Block); err != nil {
+		// The agent's own extension delivers. A waker left for this handle
+		// would type doorbells into it: remove it.
+		if _, err := e.AMQ.RetireHandle(ctx, e.Paths.Root(), string(handle)); err != nil {
 			return Adoption{}, err
 		}
 	} else {

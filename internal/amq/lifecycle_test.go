@@ -14,7 +14,7 @@ import (
 // TestLifecycleAgainstRealAmq exercises the amq contract the adapter relies
 // on: mailbox registration merges handles, Unread sees a sent message, the
 // waker amq starts calls the injector with exactly the target's argv, Ensure
-// keeps a matching live waker, and RetireFor stops only the waker of its block.
+// keeps a matching live waker, and RetireHandle stops the handle's waker.
 func TestLifecycleAgainstRealAmq(t *testing.T) {
 	amqBin, err := ResolveBin()
 	if err != nil {
@@ -52,13 +52,13 @@ func TestLifecycleAgainstRealAmq(t *testing.T) {
 	if err := os.WriteFile(injector, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	w := Waker{InjectVia: injector, Server: "unix:///tmp/rex.sock", Block: "block:test", Handle: "bob", Root: root}
+	w := Waker{InjectVia: injector, Handle: "bob", Root: root}
 
 	st, decision, err := Ensure(ctx, amqBin, w, logs)
 	if err != nil || decision != DecisionStart || !st.Live || st.Generation == "" {
 		t.Fatalf("first ensure: %+v %s %v", st, decision, err)
 	}
-	t.Cleanup(func() { _, _ = RetireFor(context.Background(), amqBin, root, "bob", w.Block) })
+	t.Cleanup(func() { _, _ = RetireHandle(context.Background(), amqBin, root, "bob") })
 	again, decision, err := Ensure(ctx, amqBin, w, logs)
 	if err != nil || decision != DecisionKeep || again.Generation != st.Generation {
 		t.Fatalf("second ensure must keep the same waker: %+v %s %v", again, decision, err)
@@ -84,11 +84,11 @@ func TestLifecycleAgainstRealAmq(t *testing.T) {
 		t.Fatal("amq passed an empty payload")
 	}
 
-	if retired, err := RetireFor(ctx, amqBin, root, "bob", "block:another"); err != nil || retired {
-		t.Fatalf("a waker for another block must be left alone: %v %v", retired, err)
+	if retired, err := RetireHandle(ctx, amqBin, root, "alice"); err != nil || retired {
+		t.Fatalf("another handle's (missing) waker: %v %v", retired, err)
 	}
-	if retired, err := RetireFor(ctx, amqBin, root, "bob", w.Block); err != nil || !retired {
-		t.Fatalf("the block's own waker must retire: %v %v", retired, err)
+	if retired, err := RetireHandle(ctx, amqBin, root, "bob"); err != nil || !retired {
+		t.Fatalf("the handle's own waker must retire: %v %v", retired, err)
 	}
 	after, err := WakeCheck(ctx, amqBin, root, "bob")
 	if err != nil || after.Live {

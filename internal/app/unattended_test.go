@@ -185,7 +185,7 @@ func adoptUnattendedLaunch(t *testing.T, e Env, term *fakeTerm, l launch, sessio
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = e.AMQ.RetireFor(context.Background(), e.Paths.Root(), string(a.Agent.Handle), l.Block) })
+	t.Cleanup(func() { _, _ = e.AMQ.RetireHandle(context.Background(), e.Paths.Root(), string(a.Agent.Handle)) })
 	return a.Agent
 }
 
@@ -225,7 +225,7 @@ func TestAdoptRecordsUnattendedAndEnvExportsIt(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { _, _ = e.AMQ.RetireFor(context.Background(), e.Paths.Root(), string(a.Agent.Handle), block) })
+		t.Cleanup(func() { _, _ = e.AMQ.RetireHandle(context.Background(), e.Paths.Root(), string(a.Agent.Handle)) })
 		return a.Agent
 	}
 	exports := func(t *testing.T, e Env, block string) string {

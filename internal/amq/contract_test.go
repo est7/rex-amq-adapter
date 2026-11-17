@@ -17,7 +17,6 @@ import (
 type queue interface {
 	EnsureMailbox(ctx context.Context, root, handle string) error
 	Ensure(ctx context.Context, w Waker, logDir string) (WakeState, WakeDecision, error)
-	RetireFor(ctx context.Context, root, handle, block string) (bool, error)
 	RetireHandle(ctx context.Context, root, handle string) (bool, error)
 	ConfigureHolds(ctx context.Context, root, handle string, normal, low time.Duration) error
 	Post(ctx context.Context, root, verb string, args ...string) (Sent, []byte, error)
@@ -159,7 +158,7 @@ func TestQueueContract(t *testing.T) {
 			if err := os.WriteFile(injector, []byte("#!/bin/sh\necho AMQ_INJECT_PROGRESS=deferred >&2\nexit 1\n"), 0o700); err != nil {
 				t.Fatal(err)
 			}
-			w := Waker{InjectVia: injector, Server: "unix:///tmp/rex.sock", Block: "block:one", Handle: "bob", Root: root}
+			w := Waker{InjectVia: injector, Handle: "bob", Root: root}
 			st, decision, err := q.Ensure(ctx, w, filepath.Join(dir, "logs"))
 			if err != nil || decision != DecisionStart || !st.Live || st.Generation == "" {
 				t.Fatalf("first ensure: %+v %s %v", st, decision, err)
@@ -171,11 +170,11 @@ func TestQueueContract(t *testing.T) {
 			if got, err := tc.wakes(ctx, root, "bob"); err != nil || !got.Live || got.Generation != st.Generation || !slices.Equal(got.Target.InjectArgs, w.Target().InjectArgs) {
 				t.Fatalf("waker as checked: %+v %v", got, err)
 			}
-			if retired, err := q.RetireFor(ctx, root, "bob", "block:other"); err != nil || retired {
-				t.Fatalf("a waker for another block is left alone: %v %v", retired, err)
+			if retired, err := q.RetireHandle(ctx, root, "alice"); err != nil || retired {
+				t.Fatalf("another handle's waker is left alone: %v %v", retired, err)
 			}
-			if retired, err := q.RetireFor(ctx, root, "bob", "block:one"); err != nil || !retired {
-				t.Fatalf("retire the block's waker: %v %v", retired, err)
+			if retired, err := q.RetireHandle(ctx, root, "bob"); err != nil || !retired {
+				t.Fatalf("retire the handle's waker: %v %v", retired, err)
 			}
 			if retired, err := q.RetireHandle(ctx, root, "bob"); err != nil || retired {
 				t.Fatalf("nothing left to retire: %v %v", retired, err)
@@ -228,7 +227,7 @@ func TestQueueContractRefusesAnUnsafeInjector(t *testing.T) {
 			}
 			for name, inject := range map[string]string{"missing": filepath.Join(dir, "absent"), "not executable": noExec, "shared directory": inShared} {
 				ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-				w := Waker{InjectVia: inject, Server: "unix:///tmp/rex.sock", Block: "block:one", Handle: "bob", Root: root}
+				w := Waker{InjectVia: inject, Handle: "bob", Root: root}
 				st, _, err := tc.q.Ensure(ctx, w, filepath.Join(dir, "logs"))
 				cancel()
 				if err == nil || st.Live {
@@ -289,7 +288,7 @@ func TestQueueContractDoesNotRecoverAWakerWithABrokenInjector(t *testing.T) {
 			if err := os.WriteFile(inject, []byte("#!/bin/sh\necho AMQ_INJECT_PROGRESS=deferred >&2\nexit 1\n"), 0o700); err != nil {
 				t.Fatal(err)
 			}
-			w := Waker{InjectVia: inject, Server: "unix:///tmp/rex.sock", Block: "block:one", Handle: "bob", Root: root}
+			w := Waker{InjectVia: inject, Handle: "bob", Root: root}
 			if st, _, err := tc.q.Ensure(ctx, w, filepath.Join(dir, "logs")); err != nil || !st.Live {
 				t.Fatalf("start: %+v %v", st, err)
 			}

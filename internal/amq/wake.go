@@ -30,11 +30,11 @@ type WakeTarget struct {
 	RetryUntil string   `json:"retry_until"`
 }
 
-// Waker names one handle's waker: which block it wakes, on which server.
+// Waker names one handle's waker. It names no server or block: the injector
+// finds where the handle runs from its lease when a doorbell fires, so a
+// lease that moves keeps the same waker (same pid and generation).
 type Waker struct {
 	InjectVia string // what amq runs per notification (the adapter's wrapper)
-	Server    string // Rex server address the block lives on
-	Block     string
 	Handle    string
 	Root      string
 }
@@ -44,7 +44,7 @@ type Waker struct {
 func (w Waker) Target() WakeTarget {
 	return WakeTarget{
 		InjectVia:  w.InjectVia,
-		InjectArgs: []string{"inject", w.Server, w.Block, w.Handle, w.Root},
+		InjectArgs: []string{"inject", w.Handle, w.Root},
 		RetryUntil: "injected",
 	}
 }

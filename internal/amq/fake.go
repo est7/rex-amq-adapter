@@ -366,15 +366,7 @@ func (f *Fake) Kill(root, handle string) {
 	}
 }
 
-func (f *Fake) RetireFor(ctx context.Context, root, handle, block string) (bool, error) {
-	return f.retire(root, handle, func(t WakeTarget) bool { return wakes(t, block, handle, root) })
-}
-
 func (f *Fake) RetireHandle(ctx context.Context, root, handle string) (bool, error) {
-	return f.retire(root, handle, func(t WakeTarget) bool { return wakesAnyBlock(t, handle, root) })
-}
-
-func (f *Fake) retire(root, handle string, ours func(WakeTarget) bool) (bool, error) {
 	if err := f.fail("wake check", root, handle); err != nil {
 		return false, err
 	}
@@ -382,7 +374,7 @@ func (f *Fake) retire(root, handle string, ours func(WakeTarget) bool) (bool, er
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 	st := fs.waker(root, handle)
-	if st.Status == "missing" || !ours(st.Target) {
+	if st.Status == "missing" || !wakes(st.Target, handle, root) {
 		return false, nil
 	}
 	if err := f.fail("wake retire", root, handle); err != nil {
