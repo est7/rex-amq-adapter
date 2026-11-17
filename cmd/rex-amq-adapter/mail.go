@@ -359,10 +359,11 @@ func mailDLQList(c *cli.Ctx, in cli.Input) (cli.Result, error) {
 	if err := m.run("dlq", args, &items); err != nil {
 		return cli.Result{}, err
 	}
-	if items == nil {
-		items = []map[string]any{}
+	page, err := cli.Page(items, in, fmt.Sprintf("mail dlq list|%s|new=%v|cur=%v", m.me(), in.Bool("new"), in.Bool("cur")))
+	if err != nil {
+		return cli.Result{}, err
 	}
-	return cli.Result{Data: cli.List[map[string]any]{Items: items, Total: len(items)}}, nil
+	return cli.Result{Data: page}, nil
 }
 
 func mailDLQRead(c *cli.Ctx, in cli.Input) (cli.Result, error) {

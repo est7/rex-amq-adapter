@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/app"
+	"github.com/est7/rex-amq-adapter/internal/cli"
 	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
@@ -516,5 +518,33 @@ func TestEpicListAndShowOutsideRex(t *testing.T) {
 	check(t, []want{
 		{[]string{"epic", "list", "--personal", "pi-01"}, 6, "guard_denied"},
 		{[]string{"epic", "show", s}, 6, "guard_denied"},
+	})
+}
+
+// Every list command takes --limit, --cursor, and --fields, declared once
+// by the registry: mail dlq list included.
+func TestListCommandsAreBounded(t *testing.T) {
+	isolate(t)
+	stubTools(t)
+	for _, cmd := range registry().Commands {
+		if !cmd.List {
+			continue
+		}
+		info := cmd.Info()
+		for _, f := range []string{"limit", "cursor", "fields"} {
+			if !slices.ContainsFunc(info.Flags, func(fl cli.Flag) bool { return fl.Name == f }) {
+				t.Errorf("%s lacks --%s", cmd.Name(), f)
+			}
+		}
+		if info.MaxLimit != 100 {
+			t.Errorf("%s: max limit %d", cmd.Name(), info.MaxLimit)
+		}
+	}
+	if c := registry().Find("mail", "dlq", "list"); c == nil || !c.List || c.DefaultLimit != 20 {
+		t.Fatalf("mail dlq list is not a bounded list: %+v", c)
+	}
+	check(t, []want{
+		{[]string{"mail", "dlq", "list", "--limit", "101"}, 2, "invalid_input"},
+		{[]string{"mail", "dlq", "list", "--limit", "5", "--fields", "id"}, 5, "failed_precondition"},
 	})
 }

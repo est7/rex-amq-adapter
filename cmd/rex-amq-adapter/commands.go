@@ -243,8 +243,8 @@ func commands() []*cli.Command {
 		{
 			Path: path("mail", "dlq", "list"), Summary: "list your dead letters",
 			Flags: []cli.Flag{b("new", "unread dead letters only"), b("cur", "inspected dead letters only")},
-			Tier:  cli.TierRead, Audience: cli.AudienceAgent,
-			Result:   "{items}",
+			Tier:  cli.TierRead, Audience: cli.AudienceAgent, List: true,
+			Result:   "a list of dead letters, as amq describes them",
 			Examples: []string{"rex-amq-adapter mail dlq list", "rex-amq-adapter mail dlq list --new"},
 			Run:      mailDLQList,
 		},
