@@ -11,7 +11,6 @@ import (
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/core"
-	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 // `rex-amq-adapter events --json` streams the projection of a scope as NDJSON
@@ -88,7 +87,7 @@ type streamer struct {
 	headers  headerCache
 	prev     core.Snapshot
 
-	recs      []store.Record
+	recs      []agent
 	recsStamp time.Time
 
 	// panel is the panel's state when the stream is `panel --json`'s; nil
@@ -193,21 +192,21 @@ func (s *streamer) next(typ string) envelope {
 
 func (s *streamer) emit(frame any) error { return s.enc.Encode(frame) }
 
-// held are the records in scope. Records are reread only when their directory
-// changed: every write renames a file into it.
-func (s *streamer) held() ([]store.Record, error) {
-	stamp, err := s.e.Store.RecordsChanged()
+// held are the agents in scope. They are reread only when their identities
+// or leases changed: every write renames a file into their directory.
+func (s *streamer) held() ([]agent, error) {
+	stamp, err := s.e.Store.AgentsChanged()
 	if err != nil {
 		return nil, err
 	}
 	if s.recs == nil || stamp.IsZero() || !stamp.Equal(s.recsStamp) {
-		recs, err := s.e.Store.Records()
+		recs, err := s.e.agents()
 		if err != nil {
 			return nil, err
 		}
 		s.recs, s.recsStamp = recs, stamp
 	}
-	var out []store.Record
+	var out []agent
 	for _, r := range s.recs {
 		if s.v.holds(r) {
 			out = append(out, r)
@@ -216,7 +215,7 @@ func (s *streamer) held() ([]store.Record, error) {
 	return out, nil
 }
 
-func (s *streamer) observe(held []store.Record) (core.Snapshot, core.Observations, error) {
+func (s *streamer) observe(held []agent) (core.Snapshot, core.Observations, error) {
 	agents, err := s.e.observeAgents(s.v, held, s.activity)
 	if err != nil {
 		return core.Snapshot{}, core.Observations{}, err
@@ -269,7 +268,7 @@ func (s *streamer) tick() error {
 // seed marks what already happened when the stream starts, so its first
 // events are news: doorbell attempts, receipts, and dead letters present now
 // are history, and the snapshot already shows them.
-func (s *streamer) seed(held []store.Record, obs core.Observations) {
+func (s *streamer) seed(held []agent, obs core.Observations) {
 	for _, a := range obs.Agents {
 		at := s.start
 		if n := len(a.Doorbells); n > 0 && a.Doorbells[n-1].At.After(at) {
@@ -293,7 +292,7 @@ func (s *streamer) seed(held []store.Record, obs core.Observations) {
 // to an agent's injector log after the stream started (the log is cut by
 // rewriting it, so attempts are told by time, not by offset), receipts that
 // are new, and messages that reached a dead-letter box.
-func (s *streamer) events(held []store.Record, obs core.Observations) []eventFrame {
+func (s *streamer) events(held []agent, obs core.Observations) []eventFrame {
 	var out []eventFrame
 	for _, a := range obs.Agents {
 		after, ok := s.doorbellAt[a.Handle]

@@ -20,8 +20,8 @@ import (
 // (core.Assess); the rows go to the orchestrator verbatim, as quoted data, and
 // it decides what they mean. Each finding is told once (store.HealthMark).
 
-func (e Env) health(ctx context.Context, orch store.Record, s Session, rec store.Record) error {
-	tail, ok, err := transcript.Read(ctx, e.harnessDirs(), rec.Kind, rec.AgentSessionID, core.TailRows)
+func (e Env) health(ctx context.Context, orch agent, s Session, rec agent) error {
+	tail, ok, err := transcript.Read(ctx, e.harnessDirs(), rec.Kind, rec.Session(), core.TailRows)
 	if err != nil || !ok {
 		return err
 	}
@@ -45,7 +45,7 @@ func (e Env) health(ctx context.Context, orch store.Record, s Session, rec store
 // and records it only once it is sent, so a failed send is tried again on
 // the next poll. Rex is read before and the desktop told after, never under
 // LockHealth; it returns what the desktop should hear.
-func (e Env) tellFindings(ctx context.Context, orch store.Record, s Session, rec store.Record, tail core.Tail, h core.Health, screen []string) (desktop []string, err error) {
+func (e Env) tellFindings(ctx context.Context, orch agent, s Session, rec agent, tail core.Tail, h core.Health, screen []string) (desktop []string, err error) {
 	unlock, err := e.Store.LockHealth(ctx, rec.BlockID)
 	if err != nil {
 		return nil, err
@@ -84,7 +84,7 @@ func (e Env) tellFindings(ctx context.Context, orch store.Record, s Session, rec
 	return desktop, nil
 }
 
-func (e Env) screenLines(ctx context.Context, rec store.Record) []string {
+func (e Env) screenLines(ctx context.Context, rec agent) []string {
 	vt, err := e.Rex.CaptureVT(ctx, rec.BlockID)
 	if err != nil {
 		return nil
@@ -96,7 +96,7 @@ func (e Env) screenLines(ctx context.Context, rec store.Record) []string {
 // about the orchestrator itself goes to a live agent of another model family,
 // or, when there is none, to the user's desktop: it returns that text for the
 // caller to show once it holds no lock.
-func (e Env) healthNotice(ctx context.Context, orch store.Record, s Session, rec store.Record, code string, tail core.Tail, h core.Health, screen []string) (desktop []string, err error) {
+func (e Env) healthNotice(ctx context.Context, orch agent, s Session, rec agent, code string, tail core.Tail, h core.Health, screen []string) (desktop []string, err error) {
 	subject, body := core.HealthNotice(peerOf(rec), code, tail, h, screen, e.Now())
 	to, ok := e.findingRecipient(s, rec, orch)
 	if !ok {
@@ -115,19 +115,19 @@ func (e Env) healthNotice(ctx context.Context, orch store.Record, s Session, rec
 
 // turnKey names one agent run in a pane: a new agent in the same pane, or a
 // new session of the same agent, does not inherit its predecessor's mark.
-func turnKey(rec store.Record) string {
-	return string(rec.Handle) + "/" + rec.AgentSessionID
+func turnKey(rec agent) string {
+	return string(rec.Handle) + "/" + rec.Session()
 }
 
 // flagged reports whether rec's own last turn ended in an error recently
 // enough that it may still be unable to act (a usage limit on its account);
 // its next turn, or core.StalledFor, ends that.
-func (e Env) flagged(rec store.Record) bool {
-	te, ok, err := e.Store.TurnError(rec.BlockID)
+func (e Env) flagged(rec agent) bool {
+	te, ok, err := e.Store.TurnError(rec.Handle)
 	return err == nil && ok && te.By == turnKey(rec) && e.Now().Sub(te.At) < core.StalledFor
 }
 
-func (e Env) readHookTail(ctx context.Context, kind core.Kind, in HookInput, rec store.Record) (core.Tail, bool) {
+func (e Env) readHookTail(ctx context.Context, kind core.Kind, in HookInput, rec agent) (core.Tail, bool) {
 	if path, err := in.transcript(); err == nil && path != "" {
 		if t, ok, err := transcript.ReadPath(ctx, path, kind, core.TailRows); err == nil && ok {
 			return t, true
@@ -135,7 +135,7 @@ func (e Env) readHookTail(ctx context.Context, kind core.Kind, in HookInput, rec
 	}
 	sid := in.SessionID
 	if sid == "" {
-		sid = rec.AgentSessionID
+		sid = rec.Session()
 	}
 	t, ok, err := transcript.Read(ctx, e.harnessDirs(), kind, sid, core.TailRows)
 	if err != nil {
@@ -150,9 +150,9 @@ func (e Env) readHookTail(ctx context.Context, kind core.Kind, in HookInput, rec
 // the turn is followed by more rows, so only a last row that is the turn's
 // own error counts.
 func (e Env) codexTurnError(ctx context.Context, loc Location, in HookInput) (detail string, ok bool) {
-	rec, has, _ := e.Store.Record(loc.Block)
+	rec, has, _ := e.agentAt(loc.Block)
 	if has && e.recordFit(core.Codex, rec, in) == foreign {
-		rec = store.Record{} // another agent's rollout is not this hook's
+		rec = agent{} // another agent's rollout is not this hook's
 	}
 	tail, found := e.readHookTail(ctx, core.Codex, in, rec)
 	if !found || len(tail.Rows) == 0 {
@@ -173,13 +173,14 @@ func (e Env) codexTurnError(ctx context.Context, loc Location, in HookInput) (de
 // another agent (a `claude -p` the pane's agent runs, a Codex thread of a
 // shared daemon) leaves it alone.
 func (e Env) clearTurnError(kind core.Kind, block string, in HookInput) {
-	if _, ok, err := e.Store.TurnError(block); err != nil || !ok {
+	rec, ok, err := e.agentAt(block)
+	if err != nil || !ok || e.recordFit(kind, rec, in) == foreign {
 		return
 	}
-	if rec, ok, err := e.Store.Record(block); err != nil || !ok || e.recordFit(kind, rec, in) == foreign {
+	if _, ok, err := e.Store.TurnError(rec.Handle); err != nil || !ok {
 		return
 	}
-	_ = e.Store.ClearTurnError(block)
+	_ = e.Store.ClearTurnError(rec.Handle)
 }
 
 // reportTurnError tells the agent that should act (core.ErrorRecipient) that
@@ -187,7 +188,7 @@ func (e Env) clearTurnError(kind core.Kind, block string, in HookInput) {
 // and the last transcript rows. A stop hook runs once per turn, so it is
 // reported once; when the mail cannot be sent, the user's desktop hears.
 func (e Env) reportTurnError(ctx context.Context, kind core.Kind, loc Location, in HookInput, code, detail string) error {
-	rec, ok, err := e.Store.Record(loc.Block)
+	rec, ok, err := e.agentAt(loc.Block)
 	if err != nil {
 		return err
 	}
@@ -201,7 +202,7 @@ func (e Env) reportTurnError(ctx context.Context, kind core.Kind, loc Location, 
 		a, adopted, _ := e.adoptUnlessBackingOff(ctx, kind, loc, in, onTurnEnd)
 		switch {
 		case adopted:
-			rec, ok = a.Record, true
+			rec, ok = a.Agent, true
 		case f == foreign:
 			return nil
 		}
@@ -245,23 +246,23 @@ func (e Env) reportTurnError(ctx context.Context, kind core.Kind, loc Location, 
 }
 
 // markTurnError records that rec's turn ended in an error, for flagged.
-func (e Env) markTurnError(rec store.Record) error {
-	return e.Store.PutTurnError(rec.BlockID, store.TurnError{At: e.Now().UTC(), By: turnKey(rec)})
+func (e Env) markTurnError(rec agent) error {
+	return e.Store.PutTurnError(rec.Handle, store.TurnError{At: e.Now().UTC(), By: turnKey(rec)})
 }
 
 // sessionPeersForError reads only stored records (no Rex IPC inside the stop
 // hook budget): peers in rec's session via together(), and rec's crew lead from
 // its session's crew (sessionCrew) and rec.Cwd. A Stealth agent (core.Stealth) is never told of
 // another's error, and its own goes to the desktop: no worker hears of it.
-func (e Env) sessionPeersForError(rec store.Record) ([]core.Peer, map[core.Handle]store.Record, string) {
+func (e Env) sessionPeersForError(rec agent) ([]core.Peer, map[core.Handle]agent, string) {
 	if core.Stealth(rec.Role) {
 		return nil, nil, ""
 	}
-	recs, err := e.Store.Records()
+	recs, err := e.agents()
 	if err != nil {
 		return nil, nil, ""
 	}
-	byHandle := make(map[core.Handle]store.Record, len(recs))
+	byHandle := make(map[core.Handle]agent, len(recs))
 	var peers []core.Peer
 	for _, r := range recs {
 		if !r.Live() || r.Handle == rec.Handle || !together(r, rec) || core.Stealth(r.Role) {
@@ -283,7 +284,7 @@ func (e Env) sessionPeersForError(rec store.Record) ([]core.Peer, map[core.Handl
 // orchestrator, or, for a finding about the orchestrator itself, a live agent
 // of another model family in s. ok is false when the finding is about the
 // orchestrator and no such agent exists: the caller tells the desktop.
-func (e Env) findingRecipient(s Session, rec, orch store.Record) (to core.Handle, ok bool) {
+func (e Env) findingRecipient(s Session, rec, orch agent) (to core.Handle, ok bool) {
 	if rec.Handle != orch.Handle {
 		return orch.Handle, true
 	}
@@ -294,17 +295,17 @@ func (e Env) findingRecipient(s Session, rec, orch store.Record) (to core.Handle
 // otherFamily finds a live agent in s of a model family other than rec's and
 // the orchestrator's, whose own last turn did not end in an error. A Stealth
 // agent never takes over a stalled goal.
-func (e Env) otherFamily(s Session, rec, orch store.Record) (store.Record, bool) {
-	recs, err := e.Store.Records()
+func (e Env) otherFamily(s Session, rec, orch agent) (agent, bool) {
+	recs, err := e.agents()
 	if err != nil {
-		return store.Record{}, false
+		return agent{}, false
 	}
 	for _, r := range recs {
 		if r.Live() && s.holds(r) && !core.Stealth(r.Role) && r.Kind != rec.Kind && r.Kind != orch.Kind && r.Handle != rec.Handle && !e.flagged(r) {
 			return r, true
 		}
 	}
-	return store.Record{}, false
+	return agent{}, false
 }
 
 // sendSystem mails a report or notice in from's name as system mail

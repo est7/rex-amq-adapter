@@ -240,12 +240,12 @@ func (e Env) NotifyPersonal(ctx context.Context, n Notify) (NotifyResult, error)
 // shows, narrowed by n's --personal and --hub. A block Rex cannot show (gone,
 // or its server unreachable, as when Rex is not running) is no target: the
 // producer keeps its entry.
-func (e Env) livePersonals(ctx context.Context, n Notify) ([]store.Record, error) {
-	recs, err := e.Store.Records()
+func (e Env) livePersonals(ctx context.Context, n Notify) ([]agent, error) {
+	recs, err := e.agents()
 	if err != nil {
 		return nil, err
 	}
-	var out []store.Record
+	var out []agent
 	for _, r := range recs {
 		if !r.Live() || r.Role != core.PersonalRole || !placed(r) ||
 			n.personal != "" && r.Handle != n.personal ||
@@ -258,7 +258,7 @@ func (e Env) livePersonals(ctx context.Context, n Notify) ([]store.Record, error
 		}
 		out = append(out, r)
 	}
-	slices.SortFunc(out, func(a, b store.Record) int { return strings.Compare(string(a.Handle), string(b.Handle)) })
+	slices.SortFunc(out, func(a, b agent) int { return strings.Compare(string(a.Handle), string(b.Handle)) })
 	return out, nil
 }
 

@@ -65,8 +65,8 @@ func TestAdoptRetainsSummonOnRecordFailure(t *testing.T) {
 	if err := e.Store.PutSummon(token, sm); err != nil {
 		t.Fatal(err)
 	}
-	// A directory at the target makes the atomic record rename fail, even as root.
-	bad := filepath.Join(e.Paths.Home, "records", "pi-01.json")
+	// A directory at the target makes the atomic identity rename fail, even as root.
+	bad := filepath.Join(e.Paths.Home, "identities", "pi-01.json")
 	e.Rex = &failRecordTerm{fakeTerm: term, beforeRecord: func() {
 		if err := os.MkdirAll(bad, 0700); err != nil {
 			t.Fatal(err)
@@ -86,8 +86,8 @@ func TestAdoptRetainsSummonOnRecordFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.Record.Parent != sm.Parent || a.Record.Depth != sm.Depth || a.Record.SummonedFor != sm.For {
-		t.Fatalf("retry lost lineage: %+v", a.Record)
+	if a.Agent.Parent != sm.Parent || a.Agent.Depth != sm.Depth || a.Agent.SummonedFor != sm.For {
+		t.Fatalf("retry lost lineage: %+v", a.Agent)
 	}
 	if n, err := e.Store.PendingSummons("session:s", e.Now()); err != nil || n != 0 {
 		t.Fatalf("successful commit retained reservation: %d %v", n, err)
@@ -127,7 +127,7 @@ func (f *adoptionBetweenLayouts) InspectSession(ctx context.Context, id string) 
 func TestSummonReloadsLayoutBeforeCountingCap(t *testing.T) {
 	e, term, loc := summonWorld(t)
 	for i := 2; i <= 5; i++ {
-		add(t, e, store.Record{Handle: core.Handle(fmt.Sprintf("pi-%02d", i)), Kind: core.Pi, Server: "unix:///fake.sock", BlockID: fmt.Sprintf("block:%d", i), SessionID: "session:s", WindowID: "window:1", AdoptedAt: e.Now()})
+		add(t, e, seed{Handle: core.Handle(fmt.Sprintf("pi-%02d", i)), Kind: core.Pi, Server: "unix:///fake.sock", BlockID: fmt.Sprintf("block:%d", i), SessionID: "session:s", WindowID: "window:1", AdoptedAt: e.Now()})
 	}
 	const token = "last-place"
 	if err := e.Store.PutSummon(token, store.Summon{Parent: "claude-01", Depth: 1, For: "editor", Session: "session:s", At: e.Now()}); err != nil {
@@ -142,7 +142,7 @@ func TestSummonReloadsLayoutBeforeCountingCap(t *testing.T) {
 		term.mu.Lock()
 		term.windows["block:six"] = "window:1"
 		term.mu.Unlock()
-		if err := e.Store.PutRecord(store.Record{Handle: "pi-06", Kind: core.Pi, Server: "unix:///fake.sock", BlockID: "block:six", SessionID: "session:s", WindowID: "window:1", AdoptedAt: e.Now()}); err != nil {
+		if err := putSeed(e.Store, seed{Handle: "pi-06", Kind: core.Pi, Server: "unix:///fake.sock", BlockID: "block:six", SessionID: "session:s", WindowID: "window:1", AdoptedAt: e.Now()}); err != nil {
 			t.Fatal(err)
 		}
 		if err := e.Store.DeleteSummon(token); err != nil {

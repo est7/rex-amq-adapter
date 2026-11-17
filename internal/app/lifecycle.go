@@ -33,7 +33,7 @@ const superviseFor = 1500 * time.Millisecond
 const finishDepartureFor = time.Second
 
 // waker is the amq waker that wakes rec's agent.
-func (e Env) waker(rec store.Record) amq.Waker {
+func (e Env) waker(rec agent) amq.Waker {
 	return amq.Waker{InjectVia: e.injector(), Server: rec.Server, Block: rec.BlockID, Handle: string(rec.Handle), Root: e.Paths.Root()}
 }
 
@@ -74,7 +74,7 @@ func (e Env) SuperviseWaker(ctx context.Context, loc Location) error {
 		return err
 	}
 	defer unlock()
-	rec, ok, err := e.Store.Record(loc.Block)
+	rec, ok, err := e.agentAt(loc.Block)
 	if err != nil || !ok || !rec.Live() {
 		return err
 	}
@@ -85,7 +85,7 @@ func (e Env) SuperviseWaker(ctx context.Context, loc Location) error {
 }
 
 // ensureWaker brings back rec's waker if it died. An in-process agent has none.
-func (e Env) ensureWaker(ctx context.Context, rec store.Record) error {
+func (e Env) ensureWaker(ctx context.Context, rec agent) error {
 	if rec.Kind.InProcess() {
 		return nil
 	}
@@ -96,8 +96,8 @@ func (e Env) ensureWaker(ctx context.Context, rec store.Record) error {
 	return err
 }
 
-// Depart retires the waker of the agent that ended in loc and keeps its
-// record as a reservation for its session. A SessionEnd from an agent session other than the
+// Depart retires the waker of the agent that ended in loc and releases its
+// lease; its identity stays a reservation for its session. A SessionEnd from an agent session other than the
 // recorded one (a late hook from a replaced agent) changes nothing.
 func (e Env) Depart(ctx context.Context, loc Location, in HookInput) error {
 	unlock, err := e.Store.LockLifecycle(ctx)
@@ -105,23 +105,23 @@ func (e Env) Depart(ctx context.Context, loc Location, in HookInput) error {
 		return err
 	}
 	defer unlock()
-	rec, ok, err := e.Store.Record(loc.Block)
+	rec, ok, err := e.agentAt(loc.Block)
 	if err != nil || !ok || !rec.Live() {
 		return err
 	}
-	if in.SessionID != "" && rec.AgentSessionID != "" && in.SessionID != rec.AgentSessionID {
+	if in.SessionID != "" && rec.Session() != "" && in.SessionID != rec.Session() {
 		return nil
 	}
 	return e.park(ctx, rec, store.DepartSessionEnd)
 }
 
-// park retires the handle's waker and marks the record departed, for reason
-// (store.Record.DepartReason). A moved job whose adoption failed after its
+// park retires the handle's waker and releases its lease, for reason
+// (store.Placement.DepartReason). A moved job whose adoption failed after its
 // record took the new block still has a waker targeting the old one, so the
 // handle's waker is retired whichever block it wakes (amq.RetireHandle).
 // What follows can fail without undoing that: the departure stands, and
 // collection finishes it.
-func (e Env) park(ctx context.Context, rec store.Record, reason string) error {
+func (e Env) park(ctx context.Context, rec agent, reason string) error {
 	if !rec.Kind.InProcess() {
 		// amq wake retire checks the waker's --inject-via path exists; a
 		// wrapper that was removed (or never written, as when the adoption
@@ -135,11 +135,8 @@ func (e Env) park(ctx context.Context, rec store.Record, reason string) error {
 	if _, err := e.AMQ.RetireHandle(ctx, e.Paths.Root(), string(rec.Handle)); err != nil {
 		return err
 	}
-	now := e.Now().UTC()
-	rec.DepartedAt = &now
-	rec.DepartReason = reason
-	rec.Unfinished = store.Departing
-	if err := e.Store.PutRecord(rec); err != nil {
+	rec, err := e.releaseLease(rec, store.Departure{Reason: reason, At: e.Now().UTC(), Unfinished: true})
+	if err != nil {
 		return err
 	}
 	e.leaveSession(ctx, rec)
@@ -159,7 +156,7 @@ func (e Env) park(ctx context.Context, rec store.Record, reason string) error {
 // finishDeparture does what a departure must not lose. Nothing else would ever
 // tell an idle orchestrator, so this runs until it succeeds, which may tell it
 // twice. Notes about leaving are advice and are not repeated here.
-func (e Env) finishDeparture(ctx context.Context, rec store.Record) error {
+func (e Env) finishDeparture(ctx context.Context, rec agent) error {
 	// Notes about who joined are about the session it was in; a resume may
 	// be elsewhere, much later.
 	if err := e.clearWindowNotes(ctx, rec.Handle); err != nil {
@@ -168,8 +165,7 @@ func (e Env) finishDeparture(ctx context.Context, rec store.Record) error {
 	if err := e.wakeForDeparture(ctx, rec); err != nil {
 		return err
 	}
-	rec.Unfinished = ""
-	return e.Store.PutRecord(rec)
+	return e.Store.FinishDeparture(rec.Handle)
 }
 
 func (e Env) clearWindowNotes(ctx context.Context, h core.Handle) error {
@@ -186,11 +182,11 @@ func (e Env) clearWindowNotes(ctx context.Context, h core.Handle) error {
 // collection, whose block is gone, is told like a SessionEnd. Like a join
 // it is advice: a failure is reported, and the departure stands. A Stealth
 // agent (core.Stealth) neither is told nor tells.
-func (e Env) leaveSession(ctx context.Context, rec store.Record) {
+func (e Env) leaveSession(ctx context.Context, rec agent) {
 	if !placed(rec) || core.Stealth(rec.Role) {
 		return
 	}
-	recs, err := e.Store.Records()
+	recs, err := e.agents()
 	if err != nil {
 		fmt.Fprintf(Diagnostics, "tell the session that %s left: %v\n", rec.Handle, err)
 		return
@@ -213,18 +209,18 @@ func (e Env) leaveSession(ctx context.Context, rec store.Record) {
 // and a server that cannot be reached leaves its records alone: absence
 // cannot be proven.
 func (e Env) Collect(ctx context.Context) error {
-	return e.collect(ctx, func(store.Record) bool { return true })
+	return e.collect(ctx, func(agent) bool { return true })
 }
 
 // collect reconciles the records covers selects. A failed record does not
 // stop the rest.
-func (e Env) collect(ctx context.Context, covers func(store.Record) bool) error {
+func (e Env) collect(ctx context.Context, covers func(agent) bool) error {
 	unlock, err := e.Store.LockLifecycle(ctx)
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	recs, err := e.Store.Records()
+	recs, err := e.agents()
 	if err != nil {
 		return err
 	}
@@ -240,12 +236,21 @@ func (e Env) collect(ctx context.Context, covers func(store.Record) bool) error 
 	return errors.Join(errs...)
 }
 
-func (e Env) collectOne(ctx context.Context, rec store.Record) error {
+func (e Env) collectOne(ctx context.Context, rec agent) error {
 	if !rec.Live() {
-		if e.Now().Sub(*rec.DepartedAt) > ReserveFor {
-			return e.Store.DeleteRecord(rec.Handle)
+		p := rec.departure()
+		if p == nil {
+			// An adoption that died between writing the identity and
+			// acquiring its lease: the handle was never placed anywhere.
+			if e.Now().Sub(rec.FirstAdoptedAt) > ReserveFor {
+				return e.Store.ForgetIdentity(rec.Handle)
+			}
+			return nil
 		}
-		if rec.Unfinished == store.Departing {
+		if e.Now().Sub(p.DepartedAt) > ReserveFor {
+			return e.Store.ForgetIdentity(rec.Handle)
+		}
+		if p.Unfinished {
 			ctx, cancel := context.WithTimeout(ctx, finishDepartureFor)
 			defer cancel()
 			return e.finishDeparture(ctx, rec)
@@ -259,7 +264,7 @@ func (e Env) collectOne(ctx context.Context, rec store.Record) error {
 // parkIfGone parks the live agent of rec if Rex shows it is gone. observed is
 // false when Rex could not say: an unreachable or failing server cannot prove
 // the agent is gone, and the record stands.
-func (e Env) parkIfGone(ctx context.Context, rec store.Record) (observed bool, err error) {
+func (e Env) parkIfGone(ctx context.Context, rec agent) (observed bool, err error) {
 	on := e
 	on.Rex = e.RexOn(rec.Server)
 	b, err := on.observeBinding(ctx, rec)

@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
-	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 // A pid no process holds: the agent that held it has exited.
@@ -43,14 +42,14 @@ func rawPath(t *testing.T, path string) json.RawMessage {
 }
 
 // startClaude runs the SessionStart hook of a Claude session in block b.
-func startClaude(t *testing.T, e Env, b string, in HookInput) store.Record {
+func startClaude(t *testing.T, e Env, b string, in HookInput) agent {
 	t.Helper()
 	ctx := context.Background()
 	if _, err := e.Hook(ctx, EventSessionStart, core.Claude, Location{Block: b}, in); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = e.Depart(context.Background(), Location{Block: b}, HookInput{}) })
-	rec, ok, err := e.Store.Record(b)
+	rec, ok, err := e.agentAt(b)
 	if err != nil || !ok {
 		t.Fatalf("no record for %s: %v", b, err)
 	}
@@ -75,7 +74,7 @@ func TestConversationThatChangedSessionIDKeepsItsHandle(t *testing.T) {
 	if resumed.Handle != first.Handle {
 		t.Fatalf("handle changed: %s -> %s", first.Handle, resumed.Handle)
 	}
-	if !resumed.Live() || resumed.AgentSessionID != "new" {
+	if !resumed.Live() || resumed.Session() != "new" {
 		t.Fatalf("record does not follow the conversation: %+v", resumed)
 	}
 
@@ -176,7 +175,7 @@ func TestOtherKindsDoNotReadALineage(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = e.Depart(context.Background(), Location{Block: "block:b"}, HookInput{}) })
-	next, _, _ := e.Store.Record("block:b")
+	next, _, _ := e.agentAt("block:b")
 	if next.Handle == first.Handle {
 		t.Fatalf("took %s from a transcript", first.Handle)
 	}

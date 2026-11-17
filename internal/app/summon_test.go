@@ -27,13 +27,13 @@ func summonWorld(t *testing.T) (Env, *fakeTerm, Location) {
 	e.TranscriptHome = t.TempDir()
 	trustTemp(t, e)
 	trustAgy(t, e, workDir(t, e, "app"))
-	add(t, e, store.Record{Handle: "claude-01", Kind: core.Claude, Server: "unix:///fake.sock", BlockID: block, SessionID: "session:s", WindowID: "window:1", AgentPID: term.fgPID, AdoptedAt: now, Cwd: workDir(t, e, "app")})
+	add(t, e, seed{Handle: "claude-01", Kind: core.Claude, Server: "unix:///fake.sock", BlockID: block, SessionID: "session:s", WindowID: "window:1", AgentPID: term.fgPID, AdoptedAt: now, Cwd: workDir(t, e, "app")})
 	return e, term, Location{Block: block}
 }
 
-func add(t *testing.T, e Env, r store.Record) {
+func add(t *testing.T, e Env, r seed) {
 	t.Helper()
-	if err := e.Store.PutRecord(r); err != nil {
+	if err := putSeed(e.Store, r); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.AMQ.EnsureMailbox(context.Background(), e.Paths.Root(), string(r.Handle)); err != nil {
@@ -44,7 +44,7 @@ func add(t *testing.T, e Env, r store.Record) {
 	}
 }
 
-func departed(r store.Record, at time.Time) store.Record {
+func departed(r seed, at time.Time) seed {
 	r.DepartedAt = &at
 	r.DepartReason = store.DepartSessionEnd
 	return r
@@ -81,7 +81,7 @@ func program(cmd []string) []string {
 }
 
 // adoptLaunch plays the harness's first hook for a launched pane.
-func adoptLaunch(t *testing.T, e Env, term *fakeTerm, l launch, kind core.Kind, session string) store.Record {
+func adoptLaunch(t *testing.T, e Env, term *fakeTerm, l launch, kind core.Kind, session string) agent {
 	t.Helper()
 	term.mu.Lock()
 	term.label = l.Label
@@ -90,9 +90,9 @@ func adoptLaunch(t *testing.T, e Env, term *fakeTerm, l launch, kind core.Kind, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, blk := a.Record.Handle, l.Block
+	h, blk := a.Agent.Handle, l.Block
 	t.Cleanup(func() { _, _ = e.AMQ.RetireFor(context.Background(), e.Paths.Root(), string(h), blk) })
-	return a.Record
+	return a.Agent
 }
 
 func summon(t *testing.T, e Env, loc Location, target string, extra ...func(*SummonRequest)) SummonResult {
@@ -112,8 +112,8 @@ func summon(t *testing.T, e Env, loc Location, target string, extra ...func(*Sum
 // agents is refused, so one brief never reaches two writers.
 func TestSummonDeliversToLivePeers(t *testing.T) {
 	e, term, loc := summonWorld(t)
-	add(t, e, store.Record{Handle: "codex-02", Kind: core.Codex, Server: "unix:///fake.sock", BlockID: "block:b", SessionID: "session:s", Role: "reviewer", AgentPID: 2, AdoptedAt: e.Now()})
-	add(t, e, store.Record{Handle: "agy-03", Kind: core.Agy, Server: "unix:///fake.sock", BlockID: "block:c", SessionID: "session:s", Role: "reviewer", AgentPID: 3, AdoptedAt: e.Now()})
+	add(t, e, seed{Handle: "codex-02", Kind: core.Codex, Server: "unix:///fake.sock", BlockID: "block:b", SessionID: "session:s", Role: "reviewer", AgentPID: 2, AdoptedAt: e.Now()})
+	add(t, e, seed{Handle: "agy-03", Kind: core.Agy, Server: "unix:///fake.sock", BlockID: "block:c", SessionID: "session:s", Role: "reviewer", AgentPID: 3, AdoptedAt: e.Now()})
 	if res := summon(t, e, loc, "codex-02"); res.Action != "deliver" || len(res.Handles) != 1 || len(unread(t, e, "codex-02")) != 1 {
 		t.Fatalf("%+v", res)
 	}
@@ -131,7 +131,7 @@ func TestSummonDeliversToLivePeers(t *testing.T) {
 // one, the resume is refused and the mail still waits.
 func TestSummonResumesADepartedPeer(t *testing.T) {
 	e, term, loc := summonWorld(t)
-	add(t, e, departed(store.Record{Handle: "codex-02", Kind: core.Codex, Server: "unix:///fake.sock", BlockID: "block:gone", SessionID: "session:s", Role: "reviewer", AgentPID: 2, AgentSessionID: "thread-2", AdoptedAt: e.Now().Add(-time.Hour), Cwd: workDir(t, e, "app")}, e.Now().Add(-time.Minute)))
+	add(t, e, departed(seed{Handle: "codex-02", Kind: core.Codex, Server: "unix:///fake.sock", BlockID: "block:gone", SessionID: "session:s", Role: "reviewer", AgentPID: 2, AgentSessionID: "thread-2", AdoptedAt: e.Now().Add(-time.Hour), Cwd: workDir(t, e, "app")}, e.Now().Add(-time.Minute)))
 	res := summon(t, e, loc, "reviewer")
 	if res.Action != "resume" || res.Block == "" || !res.Mailed || len(unread(t, e, "codex-02")) != 1 {
 		t.Fatalf("%+v", res)
@@ -147,7 +147,7 @@ func TestSummonResumesADepartedPeer(t *testing.T) {
 	}
 	// No cwd anywhere: refused, mail waits.
 	e2, term2, loc2 := summonWorld(t)
-	add(t, e2, departed(store.Record{Handle: "codex-02", Kind: core.Codex, Server: "unix:///fake.sock", BlockID: "block:gone", SessionID: "session:s", Role: "reviewer", AgentPID: 2, AgentSessionID: "thread-2", AdoptedAt: e2.Now().Add(-time.Hour)}, e2.Now().Add(-time.Minute)))
+	add(t, e2, departed(seed{Handle: "codex-02", Kind: core.Codex, Server: "unix:///fake.sock", BlockID: "block:gone", SessionID: "session:s", Role: "reviewer", AgentPID: 2, AgentSessionID: "thread-2", AdoptedAt: e2.Now().Add(-time.Hour)}, e2.Now().Add(-time.Minute)))
 	if res := summon(t, e2, loc2, "codex-02"); res.Action != "refused" || !strings.Contains(res.Reason, "working directory") || len(term2.launches) != 0 || len(unread(t, e2, "codex-02")) != 1 {
 		t.Fatalf("%+v launches %v", res, term2.launches)
 	}
@@ -211,10 +211,10 @@ func TestSummonGuards(t *testing.T) {
 		t.Fatalf("reply: %+v", res)
 	}
 	// Cycle: claude-01 was summoned by a reviewer (codex-00, departed); asking for a reviewer again.
-	rec, _, _ := e.Store.Record(block)
+	rec, _, _ := e.agentAt(block)
 	rec.Parent, rec.Depth = "codex-00", 1
-	add(t, e, rec)
-	add(t, e, departed(store.Record{Handle: "codex-00", Kind: core.Codex, Server: "unix:///fake.sock", BlockID: "block:z", SessionID: "session:s", Role: "reviewer", AgentPID: 9, AgentSessionID: "t0", AdoptedAt: e.Now().Add(-2 * time.Hour), Cwd: "/w"}, e.Now().Add(-time.Hour)))
+	add(t, e, seedOf(rec))
+	add(t, e, departed(seed{Handle: "codex-00", Kind: core.Codex, Server: "unix:///fake.sock", BlockID: "block:z", SessionID: "session:s", Role: "reviewer", AgentPID: 9, AgentSessionID: "t0", AdoptedAt: e.Now().Add(-2 * time.Hour), Cwd: "/w"}, e.Now().Add(-time.Hour)))
 	if res := summon(t, e, loc, "reviewer", authorized); res.Action != "refused" || !strings.Contains(res.Reason, "cycle") || !res.Mailed {
 		t.Fatalf("cycle: %+v", res)
 	}
@@ -223,15 +223,15 @@ func TestSummonGuards(t *testing.T) {
 	}
 	// Depth: at depth 2 nothing more may be summoned.
 	rec.Parent, rec.Depth = "", 2
-	add(t, e, rec)
+	add(t, e, seedOf(rec))
 	if res := summon(t, e, loc, "writer", authorized); res.Action != "refused" || !strings.Contains(res.Reason, "too deep") {
 		t.Fatalf("depth: %+v", res)
 	}
 	// Cap: six live agents in the session.
 	rec.Depth = 0
-	add(t, e, rec)
+	add(t, e, seedOf(rec))
 	for i := 2; i <= 6; i++ {
-		add(t, e, store.Record{Handle: core.Handle("pi-0" + string(rune('0'+i))), Kind: core.Pi, Server: "unix:///fake.sock", BlockID: "block:p" + string(rune('0'+i)), SessionID: "session:s", Role: "qa", AgentPID: i, AdoptedAt: e.Now()})
+		add(t, e, seed{Handle: core.Handle("pi-0" + string(rune('0'+i))), Kind: core.Pi, Server: "unix:///fake.sock", BlockID: "block:p" + string(rune('0'+i)), SessionID: "session:s", Role: "qa", AgentPID: i, AdoptedAt: e.Now()})
 	}
 	if res := summon(t, e, loc, "writer", authorized); res.Action != "refused" || !strings.Contains(res.Reason, "cap") {
 		t.Fatalf("cap: %+v", res)
@@ -273,7 +273,7 @@ func TestSummonOpensATabOfItsOwn(t *testing.T) {
 // the tab to follow it: the launch follows the tab once it is recorded.
 func TestSummonTabFollowsAnAgentAdoptedBeforeItsTabWasRecorded(t *testing.T) {
 	e, term, loc := summonWorld(t)
-	var rec store.Record
+	var rec agent
 	term.started = func(l launch) { rec = adoptLaunch(t, e, term, l, core.Codex, "early") }
 	res := summon(t, e, loc, "reviewer", func(r *SummonRequest) { r.Asked = "go" })
 	if res.Action != "start" || rec.Handle == "" {
@@ -293,7 +293,7 @@ func TestSummonSplitsOnlyWhenAskedAndNeverAStealthAgent(t *testing.T) {
 	if res.Action != "start" || len(term.newTabs) != 0 || term.windows[res.Block] != "window:1" {
 		t.Fatalf("%+v tabs %v window %q", res, term.newTabs, term.windows[res.Block])
 	}
-	add(t, e, departed(store.Record{Handle: "pi-05", Kind: core.Pi, Server: "unix:///fake.sock", BlockID: "block:gone", SessionID: "session:s", Role: core.NarratorRole, AgentPID: 9, AdoptedAt: e.Now(), Cwd: workDir(t, e, "app")}, e.Now()))
+	add(t, e, departed(seed{Handle: "pi-05", Kind: core.Pi, Server: "unix:///fake.sock", BlockID: "block:gone", SessionID: "session:s", Role: core.NarratorRole, AgentPID: 9, AdoptedAt: e.Now(), Cwd: workDir(t, e, "app")}, e.Now()))
 	for _, target := range []string{core.NarratorRole, core.PersonalRole, "pi-05"} {
 		res := summon(t, e, loc, target, split)
 		if res.Action != "refused" || !strings.Contains(res.Reason, "never shares a worker's tab") {
@@ -310,7 +310,7 @@ func TestSummonSplitsOnlyWhenAskedAndNeverAStealthAgent(t *testing.T) {
 func TestSummonPendingLaunchesCountTowardTheCap(t *testing.T) {
 	e, term, loc := summonWorld(t)
 	for i := 0; i < 4; i++ {
-		add(t, e, store.Record{Handle: core.Handle(fmt.Sprintf("pi-%02d", i+2)), Kind: core.Pi, Server: "unix:///fake.sock", BlockID: fmt.Sprintf("block:peer-%d", i), SessionID: "session:s", AgentPID: i + 10, AdoptedAt: e.Now()})
+		add(t, e, seed{Handle: core.Handle(fmt.Sprintf("pi-%02d", i+2)), Kind: core.Pi, Server: "unix:///fake.sock", BlockID: fmt.Sprintf("block:peer-%d", i), SessionID: "session:s", AgentPID: i + 10, AdoptedAt: e.Now()})
 	}
 	auth := func(r *SummonRequest) { r.Asked = "start one" }
 	a := summon(t, e, loc, "reviewer", auth)
@@ -319,7 +319,7 @@ func TestSummonPendingLaunchesCountTowardTheCap(t *testing.T) {
 		t.Fatalf("a %+v b %+v launches %d", a, b, len(term.launches))
 	}
 	adoptLaunch(t, e, term, term.launches[0], core.Codex, "cap-1")
-	recs, _ := e.Store.Records()
+	recs, _ := e.agents()
 	live := 0
 	for _, r := range recs {
 		if r.Live() {
@@ -339,11 +339,11 @@ func TestSummonPendingLaunchesCountTowardTheCap(t *testing.T) {
 // environment binds each adoption to its launch.
 func TestSummonSameLabelKeepsEachLaunchLineage(t *testing.T) {
 	e, term, loc := summonWorld(t)
-	caller, _, _ := e.Store.Record(block)
+	caller, _, _ := e.agentAt(block)
 	caller.Depth, caller.Parent = 1, "pi-00"
-	add(t, e, caller)
-	add(t, e, store.Record{Handle: "pi-00", Kind: core.Pi, Server: "unix:///fake.sock", BlockID: "block:root", SessionID: "session:s", AgentPID: 5, AdoptedAt: e.Now()})
-	add(t, e, store.Record{Handle: "claude-02", Kind: core.Claude, Server: "unix:///fake.sock", BlockID: "block:caller-2", SessionID: "session:s", AgentPID: term.fgPID, AdoptedAt: e.Now(), Cwd: workDir(t, e, "app")})
+	add(t, e, seedOf(caller))
+	add(t, e, seed{Handle: "pi-00", Kind: core.Pi, Server: "unix:///fake.sock", BlockID: "block:root", SessionID: "session:s", AgentPID: 5, AdoptedAt: e.Now()})
+	add(t, e, seed{Handle: "claude-02", Kind: core.Claude, Server: "unix:///fake.sock", BlockID: "block:caller-2", SessionID: "session:s", AgentPID: term.fgPID, AdoptedAt: e.Now(), Cwd: workDir(t, e, "app")})
 	auth := func(r *SummonRequest) { r.Asked = "start a reviewer" }
 	a := summon(t, e, loc, "reviewer", auth)
 	b := summon(t, e, Location{Block: "block:caller-2"}, "reviewer", auth)
@@ -360,7 +360,7 @@ func TestSummonSameLabelKeepsEachLaunchLineage(t *testing.T) {
 // The message kind the summoner chose is the kind the mail carries.
 func TestSummonKeepsTheMessageKind(t *testing.T) {
 	e, _, loc := summonWorld(t)
-	add(t, e, store.Record{Handle: "codex-02", Kind: core.Codex, Server: "unix:///fake.sock", BlockID: "block:b", SessionID: "session:s", Role: "reviewer", AgentPID: 2, AdoptedAt: e.Now()})
+	add(t, e, seed{Handle: "codex-02", Kind: core.Codex, Server: "unix:///fake.sock", BlockID: "block:b", SessionID: "session:s", Role: "reviewer", AgentPID: 2, AdoptedAt: e.Now()})
 	summon(t, e, loc, "codex-02", func(r *SummonRequest) { r.Kind = "review_request" })
 	raw := mailBody(t, e, "codex-02", unread(t, e, "codex-02")[0])
 	if !strings.Contains(raw, `"kind": "review_request"`) && !strings.Contains(raw, `"kind":"review_request"`) {
@@ -373,9 +373,9 @@ func TestSummonKeepsTheMessageKind(t *testing.T) {
 // that is neither a handle nor a role is an error.
 func TestSummonCanonicalizesRoles(t *testing.T) {
 	e, term, loc := summonWorld(t)
-	r, _, _ := e.Store.Record(block)
+	r, _, _ := e.agentAt(block)
 	r.Role = "reviewer"
-	add(t, e, r)
+	add(t, e, seedOf(r))
 	if res := summon(t, e, loc, "Reviewer", func(r *SummonRequest) { r.Asked = "start one" }); res.Action != "refused" || !strings.Contains(res.Reason, "cycle") || len(term.launches) != 0 {
 		t.Fatalf("%+v launches %d", res, len(term.launches))
 	}
@@ -388,9 +388,9 @@ func TestSummonCanonicalizesRoles(t *testing.T) {
 // it may deliver, not start.
 func TestSummonFailsClosedWithoutItsAncestry(t *testing.T) {
 	e, term, loc := summonWorld(t)
-	r, _, _ := e.Store.Record(block)
+	r, _, _ := e.agentAt(block)
 	r.Parent, r.Depth = "pi-99", 1
-	add(t, e, r)
+	add(t, e, seedOf(r))
 	if res := summon(t, e, loc, "writer", func(r *SummonRequest) { r.Asked = "go" }); res.Action != "refused" || !strings.Contains(res.Reason, "chain cannot be checked") || len(term.launches) != 0 {
 		t.Fatalf("%+v", res)
 	}
@@ -411,7 +411,7 @@ func TestSummonStartsTheAgentInItsWorktree(t *testing.T) {
 	}
 	// A departed agent of the role is not resumed in its old directory: a new one starts in wt.
 	e3, term3, loc3 := summonWorld(t)
-	add(t, e3, departed(store.Record{Handle: "claude-07", Kind: core.Claude, Server: "unix:///fake.sock", BlockID: "block:gone", SessionID: "session:s", Role: "implementer", AgentPID: 7, AgentSessionID: "sess-7", AdoptedAt: e3.Now().Add(-time.Hour), Cwd: "/old/worktree"}, e3.Now().Add(-time.Minute)))
+	add(t, e3, departed(seed{Handle: "claude-07", Kind: core.Claude, Server: "unix:///fake.sock", BlockID: "block:gone", SessionID: "session:s", Role: "implementer", AgentPID: 7, AgentSessionID: "sess-7", AdoptedAt: e3.Now().Add(-time.Hour), Cwd: "/old/worktree"}, e3.Now().Add(-time.Minute)))
 	if res := summon(t, e3, loc3, "implementer", func(r *SummonRequest) { r.Asked = "start one"; r.Cwd = wt }); res.Action != "start" || len(term3.launches) != 1 || term3.launches[0].Dir != wt {
 		t.Fatalf("a departed implementer stood in: %+v launches %+v", res, term3.launches)
 	}
@@ -423,7 +423,7 @@ func TestSummonStartsTheAgentInItsWorktree(t *testing.T) {
 	}
 	first := adoptLaunch(t, e4, term4, term4.launches[0], core.Claude, "sess-live")
 	first.Cwd = wt
-	add(t, e4, first)
+	add(t, e4, seedOf(first))
 	if res := summon(t, e4, loc4, "implementer", func(r *SummonRequest) { r.Asked = "start one"; r.Cwd = wt }); res.Action != "refused" || !strings.Contains(res.Reason, "already works in") || len(term4.launches) != 1 {
 		t.Fatalf("a second implementer in the same worktree: %+v", res)
 	}
@@ -502,7 +502,7 @@ func TestSummonSucceedsWhenItsLogCannotBeWritten(t *testing.T) {
 	Diagnostics = &diag
 	t.Cleanup(func() { Diagnostics = old })
 
-	add(t, e, store.Record{Handle: "codex-02", Kind: core.Codex, Server: "unix:///fake.sock", BlockID: "block:b", SessionID: "session:s", Role: "reviewer", AgentPID: 2, AdoptedAt: e.Now()})
+	add(t, e, seed{Handle: "codex-02", Kind: core.Codex, Server: "unix:///fake.sock", BlockID: "block:b", SessionID: "session:s", Role: "reviewer", AgentPID: 2, AdoptedAt: e.Now()})
 	if res := summon(t, e, loc, "codex-02"); res.Action != "deliver" || !res.Mailed || len(unread(t, e, "codex-02")) != 1 {
 		t.Fatalf("deliver: %+v, unread %v", res, unread(t, e, "codex-02"))
 	}
@@ -524,8 +524,8 @@ func TestSummonExplicitHarnessSkipsAPeerOfAnotherKind(t *testing.T) {
 	asked := func(h string) func(*SummonRequest) {
 		return func(r *SummonRequest) { r.Asked = "换个 agy 审"; r.Harness = h }
 	}
-	codex := func(e Env) store.Record {
-		return store.Record{Handle: "codex-02", Kind: core.Codex, Server: "unix:///fake.sock", BlockID: "block:b", SessionID: "session:s", Role: "reviewer", AgentPID: 2, AgentSessionID: "thread-2", AdoptedAt: e.Now().Add(-time.Hour), Cwd: workDir(t, e, "app")}
+	codex := func(e Env) seed {
+		return seed{Handle: "codex-02", Kind: core.Codex, Server: "unix:///fake.sock", BlockID: "block:b", SessionID: "session:s", Role: "reviewer", AgentPID: 2, AgentSessionID: "thread-2", AdoptedAt: e.Now().Add(-time.Hour), Cwd: workDir(t, e, "app")}
 	}
 	// A departed codex reviewer: agy starts, codex is neither resumed nor mailed.
 	e, term, loc := summonWorld(t)

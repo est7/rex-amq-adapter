@@ -848,7 +848,7 @@ counts as another), that the summoner's PATH finds, and whose preflight
 passes (`app.Env.pickHarness`). The model and effort of that harness go on
 the command line as the CLI's flags (`core.Launch.Args`) and into the
 launch's environment (`REX_AMQ_MODEL`, `REX_AMQ_EFFORT`), which the
-adoption records on `store.Record`; a resume reuses them after checking them
+adoption records on `store.Identity`; a resume reuses them after checking them
 again (`core.ParseLaunch`), and a record holding neither takes its role's
 routing. The result names the `harness`
 and each one `passed_over` with its reason; with none ready the summon
@@ -1230,7 +1230,7 @@ lead in any tab, the earliest agent in its tab, the session's orchestrator, and,
 when one of those is itself flagged and the code is not `turn_limit`, a live
 agent of another model family. With none, or when the send fails, the desktop
 hears. A `turn_error` flags the agent (`store.TurnError` `At` / `By` at
-`turn-error/<block>.json`, keyed by handle and agent session, separate from the
+`turn-error/<handle>.json`, keyed by handle and agent session, separate from the
 watchdog's `store.HealthMark` so hooks need no lock) so it is passed over as a
 recipient (and every skipped flagged owner's model family is excluded from the
 cross-family fallback); its next `SessionStart`, `UserPromptSubmit`,
@@ -1606,7 +1606,7 @@ not:
   unattended policy. An unreadable policy starts nothing (the reservation is
   released); it never makes a launch attended. `REX_AMQ_SUMMON` stays the
   first assignment.
-- Adoption (`adoptUnattended`) records `store.Record.Unattended` on an agent
+- Adoption (`adoptUnattended`) records `store.Identity.Unattended` on an agent
   that is not `personal` when its hook's environment carries the marker, the
   handle ran unattended before, or its session's policy is unattended.
 - `rex-amq-adapter env` adds `ME_UNATTENDED=1` to its export line for such a

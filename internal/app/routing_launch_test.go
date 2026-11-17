@@ -11,7 +11,6 @@ import (
 
 	"github.com/est7/rex-amq-adapter/internal/core"
 	"github.com/est7/rex-amq-adapter/internal/crew"
-	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 // envOf reads the assignments of cmd's env prefix, as a launched agent's
@@ -32,7 +31,7 @@ func launchEnvOf(cmd []string) func(string) (string, bool) {
 
 // adoptLaunched plays the first hook of a launched pane with the environment
 // its command set.
-func adoptLaunched(t *testing.T, e Env, term *fakeTerm, l launch, kind core.Kind, session string) store.Record {
+func adoptLaunched(t *testing.T, e Env, term *fakeTerm, l launch, kind core.Kind, session string) agent {
 	t.Helper()
 	term.mu.Lock()
 	term.label = l.Label
@@ -41,9 +40,9 @@ func adoptLaunched(t *testing.T, e Env, term *fakeTerm, l launch, kind core.Kind
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, blk := a.Record.Handle, l.Block
+	h, blk := a.Agent.Handle, l.Block
 	t.Cleanup(func() { _, _ = e.AMQ.RetireFor(context.Background(), e.Paths.Root(), string(h), blk) })
-	return a.Record
+	return a.Agent
 }
 
 // A started agent runs on its role's routing: the flags are on its command
@@ -68,8 +67,8 @@ func TestSummonLaunchesOnTheRolesRouting(t *testing.T) {
 	}
 	// A repeated start hook (a compaction), whose input carries no launch, keeps them.
 	a, err := e.Adopt(context.Background(), Location{Block: l.Block}, core.Claude, HookInput{SessionID: "sess-1"})
-	if err != nil || a.Record.Model != "opus" || a.Record.Effort != "high" {
-		t.Fatalf("re-adopted %+v %v", a.Record, err)
+	if err != nil || a.Agent.Model != "opus" || a.Agent.Effort != "high" {
+		t.Fatalf("re-adopted %+v %v", a.Agent, err)
 	}
 	s, err := e.FindSession(context.Background(), loc.Block)
 	if err != nil {
@@ -89,9 +88,9 @@ func TestSummonLaunchesOnTheRolesRouting(t *testing.T) {
 		t.Fatalf("who --json: %+v", agents)
 	}
 	// Departed with another model on record: the resume reuses the record, not the table.
-	stored, _, _ := e.Store.Record(l.Block)
+	stored, _, _ := e.agentAt(l.Block)
 	stored.Model, stored.Effort, stored.Cwd = "sonnet", "max", workDir(t, e, "app")
-	add(t, e, departed(stored, e.Now()))
+	add(t, e, departed(seedOf(stored), e.Now()))
 	if res := summon(t, e, loc, "implementer"); res.Action != "resume" {
 		t.Fatalf("%+v", res)
 	}
@@ -109,8 +108,8 @@ func TestSummonLaunchesOnTheRolesRouting(t *testing.T) {
 // from before records kept them takes its role's routing (a narrator stays
 // on its cheap tier); one with no role keeps its CLI's defaults.
 func TestSummonResumeLaunchChecksTheRecord(t *testing.T) {
-	old := func(e Env, h core.Handle, kind core.Kind, role, model, effort string) store.Record {
-		return departed(store.Record{Handle: h, Kind: kind, Server: "unix:///fake.sock", BlockID: "block:gone-" + string(h), SessionID: "session:s", Role: role, AgentPID: 9, AgentSessionID: "s-" + string(h), AdoptedAt: e.Now().Add(-time.Hour), Cwd: workDir(t, e, "app"), Model: model, Effort: effort}, e.Now().Add(-time.Minute))
+	old := func(e Env, h core.Handle, kind core.Kind, role, model, effort string) seed {
+		return departed(seed{Handle: h, Kind: kind, Server: "unix:///fake.sock", BlockID: "block:gone-" + string(h), SessionID: "session:s", Role: role, AgentPID: 9, AgentSessionID: "s-" + string(h), AdoptedAt: e.Now().Add(-time.Hour), Cwd: workDir(t, e, "app"), Model: model, Effort: effort}, e.Now().Add(-time.Minute))
 	}
 	e, term, loc := summonWorld(t)
 	add(t, e, old(e, "claude-05", core.Claude, "implementer", "--dangerously-skip-permissions", ""))
@@ -126,7 +125,7 @@ func TestSummonResumeLaunchChecksTheRecord(t *testing.T) {
 		t.Fatalf("old reviewer: %+v %q", res, term.launches)
 	}
 	// A narrator takes no member's mail, so its resume is read directly.
-	if l, err := e.resumeLaunch(workDir(t, e, "app"), old(e, "claude-09", core.Claude, core.NarratorRole, "", "")); err != nil || l != (core.Launch{Model: "haiku", Effort: "low"}) {
+	if l, err := e.resumeLaunch(workDir(t, e, "app"), old(e, "claude-09", core.Claude, core.NarratorRole, "", "").asAgent()); err != nil || l != (core.Launch{Model: "haiku", Effort: "low"}) {
 		t.Fatalf("old narrator: %+v %v", l, err)
 	}
 	add(t, e, old(e, "claude-08", core.Claude, "", "", ""))
@@ -142,9 +141,9 @@ func TestSummonResumeLaunchChecksTheRecord(t *testing.T) {
 // known other family, the summon refuses, saying why.
 func TestSummonReviewerFamilyFollowsTheModels(t *testing.T) {
 	caller := func(e Env, kind core.Kind, model string) {
-		rec, _, _ := e.Store.Record(block)
+		rec, _, _ := e.agentAt(block)
 		rec.Kind, rec.Model = kind, model
-		add(t, e, rec)
+		add(t, e, seedOf(rec))
 	}
 	e, term, loc := summonWorld(t)
 	e.LookPath = installedOnly(core.Agy, core.Claude)
@@ -276,7 +275,7 @@ func TestSummonResumeLaunchKeepsALaunchOnTheDefaults(t *testing.T) {
 	}
 	writeFile(t, user, "[role.implementer]\nharness = [\"claude\"]\nclaude = { model = \"sonnet\", effort = \"max\" }\n")
 	rec.Cwd = workDir(t, e, "app")
-	add(t, e, departed(rec, e.Now()))
+	add(t, e, departed(seedOf(rec), e.Now()))
 	if res := summon(t, e, loc, string(rec.Handle)); res.Action != "resume" || launchProgram(term.launches[1])[1] != "--resume" {
 		t.Fatalf("resumed on the new routing: %+v %q", res, term.launches)
 	}

@@ -27,7 +27,7 @@ func retireWorld(t *testing.T) (Env, *fakeTerm, core.SessionKey, *amq.Fake) {
 	if !ok {
 		t.Skip("observing wakers needs amq.Fake")
 	}
-	add(t, e, store.Record{Handle: "codex-04", Role: "implementer", BlockID: "block:v", Kind: core.Codex, Server: fakeServer, SessionID: "session:s", AgentPID: os.Getpid(), AdoptedAt: e.Now()})
+	add(t, e, seed{Handle: "codex-04", Role: "implementer", BlockID: "block:v", Kind: core.Codex, Server: fakeServer, SessionID: "session:s", AgentPID: os.Getpid(), AdoptedAt: e.Now()})
 	for _, h := range []core.Handle{"codex-03", "codex-04"} {
 		if err := e.ensureWaker(context.Background(), recordOf(t, e, h)); err != nil {
 			t.Fatal(err)
@@ -81,10 +81,10 @@ func TestRetireClosesThePaneAndMailsNobody(t *testing.T) {
 		t.Errorf("the retired agent's waker still runs: %+v", st)
 	}
 	rec := recordOf(t, e, "codex-03")
-	if rec.Live() || rec.DepartReason != store.DepartRetired || rec.Unfinished != "" {
-		t.Fatalf("record: live=%v reason=%q unfinished=%q", rec.Live(), rec.DepartReason, rec.Unfinished)
+	if rec.Live() || rec.departReason() != store.DepartRetired || rec.unfinished() != "" {
+		t.Fatalf("record: live=%v reason=%q unfinished=%q", rec.Live(), rec.departReason(), rec.unfinished())
 	}
-	at := *rec.DepartedAt
+	at := *rec.departedAt()
 	// The dying agent's SessionEnd, then collection, which finds its block gone.
 	if err := e.Depart(ctx, Location{Block: "block:w"}, HookInput{}); err != nil {
 		t.Fatal(err)
@@ -93,7 +93,7 @@ func TestRetireClosesThePaneAndMailsNobody(t *testing.T) {
 		t.Fatal(err)
 	}
 	rec = recordOf(t, e, "codex-03")
-	if rec.Live() || rec.DepartReason != store.DepartRetired || !rec.DepartedAt.Equal(at) {
+	if rec.Live() || rec.departReason() != store.DepartRetired || !rec.departedAt().Equal(at) {
 		t.Errorf("a later SessionEnd or collection changed the retired record: %+v", rec)
 	}
 	if mail := unreadBodies(t, e, "codex-01"); len(mail) != 0 {
@@ -106,7 +106,7 @@ func TestRetireClosesThePaneAndMailsNobody(t *testing.T) {
 	if err := e.Collect(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if r := recordOf(t, e, "codex-04"); r.Live() || r.DepartReason == store.DepartRetired {
+	if r := recordOf(t, e, "codex-04"); r.Live() || r.departReason() == store.DepartRetired {
 		t.Fatalf("the control was not parked as a crash: %+v", r)
 	}
 	mail := unreadBodies(t, e, "codex-01")
@@ -120,7 +120,7 @@ func TestRetireClosesThePaneAndMailsNobody(t *testing.T) {
 func TestRetireTellsTheNarratorRoutinely(t *testing.T) {
 	e, term, key, _ := retireWorld(t)
 	ctx := context.Background()
-	keepers := []store.Record{recordOf(t, e, "codex-01"), recordOf(t, e, "codex-02")}
+	keepers := []agent{recordOf(t, e, "codex-01"), recordOf(t, e, "codex-02")}
 	look := func() []amq.Header {
 		t.Helper()
 		if err := e.watchOnce(ctx, key, keepers); err != nil {
@@ -157,8 +157,8 @@ func TestRetireTellsTheNarratorRoutinely(t *testing.T) {
 // nothing and leaves the target live.
 func TestRetireRefusesWithoutItsGuards(t *testing.T) {
 	e, term, _, _ := retireWorld(t)
-	add(t, e, store.Record{Handle: "codex-05", Role: "implementer", BlockID: "block:x", Kind: core.Codex, Server: fakeServer, SessionID: "session:other", AgentPID: os.Getpid(), AdoptedAt: e.Now()})
-	add(t, e, store.Record{Handle: "claude-06", Role: core.PersonalRole, BlockID: "block:p", Kind: core.Claude, Server: fakeServer, SessionID: "session:s", AgentPID: os.Getpid(), AdoptedAt: e.Now()})
+	add(t, e, seed{Handle: "codex-05", Role: "implementer", BlockID: "block:x", Kind: core.Codex, Server: fakeServer, SessionID: "session:other", AgentPID: os.Getpid(), AdoptedAt: e.Now()})
+	add(t, e, seed{Handle: "claude-06", Role: core.PersonalRole, BlockID: "block:p", Kind: core.Claude, Server: fakeServer, SessionID: "session:s", AgentPID: os.Getpid(), AdoptedAt: e.Now()})
 	for _, c := range []struct {
 		name, by string
 		h        core.Handle
@@ -234,7 +234,7 @@ func TestRetireWhoseBlockDoesNotCloseStillDeparts(t *testing.T) {
 	if res.Action != RetireRetired || res.Block != "block:w" || res.Pane != PaneLeftOpen {
 		t.Errorf("result %+v", res)
 	}
-	if r := recordOf(t, e, "codex-03"); r.Live() || r.DepartReason != store.DepartRetired {
+	if r := recordOf(t, e, "codex-03"); r.Live() || r.departReason() != store.DepartRetired {
 		t.Errorf("the departure did not stand: %+v", r)
 	}
 	if mail := unreadBodies(t, e, "codex-01"); len(mail) != 0 {
@@ -272,7 +272,7 @@ func TestRetireAfterAFailedCloseFinishesOnASecondRun(t *testing.T) {
 	if err != nil || res.Action != RetireRetired || res.Block != "block:w" || res.Pane != PaneGone {
 		t.Fatalf("the second retire, its block gone: %+v %v", res, err)
 	}
-	if r := recordOf(t, e, worker); r.Live() || r.DepartReason != store.DepartRetired {
+	if r := recordOf(t, e, worker); r.Live() || r.departReason() != store.DepartRetired {
 		t.Errorf("record %+v", r)
 	}
 	if n := len(unread(t, e, string(orch))); n != before {
@@ -290,7 +290,7 @@ func TestRetireSurvivesLateAdoptingHooks(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _ = e.Hook(ctx, EventStop, core.Codex, Location{Block: "block:w"}, HookInput{AgentPID: os.Getpid()})
-	if r := recordOf(t, e, "codex-03"); r.Live() || r.DepartReason != store.DepartRetired {
+	if r := recordOf(t, e, "codex-03"); r.Live() || r.departReason() != store.DepartRetired {
 		t.Errorf("a late Codex Stop revived the retired record: %+v", r)
 	}
 	if mail := unreadBodies(t, e, "codex-01"); len(mail) != 0 {
@@ -304,7 +304,7 @@ func TestRetireSurvivesLateAdoptingHooks(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _ = pe.Hook(ctx, EventStop, core.Pi, Location{Block: "block:w"}, HookInput{SessionID: "w1", AgentPID: os.Getpid()})
-	if r := recordOf(t, pe, worker); r.Live() || r.DepartReason != store.DepartRetired {
+	if r := recordOf(t, pe, worker); r.Live() || r.departReason() != store.DepartRetired {
 		t.Errorf("a late Pi Stop revived the retired record: %+v", r)
 	}
 	if n := len(unread(t, pe, string(orch))); n != before {
@@ -361,7 +361,7 @@ func TestRetireLeavesAPaneThatNoLongerShowsTheAgentOpen(t *testing.T) {
 	if err != nil || res.Pane != PaneLeftOpen || !strings.Contains(res.PaneNote, "moved to the background") {
 		t.Errorf("a terminal session that left its pane: %+v %v", res, err)
 	}
-	if r := recordOf(t, w.e, tui.Handle); r.Live() || r.DepartReason != store.DepartRetired {
+	if r := recordOf(t, w.e, tui.Handle); r.Live() || r.departReason() != store.DepartRetired {
 		t.Errorf("the terminal session did not depart as retired: %+v", r)
 	}
 	if len(w.term.closed) != 0 {
@@ -374,10 +374,12 @@ func TestRetireLeavesAPaneThatNoLongerShowsTheAgentOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 	rec := recordOf(t, e, "codex-03")
-	rec.AgentPID = dead.Process.Pid // its shell is the pane's foreground now
-	if err := e.Store.PutRecord(rec); err != nil {
+	recSeed := seedOf(rec)
+	recSeed.AgentPID = dead.Process.Pid // its shell is the pane's foreground now
+	if err := putSeed(e.Store, recSeed); err != nil {
 		t.Fatal(err)
 	}
+	rec = recordNamed(t, e, rec.Handle)
 	res, err = retire(e, "block:o", "codex-03", false)
 	if err != nil || res.Pane != PaneLeftOpen || !strings.Contains(res.PaneNote, "process exited") || len(term.closed) != 0 {
 		t.Errorf("an agent whose process exited: %+v %v, closed %v", res, err, term.closed)
@@ -406,7 +408,7 @@ func TestRetireChecksItsGuardsUnderTheLock(t *testing.T) {
 		{"it becomes the orchestrator", "codex-04", func() {
 			r := recordOf(t, e, "codex-04")
 			r.Role = core.OrchestratorRole
-			if err := e.Store.PutRecord(r); err != nil {
+			if err := putSeed(e.Store, seedOf(r)); err != nil {
 				t.Error(err)
 			}
 		}, core.OrchestratorRole},
@@ -447,7 +449,7 @@ func TestRetireBoundsAStalledCloseUnderTheLock(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "rex block close block:w") || res.Pane != PaneLeftOpen {
 		t.Errorf("a stalled close: %+v %v", res, err)
 	}
-	if r := recordOf(t, e, "codex-03"); r.Live() || r.DepartReason != store.DepartRetired {
+	if r := recordOf(t, e, "codex-03"); r.Live() || r.departReason() != store.DepartRetired {
 		t.Errorf("the departure did not stand: %+v", r)
 	}
 	lockCtx, cancelLock := context.WithTimeout(context.Background(), 100*time.Millisecond)

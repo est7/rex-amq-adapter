@@ -331,7 +331,7 @@ func (e Env) awaitEpicAgents(ctx context.Context, res *EpicResult) []error {
 // finishClose kills the Epic's session (one already gone is not an error),
 // parks its agents, removes link, and records the Epic closed, with op when
 // there is one. The caller holds LockEpicLifecycle and then LockLifecycle.
-func (e Env) finishClose(ctx context.Context, on Terminal, link core.Link, caller store.Record, op *store.EpicOpRecord) (CloseResult, error) {
+func (e Env) finishClose(ctx context.Context, on Terminal, link core.Link, caller agent, op *store.EpicOpRecord) (CloseResult, error) {
 	res := CloseResult{SessionID: link.Epic.SessionID}
 	if op != nil {
 		res.OpID = op.OpID

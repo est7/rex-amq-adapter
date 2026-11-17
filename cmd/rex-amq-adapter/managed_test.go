@@ -21,12 +21,12 @@ func TestManagedMailExitCodes(t *testing.T) {
 	}
 	paths := store.Paths{Home: t.TempDir()}
 	env := app.Env{Paths: paths, Store: store.Store{P: paths}, AMQ: amq.CLI{Bin: bin}, Now: time.Now}
-	for _, r := range []store.Record{
+	for _, r := range []testAgent{
 		{Handle: "codex-01", Server: "unix:///t.sock", BlockID: "block:a", SessionID: "session:a"},
 		{Handle: "claude-02", Server: "unix:///t.sock", BlockID: "block:b", SessionID: "session:a"},
 		{Handle: "claude-09", Server: "unix:///t.sock", BlockID: "block:c", SessionID: "session:b"},
 	} {
-		if err := env.Store.PutRecord(r); err != nil {
+		if err := putAgent(env.Store, r); err != nil {
 			t.Fatal(err)
 		}
 		if err := amq.EnsureMailbox(context.Background(), bin, paths.Root(), string(r.Handle)); err != nil {

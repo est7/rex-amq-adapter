@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
-	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 // maxAncestors bounds the walk up the process tree.
@@ -34,14 +33,14 @@ const (
 )
 
 // recordFit compares rec, this block's record, with the hook's evidence.
-func (e Env) recordFit(kind core.Kind, rec store.Record, in HookInput) fit {
+func (e Env) recordFit(kind core.Kind, rec agent, in HookInput) fit {
 	if rec.Kind != kind {
 		return foreign
 	}
 	if !e.sameProcess(rec, in) {
 		// Only the record's own session vouches for another process: a hook
 		// that names none, or a record that holds none, proves nothing.
-		if in.SessionID != "" && in.SessionID == rec.AgentSessionID {
+		if in.SessionID != "" && in.SessionID == rec.Session() {
 			return staleLease
 		}
 		return foreign
@@ -57,9 +56,9 @@ func (e Env) recordFit(kind core.Kind, rec store.Record, in HookInput) fit {
 // process.pid) is compared exactly: a session started inside the agent (a
 // `claude -p` it runs) descends from it but is not it. Others are known by
 // ancestry.
-func (e Env) sameProcess(rec store.Record, in HookInput) bool {
-	if in.AgentPID > 0 && rec.AgentPID > 0 && localServer(rec.Server) {
-		return in.AgentPID == rec.AgentPID
+func (e Env) sameProcess(rec agent, in HookInput) bool {
+	if in.AgentPID > 0 && rec.pid() > 0 && localServer(rec.Server) {
+		return in.AgentPID == rec.pid()
 	}
 	return e.descendsFrom(rec)
 }
@@ -69,8 +68,8 @@ func (e Env) sameProcess(rec store.Record, in HookInput) bool {
 // cannot be checked and is taken as is. Unreadable ancestry is not taken as a
 // match: adopting again costs one hook's time, trusting a stale record costs
 // the agent its mail.
-func (e Env) descendsFrom(rec store.Record) bool {
-	if !localServer(rec.Server) || rec.AgentPID <= 0 {
+func (e Env) descendsFrom(rec agent) bool {
+	if !localServer(rec.Server) || rec.pid() <= 0 {
 		return true
 	}
 	ancestors, err := e.ancestors()
@@ -78,7 +77,7 @@ func (e Env) descendsFrom(rec store.Record) bool {
 		fmt.Fprintf(Diagnostics, "read this hook's process ancestry: %v\n", err)
 		return false
 	}
-	err = runsUnder(rec.Kind, ancestors, rec.AgentPID)
+	err = runsUnder(rec.Kind, ancestors, rec.pid())
 	if errors.Is(err, ErrSharedHarness) {
 		fmt.Fprintf(Diagnostics, "%s: %v\n", rec.Handle, err)
 	}
@@ -161,9 +160,9 @@ var ErrStartedInPane = errors.New("this hook comes from a harness a command in t
 // agent's own hooks, a harness that does not run under the agent, and a hook
 // whose ancestry cannot be read are not: muting the pane's agent costs more
 // than a stray adoption, which the agent's next hook takes back.
-func (e Env) startedUnderOwner(kind core.Kind, block string) (store.Record, bool) {
-	rec, ok, err := e.Store.Record(block)
-	if err != nil || !ok || !rec.Live() || rec.AgentPID <= 0 || !localServer(rec.Server) {
+func (e Env) startedUnderOwner(kind core.Kind, block string) (agent, bool) {
+	rec, ok, err := e.agentAt(block)
+	if err != nil || !ok || !rec.Live() || rec.pid() <= 0 || !localServer(rec.Server) {
 		return rec, false
 	}
 	ancestors, err := e.ancestors()
@@ -172,13 +171,13 @@ func (e Env) startedUnderOwner(kind core.Kind, block string) (store.Record, bool
 	}
 	// The hook itself is never its own agent: a test process standing in
 	// for an agent is ancestors[0].
-	if !slices.ContainsFunc(ancestors[1:], func(p proc) bool { return p.PID == rec.AgentPID }) {
+	if !slices.ContainsFunc(ancestors[1:], func(p proc) bool { return p.PID == rec.pid() }) {
 		return rec, false
 	}
 	if kind != rec.Kind {
 		return rec, true
 	}
-	return rec, errors.Is(runsUnder(kind, ancestors, rec.AgentPID), ErrStartedInPane)
+	return rec, errors.Is(runsUnder(kind, ancestors, rec.pid()), ErrStartedInPane)
 }
 
 var errNotUnder = errors.New("this hook does not descend from the agent")

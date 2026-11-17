@@ -35,7 +35,7 @@ func (e Env) AwaitStartup(ctx context.Context, block string) (core.Startup, erro
 
 func (e Env) observeStartup(ctx context.Context, block string) (core.StartupObservation, error) {
 	var o core.StartupObservation
-	rec, ok, err := e.Store.Record(block)
+	rec, ok, err := e.agentAt(block)
 	if err != nil {
 		return o, err
 	}

@@ -13,7 +13,6 @@ import (
 
 	"github.com/est7/rex-amq-adapter/internal/core"
 	"github.com/est7/rex-amq-adapter/internal/rex"
-	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 // A live orchestrator coordinates its Rex session: it owns the goal, so it
@@ -35,11 +34,11 @@ const (
 
 // wakeForDeparture tells rec's session that rec departed, when an orchestrator
 // is involved.
-func (e Env) wakeForDeparture(ctx context.Context, rec store.Record) error {
+func (e Env) wakeForDeparture(ctx context.Context, rec agent) error {
 	if !placed(rec) {
 		return nil
 	}
-	recs, err := e.Store.Records()
+	recs, err := e.agents()
 	if err != nil {
 		return err
 	}
@@ -50,7 +49,7 @@ func (e Env) wakeForDeparture(ctx context.Context, rec store.Record) error {
 		}
 	}
 	left := peerOf(rec)
-	to, subject, body := core.DepartureMail(left, rec.AgentSessionID, others)
+	to, subject, body := core.DepartureMail(left, rec.Session(), others)
 	var errs []error
 	for _, h := range to {
 		if err := e.sendAs(ctx, rec.Handle, h, true, "--kind", "status", "--priority", "normal", "--subject", subject, "--body", body); err != nil {
@@ -66,7 +65,7 @@ func (e Env) wakeForDeparture(ctx context.Context, rec store.Record) error {
 // watches reports whether r keeps its session's watcher running: a live
 // orchestrator (the watchdog reports to it) or a live narrator (the watcher
 // tells it what changed).
-func watches(r store.Record) bool {
+func watches(r agent) bool {
 	return r.Live() && placed(r) && (r.Role == core.OrchestratorRole || r.Role == core.NarratorRole)
 }
 
@@ -76,7 +75,7 @@ func watches(r store.Record) bool {
 // its own. Hooks call this; the watcher is the session's, not rec's, so it
 // outlives an orchestrator while a narrator stays, and ends when neither is
 // left.
-func (e Env) ensureSessionWatcher(rec store.Record) error {
+func (e Env) ensureSessionWatcher(rec agent) error {
 	if !watches(rec) {
 		return nil
 	}
@@ -121,11 +120,11 @@ func (e Env) WatchSession(ctx context.Context, key core.SessionKey) error {
 	}
 	defer unlock()
 	for failures := 0; ; {
-		recs, err := e.Store.Records()
+		recs, err := e.agents()
 		if err != nil {
 			return err
 		}
-		var keepers []store.Record
+		var keepers []agent
 		for _, r := range recs {
 			if watches(r) && r.Server == key.Server && r.SessionID == key.SessionID {
 				keepers = append(keepers, r)
@@ -151,13 +150,13 @@ func (e Env) WatchSession(ctx context.Context, key core.SessionKey) error {
 // watchOnce looks at session key once: it reconciles the session, runs the
 // watchdog for each live orchestrator (keepers), and tells each live narrator
 // what changed.
-func (e Env) watchOnce(ctx context.Context, key core.SessionKey, keepers []store.Record) error {
+func (e Env) watchOnce(ctx context.Context, key core.SessionKey, keepers []agent) error {
 	ctx, cancel := context.WithTimeout(ctx, watchBudget)
 	defer cancel()
 	s, err := e.loadSession(ctx, key.Server, key.SessionID)
 	if errors.Is(err, rex.ErrNotFound) {
 		// The session itself is gone: its agents' blocks went with it.
-		return e.collect(ctx, func(r store.Record) bool { return r.Server == key.Server && r.SessionID == key.SessionID })
+		return e.collect(ctx, func(r agent) bool { return r.Server == key.Server && r.SessionID == key.SessionID })
 	}
 	if err != nil {
 		return err

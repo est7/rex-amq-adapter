@@ -115,7 +115,7 @@ func (e Env) panelGate(getenv func(string) string) error {
 		return fmt.Errorf("%w: the panel is the human's, and this command runs unattended (ME_UNATTENDED=1)", ErrRefused)
 	}
 	if block := getenv("REX_BLOCK"); block != "" {
-		rec, ok, err := e.Store.Record(block)
+		rec, ok, err := e.agentAt(block)
 		if err != nil {
 			return err
 		}
@@ -123,7 +123,7 @@ func (e Env) panelGate(getenv func(string) string) error {
 			return panelRefused(rec)
 		}
 	}
-	recs, err := e.Store.Records()
+	recs, err := e.agents()
 	if err != nil {
 		return err
 	}
@@ -131,7 +131,7 @@ func (e Env) panelGate(getenv func(string) string) error {
 	if err != nil {
 		return fmt.Errorf("tell which agent runs the panel: %w", err)
 	}
-	if rec, ok := agentAncestor(ancestors, recs, func(store.Record) bool { return true }); ok {
+	if rec, ok := agentAncestor(ancestors, recs, func(agent) bool { return true }); ok {
 		return panelRefused(rec)
 	}
 	// The walkers stop at maxAncestors without an error, so a full walk may
@@ -143,7 +143,7 @@ func (e Env) panelGate(getenv func(string) string) error {
 	return nil
 }
 
-func panelRefused(rec store.Record) error {
+func panelRefused(rec agent) error {
 	role := rec.Role
 	if role == "" {
 		role = "no role"
@@ -153,7 +153,7 @@ func panelRefused(rec store.Record) error {
 
 // panelNow is the panel of the stream's session now; held are its records
 // in scope, and s.recs every record (held reread them).
-func (s *streamer) panelNow(held []store.Record) (PanelProjection, error) {
+func (s *streamer) panelNow(held []agent) (PanelProjection, error) {
 	if len(s.v.sessions) > 0 && s.v.sessions[0].described {
 		// A session Rex could not describe this time keeps its last label.
 		s.panel.label = s.v.sessions[0].label
@@ -168,7 +168,7 @@ func (s *streamer) panelNow(held []store.Record) (PanelProjection, error) {
 
 // panelTick tells the panel when it changed since it was last told. A look
 // that fails is reported and tried again at the next tick.
-func (s *streamer) panelTick(held []store.Record) error {
+func (s *streamer) panelTick(held []agent) error {
 	before := s.panel.told
 	p, err := s.panelNow(held)
 	if err != nil {
@@ -184,9 +184,9 @@ func (s *streamer) panelTick(held []store.Record) error {
 
 // panelProjection builds the panel of session sc labeled label: held are
 // the records in scope, all every record.
-func (e Env) panelProjection(sc Scope, label string, held, all []store.Record) (PanelProjection, error) {
+func (e Env) panelProjection(sc Scope, label string, held, all []agent) (PanelProjection, error) {
 	p := PanelProjection{SessionLabel: label, Attention: map[core.Handle][]string{}}
-	var personal *store.Record
+	var personal *agent
 	for _, r := range held {
 		if !r.Live() {
 			continue
@@ -223,7 +223,7 @@ func (e Env) panelProjection(sc Scope, label string, held, all []store.Record) (
 // claimed the crew (the claimant is then the personal agent, which works
 // elsewhere); a session with no Epic directory recorded resolves from the
 // claiming agent's directory.
-func (e Env) panelCrew(id string, all []store.Record) (*PanelCrew, error) {
+func (e Env) panelCrew(id string, all []agent) (*PanelCrew, error) {
 	c, ok, err := e.Store.SessionCrew(id)
 	if err != nil || !ok {
 		return nil, err
@@ -237,7 +237,7 @@ func (e Env) panelCrew(id string, all []store.Record) (*PanelCrew, error) {
 		return nil, err
 	}
 	dir := lc.Dir
-	if i := slices.IndexFunc(all, func(r store.Record) bool { return r.Handle == c.ClaimedBy }); dir == "" && i >= 0 {
+	if i := slices.IndexFunc(all, func(r agent) bool { return r.Handle == c.ClaimedBy }); dir == "" && i >= 0 {
 		dir = all[i].Cwd
 	}
 	// A definition that is missing or does not parse leaves the claim
@@ -283,7 +283,7 @@ func (e Env) handBackView(key core.SessionKey) (*SessionView, error) {
 // panelCockpit is the summary of every Epic linked to personal's session,
 // sorted by session id, counted from records and stored views: no Epic's
 // Rex session is asked.
-func (e Env) panelCockpit(personal store.Record, all []store.Record) ([]PanelEpic, error) {
+func (e Env) panelCockpit(personal agent, all []agent) ([]PanelEpic, error) {
 	links, err := e.Store.Links()
 	if err != nil {
 		return nil, err

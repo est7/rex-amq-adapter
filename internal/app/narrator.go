@@ -24,7 +24,7 @@ import (
 // ones, from their records, mailbox listings, health marks, and the
 // session's recorded hand-back.
 func (e Env) sessionPulse(key core.SessionKey) (core.SessionPulse, error) {
-	recs, err := e.Store.Records()
+	recs, err := e.agents()
 	if err != nil {
 		return core.SessionPulse{}, err
 	}
@@ -37,7 +37,7 @@ func (e Env) sessionPulse(key core.SessionKey) (core.SessionPulse, error) {
 		if r.Server != key.Server || r.SessionID != key.SessionID || core.Stealth(r.Role) {
 			continue
 		}
-		m := core.PulseMember{Handle: r.Handle, Role: r.Role, Live: r.Live(), Task: r.Task, Retired: !r.Live() && r.DepartReason == store.DepartRetired}
+		m := core.PulseMember{Handle: r.Handle, Role: r.Role, Live: r.Live(), Task: r.Task, Retired: !r.Live() && r.departReason() == store.DepartRetired}
 		if hasHB && hb.By == r.Handle {
 			sum := sha256.Sum256([]byte(hb.Body))
 			m.HandBack = hb.At.UTC().Format(time.RFC3339Nano) + "#" + hex.EncodeToString(sum[:4])
@@ -81,12 +81,12 @@ func (e Env) lastMail(h core.Handle) (string, error) {
 
 // attention is what waits on someone in r's block: its own turn that ended in
 // an error, its own run waiting on the human, a stall.
-func (e Env) attention(r store.Record) ([]string, error) {
+func (e Env) attention(r agent) ([]string, error) {
 	mark, err := e.Store.HealthMark(r.BlockID)
 	if err != nil {
 		return nil, err
 	}
-	te, hasErr, err := e.Store.TurnError(r.BlockID)
+	te, hasErr, err := e.Store.TurnError(r.Handle)
 	if err != nil {
 		return nil, err
 	}
@@ -107,7 +107,7 @@ func (e Env) attention(r store.Record) ([]string, error) {
 // tellNarrator mails narr, the session's narrator, what changed in session
 // key since it was last told. The first look only records the pulse: a
 // narrator reads its view when it starts.
-func (e Env) tellNarrator(ctx context.Context, key core.SessionKey, narr store.Record) error {
+func (e Env) tellNarrator(ctx context.Context, key core.SessionKey, narr agent) error {
 	now, err := e.sessionPulse(key)
 	if err != nil {
 		return err
@@ -168,7 +168,7 @@ const (
 // waker and the adapter's hooks both apply, and takes them from an agent
 // that was one (was) and no longer is. A failure is reported, never fatal:
 // holds batch mail, they guard nothing.
-func (e Env) alignHolds(ctx context.Context, rec store.Record, was string) {
+func (e Env) alignHolds(ctx context.Context, rec agent, was string) {
 	var normal, low time.Duration
 	switch {
 	case rec.Role == core.NarratorRole:

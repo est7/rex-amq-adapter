@@ -23,7 +23,7 @@ func envOf(kv ...string) func(string) string {
 func TestCallerIsTheSessionsRecord(t *testing.T) {
 	const server, stale = "unix:///rec.sock", "block:inherited"
 	departed := time.Now().Add(-time.Hour)
-	recs := []store.Record{
+	recs := []seed{
 		{Handle: "claude-01", Kind: core.Claude, Server: server, BlockID: "block:claude", AgentPID: 101, AgentSessionID: "cl"},
 		{Handle: "codex-01", Kind: core.Codex, Server: server, BlockID: "block:codex", AgentPID: 102, AgentSessionID: "cx"},
 		{Handle: "pi-01", Kind: core.Pi, Server: server, BlockID: "block:pi", AgentPID: 103, AgentSessionID: "pi"},
@@ -59,7 +59,7 @@ func TestCallerIsTheSessionsRecord(t *testing.T) {
 			paths := store.Paths{Home: t.TempDir()}
 			e := Env{Paths: paths, Store: store.Store{P: paths}, Rex: &fakeTerm{}}
 			for _, r := range recs {
-				if err := e.Store.PutRecord(r); err != nil {
+				if err := putSeed(e.Store, r); err != nil {
 					t.Fatal(err)
 				}
 			}

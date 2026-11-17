@@ -104,7 +104,7 @@ func TestNotifyPersonalRingsOnlyTheLivePersonalAgent(t *testing.T) {
 	if got := w.sessionCount(); got != sessions {
 		t.Errorf("sessions %d -> %d: notify-personal started something", sessions, got)
 	}
-	if recs, _ := os.ReadDir(filepath.Join(w.home, "records")); len(recs) != 1 {
-		t.Errorf("%d records, want only the crashed personal agent's", len(recs))
+	if ids, _ := os.ReadDir(filepath.Join(w.home, "identities")); len(ids) != 1 {
+		t.Errorf("%d identities, want only the crashed personal agent's", len(ids))
 	}
 }

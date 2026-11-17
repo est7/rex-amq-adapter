@@ -10,7 +10,6 @@ import (
 	"github.com/est7/rex-amq-adapter/internal/core"
 	"github.com/est7/rex-amq-adapter/internal/rex"
 	"github.com/est7/rex-amq-adapter/internal/screen"
-	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 // InjectRequest is what amq wake passes the injector. amq's notification
@@ -48,7 +47,7 @@ func (e Env) Inject(ctx context.Context, r InjectRequest) core.Outcome {
 }
 
 func (e Env) inject(ctx context.Context, r InjectRequest) core.Outcome {
-	rec, ok, err := e.Store.Record(r.Block)
+	rec, ok, err := e.agentAt(r.Block)
 	switch {
 	case err != nil:
 		return deferredErr("state_unreadable", err)
@@ -112,7 +111,7 @@ func (e Env) inject(ctx context.Context, r InjectRequest) core.Outcome {
 }
 
 // checkBinding confirms the block still runs the adopted agent process.
-func (e Env) checkBinding(ctx context.Context, rec store.Record) (core.Outcome, bool) {
+func (e Env) checkBinding(ctx context.Context, rec agent) (core.Outcome, bool) {
 	b, err := e.observeBinding(ctx, rec)
 	if err != nil {
 		return rexOutcome(err), false
@@ -122,7 +121,7 @@ func (e Env) checkBinding(ctx context.Context, rec store.Record) (core.Outcome, 
 
 // observeBinding reads what CheckBinding decides on. Whether the agent
 // process exited can only be probed for a local server.
-func (e Env) observeBinding(ctx context.Context, rec store.Record) (core.Binding, error) {
+func (e Env) observeBinding(ctx context.Context, rec agent) (core.Binding, error) {
 	fg, ok, err := e.Rex.Foreground(ctx, rec.BlockID)
 	if errors.Is(err, rex.ErrNotFound) {
 		return core.Binding{BlockGone: true}, nil
@@ -130,7 +129,7 @@ func (e Env) observeBinding(ctx context.Context, rec store.Record) (core.Binding
 	if err != nil {
 		return core.Binding{}, err
 	}
-	b := core.Binding{RecordPID: rec.AgentPID, AgentGone: localServer(rec.Server) && processGone(rec.AgentPID)}
+	b := core.Binding{RecordPID: rec.pid(), AgentGone: localServer(rec.Server) && processGone(rec.pid())}
 	if ok {
 		b.ForegroundPID = fg.PID
 	}
@@ -144,7 +143,7 @@ func (e Env) observeBinding(ctx context.Context, rec store.Record) (core.Binding
 
 // clearLeftover erases a doorbell an earlier attempt left in the box. Text in
 // the box that is not exactly that doorbell is someone's draft and stays.
-func (e Env) clearLeftover(ctx context.Context, rec store.Record) (core.Outcome, bool) {
+func (e Env) clearLeftover(ctx context.Context, rec agent) (core.Outcome, bool) {
 	pending, ok, err := e.Store.Pending(rec.BlockID)
 	if err != nil {
 		return deferredErr("state_unreadable", err), false
@@ -168,7 +167,7 @@ func (e Env) clearLeftover(ctx context.Context, rec store.Record) (core.Outcome,
 }
 
 // erase clears the input box and verifies it emptied.
-func (e Env) erase(ctx context.Context, rec store.Record) (core.Outcome, bool) {
+func (e Env) erase(ctx context.Context, rec agent) (core.Outcome, bool) {
 	if err := e.Rex.SendKeys(ctx, rec.BlockID, "ctrl+u"); err != nil {
 		return rexOutcome(err), false
 	}
@@ -188,7 +187,7 @@ func (e Env) erase(ctx context.Context, rec store.Record) (core.Outcome, bool) {
 // confirm waits for evidence that the doorbell was submitted, and erases a
 // doorbell left unsubmitted in the box. The pending record is dropped once
 // the doorbell is known to be submitted or erased.
-func (e Env) confirm(ctx context.Context, rec store.Record, doorbell string, reports bool) core.Outcome {
+func (e Env) confirm(ctx context.Context, rec agent, doorbell string, reports bool) core.Outcome {
 	c := core.Confirmation{Reports: reports}
 	empties := 0
 	for deadline := time.Now().Add(confirmFor); time.Now().Before(deadline) && !c.Started && !c.EmptiedTwice; {

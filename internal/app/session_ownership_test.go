@@ -18,7 +18,7 @@ func TestCodexBackgroundSessionCannotRetireTerminalIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = e.Depart(ctx, loc, HookInput{SessionID: "terminal-session"}) })
-	before, _, _ := e.Store.Record(block)
+	before, _, _ := e.agentAt(block)
 	// An internal Codex thread inherits the same Rex block and foreground PID.
 	// Its lifecycle must not replace or retire the terminal's session binding.
 	child := HookInput{SessionID: "memory-consolidation", Source: "startup", TranscriptPath: []byte("null")}
@@ -28,8 +28,8 @@ func TestCodexBackgroundSessionCannotRetireTerminalIdentity(t *testing.T) {
 	if _, err := e.Hook(ctx, EventSessionEnd, core.Codex, loc, child); err != nil {
 		t.Fatal(err)
 	}
-	after, ok, err := e.Store.Record(block)
-	if err != nil || !ok || !after.Live() || after.AgentSessionID != before.AgentSessionID || after.AgentPID != before.AgentPID || !after.AdoptedAt.Equal(before.AdoptedAt) {
+	after, ok, err := e.agentAt(block)
+	if err != nil || !ok || !after.Live() || after.Session() != before.Session() || after.pid() != before.pid() || !after.adoptedAt().Equal(before.adoptedAt()) {
 		t.Fatalf("background lifecycle changed terminal identity: before=%+v after=%+v ok=%v err=%v", before, after, ok, err)
 	}
 	if exports, err := e.Exports(loc); err != nil || !strings.Contains(exports, "AM_ME='codex-01'") {
@@ -42,11 +42,13 @@ func TestCodexBackgroundSessionCannotRetireTerminalIdentity(t *testing.T) {
 
 func TestForeignCodexHookDoesNotAnnounceTerminalMail(t *testing.T) {
 	e := fixture(t, &fakeTerm{state: "working"}, "m1")
-	rec, _, _ := e.Store.Record(block)
-	rec.AgentSessionID = "terminal-session"
-	if err := e.Store.PutRecord(rec); err != nil {
+	rec, _, _ := e.agentAt(block)
+	recSeed := seedOf(rec)
+	recSeed.AgentSessionID = "terminal-session"
+	if err := putSeed(e.Store, recSeed); err != nil {
 		t.Fatal(err)
 	}
+	rec = recordNamed(t, e, rec.Handle)
 	ctx := context.Background()
 	loc := Location{Block: block}
 	r, err := e.Hook(ctx, EventPostTool, core.Codex, loc, HookInput{SessionID: "memory-consolidation", TranscriptPath: []byte("null")})
@@ -67,7 +69,7 @@ func TestCodexBackgroundFirstDoesNotClaimPane(t *testing.T) {
 	if _, err := e.Hook(ctx, EventSessionStart, core.Codex, loc, child); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, err := e.Store.Record(block); err != nil || ok {
+	if _, ok, err := e.agentAt(block); err != nil || ok {
 		t.Fatalf("ephemeral background start claimed pane: exists=%v err=%v", ok, err)
 	}
 	if _, err := e.Hook(ctx, EventSessionStart, core.Codex, loc, HookInput{SessionID: "terminal-session", Source: "startup"}); err != nil {
@@ -77,19 +79,21 @@ func TestCodexBackgroundFirstDoesNotClaimPane(t *testing.T) {
 	if _, err := e.Hook(ctx, EventSessionEnd, core.Codex, loc, child); err != nil {
 		t.Fatal(err)
 	}
-	rec, _, _ := e.Store.Record(block)
-	if !rec.Live() || rec.AgentSessionID != "terminal-session" {
+	rec, _, _ := e.agentAt(block)
+	if !rec.Live() || rec.Session() != "terminal-session" {
 		t.Fatalf("background-first lifecycle retired terminal: %+v", rec)
 	}
 }
 
 func TestCodexMissedInteractiveStartStillAnnouncesMail(t *testing.T) {
 	e := fixture(t, &fakeTerm{state: "working"}, "m1")
-	rec, _, _ := e.Store.Record(block)
-	rec.AgentSessionID = "before-resume"
-	if err := e.Store.PutRecord(rec); err != nil {
+	rec, _, _ := e.agentAt(block)
+	recSeed := seedOf(rec)
+	recSeed.AgentSessionID = "before-resume"
+	if err := putSeed(e.Store, recSeed); err != nil {
 		t.Fatal(err)
 	}
+	rec = recordNamed(t, e, rec.Handle)
 	r, err := e.Hook(context.Background(), EventPostTool, core.Codex, Location{Block: block}, HookInput{SessionID: "after-resume", TranscriptPath: []byte(`"/tmp/interactive.jsonl"`)})
 	if err != nil || !strings.Contains(r.Notice, "1 unread") {
 		t.Fatalf("missed startup silenced interactive mail: %+v %v", r, err)
@@ -135,8 +139,8 @@ func TestCodexInteractiveSessionChangesRemainAdoptable(t *testing.T) {
 			if _, err := e.Hook(ctx, EventSessionEnd, core.Codex, loc, HookInput{SessionID: "first"}); err != nil {
 				t.Fatal(err)
 			}
-			rec, _, _ := e.Store.Record(block)
-			if !rec.Live() || rec.AgentSessionID != "next" {
+			rec, _, _ := e.agentAt(block)
+			if !rec.Live() || rec.Session() != "next" {
 				t.Fatalf("interactive %s was not preserved: %+v", source, rec)
 			}
 		})
@@ -156,8 +160,8 @@ func TestCodexNewProcessCanReplaceSessionInSamePane(t *testing.T) {
 	if _, err := e.Hook(ctx, EventSessionStart, core.Codex, loc, HookInput{SessionID: "replacement", Source: "startup"}); err != nil {
 		t.Fatal(err)
 	}
-	rec, _, _ := e.Store.Record(block)
-	if !rec.Live() || rec.AgentSessionID != "replacement" || rec.AgentPID != os.Getpid() {
+	rec, _, _ := e.agentAt(block)
+	if !rec.Live() || rec.Session() != "replacement" || rec.pid() != os.Getpid() {
 		t.Fatalf("replacement CLI did not acquire its identity: %+v", rec)
 	}
 }
@@ -183,11 +187,11 @@ func TestOncePerTurnHooksRetryAFailedAdoption(t *testing.T) {
 	if _, err := e.Hook(ctx, EventPostTool, core.Codex, loc, in); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, _ := e.Store.Record(block); ok {
+	if _, ok, _ := e.agentAt(block); ok {
 		t.Fatal("a tool call retried the failed adoption inside the back-off")
 	}
 	r, err := e.Hook(ctx, EventPrompt, core.Codex, loc, in)
-	if rec, ok, _ := e.Store.Record(block); err != nil || !ok || !rec.Live() || !strings.Contains(r.Notice, "you are codex-01") {
+	if rec, ok, _ := e.agentAt(block); err != nil || !ok || !rec.Live() || !strings.Contains(r.Notice, "you are codex-01") {
 		t.Fatalf("the next prompt must adopt: %+v %v %q", rec, err, r.Notice)
 	}
 }
@@ -206,7 +210,7 @@ func TestTurnEndRetriesAFailedAdoption(t *testing.T) {
 	if _, err := e.Hook(ctx, EventStop, core.Codex, loc, in); err != nil {
 		t.Fatal(err)
 	}
-	if rec, ok, _ := e.Store.Record(block); !ok || !rec.Live() {
+	if rec, ok, _ := e.agentAt(block); !ok || !rec.Live() {
 		t.Fatal("the end of the first turn must adopt an agent whose start failed")
 	}
 }
@@ -223,12 +227,14 @@ func sharedDaemon(agent int) func() ([]proc, error) {
 
 func TestSharedCodexDaemonThreadDoesNotTakeThePanesIdentity(t *testing.T) {
 	e := fixture(t, &fakeTerm{state: "working"}, "m1")
-	rec, _, _ := e.Store.Record(block)
-	rec.AgentSessionID = "pane-a"
-	if err := e.Store.PutRecord(rec); err != nil {
+	rec, _, _ := e.agentAt(block)
+	recSeed := seedOf(rec)
+	recSeed.AgentSessionID = "pane-a"
+	if err := putSeed(e.Store, recSeed); err != nil {
 		t.Fatal(err)
 	}
-	e.Ancestors = sharedDaemon(rec.AgentPID)
+	rec = recordNamed(t, e, rec.Handle)
+	e.Ancestors = sharedDaemon(rec.pid())
 	ctx := context.Background()
 	loc := Location{Block: block}
 	paneB := HookInput{SessionID: "pane-b", TranscriptPath: []byte(`"/tmp/pane-b.jsonl"`)}
@@ -238,8 +244,8 @@ func TestSharedCodexDaemonThreadDoesNotTakeThePanesIdentity(t *testing.T) {
 			t.Errorf("%s: another pane's thread was told of this pane's mail: %q", event, r.Notice)
 		}
 	}
-	after, _, _ := e.Store.Record(block)
-	if after.Handle != rec.Handle || after.AgentSessionID != "pane-a" || after.AgentPID != rec.AgentPID || !after.Live() {
+	after, _, _ := e.agentAt(block)
+	if after.Handle != rec.Handle || after.Session() != "pane-a" || after.pid() != rec.pid() || !after.Live() {
 		t.Errorf("another pane's thread took the record: before %+v, after %+v", rec, after)
 	}
 	if ledger, err := e.Store.Announced(rec.Handle); err != nil || ledger.IDs["m1"] {
@@ -256,7 +262,7 @@ func TestSharedCodexDaemonThreadIsNotAdopted(t *testing.T) {
 	if !errors.Is(err, ErrSharedHarness) || !strings.Contains(err.Error(), "--no-daemon") {
 		t.Errorf("adoption under a shared daemon: %v, want ErrSharedHarness naming --no-daemon", err)
 	}
-	if rec, ok, _ := e.Store.Record(block); ok {
+	if rec, ok, _ := e.agentAt(block); ok {
 		t.Errorf("a shared daemon's thread was adopted into the pane: %+v", rec)
 	}
 }
@@ -272,15 +278,15 @@ func TestCodexHookUnderItsShellIsAdopted(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = e.Depart(ctx, loc, HookInput{SessionID: "s1"}) })
-	rec, ok, _ := e.Store.Record(block)
-	if !ok || !rec.Adopted() || rec.AgentPID != os.Getpid() || rec.AgentSessionID != "s1" {
+	rec, ok, _ := e.agentAt(block)
+	if !ok || !rec.Adopted() || rec.pid() != os.Getpid() || rec.Session() != "s1" {
 		t.Fatalf("codex --no-daemon was not adopted: %+v", rec)
 	}
 	r, err := e.Hook(ctx, EventPostTool, core.Codex, loc, HookInput{SessionID: "s1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after, _, _ := e.Store.Record(block); after.AdoptedAt != rec.AdoptedAt || after.Handle != rec.Handle {
+	if after, _, _ := e.agentAt(block); after.adoptedAt() != rec.adoptedAt() || after.Handle != rec.Handle {
 		t.Errorf("the lease of codex --no-daemon was not kept: %+v -> %+v (%+v)", rec, after, r)
 	}
 }

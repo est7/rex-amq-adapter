@@ -12,7 +12,6 @@ import (
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/core"
-	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 // startPiAs starts a Pi session in b whose pane label (and so its role) is
@@ -86,12 +85,12 @@ func TestNarratorStealthInTheSession(t *testing.T) {
 // goal, and its own error reaches no worker.
 func TestNarratorStealthInErrorRouting(t *testing.T) {
 	e := realAmqEnv(t, &fakeTerm{})
-	orch := store.Record{Handle: "claude-01", Kind: core.Claude, Role: core.OrchestratorRole, SessionID: "session:s"}
+	orch := seed{Handle: "claude-01", Kind: core.Claude, Role: core.OrchestratorRole, SessionID: "session:s"}
 	put(t, e, orch,
-		store.Record{Handle: "codex-02", Kind: core.Codex, Role: core.NarratorRole, SessionID: "session:s"},
-		store.Record{Handle: "pi-03", Kind: core.Pi, Role: "implementer", SessionID: "session:s"},
+		seed{Handle: "codex-02", Kind: core.Codex, Role: core.NarratorRole, SessionID: "session:s"},
+		seed{Handle: "pi-03", Kind: core.Pi, Role: "implementer", SessionID: "session:s"},
 	)
-	orch = recordOf(t, e, "claude-01")
+	orchRec := recordOf(t, e, "claude-01")
 	peers, _, _ := e.sessionPeersForError(recordOf(t, e, "pi-03"))
 	for _, p := range peers {
 		if p.Role == core.NarratorRole {
@@ -102,7 +101,7 @@ func TestNarratorStealthInErrorRouting(t *testing.T) {
 		t.Fatalf("the narrator's own error goes to %+v", peers)
 	}
 	s := Session{server: fakeServer, id: "session:s", windowOf: map[string]string{"block:claude-01": "w", "block:codex-02": "w2", "block:pi-03": "w"}}
-	if other, ok := e.otherFamily(s, orch, orch); ok && other.Role == core.NarratorRole {
+	if other, ok := e.otherFamily(s, orchRec, orchRec); ok && other.Role == core.NarratorRole {
 		t.Fatalf("the narrator took over: %+v", other)
 	}
 }
@@ -113,15 +112,15 @@ func TestNarratorStealthInErrorRouting(t *testing.T) {
 func TestNarratorSummonCapacityAndTab(t *testing.T) {
 	e, term, loc := summonWorld(t)
 	for i, h := range []core.Handle{"codex-02", "codex-03", "codex-04", "codex-05"} {
-		add(t, e, store.Record{Handle: h, Kind: core.Codex, Server: fakeServer, BlockID: "block:w" + string(rune('0'+i)), SessionID: "session:s", Role: "worker", AgentPID: 2, AdoptedAt: e.Now()})
+		add(t, e, seed{Handle: h, Kind: core.Codex, Server: fakeServer, BlockID: "block:w" + string(rune('0'+i)), SessionID: "session:s", Role: "worker", AgentPID: 2, AdoptedAt: e.Now()})
 	}
-	add(t, e, store.Record{Handle: "pi-06", Kind: core.Pi, Server: fakeServer, BlockID: "block:n", SessionID: "session:s", Role: core.NarratorRole, AgentPID: 3, AdoptedAt: e.Now()})
-	add(t, e, store.Record{Handle: "pi-07", Kind: core.Pi, Server: fakeServer, BlockID: "block:p", SessionID: "session:s", Role: core.PersonalRole, AgentPID: 4, AdoptedAt: e.Now()})
+	add(t, e, seed{Handle: "pi-06", Kind: core.Pi, Server: fakeServer, BlockID: "block:n", SessionID: "session:s", Role: core.NarratorRole, AgentPID: 3, AdoptedAt: e.Now()})
+	add(t, e, seed{Handle: "pi-07", Kind: core.Pi, Server: fakeServer, BlockID: "block:p", SessionID: "session:s", Role: core.PersonalRole, AgentPID: 4, AdoptedAt: e.Now()})
 	asked := func(r *SummonRequest) { r.Asked = "start a qa" }
 	if res := summon(t, e, loc, "qa", asked); res.Action != "start" {
 		t.Fatalf("the narrator and personal agent took a worker's place: %+v", res)
 	}
-	add(t, e, store.Record{Handle: "codex-08", Kind: core.Codex, Server: fakeServer, BlockID: "block:q", SessionID: "session:s", Role: "qa", AgentPID: 5, AdoptedAt: e.Now()})
+	add(t, e, seed{Handle: "codex-08", Kind: core.Codex, Server: fakeServer, BlockID: "block:q", SessionID: "session:s", Role: "qa", AgentPID: 5, AdoptedAt: e.Now()})
 	if res := summon(t, e, loc, "editor", asked); res.Action != "refused" || !strings.Contains(res.Reason, "cap") {
 		t.Fatalf("the cap counts workers: %+v", res)
 	}
@@ -151,7 +150,7 @@ func watcherWorld(t *testing.T) (Env, *fakeTerm, core.SessionKey) {
 	t.Helper()
 	term := &fakeTerm{state: "idle", fgPID: os.Getpid(), windows: map[string]string{}}
 	e := realAmqEnv(t, term)
-	for _, r := range []store.Record{
+	for _, r := range []seed{
 		{Handle: "codex-01", Role: core.OrchestratorRole, BlockID: "block:o"},
 		{Handle: "codex-02", Role: core.NarratorRole, BlockID: "block:n"},
 		{Handle: "codex-03", Role: "implementer", BlockID: "block:w"},
@@ -164,7 +163,7 @@ func watcherWorld(t *testing.T) (Env, *fakeTerm, core.SessionKey) {
 
 func leave(t *testing.T, e Env, h core.Handle) {
 	t.Helper()
-	if err := e.Store.PutRecord(departed(recordOf(t, e, h), e.Now())); err != nil {
+	if err := putSeed(e.Store, departed(seedOf(recordOf(t, e, h)), e.Now())); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -194,7 +193,7 @@ func TestSessionWatcherOutlivesTheOrchestrator(t *testing.T) {
 	if err := <-first; !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("the watcher ended on its own: %v", err)
 	}
-	if recordOf(t, e, "codex-02").DepartedAt != nil {
+	if recordOf(t, e, "codex-02").departedAt() != nil {
 		t.Fatal("the watcher parked the narrator")
 	}
 
@@ -216,9 +215,9 @@ func TestSessionWatcherOutlivesTheOrchestrator(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.SelfBin = self
-	narr := recordOf(t, e, "codex-02")
+	narr := seedOf(recordOf(t, e, "codex-02"))
 	narr.DepartedAt = nil
-	if err := e.ensureSessionWatcher(narr); err != nil {
+	if err := e.ensureSessionWatcher(narr.asAgent()); err != nil {
 		t.Fatal(err)
 	}
 	for end := time.Now().Add(3 * time.Second); ; time.Sleep(20 * time.Millisecond) {
@@ -250,8 +249,8 @@ func narratorInbox(t *testing.T, e Env) []amq.Header {
 func TestSessionWatcherTellsTheNarrator(t *testing.T) {
 	e, _, key := watcherWorld(t)
 	ctx := context.Background()
-	keepers := func() []store.Record {
-		var out []store.Record
+	keepers := func() []agent {
+		var out []agent
 		for _, h := range []core.Handle{"codex-01", "codex-02"} {
 			if r := recordOf(t, e, h); r.Live() {
 				out = append(out, r)
@@ -316,7 +315,7 @@ func TestSessionWatcherTellsTheNarrator(t *testing.T) {
 func TestSessionWatcherTellsTheNarratorOfAHandBackAtOnce(t *testing.T) {
 	e, _, key := watcherWorld(t)
 	ctx := context.Background()
-	keepers := []store.Record{recordOf(t, e, "codex-01"), recordOf(t, e, "codex-02")}
+	keepers := []agent{recordOf(t, e, "codex-01"), recordOf(t, e, "codex-02")}
 	look := func() {
 		t.Helper()
 		if err := e.watchOnce(ctx, key, keepers); err != nil {
@@ -369,7 +368,7 @@ func TestSessionWatcherTellsTheNarratorOfAHandBackAtOnce(t *testing.T) {
 func TestHandBackOnlyTheOrchestratorRecords(t *testing.T) {
 	e, _, key := watcherWorld(t)
 	ctx := context.Background()
-	add(t, e, store.Record{Handle: "pi-04", Kind: core.Pi, Role: core.PersonalRole, BlockID: "block:p", Server: fakeServer, SessionID: "session:s", AgentPID: os.Getpid(), AdoptedAt: e.Now()})
+	add(t, e, seed{Handle: "pi-04", Kind: core.Pi, Role: core.PersonalRole, BlockID: "block:p", Server: fakeServer, SessionID: "session:s", AgentPID: os.Getpid(), AdoptedAt: e.Now()})
 	for _, b := range []string{"block:n", "block:w", "block:p"} {
 		if _, err := e.RecordHandBack(ctx, Location{Block: b}, "report"); !errors.Is(err, ErrRefused) {
 			t.Fatalf("%s recorded a hand-back: %v", b, err)
@@ -411,7 +410,7 @@ func TestSessionWatcherTellsAHandBackStoredBeforeItsFirstLook(t *testing.T) {
 	if _, err := e.RecordHandBack(ctx, Location{Block: "block:o"}, "fast report"); err != nil {
 		t.Fatal(err)
 	}
-	keepers := []store.Record{recordOf(t, e, "codex-01"), recordOf(t, e, "codex-02")}
+	keepers := []agent{recordOf(t, e, "codex-01"), recordOf(t, e, "codex-02")}
 	if err := e.watchOnce(ctx, key, keepers); err != nil {
 		t.Fatal(err)
 	}
@@ -491,7 +490,7 @@ func TestNarratorHoldBatchesHooksAndPi(t *testing.T) {
 func TestNarratorWakeEndsInTheViewNotInMail(t *testing.T) {
 	e, _, key := watcherWorld(t)
 	ctx := context.Background()
-	keep := []store.Record{recordOf(t, e, "codex-01"), recordOf(t, e, "codex-02")}
+	keep := []agent{recordOf(t, e, "codex-01"), recordOf(t, e, "codex-02")}
 	if err := e.watchOnce(ctx, key, keep); err != nil {
 		t.Fatal(err)
 	}

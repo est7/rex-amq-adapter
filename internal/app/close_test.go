@@ -33,7 +33,7 @@ func closeWorld(t *testing.T) (Env, *fakeTerm, Location) {
 	} {
 		startPiAs(t, e, term, p.block, p.session, p.label)
 	}
-	put(t, e, store.Record{Handle: "claude-01", Kind: core.Claude, Role: core.PersonalRole, BlockID: "block:me", SessionID: "session:me", WindowID: "window:me", AdoptedAt: time.Now()})
+	put(t, e, seed{Handle: "claude-01", Kind: core.Claude, Role: core.PersonalRole, BlockID: "block:me", SessionID: "session:me", WindowID: "window:me", AdoptedAt: time.Now()})
 	if err := e.Store.PutLink(core.Link{Personal: core.SessionKey{Server: fakeServer, SessionID: "session:me"}, Epic: core.SessionKey{Server: fakeServer, SessionID: "session:epic"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +48,7 @@ func closeEpic(e Env, loc Location, r CloseRequest) (CloseResult, error) {
 
 func handleIn(t *testing.T, e Env, block string) core.Handle {
 	t.Helper()
-	rec, ok, err := e.Store.Record(block)
+	rec, ok, err := e.agentAt(block)
 	if err != nil || !ok {
 		t.Fatalf("no record in %s: %v", block, err)
 	}
@@ -80,8 +80,8 @@ func TestCloseEpicKillsParksAndUnlinks(t *testing.T) {
 	}
 	for _, h := range want {
 		r := recordOf(t, e, h)
-		if r.Live() || r.DepartReason != store.DepartEpicClosed || r.Unfinished != "" {
-			t.Errorf("%s: live=%v reason=%q unfinished=%q", h, r.Live(), r.DepartReason, r.Unfinished)
+		if r.Live() || r.departReason() != store.DepartEpicClosed || r.unfinished() != "" {
+			t.Errorf("%s: live=%v reason=%q unfinished=%q", h, r.Live(), r.departReason(), r.unfinished())
 		}
 	}
 	if r := recordOf(t, e, other); !r.Live() {

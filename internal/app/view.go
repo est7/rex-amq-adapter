@@ -163,8 +163,8 @@ var ErrNoView = errors.New("no view yet: the session's narrator writes it with `
 
 // narratorOf is the live narrator in loc, which alone writes its session's
 // view and reads bodies for it.
-func (e Env) narratorOf(loc Location) (store.Record, core.SessionKey, error) {
-	rec, ok, err := e.Store.Record(loc.Block)
+func (e Env) narratorOf(loc Location) (agent, core.SessionKey, error) {
+	rec, ok, err := e.agentAt(loc.Block)
 	if err != nil {
 		return rec, core.SessionKey{}, err
 	}
@@ -180,7 +180,7 @@ func (e Env) narratorOf(loc Location) (store.Record, core.SessionKey, error) {
 // (session names it, or the one Epic it is linked to). Anyone else is
 // refused.
 func (e Env) viewReader(ctx context.Context, loc Location, session string) (string, error) {
-	rec, ok, err := e.Store.Record(loc.Block)
+	rec, ok, err := e.agentAt(loc.Block)
 	if err != nil {
 		return "", err
 	}
@@ -310,12 +310,12 @@ func (e Env) RefreshSessionView(ctx context.Context, loc Location, summary strin
 
 // sessionMembers are the records of key's session other than the stealth
 // ones, sorted by handle.
-func (e Env) sessionMembers(key core.SessionKey) ([]store.Record, error) {
-	recs, err := e.Store.Records()
+func (e Env) sessionMembers(key core.SessionKey) ([]agent, error) {
+	recs, err := e.agents()
 	if err != nil {
 		return nil, err
 	}
-	var out []store.Record
+	var out []agent
 	for _, r := range recs {
 		if r.Server == key.Server && r.SessionID == key.SessionID && !core.Stealth(r.Role) {
 			out = append(out, r)
@@ -390,7 +390,7 @@ func (g *gaps) list() []CoverageGap {
 	return out
 }
 
-func (e Env) buildView(ctx context.Context, narr store.Record, key core.SessionKey) (SessionView, error) {
+func (e Env) buildView(ctx context.Context, narr agent, key core.SessionKey) (SessionView, error) {
 	v := SessionView{
 		Schema: ViewSchema, Session: ViewSession{Server: key.Server, SessionID: key.SessionID}, Narrator: narr.Handle,
 		Members: []ViewMember{}, Obligations: []ViewObligation{}, Activity: []ViewMessage{}, ControlPlane: []ViewMessage{},
@@ -409,7 +409,7 @@ func (e Env) buildView(ctx context.Context, narr store.Record, key core.SessionK
 	}
 	var handles []core.Handle
 	for _, r := range members {
-		m := ViewMember{Handle: r.Handle, Kind: r.Kind, Role: r.Role, Task: r.Task, Live: r.Live(), DepartedAt: r.DepartedAt, DepartReason: r.DepartReason}
+		m := ViewMember{Handle: r.Handle, Kind: r.Kind, Role: r.Role, Task: r.Task, Live: r.Live(), DepartedAt: r.departedAt(), DepartReason: r.departReason()}
 		if r.Live() {
 			if m.Attention, err = e.attention(r); err != nil {
 				return v, err
@@ -623,7 +623,7 @@ func (e Env) ReadSessionMessages(ctx context.Context, loc Location, ids []string
 
 // findInSession finds message id's header in a mailbox of members: a copy
 // received (read or not) or sent.
-func (e Env) findInSession(members []store.Record, id string) (amq.Header, bool) {
+func (e Env) findInSession(members []agent, id string) (amq.Header, bool) {
 	for _, r := range members {
 		for _, box := range []amq.Box{amq.BoxUnread, amq.BoxDrained, amq.BoxSent} {
 			if h, err := amq.ReadHeader(e.Paths.Root(), string(r.Handle), box, id); err == nil {

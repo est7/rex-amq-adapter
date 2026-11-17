@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
-	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 const scoreAsk = "SCORE: <n>/10"
@@ -104,9 +103,9 @@ func TestSummonCouncilRoundTwoDeliversToLiveSeats(t *testing.T) {
 	e, term, loc := summonWorld(t)
 	e.LookPath = installedOnly(core.Codex, core.Agy, core.Claude)
 	wt := workDir(t, e, "app")
-	var seats []store.Record
+	var seats []seed
 	for i, k := range []core.Kind{core.Codex, core.Agy, core.Claude} {
-		rec := store.Record{Handle: core.Handle(fmt.Sprintf("%s-1%d", k, i)), Kind: k, Server: "unix:///fake.sock", BlockID: fmt.Sprintf("block:seat-%d", i), SessionID: "session:s", Role: "reviewer", AgentPID: 20 + i, AgentSessionID: fmt.Sprintf("seat-%d", i), AdoptedAt: e.Now(), Cwd: wt}
+		rec := seed{Handle: core.Handle(fmt.Sprintf("%s-1%d", k, i)), Kind: k, Server: "unix:///fake.sock", BlockID: fmt.Sprintf("block:seat-%d", i), SessionID: "session:s", Role: "reviewer", AgentPID: 20 + i, AgentSessionID: fmt.Sprintf("seat-%d", i), AdoptedAt: e.Now(), Cwd: wt}
 		add(t, e, rec)
 		seats = append(seats, rec)
 	}
@@ -151,10 +150,10 @@ func TestSummonCouncilRoundTwoDeliversToLiveSeats(t *testing.T) {
 // launched or reserved: a later single summon under the cap still starts.
 func TestSummonCouncilRefusesWithoutPartialLaunch(t *testing.T) {
 	asked := func(r *SummonRequest) { r.Asked = "council" }
-	seatOn := func(k core.Kind, n int) store.Record {
-		return store.Record{Handle: core.Handle(fmt.Sprintf("%s-%d", k, n)), Kind: k, Server: "unix:///fake.sock", BlockID: fmt.Sprintf("block:%s-%d", k, n), SessionID: "session:s", Role: "reviewer", AgentPID: 30 + n, AdoptedAt: time.Date(2026, 11, 10, 3, 0, 0, 0, time.UTC)}
+	seatOn := func(k core.Kind, n int) seed {
+		return seed{Handle: core.Handle(fmt.Sprintf("%s-%d", k, n)), Kind: k, Server: "unix:///fake.sock", BlockID: fmt.Sprintf("block:%s-%d", k, n), SessionID: "session:s", Role: "reviewer", AgentPID: 30 + n, AdoptedAt: time.Date(2026, 11, 10, 3, 0, 0, 0, time.UTC)}
 	}
-	nothing := func(t *testing.T, e Env, term *fakeTerm, live store.Record, res SummonResult, want string) {
+	nothing := func(t *testing.T, e Env, term *fakeTerm, live seed, res SummonResult, want string) {
 		t.Helper()
 		if res.Action != "refused" || !strings.Contains(res.Reason, want) || len(res.Seats) != 0 || len(res.Handles) != 0 {
 			t.Fatalf("want a refusal naming %q: %+v", want, res)
@@ -171,7 +170,7 @@ func TestSummonCouncilRefusesWithoutPartialLaunch(t *testing.T) {
 	}
 	for _, c := range []struct {
 		name, want string
-		live       store.Record
+		live       seed
 		setup      func(t *testing.T, e *Env)
 	}{
 		{"agy not installed", "agy: not installed", seatOn(core.Codex, 12), func(t *testing.T, e *Env) { e.LookPath = installedOnly(core.Codex, core.Claude) }},
@@ -205,7 +204,7 @@ func TestSummonCouncilRefusesWithoutPartialLaunch(t *testing.T) {
 		add(t, e, live)
 		// The caller, the codex seat and three more: two seats to start would make 7.
 		for i := 0; i < 3; i++ {
-			add(t, e, store.Record{Handle: core.Handle(fmt.Sprintf("pi-%02d", i+2)), Kind: core.Pi, Server: "unix:///fake.sock", BlockID: fmt.Sprintf("block:peer-%d", i), SessionID: "session:s", AgentPID: i + 10, AdoptedAt: e.Now()})
+			add(t, e, seed{Handle: core.Handle(fmt.Sprintf("pi-%02d", i+2)), Kind: core.Pi, Server: "unix:///fake.sock", BlockID: fmt.Sprintf("block:peer-%d", i), SessionID: "session:s", AgentPID: i + 10, AdoptedAt: e.Now()})
 		}
 		nothing(t, e, term, live, summon(t, e, loc, "reviewer", councilOf(asked)), "cap")
 		// One more agent still fits: the refused council reserved nothing.
@@ -219,7 +218,7 @@ func TestSummonCouncilRefusesWithoutPartialLaunch(t *testing.T) {
 // harness is a usage error, and nothing is mailed or launched.
 func TestSummonCouncilRejectsNonReviewRoles(t *testing.T) {
 	e, term, loc := summonWorld(t)
-	add(t, e, store.Record{Handle: "codex-02", Kind: core.Codex, Server: "unix:///fake.sock", BlockID: "block:b", SessionID: "session:s", Role: "reviewer", AgentPID: 2, AdoptedAt: e.Now()})
+	add(t, e, seed{Handle: "codex-02", Kind: core.Codex, Server: "unix:///fake.sock", BlockID: "block:b", SessionID: "session:s", Role: "reviewer", AgentPID: 2, AdoptedAt: e.Now()})
 	for _, r := range []SummonRequest{
 		{Target: "implementer"},
 		{Target: "writer"},

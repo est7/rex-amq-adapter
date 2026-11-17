@@ -3,11 +3,11 @@ package app
 import (
 	"context"
 	"os"
+	"reflect"
 	"testing"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
 	"github.com/est7/rex-amq-adapter/internal/rex"
-	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 // A headless `agy -p` inherits REX_BLOCK from the shell that runs it, and the
@@ -37,8 +37,8 @@ func TestAnAgyPrintRunInAClaudePaneIsNotThePanesAgent(t *testing.T) {
 	term := &fakeTerm{state: "working"}
 	e := realAmqEnv(t, term)
 	term.fgs = map[string]rex.Process{block: {PID: os.Getpid(), Name: "claude"}}
-	claude := store.Record{Handle: "claude-01", Kind: core.Claude, Server: "unix:///fake.sock", BlockID: block, AgentPID: os.Getpid(), AgentSessionID: "tui"}
-	if err := e.Store.PutRecord(claude); err != nil {
+	claude := seed{Handle: "claude-01", Kind: core.Claude, Server: "unix:///fake.sock", BlockID: block, AgentPID: os.Getpid(), AgentSessionID: "tui"}
+	if err := putSeed(e.Store, claude); err != nil {
 		t.Fatal(err)
 	}
 	e.Ancestors = printRunUnder(os.Getpid(), "claude")
@@ -48,11 +48,11 @@ func TestAnAgyPrintRunInAClaudePaneIsNotThePanesAgent(t *testing.T) {
 		if r.Notice != "" {
 			t.Errorf("%s: the print run was told %q", event, r.Notice)
 		}
-		if now, ok, _ := e.Store.Record(block); !ok || now != claude {
+		if now, ok, _ := e.agentAt(block); !ok || seedOf(now) != claude {
 			t.Fatalf("%s: the pane's record is %+v, want claude's %+v", event, now, claude)
 		}
 	}
-	recs, _ := e.Store.Records()
+	recs, _ := e.agents()
 	for _, r := range recs {
 		if r.Kind == core.Agy {
 			t.Errorf("the print run got a record: %+v", r)
@@ -76,8 +76,8 @@ func TestAnAgyPrintRunInAnAgyPaneKeepsTheParentsIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = e.Depart(ctx, loc, HookInput{}) })
-	parent, _, _ := e.Store.Record(block)
-	if parent.AgentSessionID != "parent" || parent.AgentPID != os.Getpid() {
+	parent, _, _ := e.agentAt(block)
+	if parent.Session() != "parent" || parent.pid() != os.Getpid() {
 		t.Fatalf("setup: %+v", parent)
 	}
 	e.Ancestors = printRunUnder(os.Getpid(), "agy")
@@ -86,7 +86,7 @@ func TestAnAgyPrintRunInAnAgyPaneKeepsTheParentsIdentity(t *testing.T) {
 		if r.Notice != "" {
 			t.Errorf("%s: the print run was told %q", event, r.Notice)
 		}
-		if now, _, _ := e.Store.Record(block); now != parent {
+		if now, _, _ := e.agentAt(block); !reflect.DeepEqual(now, parent) {
 			t.Fatalf("%s: the parent's record became %+v, was %+v", event, now, parent)
 		}
 	}
@@ -119,7 +119,7 @@ func TestThePanesOwnAgyIsStillAdopted(t *testing.T) {
 			if err != nil || r.Notice == "" {
 				t.Fatalf("SessionStart: notice %q, err %v", r.Notice, err)
 			}
-			if rec, ok, _ := e.Store.Record(block); !ok || rec.Kind != core.Agy || rec.AgentPID != c.fg.PID || rec.AgentSessionID != "own" {
+			if rec, ok, _ := e.agentAt(block); !ok || rec.Kind != core.Agy || rec.pid() != c.fg.PID || rec.Session() != "own" {
 				t.Errorf("record %+v", rec)
 			}
 		})
@@ -155,7 +155,7 @@ func TestARejectedAgyPrintRunDoesNotDelayThePanesAgy(t *testing.T) {
 	if _, err := e.Hook(ctx, EventPreInvocation, core.Agy, loc, HookInput{ConversationID: "c1"}); err != nil {
 		t.Fatal(err)
 	}
-	if rec, _, _ := e.Store.Record(block); rec.AgentPID != os.Getpid() || rec.AgentSessionID != "c1" {
+	if rec, _, _ := e.agentAt(block); rec.pid() != os.Getpid() || rec.Session() != "c1" {
 		t.Errorf("the pane's agy was not rebound after a rejected print run: %+v", rec)
 	}
 }

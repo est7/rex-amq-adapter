@@ -15,7 +15,6 @@ import (
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/core"
-	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 // ManagedVerbs are the amq commands the adapter runs for an agent, gateway
@@ -29,7 +28,7 @@ var ErrUsage = errors.New("usage")
 // ManagedMail runs amq verb with args as the agent in loc, on the adapter's
 // root, after the gateway allowed it. The exit status is amq's.
 func (e Env) ManagedMail(ctx context.Context, loc Location, verb string, args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
-	rec, ok, err := e.Store.Record(loc.Block)
+	rec, ok, err := e.agentAt(loc.Block)
 	if err != nil {
 		return 1, err
 	}
@@ -58,7 +57,7 @@ func (e Env) ManagedMail(ctx context.Context, loc Location, verb string, args []
 
 type managed struct {
 	e              Env
-	rec            store.Record
+	rec            agent
 	root           string
 	stdin          io.Reader
 	stdout, stderr io.Writer

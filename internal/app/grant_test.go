@@ -26,7 +26,7 @@ func grantWorld(t *testing.T) (Env, *fakeTerm, chan adoptedNotice) {
 	trustTemp(t, e)
 	e.Crews = func(string) crew.Library { return crew.Load("") }
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	put(t, e, store.Record{Handle: "claude-01", Kind: core.Claude, Role: core.PersonalRole, BlockID: "block:me", SessionID: "session:me", WindowID: "window:me", AdoptedAt: time.Now()})
+	put(t, e, seed{Handle: "claude-01", Kind: core.Claude, Role: core.PersonalRole, BlockID: "block:me", SessionID: "session:me", WindowID: "window:me", AdoptedAt: time.Now()})
 	adoptPane(t, e, "block:epic-1-1", "claude-02", core.NarratorRole)
 	done := make(chan adoptedNotice, 1)
 	term.sessionStarted = func(_ string, blocks []string) {
@@ -123,7 +123,7 @@ func TestOpenEpicGrantNotarizesGoalAndAskedTogether(t *testing.T) {
 	if a.err != nil || !strings.HasSuffix(a.notice, "Goal: "+goal+"\n"+grantLine) {
 		t.Fatalf("the lead's start notice (%v) does not end with its Goal and Grant lines:\n%s", a.err, a.notice)
 	}
-	if strings.Contains(e.identityNotice(context.Background(), Adoption{Record: recordOf(t, e, "claude-02")}, 0), "Grant:") {
+	if strings.Contains(e.identityNotice(context.Background(), Adoption{Agent: recordOf(t, e, "claude-02")}, 0), "Grant:") {
 		t.Error("the narrator was told the grant meant for the lead")
 	}
 	out, err := e.withStored(id, json.RawMessage(`{"schema":1}`))

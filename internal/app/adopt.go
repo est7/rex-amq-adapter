@@ -13,7 +13,7 @@ import (
 
 // Adoption is the result of adopting the agent in a block.
 type Adoption struct {
-	Record store.Record
+	Agent  agent
 	Unread int
 	// Decision is what happened to the waker; zero for in-process kinds,
 	// which have none.
@@ -93,7 +93,7 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	if err != nil {
 		return Adoption{}, err
 	}
-	recs, err := e.Store.Records()
+	recs, err := e.agents()
 	if err != nil {
 		return Adoption{}, err
 	}
@@ -103,7 +103,7 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	moved := false
 	if !hasOwn && in.Job {
 		for _, r := range recs {
-			if r.Live() && r.Kind == kind && r.AgentSessionID == in.SessionID && r.BlockID != loc.Block {
+			if r.Live() && r.Kind == kind && r.Session() == in.SessionID && r.BlockID != loc.Block {
 				own, hasOwn, moved = r, true, true
 			}
 		}
@@ -144,7 +144,7 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	}
 	// The moved job's waker follows it: amq.Ensure below replaces the one
 	// that targets its old block.
-	shownAt := store.Record{SessionID: blk.SessionID}
+	shownAt := agent{SessionID: blk.SessionID}
 	if moved && !together(own, shownAt) {
 		e.leaveSession(ctx, own)
 	}
@@ -155,89 +155,85 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 		e.seedSentCursor(handle)
 	}
 	server := serverOf(srv, loc)
-	// What this adoption means. The live record of this block coming back is a
+	// What this adoption means. The live agent of this block coming back is a
 	// repeated start hook or a compaction: nothing changes, unless the adoption
-	// that wrote it never finished. Then the agent was not told, and nor was
+	// that leased it never finished. Then the agent was not told, and nor was
 	// its window. One that departed was announced as gone, so taking its handle
 	// back is news again.
 	again := hasOwn && own.Live() && own.BlockID == loc.Block
-	unfinished := hasOwn && own.Unfinished == store.Adopting
+	unfinished := hasOwn && own.Live() && !own.Adopted()
 	arrived := !again || unfinished
 	if moved {
 		arrived = !together(own, shownAt) || unfinished // a move within the session is no news
 	}
-	known := hasOwn && in.SessionID != "" && own.AgentSessionID == in.SessionID && !unfinished
+	known := hasOwn && in.SessionID != "" && own.Session() == in.SessionID && !unfinished
 	now := e.Now().UTC()
-	rec := store.Record{
-		Handle:         handle,
-		Kind:           kind,
-		Server:         server,
-		BlockID:        loc.Block,
-		SessionID:      blk.SessionID,
-		WindowID:       blk.WindowID,
-		AgentPID:       agentPID,
-		AgentSessionID: in.SessionID,
-		AdoptedAt:      now,
-		FirstAdoptedAt: now,
-	}
-	// A resumed agent keeps its task and role, in any pane. One without a
-	// role takes the one its launcher wrote in the label; a label the adapter
-	// wrote is an earlier agent's and gives it nothing. A new agent takes the
-	// role the pane is labelled with, whoever wrote it, so a pane keeps its
-	// purpose across agents.
+	// A resumed agent keeps who it is: its task and role, in any pane, and
+	// the sessions and placements it ran as. One without a role takes the one
+	// its launcher wrote in the label; a label the adapter wrote is an earlier
+	// agent's and gives it nothing. A new agent takes the role the pane is
+	// labelled with, whoever wrote it, so a pane keeps its purpose across
+	// agents.
+	id := store.Identity{Handle: handle, Kind: kind, FirstAdoptedAt: now}
 	if hasOwn {
-		// A handle resumed in another session starts a generation there.
-		here := own.Placed(server, blk.SessionID, blk.WindowID, now)
-		rec.Generation, rec.PlacedAt = here.Generation, here.PlacedAt
-		rec.FirstAdoptedAt = own.InitialAdoptedAt()
-		rec.Task, rec.Role = own.Task, own.Role
-		if rec.Role == "" && core.LauncherLabel(blk.Label) {
-			rec.Role = core.Role(blk.Label)
+		id = own.Identity
+		id.FirstAdoptedAt = own.InitialAdoptedAt()
+		if id.Role == "" && core.LauncherLabel(blk.Label) {
+			id.Role = core.Role(blk.Label)
 		}
 	} else {
-		rec.Task, rec.Role = core.InitialTask(blk.Label), core.Role(blk.Label)
+		id.Task, id.Role = core.InitialTask(blk.Label), core.Role(blk.Label)
 	}
-	if again && own.AgentPID == agentPID {
-		rec.AdoptedAt = own.AdoptedAt
+	id = id.WithSession(in.SessionID)
+	lease := store.Lease{
+		Handle:         handle,
+		Place:          store.Place{Server: server, SessionID: blk.SessionID, WindowID: blk.WindowID, BlockID: loc.Block},
+		ServerInstance: srv.InstanceID,
+		Incarnation:    incarnation(server, agentPID),
+		AcquiredAt:     now,
+		// Unfinished until the waker and label follow: a move within the tab
+		// tells no one but is a transition all the same.
+		Adopting: !again || unfinished,
+	}
+	if again && own.pid() == agentPID {
+		lease.AcquiredAt = own.adoptedAt()
 	}
 	// Where it runs, for a later resume; and who summoned it, for the guards.
 	if fg, ok, err := e.Rex.Foreground(ctx, loc.Block); err == nil && ok && fg.Cwd != "" {
-		rec.Cwd = fg.Cwd
+		id.Cwd = fg.Cwd
 	}
-	if hasOwn {
-		rec.Parent, rec.Depth, rec.SummonedFor = own.Parent, own.Depth, own.SummonedFor
-		if rec.Cwd == "" {
-			rec.Cwd = own.Cwd
-		}
-		rec.Launched, rec.Model, rec.Effort = own.Launched, own.Model, own.Effort
+	if id.Cwd == "" && hasOwn {
+		id.Cwd = own.Cwd
 	}
 	// What the adapter launched it on; an agent started by hand, or a
 	// repeated hook of one launched before this version, keeps its own.
 	if in.Launch != nil {
-		rec.Launched, rec.Model, rec.Effort = true, in.Launch.Model, in.Launch.Effort
+		id.Launched, id.Model, id.Effort = true, in.Launch.Model, in.Launch.Effort
 	}
-	if rec.Unattended, err = e.adoptUnattended(rec, in, hasOwn && own.Unattended); err != nil {
+	if id.Unattended, err = e.adoptUnattended(id.Role, blk.SessionID, in, hasOwn && own.Unattended); err != nil {
 		return Adoption{}, err
 	}
 	sm, summoned, err := e.Store.Summon(in.SummonToken)
 	if err != nil {
 		fmt.Fprintf(Diagnostics, "read the summon of %s: %v\n", in.SummonToken, err)
 	} else if summoned && !again {
-		rec.Parent, rec.Depth, rec.SummonedFor = sm.Parent, sm.Depth, sm.For
+		id.Parent, id.Depth, id.SummonedFor = sm.Parent, sm.Depth, sm.For
 	}
-	// Recorded as unfinished until the waker and label follow: a move within
-	// the tab tells no one but is a transition all the same.
-	if !again || unfinished {
-		rec.Unfinished = store.Adopting
-	}
-	// Recorded before the waker starts: whatever happens next, departure and
-	// collection find this record and retire the block's waker, which amq
+	// Leased before the waker starts: whatever happens next, departure and
+	// collection find this lease and retire the block's waker, which amq
 	// identifies by the block its saved target names, and a later hook finishes
 	// the adoption.
-	if err := e.Store.PutRecord(rec); err != nil {
+	if err := e.Store.PutIdentity(id); err != nil {
 		return Adoption{}, err
 	}
-	// The committed record preserves lineage if token cleanup fails or the
+	if lease, err = e.Store.AcquireLease(lease, now); err != nil {
+		return Adoption{}, err
+	}
+	rec, _, err := e.agentOf(handle)
+	if err != nil {
+		return Adoption{}, err
+	}
+	// The committed identity preserves lineage if token cleanup fails or the
 	// process exits here; a retry keeps that lineage and finishes cleanup.
 	if summoned {
 		if err := e.Store.DeleteSummon(in.SummonToken); err != nil {
@@ -265,7 +261,7 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	if err := e.ensureSessionWatcher(rec); err != nil {
 		fmt.Fprintf(Diagnostics, "%v\n", err)
 	}
-	// The record carries the role, so briefing and orchestrator behaviour read one
+	// The identity carries the role, so briefing and orchestrator behaviour read one
 	// fact: the label is overwritten below, and a resumed agent may land in
 	// any pane.
 	out := Adoption{Decision: decision, Known: known, Role: rec.Role, Window: blk.WindowID, Session: blk.SessionID}
@@ -283,18 +279,18 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 		return Adoption{}, err
 	}
 	out.Unread = len(unread)
-	if rec.Unfinished != "" {
-		rec.Unfinished = ""
-		if err := e.Store.PutRecord(rec); err != nil {
+	if lease.Adopting {
+		if err := e.Store.FinishAdoption(handle, lease.Epoch); err != nil {
 			return Adoption{}, err
 		}
+		rec.lease.Adopting = false
 	}
-	out.Record = rec
+	out.Agent = rec
 	return out, nil
 }
 
 // peerOf is r's agent as the session policy sees it.
-func peerOf(r store.Record) core.Peer {
+func peerOf(r agent) core.Peer {
 	return core.Peer{
 		Handle:    r.Handle,
 		Kind:      r.Kind,
@@ -319,7 +315,7 @@ func serverOf(srv rex.Server, loc Location) string {
 // when the agent has just arrived in its block, queues a note for each of them
 // that it started beside them. The session is advice, not a binding: when Rex
 // cannot list it, adoption stands without mates and the failure is reported.
-func (e Env) joinSession(ctx context.Context, rec store.Record, blk rex.Block, recs []store.Record, arrived bool) []core.Peer {
+func (e Env) joinSession(ctx context.Context, rec agent, blk rex.Block, recs []agent, arrived bool) []core.Peer {
 	if blk.SessionID == "" {
 		return nil
 	}
@@ -393,7 +389,7 @@ func (e Env) noteWindow(ctx context.Context, h core.Handle, note string) error {
 //
 // An agent that claims nothing is named afresh: a new session in a pane
 // does not inherit the handle of the pane's previous session.
-func claim(recs []store.Record, block string, pid int, kind core.Kind, sessions []string) (store.Record, bool) {
+func claim(recs []agent, block string, pid int, kind core.Kind, sessions []string) (agent, bool) {
 	for _, session := range sessions {
 		r, ok, running := resumable(recs, block, kind, session)
 		if ok {
@@ -404,26 +400,28 @@ func claim(recs []store.Record, block string, pid int, kind core.Kind, sessions 
 		}
 	}
 	for _, r := range recs {
-		if r.BlockID == block && r.Live() && r.AgentPID == pid && r.Kind == kind {
+		if r.BlockID == block && r.Live() && r.pid() == pid && r.Kind == kind {
 			return r, true
 		}
 	}
-	return store.Record{}, false
+	return agent{}, false
 }
 
-// resumable is the newest record of session that the agent in block may take.
+// resumable is the newest handle that ran as session that the agent in
+// block may take: an identity keeps every session it ran as (/clear starts
+// another in the same process), and one session is in one identity (I1).
 // running reports that another block's agent holds the session: a handle is
 // never shared.
-func resumable(recs []store.Record, block string, kind core.Kind, session string) (resumed store.Record, found, running bool) {
+func resumable(recs []agent, block string, kind core.Kind, session string) (resumed agent, found, running bool) {
 	for _, r := range recs {
-		if r.AgentSessionID != session || r.Kind != kind {
+		if !slices.Contains(r.Sessions, session) || r.Kind != kind {
 			continue
 		}
 		if r.Live() && r.BlockID != block {
 			running = true
 			continue
 		}
-		if !found || r.AdoptedAt.After(resumed.AdoptedAt) {
+		if !found || r.adoptedAt().After(resumed.adoptedAt()) {
 			resumed, found = r, true
 		}
 	}
@@ -433,7 +431,7 @@ func resumable(recs []store.Record, block string, kind core.Kind, session string
 // takenHandles are the handles a new name must avoid: every record's (live,
 // or reserved for a departed session), and every mailbox holding undrained
 // mail, so a new agent never inherits someone else's unread messages.
-func (e Env) takenHandles(recs []store.Record) (map[core.Handle]bool, error) {
+func (e Env) takenHandles(recs []agent) (map[core.Handle]bool, error) {
 	taken := map[core.Handle]bool{}
 	for _, r := range recs {
 		taken[r.Handle] = true
@@ -468,7 +466,7 @@ func (e Env) SetTask(ctx context.Context, loc Location, task string) (string, er
 		return "", err
 	}
 	defer unlock()
-	rec, ok, err := e.Store.Record(loc.Block)
+	rec, ok, err := e.agentAt(loc.Block)
 	if err != nil {
 		return "", err
 	}
@@ -476,7 +474,7 @@ func (e Env) SetTask(ctx context.Context, loc Location, task string) (string, er
 		return "", fmt.Errorf("no AMQ identity for this Rex block (%s), so there is no pane label to set", loc.Block)
 	}
 	rec.Task = core.Task(task)
-	if err := e.Store.PutRecord(rec); err != nil {
+	if err := e.Store.PutIdentity(rec.Identity); err != nil {
 		return "", err
 	}
 	e.refreshTitle(ctx, rec)
@@ -490,7 +488,7 @@ func (e Env) SetTask(ctx context.Context, loc Location, task string) (string, er
 
 // Exports is the shell text `rex-amq-adapter env` prints for the agent in loc.
 func (e Env) Exports(loc Location) (string, error) {
-	rec, ok, err := e.Store.Record(loc.Block)
+	rec, ok, err := e.agentAt(loc.Block)
 	if err != nil {
 		return "", err
 	}

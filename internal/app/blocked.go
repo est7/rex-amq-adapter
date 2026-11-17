@@ -10,7 +10,6 @@ import (
 
 	"github.com/est7/rex-amq-adapter/internal/core"
 	"github.com/est7/rex-amq-adapter/internal/screen"
-	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 // The watchdog's third look, at every live agent of an orchestrator session, the
@@ -24,7 +23,7 @@ import (
 // orchestrator cannot read mail: another family in the session is told, else the
 // desktop. Zero keys.
 
-func (e Env) blocked(ctx context.Context, orch store.Record, s Session, rec store.Record) error {
+func (e Env) blocked(ctx context.Context, orch agent, s Session, rec agent) error {
 	st, reports, err := e.Rex.ProgramStatus(ctx, rec.BlockID)
 	if err != nil {
 		return err
@@ -56,7 +55,7 @@ func (e Env) blocked(ctx context.Context, orch store.Record, s Session, rec stor
 // the pane showed (what is "" when no prompt is up), mailing the notice once
 // and recording it only once sent. It returns what the desktop should hear,
 // told after the lock is released.
-func (e Env) tellBlocked(ctx context.Context, orch store.Record, s Session, rec store.Record, what, vt string) (desktop []string, err error) {
+func (e Env) tellBlocked(ctx context.Context, orch agent, s Session, rec agent, what, vt string) (desktop []string, err error) {
 	unlock, err := e.Store.LockHealth(ctx, rec.BlockID)
 	if err != nil {
 		return nil, err
@@ -113,7 +112,7 @@ func (e Env) tellBlocked(ctx context.Context, orch store.Record, s Session, rec 
 
 // blockedLog keeps one line per blocked episode in logs/blocked.log: when
 // it began, who, what, and the screen's last lines.
-func (e Env) blockedLog(orch, rec store.Record, what string, since time.Time, lines []string) {
+func (e Env) blockedLog(orch, rec agent, what string, since time.Time, lines []string) {
 	if err := os.MkdirAll(e.Paths.Logs(), 0o700); err != nil {
 		return
 	}

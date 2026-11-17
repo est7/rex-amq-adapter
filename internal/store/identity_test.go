@@ -55,13 +55,10 @@ func TestIdentityRoundTripsAndLists(t *testing.T) {
 	}
 }
 
-func TestIdentityNeedsHandleAndKind(t *testing.T) {
+func TestIdentityNeedsAHandle(t *testing.T) {
 	s := testStore(t)
 	if err := s.PutIdentity(Identity{Kind: core.Claude}); err == nil {
 		t.Fatal("identity without a handle accepted")
-	}
-	if err := s.PutIdentity(Identity{Handle: "x"}); err == nil {
-		t.Fatal("identity without a kind accepted")
 	}
 }
 
@@ -153,6 +150,14 @@ func TestLeaseOnABlockReplacesAnotherHandles(t *testing.T) {
 	}
 	if got, ok, _ := s.DepartedFrom("block:a"); !ok || got.Handle != "codex-01" {
 		t.Fatalf("departed from block:a: %+v %v", got, ok)
+	}
+	// Another server's block of the same id is another block.
+	mustIdentity(t, s, Identity{Handle: "pi-03", Kind: core.Pi})
+	remote := leaseIn("pi-03", "block:a", 30)
+	remote.Server = "unix:///elsewhere.sock"
+	mustLease(t, s, remote, at)
+	if _, live, _ := s.LeaseOf("claude-02"); !live {
+		t.Fatal("a lease on another server's block of the same id replaced this one")
 	}
 }
 

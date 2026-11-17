@@ -14,7 +14,6 @@ import (
 	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/core"
 	"github.com/est7/rex-amq-adapter/internal/rex"
-	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 // notifyWorld is a fake Rex with a personal agent per hub given (claude-01,
@@ -25,7 +24,7 @@ func notifyWorld(t *testing.T, hubs ...string) (Env, *fakeTerm) {
 	e := realAmqEnv(t, term)
 	for i, hub := range hubs {
 		h := []core.Handle{"claude-01", "codex-02", "codex-03"}[i]
-		add(t, e, store.Record{Handle: h, Kind: core.Codex, Role: core.PersonalRole, Server: fakeServer, BlockID: "block:" + string(h),
+		add(t, e, seed{Handle: h, Kind: core.Codex, Role: core.PersonalRole, Server: fakeServer, BlockID: "block:" + string(h),
 			SessionID: "session:" + string(h), Cwd: hub, AgentPID: os.Getpid(), AdoptedAt: e.Now()})
 	}
 	return e, term

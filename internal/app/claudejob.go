@@ -11,7 +11,6 @@ import (
 
 	"github.com/est7/rex-amq-adapter/internal/core"
 	"github.com/est7/rex-amq-adapter/internal/rex"
-	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 // A Claude Code background session ("agent view", code.claude.com/docs/en/
@@ -85,14 +84,14 @@ var ErrJobNotShown = errors.New("no single Rex pane shows this Claude Code backg
 // names it whatever task the harness last drew; before that, a background
 // job's title is its current name. Which Claude Code path wrote which file
 // does not matter: either counts.
-func titleNames(title string, rec store.Record, job claudeJob) bool {
+func titleNames(title string, rec agent, job claudeJob) bool {
 	t := core.ShownTitle(title)
 	return t != "" && (core.TitleNamesHandle(t, rec.Handle) || job.Name != "" && t == core.ShownTitle(job.Name))
 }
 
 // showsJob reports whether block's foreground is a Claude Code terminal
 // client whose title names the job (and rec, its record, if it has one).
-func (e Env) showsJob(ctx context.Context, block string, rec store.Record, job claudeJob) (bool, error) {
+func (e Env) showsJob(ctx context.Context, block string, rec agent, job claudeJob) (bool, error) {
 	fg, ok, err := e.Rex.Foreground(ctx, block)
 	if err != nil || !ok || fg.Name != "claude" {
 		return false, err
@@ -108,7 +107,7 @@ func (e Env) showsJob(ctx context.Context, block string, rec store.Record, job c
 // session is asked, so this is for hooks that run once a turn, not for every
 // tool call. Only a block whose foreground is a Claude Code client can match,
 // so a shell or an editor with the same title never does.
-func (e Env) locateJob(ctx context.Context, rec store.Record, job claudeJob) (string, error) {
+func (e Env) locateJob(ctx context.Context, rec agent, job claudeJob) (string, error) {
 	sessions, err := e.Rex.ListSessions(ctx)
 	if err != nil {
 		return "", err
@@ -134,7 +133,7 @@ func (e Env) locateJob(ctx context.Context, rec store.Record, job claudeJob) (st
 // namesAnother reports whether title names a Claude conversation other than
 // rec's: a background job by its current name, or another record by its
 // handle.
-func (e Env) namesAnother(title string, rec store.Record) (bool, error) {
+func (e Env) namesAnother(title string, rec agent) (bool, error) {
 	names, err := e.jobNames()
 	if err != nil {
 		return false, err
@@ -142,7 +141,7 @@ func (e Env) namesAnother(title string, rec store.Record) (bool, error) {
 	if names[core.ShownTitle(title)] {
 		return true, nil
 	}
-	recs, err := e.Store.Records()
+	recs, err := e.agents()
 	if err != nil {
 		return false, err
 	}
@@ -191,12 +190,12 @@ func (e Env) jobNames() (map[string]bool, error) {
 // nothing: agent view in the title means the conversation left the pane, and
 // another job's name means the pane shows that job. A background job is never
 // its pane's foreground; the title alone says whether the pane shows it.
-func (e Env) claudeBinding(ctx context.Context, rec store.Record, b *core.Binding) error {
+func (e Env) claudeBinding(ctx context.Context, rec agent, b *core.Binding) error {
 	title, err := e.Rex.Title(ctx, rec.BlockID)
 	if err != nil {
 		return err
 	}
-	job, isJob, err := e.claudeJob(rec.AgentSessionID)
+	job, isJob, err := e.claudeJob(rec.Session())
 	if err != nil {
 		return err
 	}
@@ -224,20 +223,20 @@ func (e Env) claudeBinding(ctx context.Context, rec store.Record, b *core.Bindin
 
 // liveRecordOf is the live record of session, the identity a background
 // job's tool shell has when its inherited REX_BLOCK names another pane.
-func (e Env) liveRecordOf(kind core.Kind, session string) (store.Record, bool, error) {
+func (e Env) liveRecordOf(kind core.Kind, session string) (agent, bool, error) {
 	if session == "" {
-		return store.Record{}, false, nil
+		return agent{}, false, nil
 	}
-	recs, err := e.Store.Records()
+	recs, err := e.agents()
 	if err != nil {
-		return store.Record{}, false, err
+		return agent{}, false, err
 	}
 	for _, r := range recs {
-		if r.Live() && r.Kind == kind && r.AgentSessionID == session {
+		if r.Live() && r.Kind == kind && r.Session() == session {
 			return r, true, nil
 		}
 	}
-	return store.Record{}, false, nil
+	return agent{}, false, nil
 }
 
 // jobLocation is where the agent of a Claude hook is, and whether it is a
@@ -305,11 +304,11 @@ func onceATurn(event string) bool {
 // from before its conversation moved to the background, so a job's status is
 // its supervisor's state: working, or at rest. reports is false: an emptied
 // box, not a status, confirms the doorbell (core.DecideConfirm).
-func (e Env) jobStatus(rec store.Record) (status rex.Status, reports, isJob bool, err error) {
+func (e Env) jobStatus(rec agent) (status rex.Status, reports, isJob bool, err error) {
 	if rec.Kind != core.Claude {
 		return rex.Status{}, false, false, nil
 	}
-	job, isJob, err := e.claudeJob(rec.AgentSessionID)
+	job, isJob, err := e.claudeJob(rec.Session())
 	if err != nil || !isJob {
 		return rex.Status{}, false, false, err
 	}

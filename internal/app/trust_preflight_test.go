@@ -12,7 +12,6 @@ import (
 
 	"github.com/est7/rex-amq-adapter/internal/core"
 	"github.com/est7/rex-amq-adapter/internal/install"
-	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 // gitRepo makes a git repository with no origin under parent.
@@ -118,7 +117,7 @@ func TestSummonTrustPreflightBeforeLaunch(t *testing.T) {
 func TestSummonTrustPreflightCoversAResume(t *testing.T) {
 	e, term, loc := summonWorld(t)
 	repo := gitRepo(t, t.TempDir(), "app")
-	add(t, e, departed(store.Record{Handle: "claude-07", Kind: core.Claude, Server: "unix:///fake.sock", BlockID: "block:gone", SessionID: "session:s", Role: "implementer", AgentPID: 7, AgentSessionID: "sess-7", AdoptedAt: e.Now().Add(-time.Hour), Cwd: repo}, e.Now().Add(-time.Minute)))
+	add(t, e, departed(seed{Handle: "claude-07", Kind: core.Claude, Server: "unix:///fake.sock", BlockID: "block:gone", SessionID: "session:s", Role: "implementer", AgentPID: 7, AgentSessionID: "sess-7", AdoptedAt: e.Now().Add(-time.Hour), Cwd: repo}, e.Now().Add(-time.Minute)))
 	res := summon(t, e, loc, "claude-07")
 	if res.Action != "refused" || !strings.Contains(res.Reason, "untrusted_folder") || !strings.Contains(res.Reason, "waits in claude-07's mailbox") || !res.Mailed {
 		t.Fatalf("%+v", res)
@@ -136,13 +135,13 @@ func TestSummonTrustPreflightCoversAResume(t *testing.T) {
 func TestSummonTrustPreflightRefusesAMissingDirectory(t *testing.T) {
 	e, term, loc := summonWorld(t)
 	gone := filepath.Join(t.TempDir(), "removed-worktree")
-	add(t, e, departed(store.Record{Handle: "claude-07", Kind: core.Claude, Server: "unix:///fake.sock", BlockID: "block:gone", SessionID: "session:s", Role: "implementer", AgentPID: 7, AgentSessionID: "sess-7", AdoptedAt: e.Now().Add(-time.Hour), Cwd: gone}, e.Now().Add(-time.Minute)))
+	add(t, e, departed(seed{Handle: "claude-07", Kind: core.Claude, Server: "unix:///fake.sock", BlockID: "block:gone", SessionID: "session:s", Role: "implementer", AgentPID: 7, AgentSessionID: "sess-7", AdoptedAt: e.Now().Add(-time.Hour), Cwd: gone}, e.Now().Add(-time.Minute)))
 	if res := summon(t, e, loc, "claude-07"); res.Action != "refused" || !strings.Contains(res.Reason, "does not exist") || len(term.launches) != 0 {
 		t.Fatalf("resume: %+v %+v", res, term.launches)
 	}
-	me, _, _ := e.Store.Record(loc.Block)
+	me, _, _ := e.agentAt(loc.Block)
 	me.Cwd = gone
-	add(t, e, me)
+	add(t, e, seedOf(me))
 	if res := summon(t, e, loc, "reviewer", func(r *SummonRequest) { r.Asked = "start one" }); res.Action != "refused" || !strings.Contains(res.Reason, "does not exist") || len(term.launches) != 0 {
 		t.Fatalf("start: %+v %+v", res, term.launches)
 	}

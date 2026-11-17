@@ -15,7 +15,6 @@ import (
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/core"
-	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 const fakeServer = "unix:///fake.sock"
@@ -33,7 +32,7 @@ func headed(t *testing.T, e Env, handle, id, from string, labels ...string) {
 	}
 }
 
-func put(t *testing.T, e Env, recs ...store.Record) {
+func put(t *testing.T, e Env, recs ...seed) {
 	t.Helper()
 	for _, r := range recs {
 		if r.Server == "" {
@@ -42,7 +41,7 @@ func put(t *testing.T, e Env, recs ...store.Record) {
 		if r.BlockID == "" {
 			r.BlockID = "block:" + string(r.Handle)
 		}
-		if err := e.Store.PutRecord(r); err != nil {
+		if err := putSeed(e.Store, r); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -80,10 +79,10 @@ func TestQuarantineAtInject(t *testing.T) {
 	f := &fakeTerm{state: "idle", submit: true}
 	e := fixture(t, f, "m0")
 	put(t, e,
-		store.Record{Handle: "codex", Kind: core.Codex, BlockID: block, SessionID: "session:a", AgentPID: os.Getpid()},
-		store.Record{Handle: "orch-01", Role: core.OrchestratorRole, SessionID: "session:a"},
-		store.Record{Handle: "claude-09", SessionID: "session:b"},
-		store.Record{Handle: "agy-05", Role: core.NarratorRole, SessionID: "session:a"},
+		seed{Handle: "codex", Kind: core.Codex, BlockID: block, SessionID: "session:a", AgentPID: os.Getpid()},
+		seed{Handle: "orch-01", Role: core.OrchestratorRole, SessionID: "session:a"},
+		seed{Handle: "claude-09", SessionID: "session:b"},
+		seed{Handle: "agy-05", Role: core.NarratorRole, SessionID: "session:a"},
 	)
 	headed(t, e, "codex", "m1", "orch-01")
 	headed(t, e, "codex", "m2", "claude-09")
@@ -132,8 +131,8 @@ func TestQuarantineLeavesNothingToRingFor(t *testing.T) {
 	f := &fakeTerm{state: "idle", submit: true}
 	e := fixture(t, f)
 	put(t, e,
-		store.Record{Handle: "codex", Kind: core.Codex, BlockID: block, SessionID: "session:a", AgentPID: os.Getpid()},
-		store.Record{Handle: "claude-09", SessionID: "session:b"},
+		seed{Handle: "codex", Kind: core.Codex, BlockID: block, SessionID: "session:a", AgentPID: os.Getpid()},
+		seed{Handle: "claude-09", SessionID: "session:b"},
 	)
 	headed(t, e, "codex", "m1", "claude-09")
 	if o := inject(e); o.Code != "nothing_unread" || len(f.writes) != 0 {
@@ -148,9 +147,8 @@ func TestQuarantineLeavesNothingToRingFor(t *testing.T) {
 func TestQuarantineAtHookForANarrator(t *testing.T) {
 	e := realAmqEnv(t, &fakeTerm{state: "working"})
 	ctx := context.Background()
-	narr := store.Record{Handle: "agy-02", Kind: core.Agy, Role: core.NarratorRole, SessionID: "session:a", AgentPID: os.Getpid()}
-	put(t, e, narr, store.Record{Handle: "claude-03", Role: core.OrchestratorRole, SessionID: "session:a"})
-	narr, _, _ = e.Store.RecordOf("agy-02")
+	put(t, e, seed{Handle: "agy-02", Kind: core.Agy, Role: core.NarratorRole, SessionID: "session:a", AgentPID: os.Getpid()}, seed{Handle: "claude-03", Role: core.OrchestratorRole, SessionID: "session:a"})
+	narr := recordNamed(t, e, "agy-02")
 	for _, h := range []string{"agy-02", "claude-03"} {
 		if err := e.AMQ.EnsureMailbox(ctx, e.Paths.Root(), h); err != nil {
 			t.Fatal(err)
@@ -203,8 +201,8 @@ func TestQuarantineAtSessionStart(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = e.Depart(ctx, loc, HookInput{}) })
-	rec, _, _ := e.Store.Record(block)
-	put(t, e, store.Record{Handle: "claude-09", SessionID: "session:elsewhere"})
+	rec, _, _ := e.agentAt(block)
+	put(t, e, seed{Handle: "claude-09", SessionID: "session:elsewhere"})
 	if err := amq.Send(ctx, e.AMQ, e.Paths.Root(), "claude-09", string(rec.Handle), "hi", "from another Epic"); err != nil {
 		t.Fatal(err)
 	}
@@ -228,8 +226,8 @@ func TestQuarantineFencesMailAddressedBeforeAMove(t *testing.T) {
 	e := realAmqEnv(t, &fakeTerm{})
 	ctx := context.Background()
 	put(t, e,
-		store.Record{Handle: "codex-01", SessionID: "session:a"},
-		store.Record{Handle: "claude-02", SessionID: "session:a"},
+		seed{Handle: "codex-01", SessionID: "session:a"},
+		seed{Handle: "claude-02", SessionID: "session:a"},
 	)
 	for _, h := range []string{"codex-01", "claude-02"} {
 		if err := e.AMQ.EnsureMailbox(ctx, e.Paths.Root(), h); err != nil {
@@ -239,9 +237,12 @@ func TestQuarantineFencesMailAddressedBeforeAMove(t *testing.T) {
 	if err := e.mailAs(ctx, "codex-01", "claude-02", "todo", "before", "sent while claude-02 was here"); err != nil {
 		t.Fatal(err)
 	}
-	rec, _, _ := e.Store.RecordOf("claude-02")
-	rec = rec.Placed(rec.Server, "session:b", "window:X", time.Now()).Placed(rec.Server, "session:a", "window:X", time.Now())
-	put(t, e, rec)
+	for _, session := range []string{"session:b", "session:a"} {
+		if err := e.Store.Moved("claude-02", session, "window:X", time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rec := recordNamed(t, e, "claude-02")
 	if err := amq.Send(ctx, e.AMQ, e.Paths.Root(), "codex-01", "claude-02", "after", "raw, sent after the return"); err != nil {
 		t.Fatal(err)
 	}
@@ -268,10 +269,9 @@ func TestLinkTakesEffectAtOnce(t *testing.T) {
 	term := &fakeTerm{}
 	e := realAmqEnv(t, term)
 	ctx := context.Background()
-	me := store.Record{Handle: "claude-01", Role: core.PersonalRole, BlockID: "block:p", SessionID: "session:p"}
-	narr := store.Record{Handle: "agy-02", Role: core.NarratorRole, BlockID: "block:n", SessionID: "session:a"}
-	put(t, e, me, narr)
-	narr, _, _ = e.Store.RecordOf("agy-02")
+	put(t, e, seed{Handle: "claude-01", Role: core.PersonalRole, BlockID: "block:p", SessionID: "session:p"},
+		seed{Handle: "agy-02", Role: core.NarratorRole, BlockID: "block:n", SessionID: "session:a"})
+	narr := recordNamed(t, e, "agy-02")
 	for _, h := range []string{"claude-01", "agy-02"} {
 		if err := e.AMQ.EnsureMailbox(ctx, e.Paths.Root(), h); err != nil {
 			t.Fatal(err)
@@ -316,10 +316,9 @@ func TestLinkedNarratorSendsToItsPersonalAgentUnasked(t *testing.T) {
 	term := &fakeTerm{}
 	e := realAmqEnv(t, term)
 	ctx := context.Background()
-	me := store.Record{Handle: "claude-01", Role: core.PersonalRole, BlockID: "block:p", SessionID: "session:p"}
-	narr := store.Record{Handle: "agy-02", Role: core.NarratorRole, BlockID: "block:n", SessionID: "session:a"}
-	put(t, e, me, narr)
-	me, _, _ = e.Store.RecordOf("claude-01")
+	put(t, e, seed{Handle: "claude-01", Role: core.PersonalRole, BlockID: "block:p", SessionID: "session:p"},
+		seed{Handle: "agy-02", Role: core.NarratorRole, BlockID: "block:n", SessionID: "session:a"})
+	me := recordNamed(t, e, "claude-01")
 	for _, h := range []string{"claude-01", "agy-02"} {
 		if err := e.AMQ.EnsureMailbox(ctx, e.Paths.Root(), h); err != nil {
 			t.Fatal(err)
@@ -353,9 +352,9 @@ func TestGatewayQuarantinesUnverifiedMailToPersonalAndNarrator(t *testing.T) {
 	f := &fakeTerm{state: "idle", submit: true}
 	e := fixture(t, f)
 	put(t, e,
-		store.Record{Handle: "claude-01", Role: core.PersonalRole, SessionID: "session:p"},
-		store.Record{Handle: "agy-02", Role: core.NarratorRole, SessionID: "session:a"},
-		store.Record{Handle: "codex-03", Role: "implementer", SessionID: "session:a"},
+		seed{Handle: "claude-01", Role: core.PersonalRole, SessionID: "session:p"},
+		seed{Handle: "agy-02", Role: core.NarratorRole, SessionID: "session:a"},
+		seed{Handle: "codex-03", Role: "implementer", SessionID: "session:a"},
 	)
 	if err := e.Store.PutLink(core.Link{Personal: core.SessionKey{Server: fakeServer, SessionID: "session:p"}, Epic: core.SessionKey{Server: fakeServer, SessionID: "session:a"}}); err != nil {
 		t.Fatal(err)

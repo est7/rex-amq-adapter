@@ -322,7 +322,7 @@ func TestCloseEpicOpIDRecoversAfterTheUnlink(t *testing.T) {
 	if _, ok, _ := e.Store.EpicOp(store.EpicOpClose, "close-3"); ok {
 		t.Error("a refused close recorded its op id")
 	}
-	put(t, e, store.Record{Handle: "claude-09", Kind: core.Claude, Role: core.PersonalRole, BlockID: "block:me2", SessionID: "session:me2", AdoptedAt: time.Now()})
+	put(t, e, seed{Handle: "claude-09", Kind: core.Claude, Role: core.PersonalRole, BlockID: "block:me2", SessionID: "session:me2", AdoptedAt: time.Now()})
 	if _, err := closeEpic(e, Location{Block: "block:me2"}, CloseRequest{Session: "session:epic", Asked: "close it", OpID: "close-2"}); !errors.Is(err, ErrRefused) {
 		t.Errorf("another personal agent replayed the close: %v", err)
 	}
@@ -422,7 +422,7 @@ func TestOpenEpicOpIDFindsItsSessionAfterTheRecordFails(t *testing.T) {
 		t.Fatalf("the intent %+v %v %v", op, ok, err)
 	}
 	for i, h := range []core.Handle{"claude-02", "claude-03"} {
-		put(t, e, store.Record{Handle: h, Kind: core.Claude, Role: []string{core.NarratorRole, core.OrchestratorRole}[i], BlockID: fmt.Sprintf("block:epic-2-%d", i+1), SessionID: "session:epic-2", AdoptedAt: time.Now()})
+		put(t, e, seed{Handle: h, Kind: core.Claude, Role: []string{core.NarratorRole, core.OrchestratorRole}[i], BlockID: fmt.Sprintf("block:epic-2-%d", i+1), SessionID: "session:epic-2", AdoptedAt: time.Now()})
 	}
 	again, err := openWithin(e, loc, req, 5*time.Second)
 	if err != nil {

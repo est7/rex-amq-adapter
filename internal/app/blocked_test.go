@@ -66,7 +66,7 @@ func TestTheOrchestratorBlockedWithoutMailIsNoticedOnce(t *testing.T) {
 func TestABlockedOrchestratorIsToldToAnotherFamily(t *testing.T) {
 	e, term, orch, s, now, desktop := healthWorld(t)
 	term.states = map[string]rex.Status{"block:g": {State: "blocked", Kind: "question"}}
-	if err := e.Store.PutRecord(store.Record{Handle: "agy-03", Kind: core.Agy, Server: "unix:///fake.sock", BlockID: "block:c", SessionID: "session:s", WindowID: "window:1", AgentPID: 7, AdoptedAt: e.Now()}); err != nil {
+	if err := putSeed(e.Store, seed{Handle: "agy-03", Kind: core.Agy, Server: "unix:///fake.sock", BlockID: "block:c", SessionID: "session:s", WindowID: "window:1", AgentPID: 7, AdoptedAt: e.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.AMQ.EnsureMailbox(context.Background(), e.Paths.Root(), "agy-03"); err != nil {

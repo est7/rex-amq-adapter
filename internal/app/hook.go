@@ -13,7 +13,6 @@ import (
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/core"
-	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 // Hook event names, as installed on the command line.
@@ -77,7 +76,7 @@ func (e Env) Hook(ctx context.Context, event string, kind core.Kind, loc Locatio
 	// pane's REX_BLOCK: none of its hooks speaks for the pane (F14).
 	if owner, nested := e.startedUnderOwner(kind, loc.Block); nested {
 		if event == EventSessionStart || event == EventSessionEnd {
-			fmt.Fprintf(Diagnostics, "ignored %s %s started under %s's agent (pid %d) in its pane (%s)\n", kind, in.SessionID, owner.Handle, owner.AgentPID, event)
+			fmt.Fprintf(Diagnostics, "ignored %s %s started under %s's agent (pid %d) in its pane (%s)\n", kind, in.SessionID, owner.Handle, owner.pid(), event)
 		}
 		return Reply{}, nil
 	}
@@ -183,18 +182,18 @@ func (e Env) sessionStart(ctx context.Context, kind core.Kind, loc Location, in 
 	if err != nil {
 		return Reply{}, err
 	}
-	r := Reply{Notice: e.identityNotice(ctx, a, a.Unread), Title: e.syncTitle(ctx, kind, EventSessionStart, a.Record, in.SessionID)}
+	r := Reply{Notice: e.identityNotice(ctx, a, a.Unread), Title: e.syncTitle(ctx, kind, EventSessionStart, a.Agent, in.SessionID)}
 	if kind.InProcess() {
 		// The extension delivers waiting mail itself, with a turn of its own,
 		// from the first scan of this inbox; marking it announced here would
 		// leave an idle agent never told.
-		r.Inbox = amq.Inbox(e.Paths.Root(), string(a.Record.Handle))
+		r.Inbox = amq.Inbox(e.Paths.Root(), string(a.Agent.Handle))
 		return r, nil
 	}
 	if a.Unread > 0 {
-		unread, err := amq.Unread(e.Paths.Root(), string(a.Record.Handle))
+		unread, err := amq.Unread(e.Paths.Root(), string(a.Agent.Handle))
 		if err == nil {
-			e.markAnnounced(ctx, e.Paths.Root(), a.Record.Handle, unread)
+			e.markAnnounced(ctx, e.Paths.Root(), a.Agent.Handle, unread)
 		}
 	}
 	return r, nil
@@ -212,7 +211,7 @@ func (e Env) sessionStart(ctx context.Context, kind core.Kind, loc Location, in 
 // adoption that stopped after writing its record. An agent in that state has a
 // mailbox, so a failed retry does not silence its mail.
 func (e Env) announce(ctx context.Context, kind core.Kind, loc Location, in HookInput, hook string, event core.HookEvent, may announcing) (Reply, error) {
-	rec, ok, err := e.Store.Record(loc.Block)
+	rec, ok, err := e.agentAt(loc.Block)
 	if err != nil {
 		return Reply{}, err
 	}
@@ -228,7 +227,7 @@ func (e Env) announce(ctx context.Context, kind core.Kind, loc Location, in Hook
 		a, adopted, err := e.adoptUnlessBackingOff(ctx, kind, loc, in, may)
 		switch {
 		case adopted:
-			rec = a.Record
+			rec = a.Agent
 			if !a.Known {
 				identity = e.identityNotice(ctx, a, 0)
 			}
@@ -266,7 +265,7 @@ func (e Env) adoptUnlessBackingOff(ctx context.Context, kind core.Kind, loc Loca
 	return a, err == nil, err
 }
 
-func (e Env) announceMail(ctx context.Context, rec store.Record, in HookInput, event core.HookEvent, identity string, window bool, sent []string) (Reply, error) {
+func (e Env) announceMail(ctx context.Context, rec agent, in HookInput, event core.HookEvent, identity string, window bool, sent []string) (Reply, error) {
 	unlock, err := e.Store.LockLedger(ctx, rec.Handle)
 	if err != nil {
 		return Reply{}, err
@@ -307,7 +306,7 @@ func (e Env) announceMail(ctx context.Context, rec store.Record, in HookInput, e
 // holds them, so a hook or Pi's mail watcher tells of routine mail no sooner
 // than the waker would ring for it; urgent mail is never held. A hold that
 // cannot be read holds nothing: it batches, it guards nothing.
-func (e Env) holdBack(rec store.Record, unread []string, announced map[string]bool) []string {
+func (e Env) holdBack(rec agent, unread []string, announced map[string]bool) []string {
 	root, h := e.Paths.Root(), string(rec.Handle)
 	normal, low, err := amq.ReadHolds(root, h)
 	if err != nil {
@@ -361,20 +360,20 @@ func (e Env) withWindowNotes(h core.Handle, window bool, identity, mail string) 
 // and what its crew and role ask of it.
 func (e Env) identityNotice(ctx context.Context, a Adoption, unread int) string {
 	mates := core.MatesNotice(a.Mates)
-	if core.Stealth(a.Record.Role) {
+	if core.Stealth(a.Agent.Role) {
 		// A narrator never mails a worker, and a personal agent only a
 		// linked narrator: neither is told to reach its session's agents.
 		mates = ""
 	}
-	head := joinNotices(core.SessionNotice(a.Record.Handle, a.Record.Role, e.SelfBin, unread), mates) +
-		"\n" + core.TaskNotice(a.Record.Handle, a.Record.Role, e.SelfBin+" title", a.Record.Task)
+	head := joinNotices(core.SessionNotice(a.Agent.Handle, a.Agent.Role, e.SelfBin, unread), mates) +
+		"\n" + core.TaskNotice(a.Agent.Handle, a.Agent.Role, e.SelfBin+" title", a.Agent.Task)
 	// After the briefing, so it reads as the word on whom "the human" means;
 	// an orchestrator hears this from its own role prompt.
 	tail := ""
-	if a.Record.Role != core.OrchestratorRole && !core.Stealth(a.Record.Role) {
+	if a.Agent.Role != core.OrchestratorRole && !core.Stealth(a.Agent.Role) {
 		tail = core.OrchestratorNotice(a.Mates)
 	}
-	if g := e.grantNotice(a.Record); g != "" {
+	if g := e.grantNotice(a.Agent); g != "" {
 		tail = strings.TrimPrefix(tail+"\n\n"+g, "\n\n")
 	}
 	return core.StartNotice(head, e.briefing(ctx, a), tail)
@@ -384,7 +383,7 @@ func (e Env) identityNotice(ctx context.Context, a Adoption, unread int) string 
 // leads an Epic that has a notarized grant (an orchestrator nobody summoned,
 // or a pair Epic's lead); "" for every other agent. Like the briefing it is
 // advice: what cannot be read is reported and left out.
-func (e Env) grantNotice(rec store.Record) string {
+func (e Env) grantNotice(rec agent) string {
 	if rec.Parent != "" || !placed(rec) {
 		return ""
 	}
@@ -412,11 +411,11 @@ func (e Env) grantNotice(rec store.Record) string {
 // role prompt. Like session-mates it is advice: what cannot be read is
 // reported and left out, and the agent keeps its handle.
 func (e Env) briefing(ctx context.Context, a Adoption) core.Briefing {
-	return e.briefingIn(ctx, a.Record, a.Role, e.sessionCrew(a.Session, a.Role))
+	return e.briefingIn(ctx, a.Agent, a.Role, e.sessionCrew(a.Session, a.Role))
 }
 
 // briefingIn is rec's briefing as role in the crew named name ("" for none).
-func (e Env) briefingIn(ctx context.Context, rec store.Record, role, name string) core.Briefing {
+func (e Env) briefingIn(ctx context.Context, rec agent, role, name string) core.Briefing {
 	b := core.Briefing{Role: role, Crew: name}
 	if e.Crews == nil {
 		return b
@@ -437,7 +436,7 @@ func (e Env) briefingIn(ctx context.Context, rec store.Record, role, name string
 
 // agentDir is the directory rec's agent works in: where its crews are
 // looked up. "" when Rex cannot say.
-func (e Env) agentDir(ctx context.Context, rec store.Record) string {
+func (e Env) agentDir(ctx context.Context, rec agent) string {
 	p, ok, err := e.Rex.Foreground(ctx, rec.BlockID)
 	if err != nil {
 		fmt.Fprintf(Diagnostics, "read the directory of %s: %v\n", rec.Handle, err)
@@ -508,7 +507,7 @@ func (e Env) adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	}
 	_ = e.Store.ClearAdoptFailed(loc.Block)
 	if a.LabelErr != nil {
-		fmt.Fprintf(Diagnostics, "show handle %s as the pane label: %v\n", a.Record.Handle, a.LabelErr)
+		fmt.Fprintf(Diagnostics, "show handle %s as the pane label: %v\n", a.Agent.Handle, a.LabelErr)
 	}
 	return a, nil
 }

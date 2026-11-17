@@ -68,7 +68,7 @@ func TestOpenEpicRunsItsAgentsUnattended(t *testing.T) {
 			if err != nil || !ok || p != want {
 				t.Errorf("policy %+v ok=%v err=%v, want %+v", p, ok, err, want)
 			}
-			if me, _, _ := e.Store.Record(loc.Block); me.Unattended {
+			if me, _, _ := e.agentAt(loc.Block); me.Unattended {
 				t.Errorf("the personal caller was marked unattended: %+v", me)
 			}
 			if got := os.Getenv(UnattendedEnv); got != "1" {
@@ -100,9 +100,9 @@ func TestSummonStartsUnattendedInAnEpic(t *testing.T) {
 	}{
 		{"epic session", func(t *testing.T, e Env, _ Location) { putPolicy(t, e, "session:s") }, "implementer", true},
 		{"unattended caller", func(t *testing.T, e Env, loc Location) {
-			me, _, _ := e.Store.Record(loc.Block)
+			me, _, _ := e.agentAt(loc.Block)
 			me.Unattended = true
-			add(t, e, me)
+			add(t, e, seedOf(me))
 		}, "implementer", true},
 		{"orchestrator", func(*testing.T, Env, Location) {}, core.OrchestratorRole, true},
 		{"attended, no epic", func(*testing.T, Env, Location) {}, "implementer", false},
@@ -134,8 +134,8 @@ func TestSummonStartsUnattendedInAnEpic(t *testing.T) {
 // A resumed worker runs unattended when it ran so before, or its session is
 // an Epic's; a resumed personal agent never does, whoever resumes it.
 func TestSummonResumesUnattendedWorkersButNeverAPersonalAgent(t *testing.T) {
-	gone := func(e Env, h core.Handle, role string, unattended bool) store.Record {
-		return departed(store.Record{Handle: h, Kind: core.Claude, Server: "unix:///fake.sock", BlockID: "block:gone", SessionID: "session:s", Role: role, AgentPID: 7, AgentSessionID: "conv-" + string(h), AdoptedAt: e.Now().Add(-time.Hour), Cwd: workDir(t, e, "app"), Unattended: unattended}, e.Now().Add(-time.Minute))
+	gone := func(e Env, h core.Handle, role string, unattended bool) seed {
+		return departed(seed{Handle: h, Kind: core.Claude, Server: "unix:///fake.sock", BlockID: "block:gone", SessionID: "session:s", Role: role, AgentPID: 7, AgentSessionID: "conv-" + string(h), AdoptedAt: e.Now().Add(-time.Hour), Cwd: workDir(t, e, "app"), Unattended: unattended}, e.Now().Add(-time.Minute))
 	}
 	t.Run("worker that ran unattended", func(t *testing.T) {
 		e, term, loc := summonWorld(t)
@@ -165,9 +165,9 @@ func TestSummonResumesUnattendedWorkersButNeverAPersonalAgent(t *testing.T) {
 	t.Run("personal agent", func(t *testing.T) {
 		e, _, _ := summonWorld(t)
 		putPolicy(t, e, "session:s")
-		p := gone(e, "claude-05", core.PersonalRole, true)
-		for _, caller := range []store.Record{{Role: core.OrchestratorRole, Unattended: true}, {Role: core.NarratorRole}} {
-			if got, err := e.launchUnattended("session:s", core.PersonalRole, caller, &p); err != nil || got {
+		p := gone(e, "claude-05", core.PersonalRole, true).asAgent()
+		for _, caller := range []seed{{Role: core.OrchestratorRole, Unattended: true}, {Role: core.NarratorRole}} {
+			if got, err := e.launchUnattended("session:s", core.PersonalRole, caller.asAgent(), &p); err != nil || got {
 				t.Errorf("a personal agent resumed by %+v: unattended %v err %v", caller, got, err)
 			}
 		}
@@ -176,7 +176,7 @@ func TestSummonResumesUnattendedWorkersButNeverAPersonalAgent(t *testing.T) {
 
 // adoptUnattendedLaunch plays the launched pane's first hook, its
 // environment carrying the marker exactly when the launch command set it.
-func adoptUnattendedLaunch(t *testing.T, e Env, term *fakeTerm, l launch, session string) store.Record {
+func adoptUnattendedLaunch(t *testing.T, e Env, term *fakeTerm, l launch, session string) agent {
 	t.Helper()
 	term.mu.Lock()
 	term.label = l.Label
@@ -185,8 +185,8 @@ func adoptUnattendedLaunch(t *testing.T, e Env, term *fakeTerm, l launch, sessio
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = e.AMQ.RetireFor(context.Background(), e.Paths.Root(), string(a.Record.Handle), l.Block) })
-	return a.Record
+	t.Cleanup(func() { _, _ = e.AMQ.RetireFor(context.Background(), e.Paths.Root(), string(a.Agent.Handle), l.Block) })
+	return a.Agent
 }
 
 // An unreadable Epic policy starts nothing: the launch is not made attended
@@ -214,7 +214,7 @@ func TestSummonStartsNothingOnAnUnreadablePolicy(t *testing.T) {
 // never recorded so, marker or policy. `env` exports the marker to an
 // unattended agent's shells and says nothing of it to anyone else.
 func TestAdoptRecordsUnattendedAndEnvExportsIt(t *testing.T) {
-	adopt := func(t *testing.T, e Env, term *fakeTerm, block, label, session string, in HookInput) store.Record {
+	adopt := func(t *testing.T, e Env, term *fakeTerm, block, label, session string, in HookInput) agent {
 		t.Helper()
 		term.mu.Lock()
 		term.label = label
@@ -225,8 +225,8 @@ func TestAdoptRecordsUnattendedAndEnvExportsIt(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { _, _ = e.AMQ.RetireFor(context.Background(), e.Paths.Root(), string(a.Record.Handle), block) })
-		return a.Record
+		t.Cleanup(func() { _, _ = e.AMQ.RetireFor(context.Background(), e.Paths.Root(), string(a.Agent.Handle), block) })
+		return a.Agent
 	}
 	exports := func(t *testing.T, e Env, block string) string {
 		t.Helper()

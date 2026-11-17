@@ -31,8 +31,9 @@ import (
 //   - I1: an agent session (kind, session id) is in at most one Identity's
 //     Sessions (PutIdentity scans every identity; there is no index to drift).
 //   - I2: a handle holds at most one lease (the file is named for it).
-//   - I3: a block holds at most one live lease: acquiring one on a block
-//     releases any other handle's lease there as DepartReplaced.
+//   - I3: a block (of one server) holds at most one live lease: acquiring
+//     one on a block releases any other handle's lease there as
+//     DepartReplaced.
 //   - I4: a lease is released only by the epoch that holds it (ReleaseLease is
 //     a compare-and-swap; a stale epoch is a no-op).
 //
@@ -252,8 +253,8 @@ func (s Store) Identities() ([]Identity, error) {
 // PutIdentity writes id as its handle's identity. It refuses an agent
 // session another handle of the same kind holds (I1).
 func (s Store) PutIdentity(id Identity) error {
-	if id.Handle == "" || id.Kind == "" {
-		return errors.New("an identity needs a handle and a kind")
+	if id.Handle == "" {
+		return errors.New("an identity needs a handle")
 	}
 	all, err := s.Identities()
 	if err != nil {
@@ -342,7 +343,7 @@ func (s Store) DepartedFrom(block string) (Identity, bool, error) {
 // l.BlockID from at, and returns the lease written. The handle needs an
 // identity. A lease the same process already holds keeps its epoch; any
 // other starts the next one, continuing past the handle's last placement.
-// AcquiredAt is the caller's, at when left zero. The identity's fence
+// AcquiredAt is the caller's. The identity's fence
 // moves to the lease's session (a new generation when it is another). Any
 // other handle's lease on the block is released as DepartReplaced (I3).
 func (s Store) AcquireLease(l Lease, at time.Time) (Lease, error) {
@@ -364,16 +365,13 @@ func (s Store) AcquireLease(l Lease, at time.Time) (Lease, error) {
 	if id.LastPlacement != nil {
 		l.Epoch = id.LastPlacement.Epoch + 1
 	}
-	if l.AcquiredAt.IsZero() {
-		l.AcquiredAt = at.UTC()
-	}
 	for _, o := range leases {
 		switch {
 		case o.Handle == l.Handle && o.Incarnation.Same(l.Incarnation):
 			l.Epoch = o.Epoch
 		case o.Handle == l.Handle:
 			l.Epoch = max(l.Epoch, o.Epoch+1)
-		case o.BlockID == l.BlockID:
+		case o.BlockID == l.BlockID && o.Server == l.Server:
 			if _, err := s.ReleaseLease(o.Handle, o.Epoch, Departure{Reason: DepartReplaced, At: at, Unfinished: true}); err != nil {
 				return Lease{}, fmt.Errorf("release %s, replaced in %s: %w", o.Handle, l.BlockID, err)
 			}
@@ -476,7 +474,7 @@ func (s Store) ForgetIdentity(h core.Handle) error {
 		}
 		return err
 	}
-	for _, p := range []string{s.identityPath(h), s.ledgerPath(h), s.sentCursorPath(h), s.injectLog(h), s.titlePath(h), s.titleStatePath(h), s.taskAskedPath(h), s.turnErrorPath(string(h))} {
+	for _, p := range []string{s.identityPath(h), s.ledgerPath(h), s.sentCursorPath(h), s.injectLog(h), s.titlePath(h), s.titleStatePath(h), s.taskAskedPath(h), s.turnErrorPath(h)} {
 		if err := os.Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}

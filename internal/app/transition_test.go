@@ -45,16 +45,13 @@ func amqThat(t *testing.T, e *Env, fail, condition string) {
 	e.AMQ = amq.CLI{Bin: script}
 }
 
-func windowAgent(t *testing.T, e Env, h core.Handle, kind core.Kind, role string) store.Record {
+func windowAgent(t *testing.T, e Env, h core.Handle, kind core.Kind, role string) agent {
 	t.Helper()
 	if err := e.AMQ.EnsureMailbox(context.Background(), e.Paths.Root(), string(h)); err != nil {
 		t.Fatal(err)
 	}
-	r := store.Record{Handle: h, Kind: kind, Role: role, Server: "unix:///fake.sock", BlockID: "block:" + string(h), SessionID: "session:s", WindowID: "window:1", AgentPID: os.Getpid(), AgentSessionID: "s-" + string(h)}
-	if err := e.Store.PutRecord(r); err != nil {
-		t.Fatal(err)
-	}
-	return r
+	r := seed{Handle: h, Kind: kind, Role: role, Server: "unix:///fake.sock", BlockID: "block:" + string(h), SessionID: "session:s", WindowID: "window:1", AgentPID: os.Getpid(), AgentSessionID: "s-" + string(h)}
+	return plant(t, e, r)
 }
 
 func unreadOf(t *testing.T, e Env, h string) int {
@@ -66,9 +63,9 @@ func unreadOf(t *testing.T, e Env, h string) int {
 	return len(ids)
 }
 
-func recordNamed(t *testing.T, e Env, h core.Handle) store.Record {
+func recordNamed(t *testing.T, e Env, h core.Handle) agent {
 	t.Helper()
-	recs, err := e.Store.Records()
+	recs, err := e.agents()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +75,7 @@ func recordNamed(t *testing.T, e Env, h core.Handle) store.Record {
 		}
 	}
 	t.Fatalf("no record for %s", h)
-	return store.Record{}
+	return agent{}
 }
 
 // One failed send must not leave an idle orchestrator unaware that its peer left:
@@ -97,8 +94,8 @@ func TestADepartureFinishesAfterItsMailFailed(t *testing.T) {
 	if err := e.park(ctx, peer, store.DepartSessionEnd); err != nil {
 		t.Fatalf("a failed notice must not fail the departure: %v", err)
 	}
-	if r := recordNamed(t, e, peer.Handle); r.Live() || r.Unfinished != store.Departing {
-		t.Fatalf("after the failed send: live=%v unfinished=%q", r.Live(), r.Unfinished)
+	if r := recordNamed(t, e, peer.Handle); r.Live() || r.unfinished() != departing {
+		t.Fatalf("after the failed send: live=%v unfinished=%q", r.Live(), r.unfinished())
 	}
 	if err := e.Collect(ctx); err == nil {
 		t.Fatal("collection hid that the departure is still unfinished")
@@ -115,8 +112,8 @@ func TestADepartureFinishesAfterItsMailFailed(t *testing.T) {
 	if n := unreadOf(t, e, "claude-orch-01"); n != 1 {
 		t.Fatalf("the orchestrator got %d messages after the retry", n)
 	}
-	if r := recordNamed(t, e, peer.Handle); r.Unfinished != "" {
-		t.Fatalf("the departure stayed unfinished: %q", r.Unfinished)
+	if r := recordNamed(t, e, peer.Handle); r.unfinished() != "" {
+		t.Fatalf("the departure stayed unfinished: %q", r.unfinished())
 	}
 	if err := e.Collect(ctx); err != nil {
 		t.Fatal(err)
@@ -134,8 +131,8 @@ func TestADepartureWithoutAnOrchestratorFinishesAtOnce(t *testing.T) {
 	if err := e.park(context.Background(), peer, store.DepartSessionEnd); err != nil {
 		t.Fatal(err)
 	}
-	if r := recordNamed(t, e, peer.Handle); r.Live() || r.Unfinished != "" {
-		t.Fatalf("live=%v unfinished=%q", r.Live(), r.Unfinished)
+	if r := recordNamed(t, e, peer.Handle); r.Live() || r.unfinished() != "" {
+		t.Fatalf("live=%v unfinished=%q", r.Live(), r.unfinished())
 	}
 }
 
@@ -161,8 +158,8 @@ func TestAnInterruptedAdoptionFinishesOnTheNextPrompt(t *testing.T) {
 	if _, err := e.Hook(ctx, EventSessionStart, core.Codex, loc, in); err == nil {
 		t.Fatal("setup: the adoption should fail")
 	}
-	rec, ok, _ := e.Store.Record(block)
-	if !ok || !rec.Live() || rec.Unfinished != store.Adopting {
+	rec, ok, _ := e.agentAt(block)
+	if !ok || !rec.Live() || rec.unfinished() != adopting {
 		t.Fatalf("after the failure: %+v", rec)
 	}
 	if err := os.Remove(dir); err != nil {
@@ -178,8 +175,8 @@ func TestAnInterruptedAdoptionFinishesOnTheNextPrompt(t *testing.T) {
 	if err != nil || !strings.Contains(r.Notice, "you are "+string(rec.Handle)) {
 		t.Fatalf("the next prompt must finish the adoption: %q %v", r.Notice, err)
 	}
-	if got := recordNamed(t, e, rec.Handle); got.Unfinished != "" {
-		t.Fatalf("the adoption stayed unfinished: %q", got.Unfinished)
+	if got := recordNamed(t, e, rec.Handle); got.unfinished() != "" {
+		t.Fatalf("the adoption stayed unfinished: %q", got.unfinished())
 	}
 	if want := core.PaneLabel(rec.Handle, "reviewer", ""); term.label != want {
 		t.Fatalf("pane label %q, want %q", term.label, want)
@@ -212,8 +209,8 @@ func TestARepeatedAdoptionThatFailsIsNotAnArrival(t *testing.T) {
 	if _, err := e.Store.TakeWindowNotes(mate.Handle); err != nil {
 		t.Fatal(err)
 	}
-	if got := recordNamed(t, e, first.Record.Handle); got.Unfinished != "" {
-		t.Fatalf("a finished adoption is marked %q", got.Unfinished)
+	if got := recordNamed(t, e, first.Agent.Handle); got.unfinished() != "" {
+		t.Fatalf("a finished adoption is marked %q", got.unfinished())
 	}
 	fail := filepath.Join(t.TempDir(), "fail")
 	if err := os.WriteFile(fail, nil, 0o600); err != nil {
@@ -225,8 +222,8 @@ func TestARepeatedAdoptionThatFailsIsNotAnArrival(t *testing.T) {
 	if _, err := e.Adopt(short, loc, core.Codex, in); err == nil {
 		t.Fatal("setup: the repeat should fail")
 	}
-	if got := recordNamed(t, e, first.Record.Handle); !got.Adopted() {
-		t.Fatalf("a failed repeat undid the adoption: %q", got.Unfinished)
+	if got := recordNamed(t, e, first.Agent.Handle); !got.Adopted() {
+		t.Fatalf("a failed repeat undid the adoption: %q", got.unfinished())
 	}
 	again, err := clean.Adopt(ctx, loc, core.Codex, in)
 	if err != nil || !again.Known {
@@ -255,7 +252,7 @@ func TestAnUnfinishedAdoptionStillHearsItsMail(t *testing.T) {
 	if _, err := e.Hook(ctx, EventSessionStart, core.Codex, loc, in); err == nil {
 		t.Fatal("setup: the adoption should fail")
 	}
-	rec, _, _ := e.Store.Record(block)
+	rec, _, _ := e.agentAt(block)
 	if err := os.WriteFile(filepath.Join(amq.Inbox(e.Paths.Root(), string(rec.Handle)), "m1.md"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -308,10 +305,10 @@ func TestAPiOrchestratorsWatcherComesBackWhenItSettles(t *testing.T) {
 	e.SelfBin = self
 	r := windowAgent(t, e, "pi-orch-01", core.Pi, core.OrchestratorRole)
 	r.BlockID = block
-	if err := e.Store.PutRecord(r); err != nil {
+	if err := putSeed(e.Store, seedOf(r)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.Hook(ctx, EventSettle, core.Pi, Location{Block: block}, HookInput{SessionID: r.AgentSessionID}); err != nil {
+	if _, err := e.Hook(ctx, EventSettle, core.Pi, Location{Block: block}, HookInput{SessionID: r.Session()}); err != nil {
 		t.Fatal(err)
 	}
 	for end := time.Now().Add(3 * time.Second); ; time.Sleep(20 * time.Millisecond) {
@@ -337,7 +334,7 @@ func TestAResumedAgentKeepsItsRoleWhateverThePaneSays(t *testing.T) {
 	if err := e.AMQ.EnsureMailbox(ctx, e.Paths.Root(), "codex-01"); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.Store.PutRecord(store.Record{Handle: "codex-01", Kind: core.Codex, Role: "reviewer", Server: "unix:///fake.sock", BlockID: "block:gone", AgentSessionID: "s1", DepartedAt: &departed}); err != nil {
+	if err := putSeed(e.Store, seed{Handle: "codex-01", Kind: core.Codex, Role: "reviewer", Server: "unix:///fake.sock", BlockID: "block:gone", AgentSessionID: "s1", DepartedAt: &departed}); err != nil {
 		t.Fatal(err)
 	}
 	a, err := e.Adopt(ctx, loc, core.Codex, HookInput{SessionID: "s1"})
@@ -345,15 +342,15 @@ func TestAResumedAgentKeepsItsRoleWhateverThePaneSays(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = e.Depart(ctx, loc, HookInput{}) })
-	if a.Record.Handle != "codex-01" || a.Role != "reviewer" {
-		t.Fatalf("handle %s role %q", a.Record.Handle, a.Role)
+	if a.Agent.Handle != "codex-01" || a.Role != "reviewer" {
+		t.Fatalf("handle %s role %q", a.Agent.Handle, a.Role)
 	}
 }
 
 func TestAwaitWaitsForTheAdoptionToFinish(t *testing.T) {
 	term := &fakeTerm{state: "idle"}
 	e := realAmqEnv(t, term)
-	if err := e.Store.PutRecord(store.Record{Handle: "codex-01", Kind: core.Codex, BlockID: block, Unfinished: store.Adopting}); err != nil {
+	if err := putSeed(e.Store, seed{Handle: "codex-01", Kind: core.Codex, BlockID: block, Adopting: true}); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
@@ -382,8 +379,8 @@ func TestAnOrchestratorHearsOfADepartureAnywhereInItsSession(t *testing.T) {
 			orch.SessionID, orch.WindowID = c.goalSession, c.goalWindow
 			peer := windowAgent(t, e, "codex-reviewer-01", core.Codex, "reviewer")
 			peer.SessionID, peer.WindowID = c.peerSession, c.peerWindow
-			for _, r := range []store.Record{orch, peer} {
-				if err := e.Store.PutRecord(r); err != nil {
+			for _, r := range []seed{seedOf(orch), seedOf(peer)} {
+				if err := putSeed(e.Store, r); err != nil {
 					t.Fatal(err)
 				}
 			}

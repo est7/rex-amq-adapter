@@ -56,7 +56,7 @@ type CloseResult struct {
 // session already gone is not an error.
 func (e Env) CloseEpic(ctx context.Context, loc Location, r CloseRequest) (CloseResult, error) {
 	res := CloseResult{SessionID: r.Session, OpID: r.OpID}
-	caller, ok, err := e.Store.Record(loc.Block)
+	caller, ok, err := e.agentAt(loc.Block)
 	if err != nil {
 		return res, err
 	}
@@ -130,7 +130,7 @@ func (e Env) CloseEpic(ctx context.Context, loc Location, r CloseRequest) (Close
 // replayClose finishes the close recorded under opID, when there is one: done
 // is false when there is none, and the close goes on as a new one. The op id
 // of another request (another caller, another session) is refused.
-func (e Env) replayClose(ctx context.Context, caller store.Record, opID, hash string) (res CloseResult, done bool, err error) {
+func (e Env) replayClose(ctx context.Context, caller agent, opID, hash string) (res CloseResult, done bool, err error) {
 	unlockEpic, err := e.Store.LockEpicLifecycle(ctx)
 	if err != nil {
 		return res, true, err
@@ -159,7 +159,7 @@ func (e Env) replayClose(ctx context.Context, caller store.Record, opID, hash st
 }
 
 // linkTo is caller's link to the Epic session, refused when there is none.
-func (e Env) linkTo(caller store.Record, session string) (core.Link, error) {
+func (e Env) linkTo(caller agent, session string) (core.Link, error) {
 	if session == "" || session == caller.SessionID {
 		return core.Link{}, fmt.Errorf("%w: name an Epic session other than your own", ErrUsage)
 	}
@@ -178,7 +178,7 @@ func (e Env) linkTo(caller store.Record, session string) (core.Link, error) {
 // unsettled names each live agent of epic, Stealth ones aside, that is not
 // at rest (unrest).
 func (e Env) unsettled(ctx context.Context, on Terminal, epic core.SessionKey) ([]string, error) {
-	recs, err := e.Store.Records()
+	recs, err := e.agents()
 	if err != nil {
 		return nil, err
 	}
@@ -204,7 +204,7 @@ func (e Env) unsettled(ctx context.Context, on Terminal, epic core.SessionKey) (
 // leaves nothing in the way. A local Claude Code background job is judged by
 // its supervisor's state (jobStatus): the client showing it reports none of
 // its own, or a stale one.
-func (e Env) unrest(ctx context.Context, on Terminal, rec store.Record) (string, error) {
+func (e Env) unrest(ctx context.Context, on Terminal, rec agent) (string, error) {
 	var st rex.Status
 	isJob := false
 	if localServer(rec.Server) {
@@ -244,7 +244,7 @@ func (e Env) unrest(ctx context.Context, on Terminal, rec store.Record) (string,
 // tells nobody: everyone it would tell was in the session that was just
 // killed.
 func (e Env) parkClosed(ctx context.Context, epic core.SessionKey) ([]core.Handle, error) {
-	recs, err := e.Store.Records()
+	recs, err := e.agents()
 	if err != nil {
 		return nil, err
 	}
@@ -265,9 +265,9 @@ func (e Env) parkClosed(ctx context.Context, epic core.SessionKey) ([]core.Handl
 
 // departQuietly marks rec's agent departed for reason, the caller holding the
 // lifecycle lock: it retires the handle's waker, clears its window notes, and
-// tells nobody. The record is left finished (Unfinished ""), so collection
+// tells nobody. The departure is left finished (it owes no notices), so collection
 // and a later SessionEnd find nothing to do. A failure leaves the record live.
-func (e Env) departQuietly(ctx context.Context, rec store.Record, reason string) error {
+func (e Env) departQuietly(ctx context.Context, rec agent, reason string) error {
 	if !rec.Kind.InProcess() {
 		if err := e.prepareInjector(); err != nil {
 			return err
@@ -279,7 +279,6 @@ func (e Env) departQuietly(ctx context.Context, rec store.Record, reason string)
 	if err := e.clearWindowNotes(ctx, rec.Handle); err != nil {
 		return err
 	}
-	now := e.Now().UTC()
-	rec.DepartedAt, rec.DepartReason, rec.Unfinished = &now, reason, ""
-	return e.Store.PutRecord(rec)
+	_, err := e.releaseLease(rec, store.Departure{Reason: reason, At: e.Now().UTC()})
+	return err
 }

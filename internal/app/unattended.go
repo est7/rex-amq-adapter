@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
-	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 // An Epic runs unattended (Claim C23): every agent its session launches or
@@ -35,7 +34,7 @@ func withUnattendedEnv(cmd []string) []string {
 // orchestrator or narrator; otherwise when the session's Epic policy says so,
 // or the caller or the departed agent (nil for a start) runs unattended. An
 // unreadable policy is an error, never an attended launch.
-func (e Env) launchUnattended(session, role string, caller store.Record, departed *store.Record) (bool, error) {
+func (e Env) launchUnattended(session, role string, caller agent, departed *agent) (bool, error) {
 	if role == core.PersonalRole {
 		return false, nil
 	}
@@ -49,20 +48,20 @@ func (e Env) launchUnattended(session, role string, caller store.Record, departe
 	return p.Unattended, nil
 }
 
-// adoptUnattended reports whether rec, being adopted in session, runs
-// unattended: never a personal agent; otherwise when its hook's environment
-// carries the marker (in), the handle ran unattended before (was), or the
-// session's Epic policy says so.
-func (e Env) adoptUnattended(rec store.Record, in HookInput, was bool) (bool, error) {
-	if rec.Role == core.PersonalRole {
+// adoptUnattended reports whether an agent of role, being adopted in
+// session, runs unattended: never a personal agent; otherwise when its hook's
+// environment carries the marker (in), the handle ran unattended before
+// (was), or the session's Epic policy says so.
+func (e Env) adoptUnattended(role, session string, in HookInput, was bool) (bool, error) {
+	if role == core.PersonalRole {
 		return false, nil
 	}
 	if in.Unattended || was {
 		return true, nil
 	}
-	p, _, err := e.Store.EpicPolicy(rec.SessionID)
+	p, _, err := e.Store.EpicPolicy(session)
 	if err != nil {
-		return false, fmt.Errorf("read the Epic policy of %s: %w", rec.SessionID, err)
+		return false, fmt.Errorf("read the Epic policy of %s: %w", session, err)
 	}
 	return p.Unattended, nil
 }

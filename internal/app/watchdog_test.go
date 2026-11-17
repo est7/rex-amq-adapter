@@ -10,7 +10,6 @@ import (
 	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/core"
 	"github.com/est7/rex-amq-adapter/internal/rex"
-	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 // stuckWorld is an orchestrator session: orch-01 in block:g, codex (the peer) in
@@ -18,7 +17,7 @@ import (
 // *now and moves only when a test moves it. With history, 40 s of
 // box_not_found lie behind the peer; without, the test runs the real
 // injector to record the reason.
-func stuckWorld(t *testing.T, box, state string, history bool) (Env, *fakeTerm, store.Record, Session, *time.Time) {
+func stuckWorld(t *testing.T, box, state string, history bool) (Env, *fakeTerm, agent, Session, *time.Time) {
 	t.Helper()
 	t.Setenv("REX_AMQ_ADAPTER_NO_DESKTOP", "1")
 	term := &fakeTerm{state: state, submit: true, box: box,
@@ -28,10 +27,10 @@ func stuckWorld(t *testing.T, box, state string, history bool) (Env, *fakeTerm, 
 	e := realAmqEnv(t, term)
 	now := time.Date(2026, 11, 10, 2, 0, 0, 0, time.UTC)
 	e.Now = func() time.Time { return now }
-	orch := store.Record{Handle: "orch-01", Kind: core.Claude, Server: "unix:///fake.sock", BlockID: "block:g", SessionID: "session:s", WindowID: "window:1", AgentPID: 1, Role: core.OrchestratorRole, AdoptedAt: now}
-	peer := store.Record{Handle: "codex", Kind: core.Codex, Server: "unix:///fake.sock", BlockID: block, SessionID: "session:s", WindowID: "window:1", AgentPID: term.fgPID, AdoptedAt: now}
-	for _, r := range []store.Record{orch, peer} {
-		if err := e.Store.PutRecord(r); err != nil {
+	orch := seed{Handle: "orch-01", Kind: core.Claude, Server: "unix:///fake.sock", BlockID: "block:g", SessionID: "session:s", WindowID: "window:1", AgentPID: 1, Role: core.OrchestratorRole, AdoptedAt: now}
+	peer := seed{Handle: "codex", Kind: core.Codex, Server: "unix:///fake.sock", BlockID: block, SessionID: "session:s", WindowID: "window:1", AgentPID: term.fgPID, AdoptedAt: now}
+	for _, r := range []seed{orch, peer} {
+		if err := putSeed(e.Store, r); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -54,7 +53,7 @@ func stuckWorld(t *testing.T, box, state string, history bool) (Env, *fakeTerm, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	return e, term, orch, s, &now
+	return e, term, recordNamed(t, e, orch.Handle), s, &now
 }
 
 func goalInbox(t *testing.T, e Env) []string {
@@ -169,7 +168,7 @@ func TestWatchdogRestartContinuesTheEpisodeWithoutASecondDetach(t *testing.T) {
 	if err := e.CollectSession(context.Background(), s); err != nil {
 		t.Fatal(err)
 	}
-	if rec, ok, _ := e.Store.Record(block); !ok || !rec.Live() {
+	if rec, ok, _ := e.agentAt(block); !ok || !rec.Live() {
 		t.Fatalf("a detached block's record was collected as departed: %+v %v", rec, ok)
 	}
 	e.watchdog(context.Background(), orch, s)
@@ -336,10 +335,12 @@ func TestWatchdogLeavesAManualPlacementAlone(t *testing.T) {
 // before the look ends even when the resize did not take.
 func TestWatchdogRecoversTheOrchestratorsOwnPane(t *testing.T) {
 	e, term, orch, s, _ := stuckWorld(t, "", "idle", false)
-	orch.AgentPID = term.fgPID
-	if err := e.Store.PutRecord(orch); err != nil {
+	orchSeed := seedOf(orch)
+	orchSeed.AgentPID = term.fgPID
+	if err := putSeed(e.Store, orchSeed); err != nil {
 		t.Fatal(err)
 	}
+	orch = recordNamed(t, e, orch.Handle)
 	term.rows[orch.BlockID] = 3
 	term.owner[orch.BlockID] = "client:app"
 	term.resizeIgnored = true
@@ -357,7 +358,7 @@ func TestWatchdogRecoversTheOrchestratorsOwnPane(t *testing.T) {
 	if term.windows[orch.BlockID] != "window:overflow" {
 		t.Fatalf("the orchestrator's block was left detached: window %q, %s", term.windows[orch.BlockID], acted(term))
 	}
-	if err := e.watchOnce(context.Background(), core.SessionKey{Server: s.server, SessionID: s.id}, []store.Record{orch}); err != nil {
+	if err := e.watchOnce(context.Background(), core.SessionKey{Server: s.server, SessionID: s.id}, []agent{orch}); err != nil {
 		t.Fatalf("the watcher cannot look again: %v", err)
 	}
 }
@@ -366,12 +367,14 @@ func TestWatchdogRecoversTheOrchestratorsOwnPane(t *testing.T) {
 // inbox: a live agent of another model family hears it, or the desktop when
 // none can (none is there, or the only one's last turn ended in an error).
 func TestWatchdogReportsTheOrchestratorsOwnPaneElsewhere(t *testing.T) {
-	setup := func(t *testing.T) (Env, store.Record, Session, *[]string) {
+	setup := func(t *testing.T) (Env, agent, Session, *[]string) {
 		e, term, orch, s, _ := stuckWorld(t, "", "idle", false)
-		orch.AgentPID = term.fgPID
-		if err := e.Store.PutRecord(orch); err != nil {
+		orchSeed := seedOf(orch)
+		orchSeed.AgentPID = term.fgPID
+		if err := putSeed(e.Store, orchSeed); err != nil {
 			t.Fatal(err)
 		}
+		orch = recordNamed(t, e, orch.Handle)
 		term.rows[orch.BlockID] = 40
 		if err := amq.Send(context.Background(), e.AMQ, e.Paths.Root(), "codex", "orch-01", "brief", "do this"); err != nil {
 			t.Fatal(err)
@@ -410,12 +413,12 @@ func TestWatchdogReportsTheOrchestratorsOwnPaneElsewhere(t *testing.T) {
 	})
 	t.Run("the desktop hears it when no other family is there", func(t *testing.T) {
 		e, orch, s, desk := setup(t)
-		peer, _, err := e.Store.Record(block)
+		peer, _, err := e.agentAt(block)
 		if err != nil {
 			t.Fatal(err)
 		}
 		peer.Kind = core.Claude
-		if err := e.Store.PutRecord(peer); err != nil {
+		if err := putSeed(e.Store, seedOf(peer)); err != nil {
 			t.Fatal(err)
 		}
 		for i := 0; i < 2; i++ {
@@ -432,7 +435,7 @@ func TestWatchdogReportsTheOrchestratorsOwnPaneElsewhere(t *testing.T) {
 	})
 	t.Run("a flagged other family is skipped", func(t *testing.T) {
 		e, orch, s, desk := setup(t)
-		peer, _, err := e.Store.Record(block)
+		peer, _, err := e.agentAt(block)
 		if err != nil {
 			t.Fatal(err)
 		}

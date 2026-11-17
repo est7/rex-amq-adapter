@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
@@ -31,13 +32,13 @@ func TestAnAgySubagentsHooksDoNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = e.Depart(ctx, loc, HookInput{}) })
-	parent, _, _ := e.Store.Record(block)
+	parent, _, _ := e.agentAt(block)
 	for _, event := range []string{EventSessionStart, EventPreInvocation, EventStop} {
 		r, err := e.Hook(ctx, event, core.Agy, loc, HookInput{ConversationID: "child", TerminationReason: "NO_TOOL_CALL"})
 		if err != nil || r.Notice != "" {
 			t.Errorf("%s of a subagent: notice %q, err %v", event, r.Notice, err)
 		}
-		if now, _, _ := e.Store.Record(block); now != parent {
+		if now, _, _ := e.agentAt(block); !reflect.DeepEqual(now, parent) {
 			t.Fatalf("%s of a subagent changed the parent's record: %+v, was %+v", event, now, parent)
 		}
 	}

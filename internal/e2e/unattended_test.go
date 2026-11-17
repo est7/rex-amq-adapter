@@ -27,16 +27,33 @@ func (w *world) wantProbe(name, want string) {
 	}
 }
 
-// record is the adapter's record of the agent called name.
+// record is what the adapter keeps of the agent called name: its identity,
+// with the fields of its lease while it runs, else of its last placement
+// (which carries departed_at).
 func (w *world) record(name string) map[string]any {
 	w.t.Helper()
-	b, err := os.ReadFile(filepath.Join(w.home, "records", w.handleOf(name)+".json"))
-	if err != nil {
-		w.t.Fatal(err)
+	h := w.handleOf(name)
+	read := func(dir string) (map[string]any, bool) {
+		b, err := os.ReadFile(filepath.Join(w.home, dir, h+".json"))
+		if os.IsNotExist(err) {
+			return nil, false
+		}
+		if err != nil {
+			w.t.Fatal(err)
+		}
+		var m map[string]any
+		if err := json.Unmarshal(b, &m); err != nil {
+			w.t.Fatal(err)
+		}
+		return m, true
 	}
-	var r map[string]any
-	if err := json.Unmarshal(b, &r); err != nil {
-		w.t.Fatal(err)
+	r, _ := read("identities")
+	place, live := read("leases")
+	if !live {
+		place, _ = r["last_placement"].(map[string]any)
+	}
+	for k, v := range place {
+		r[k] = v
 	}
 	return r
 }

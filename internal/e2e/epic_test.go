@@ -156,7 +156,7 @@ func TestPersonalAgentClosesAnEpic(t *testing.T) {
 	if _, err := w.rexErr("session", "inspect", res.Session); err == nil {
 		t.Errorf("the Epic's session %s is still there", res.Session)
 	}
-	b, err := os.ReadFile(filepath.Join(w.home, "records", orch+".json"))
+	b, err := os.ReadFile(filepath.Join(w.home, "identities", orch+".json"))
 	if err != nil || !strings.Contains(string(b), `"depart_reason": "epic_closed"`) {
 		t.Errorf("the orchestrator's record: %s %v", b, err)
 	}

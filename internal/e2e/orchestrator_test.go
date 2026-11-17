@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -29,18 +30,18 @@ func goalTab(w *world) (tb *tab, reviewer string) {
 // id is its name. Handles are numbered by adoption order, so tests ask.
 func (w *world) handleOf(name string) string {
 	w.t.Helper()
-	entries, _ := os.ReadDir(filepath.Join(w.home, "records"))
+	entries, _ := os.ReadDir(filepath.Join(w.home, "identities"))
 	for _, e := range entries {
-		b, err := os.ReadFile(filepath.Join(w.home, "records", e.Name()))
+		b, err := os.ReadFile(filepath.Join(w.home, "identities", e.Name()))
 		if err != nil {
 			continue
 		}
-		var r struct {
-			Handle  string `json:"handle"`
-			Session string `json:"agent_session_id"`
+		var id struct {
+			Handle   string   `json:"handle"`
+			Sessions []string `json:"sessions"`
 		}
-		if json.Unmarshal(b, &r) == nil && r.Session == name {
-			return r.Handle
+		if json.Unmarshal(b, &id) == nil && slices.Contains(id.Sessions, name) {
+			return id.Handle
 		}
 	}
 	w.t.Fatalf("no record for agent %s\n%s", name, w.dump())
@@ -185,10 +186,10 @@ func TestAnOrchestratorDoesNotHearOfItsOwnTabsAfterItLeaves(t *testing.T) {
 	}
 }
 
-// recordedWindow is the window handle's record names.
+// recordedWindow is the window handle's lease names.
 func (w *world) recordedWindow(handle string) string {
 	w.t.Helper()
-	b, err := os.ReadFile(filepath.Join(w.home, "records", handle+".json"))
+	b, err := os.ReadFile(filepath.Join(w.home, "leases", handle+".json"))
 	if err != nil {
 		w.t.Fatal(err)
 	}

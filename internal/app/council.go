@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
-	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 // A council (summon --council, after tstack's council skill) puts one
@@ -37,8 +36,8 @@ type SeatResult struct {
 // seat is a council seat planned before anything is mailed or launched.
 type seat struct {
 	kind core.Kind
-	live *store.Record // deliver
-	plan *launchPlan   // resume (plan.departed set) or start
+	live *agent      // deliver
+	plan *launchPlan // resume (plan.departed set) or start
 }
 
 // CouncilUsage is the usage error a council for target asks, or nil: only a
@@ -55,7 +54,7 @@ func CouncilUsage(target, harness string) error {
 	return nil
 }
 
-func (e Env) council(ctx context.Context, loc Location, caller store.Record, r SummonRequest, role string) (SummonResult, error) {
+func (e Env) council(ctx context.Context, loc Location, caller agent, r SummonRequest, role string) (SummonResult, error) {
 	if err := CouncilUsage(r.Target, r.Harness); err != nil {
 		return SummonResult{}, err
 	}
@@ -80,7 +79,7 @@ func (e Env) council(ctx context.Context, loc Location, caller store.Record, r S
 	if err != nil {
 		return refuse(fmt.Sprintf("the routing of role %s cannot be read, so no seat was mailed or launched: %v", role, err))
 	}
-	recs, err := e.Store.Records()
+	recs, err := e.agents()
 	if err != nil {
 		return res, err
 	}
@@ -135,7 +134,7 @@ func (e Env) council(ctx context.Context, loc Location, caller store.Record, r S
 			return refuse(refusal + "; no seat was mailed or launched")
 		}
 	}
-	var launches []*store.Record
+	var launches []*agent
 	for _, st := range seats {
 		if st.plan != nil {
 			launches = append(launches, st.plan.departed)
@@ -197,7 +196,7 @@ func (e Env) council(ctx context.Context, loc Location, caller store.Record, r S
 
 // councilPartial logs a council that failed after some seats were mailed or
 // launched, and returns which, with the failure.
-func (e Env) councilPartial(caller store.Record, r SummonRequest, res SummonResult, err error) (SummonResult, error) {
+func (e Env) councilPartial(caller agent, r SummonRequest, res SummonResult, err error) (SummonResult, error) {
 	res.Reason = err.Error()
 	e.summonLog(caller, r, res)
 	return res, err
@@ -206,7 +205,7 @@ func (e Env) councilPartial(caller store.Record, r SummonRequest, res SummonResu
 // seatsOf are the agents of role on kind that could hold its seat: the live
 // ones in the scope (in cwd, or anywhere in the session without one), and,
 // without cwd, the latest departed one of this session.
-func seatsOf(recs []store.Record, s Session, caller store.Record, role string, kind core.Kind, cwd string) (live []store.Record, departed *store.Record) {
+func seatsOf(recs []agent, s Session, caller agent, role string, kind core.Kind, cwd string) (live []agent, departed *agent) {
 	for i, rec := range recs {
 		if rec.Handle == caller.Handle || rec.Role != role || rec.Kind != kind {
 			continue
@@ -214,7 +213,7 @@ func seatsOf(recs []store.Record, s Session, caller store.Record, role string, k
 		switch {
 		case rec.Live() && s.holds(rec) && (cwd == "" || sameDir(rec.Cwd, cwd)):
 			live = append(live, rec)
-		case !rec.Live() && cwd == "" && s.recorded(rec) && (departed == nil || rec.AdoptedAt.After(departed.AdoptedAt)):
+		case !rec.Live() && cwd == "" && s.recorded(rec) && (departed == nil || rec.adoptedAt().After(departed.adoptedAt())):
 			departed = &recs[i]
 		}
 	}
@@ -227,7 +226,7 @@ func councilBody(body, role string, kinds []core.Kind) string {
 	return body + fmt.Sprintf("\n\nCouncil review: this request went to one %s seat per harness (%s), each reading the same change on its own. Put `SCORE: <n>/10` in your reply, beside your verdict.", role, strings.Join(kindNames(kinds), ", "))
 }
 
-func handleList(recs []store.Record) string {
+func handleList(recs []agent) string {
 	out := make([]string, len(recs))
 	for i, r := range recs {
 		out[i] = string(r.Handle)

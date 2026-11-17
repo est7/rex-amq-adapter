@@ -41,7 +41,7 @@ func panelWorld(t *testing.T) (Env, *fakeTerm) {
 	e := Env{Paths: paths, Store: store.Store{P: paths}, Rex: term, RexOn: func(string) Terminal { return term }, SelfBin: "/x/rex-amq-adapter", Now: time.Now,
 		Crews:     func(string) crew.Library { return crew.Builtin() },
 		Ancestors: func() ([]proc, error) { return []proc{{PID: 9001}, {PID: 9000}}, nil }}
-	for i, r := range []store.Record{
+	for i, r := range []seed{
 		{Handle: "claude-01", Kind: core.Claude, Role: core.OrchestratorRole, SessionID: "session:s", WindowID: "window:1"},
 		{Handle: "claude-02", Kind: core.Claude, Role: "implementer", SessionID: "session:s", WindowID: "window:1"},
 		{Handle: "pi-04", Kind: core.Pi, Role: core.NarratorRole, SessionID: "session:s", WindowID: "window:2"},
@@ -51,7 +51,7 @@ func panelWorld(t *testing.T) (Env, *fakeTerm) {
 		put(t, e, r)
 	}
 	must(t, e.Store.PutSessionCrew("session:s", store.SessionCrew{Crew: "pair", ClaimedBy: "claude-01", ClaimedAt: panelT0}))
-	must(t, e.Store.PutTurnError("block:claude-02", store.TurnError{At: panelT0, By: "claude-02/harness-claude-02"}))
+	must(t, e.Store.PutTurnError("claude-02", store.TurnError{At: panelT0, By: "claude-02/harness-claude-02"}))
 	must(t, e.Store.PutHealthMark("block:pi-04", store.HealthMark{LastStallAt: panelT0}))
 	must(t, e.Store.PutEpicLifecycle(store.EpicLifecycle{SessionID: "session:s", Server: fakeServer, Name: "auth-refresh", State: store.EpicOpened, PersonalHandle: "pi-05", UpdatedAt: panelT0}))
 	must(t, e.Store.PutHandBack("session:s", store.HandBack{By: "claude-01", At: panelT0, Body: "## Review queue\nPR #3", Seq: 1}))
@@ -211,15 +211,15 @@ func TestPanelGateRefusesEveryAgentAndServesTheHuman(t *testing.T) {
 	// of a live record.
 	real := refusing
 	real.Ancestors = nil
-	put(t, real, store.Record{Handle: "claude-08", Kind: core.Claude, Role: "reviewer", SessionID: "session:s", AgentPID: os.Getpid()})
+	put(t, real, seed{Handle: "claude-08", Kind: core.Claude, Role: "reviewer", SessionID: "session:s", AgentPID: os.Getpid()})
 	if err := real.Panel(ctx, &syncBuffer{}, panelEnv(nil), "session:s", StreamTicks{}); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "claude-08") {
 		t.Errorf("under a live agent, by the real process table: %v", err)
 	}
-	put(t, e, departed(recordOf(t, e, "claude-08"), time.Now()))
+	put(t, e, departed(seedOf(recordOf(t, e, "claude-08")), time.Now()))
 
 	// The human: its own pane, a shell naming the session, and the pane of an
 	// agent that departed.
-	put(t, e, departed(store.Record{Handle: "codex-09", Kind: core.Codex, SessionID: "session:s", BlockID: "block:gone"}, time.Now()))
+	put(t, e, departed(seed{Handle: "codex-09", Kind: core.Codex, SessionID: "session:s", BlockID: "block:gone"}, time.Now()))
 	for _, c := range []struct {
 		env     map[string]string
 		session string
@@ -289,7 +289,7 @@ func TestPanelSnapshotCarriesThePanel(t *testing.T) {
 // the session), or the view each tells exactly one upsert naming it.
 func TestPanelUpsertsOncePerChange(t *testing.T) {
 	e, term := panelWorld(t)
-	must(t, e.Store.DeleteRecord("pi-04"))
+	must(t, unplant(e.Store, "pi-04"))
 	out, stop := startPanel(t, e, human, "")
 	await(t, out, "the snapshot", func(f map[string]any) bool { return f["type"] == "snapshot" })
 	settle()
@@ -371,8 +371,8 @@ func TestPanelCockpitInAPersonalSession(t *testing.T) {
 	}
 	stop()
 
-	lonely := store.Record{Handle: "pi-06", Kind: core.Pi, Role: core.PersonalRole, Server: fakeServer, SessionID: "session:q", BlockID: "block:pi-06"}
-	pp, err := e.panelProjection(Scope{Kind: ScopeSession, Server: fakeServer, SessionID: "session:q"}, "", []store.Record{lonely}, []store.Record{lonely})
+	lonely := newAgent(store.Identity{Handle: "pi-06", Kind: core.Pi, Role: core.PersonalRole}, &store.Lease{Handle: "pi-06", Place: store.Place{Server: fakeServer, SessionID: "session:q", BlockID: "block:pi-06"}})
+	pp, err := e.panelProjection(Scope{Kind: ScopeSession, Server: fakeServer, SessionID: "session:q"}, "", []agent{lonely}, []agent{lonely})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -500,7 +500,7 @@ func TestPanelRefusesACallerDeeperThanTheRealWalk(t *testing.T) {
 	}
 	home := t.TempDir()
 	s := store.Store{P: store.Paths{Home: home}}
-	must(t, s.PutRecord(store.Record{Handle: "claude-deep", Kind: core.Claude, Role: "implementer", Server: fakeServer, SessionID: "session:s", BlockID: "block:deep", AgentPID: os.Getpid()}))
+	must(t, putSeed(s, seed{Handle: "claude-deep", Kind: core.Claude, Role: "implementer", Server: fakeServer, SessionID: "session:s", BlockID: "block:deep", AgentPID: os.Getpid()}))
 	chain := filepath.Join(t.TempDir(), "chain.sh")
 	// Each shell waits for the next (the exit after it keeps it from being
 	// replaced), so every level is a live process.
@@ -554,8 +554,8 @@ func TestPanelCrewResolvesFromTheEpicDirectory(t *testing.T) {
 	}
 	r := recordOf(t, e, "pi-05")
 	r.Cwd = hub
-	put(t, e, r)
-	recs, err := e.Store.Records()
+	put(t, e, seedOf(r))
+	recs, err := e.agents()
 	must(t, err)
 	lifecycle := func(dir string) {
 		must(t, e.Store.PutEpicLifecycle(store.EpicLifecycle{SessionID: "session:s", Server: fakeServer, Name: "auth-refresh", Dir: dir, State: store.EpicOpened, UpdatedAt: panelT0}))
