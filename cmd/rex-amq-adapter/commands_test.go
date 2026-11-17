@@ -560,3 +560,29 @@ func TestFlagValuesAreNotGlobals(t *testing.T) {
 		{[]string{"mail", "send", "--to", "claude-02", "--subject", "s", "--body", "--text"}, 5, "failed_precondition"},
 	})
 }
+
+// trust root add|remove --dry-run makes the real update's checks: an
+// unbounded root, a root that is not declared, and a path that does not
+// resolve fail as they would, and nothing is written.
+func TestTrustRootDryRunChecksAsTheUpdateDoes(t *testing.T) {
+	home := isolate(t)
+	root := t.TempDir()
+	book := filepath.Join(os.Getenv("REX_AMQ_ADAPTER_HOME"), "trust.json")
+	check(t, []want{
+		{[]string{"trust", "root", "add", "/", "--dry-run"}, 1, "internal"},
+		{[]string{"trust", "root", "add", home, "--dry-run"}, 1, "internal"},
+		{[]string{"trust", "root", "remove", root, "--dry-run"}, 1, "internal"},
+		{[]string{"trust", "root", "add", root, "--dry-run"}, 0, ""},
+	})
+	if _, err := os.Stat(book); err == nil {
+		t.Error("a dry run wrote the trust book")
+	}
+	check(t, []want{
+		{[]string{"trust", "root", "add", root}, 0, ""},
+		{[]string{"trust", "root", "remove", root, "--dry-run"}, 0, ""},
+		{[]string{"trust", "root", "add", "/"}, 1, "internal"},
+	})
+	if code, env := machine(t, "trust", "root", "list"); code != 0 || !strings.Contains(string(env.Data), root) {
+		t.Errorf("the dry remove removed the root: %s", env.Data)
+	}
+}

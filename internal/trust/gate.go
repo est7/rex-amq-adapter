@@ -127,6 +127,19 @@ func (g Gate) writeBook(b book) error {
 // update runs f on the book under the adapter's trust lock and saves it.
 // The lock also serializes this adapter's writes to the harness stores.
 func (g Gate) update(ctx context.Context, f func(*book) error) error {
+	return g.change(ctx, f, false)
+}
+
+// change applies f to the book under its lock and writes it, or with
+// preview applies f to a copy read without the lock and writes nothing.
+func (g Gate) change(ctx context.Context, f func(*book) error, preview bool) error {
+	if preview {
+		b, err := g.readBook()
+		if err != nil {
+			return err
+		}
+		return f(&b)
+	}
 	if g.State == "" {
 		return errors.New("no adapter state directory, so trust cannot be recorded")
 	}
@@ -503,6 +516,16 @@ func (g Gate) log(entry map[string]any) error {
 // directory other than / and the home directory; it is kept by its physical
 // path. Adding one twice keeps the first.
 func (g Gate) AddRoots(ctx context.Context, dirs ...string) ([]Root, error) {
+	return g.addRoots(ctx, dirs, false)
+}
+
+// PreviewAddRoots is AddRoots's every check and the roots it would leave,
+// with nothing written.
+func (g Gate) PreviewAddRoots(dirs ...string) ([]Root, error) {
+	return g.addRoots(context.Background(), dirs, true)
+}
+
+func (g Gate) addRoots(ctx context.Context, dirs []string, preview bool) ([]Root, error) {
 	var add []string
 	for _, d := range dirs {
 		abs, err := filepath.Abs(d)
@@ -522,7 +545,7 @@ func (g Gate) AddRoots(ctx context.Context, dirs ...string) ([]Root, error) {
 		add = append(add, phys)
 	}
 	var roots []Root
-	err := g.update(ctx, func(b *book) error {
+	err := g.change(ctx, func(b *book) error {
 		for _, a := range add {
 			if !slices.ContainsFunc(b.Roots, func(r Root) bool { return r.Path == a }) {
 				b.Roots = append(b.Roots, Root{Path: a, At: g.now()})
@@ -530,15 +553,25 @@ func (g Gate) AddRoots(ctx context.Context, dirs ...string) ([]Root, error) {
 		}
 		roots = b.Roots
 		return nil
-	})
+	}, preview)
 	return roots, err
 }
 
 // RemoveRoots forgets each dir as a trust root, by its physical path when
 // it still exists, else as written. What its roots granted stays granted.
 func (g Gate) RemoveRoots(ctx context.Context, dirs ...string) ([]Root, error) {
+	return g.removeRoots(ctx, dirs, false)
+}
+
+// PreviewRemoveRoots is RemoveRoots's every check and the roots it would
+// leave, with nothing written.
+func (g Gate) PreviewRemoveRoots(dirs ...string) ([]Root, error) {
+	return g.removeRoots(context.Background(), dirs, true)
+}
+
+func (g Gate) removeRoots(ctx context.Context, dirs []string, preview bool) ([]Root, error) {
 	var roots []Root
-	err := g.update(ctx, func(b *book) error {
+	err := g.change(ctx, func(b *book) error {
 		for _, d := range dirs {
 			key := filepath.Clean(d)
 			if abs, err := filepath.Abs(d); err == nil {
@@ -555,7 +588,7 @@ func (g Gate) RemoveRoots(ctx context.Context, dirs ...string) ([]Root, error) {
 		}
 		roots = b.Roots
 		return nil
-	})
+	}, preview)
 	return roots, err
 }
 

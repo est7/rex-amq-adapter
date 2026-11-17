@@ -2,7 +2,6 @@ package main
 
 import (
 	"os"
-	"path/filepath"
 	"slices"
 	"time"
 
@@ -119,19 +118,13 @@ func updateRoots(c *cli.Ctx, in cli.Input, add bool) (cli.Result, error) {
 	}
 	dirs := in.Rest("dir")
 	if in.DryRun() {
-		roots, err := g.Roots()
+		preview := g.PreviewRemoveRoots
+		if add {
+			preview = g.PreviewAddRoots
+		}
+		roots, err := preview(dirs...)
 		if err != nil {
 			return cli.Result{}, err
-		}
-		for _, d := range dirs {
-			abs, _ := filepath.Abs(d)
-			has := slices.ContainsFunc(roots, func(r trust.Root) bool { return r.Path == abs })
-			switch {
-			case add && !has:
-				roots = append(roots, trust.Root{Path: abs})
-			case !add && has:
-				roots = slices.DeleteFunc(roots, func(r trust.Root) bool { return r.Path == abs })
-			}
 		}
 		return rootsResult(roots, true), nil
 	}
