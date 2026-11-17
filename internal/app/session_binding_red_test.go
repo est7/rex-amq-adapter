@@ -106,7 +106,7 @@ func (w *sbWorld) startIncumbent(t *testing.T) core.Handle {
 	w.hook(t, EventSessionStart, sbIncumbentBlock, w.incumbent, "startup")
 	a, ok := sbAgentIn(t, w.e, sbIncumbentBlock)
 	if !ok || a.Lifecycle.State != core.LifeLive {
-		t.Fatalf("setup: the incumbent was not adopted: %+v", sbWho(t, w.e))
+		t.Fatalf("setup: the incumbent was not adopted: %+v", sbHandles(sbWho(t, w.e, sbIncumbentBlock)))
 	}
 	return a.Handle
 }
@@ -118,11 +118,11 @@ func (w *sbWorld) resumeDuplicate(t *testing.T) Reply {
 	return w.hook(t, EventSessionStart, sbDuplicateBlock, w.duplicate, "resume")
 }
 
-// sbWho is `who --all --json` for the session of the incumbent's pane: every
-// agent there, live or departed.
-func sbWho(t *testing.T, e Env) []core.Agent {
+// sbWho is `who --all --json` run from block at: every agent in its session,
+// live or departed. at must be an open pane, as the caller's own is.
+func sbWho(t *testing.T, e Env, at string) []core.Agent {
 	t.Helper()
-	s, err := e.FindSession(context.Background(), sbIncumbentBlock)
+	s, err := e.FindSession(context.Background(), at)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +138,7 @@ func sbAgentIn(t *testing.T, e Env, blk string) (core.Agent, bool) {
 	t.Helper()
 	var found core.Agent
 	ok := false
-	for _, a := range sbWho(t, e) {
+	for _, a := range sbWho(t, e, blk) {
 		if a.BlockID != blk {
 			continue
 		}
@@ -268,14 +268,19 @@ func TestSessionBindingDaConcurrentResumeKeepsOneIdentity(t *testing.T) {
 	t.Logf("duplicate's SessionStart notice: %q", r.Notice)
 	if dup, ok := sbAgentIn(t, w.e, sbDuplicateBlock); ok {
 		t.Fatalf("D-a (AC1): a concurrent --resume of the conversation %s held by %s minted a second handle %s in the duplicate pane; who lists %v",
-			sbSession, original, dup.Handle, sbHandles(sbWho(t, w.e)))
+			sbSession, original, dup.Handle, sbHandles(sbWho(t, w.e, sbIncumbentBlock)))
 	}
-	if agents := sbWho(t, w.e); len(agents) != 1 || agents[0].Handle != original || agents[0].Lifecycle.State != core.LifeLive {
+	if agents := sbWho(t, w.e, sbIncumbentBlock); len(agents) != 1 || agents[0].Handle != original || agents[0].Lifecycle.State != core.LifeLive {
 		t.Fatalf("D-a (AC1): want only %s, live in %s; who lists %v", original, sbIncumbentBlock, sbHandles(agents))
 	}
 	dupEnv, dupShell := sbShellOf(w.e, w.duplicate, sbDuplicateBlock)
 	if out, err := sbEnv(dupEnv, dupShell); err == nil {
 		t.Fatalf("D-a (AC1): `env` in the duplicate pane succeeded: %q", out)
+	}
+	for _, want := range []string{sbSession, string(original), sbIncumbentBlock} {
+		if !strings.Contains(r.Notice, want) {
+			t.Fatalf("D-a (AC1): the duplicate's SessionStart notice does not say the conversation is live elsewhere (missing %q): %q", want, r.Notice)
+		}
 	}
 
 	// AC3: the incumbent's pane closes; the duplicate's next prompt is the
@@ -285,7 +290,7 @@ func TestSessionBindingDaConcurrentResumeKeepsOneIdentity(t *testing.T) {
 	_ = w.incumbent.Wait()
 	w.hook(t, EventPrompt, sbDuplicateBlock, w.duplicate, "")
 	if a, ok := sbAgentIn(t, w.e, sbDuplicateBlock); !ok || a.Handle != original || a.Lifecycle.State != core.LifeLive {
-		t.Fatalf("D-a (AC3): after the incumbent's pane closed, the duplicate pane holds %+v, want %s live; who lists %v", a.Handle, original, sbHandles(sbWho(t, w.e)))
+		t.Fatalf("D-a (AC3): after the incumbent's pane closed, the duplicate pane holds %+v, want %s live; who lists %v", a.Handle, original, sbHandles(sbWho(t, w.e, sbDuplicateBlock)))
 	}
 }
 
@@ -307,14 +312,15 @@ func TestSessionBindingDbDuplicateSessionEndLeavesIncumbentLive(t *testing.T) {
 	a, ok := sbAgentIn(t, w.e, sbIncumbentBlock)
 	if !ok || a.Handle != original || a.Lifecycle.State != core.LifeLive {
 		t.Fatalf("D-b (AC2): the duplicate pane's SessionEnd parked the live incumbent: %s in %s is %q (reason %q), want live; who lists %v",
-			a.Handle, sbIncumbentBlock, a.Lifecycle.State, a.Lifecycle.DepartReason, sbHandles(sbWho(t, w.e)))
+			a.Handle, sbIncumbentBlock, a.Lifecycle.State, a.Lifecycle.DepartReason, sbHandles(sbWho(t, w.e, sbIncumbentBlock)))
 	}
 	if after := wakeState(t, w.e, string(original)); !after.Live || after.PID != before.PID || after.Generation != before.Generation {
 		t.Fatalf("D-b (AC2): the duplicate pane's SessionEnd retired or replaced %s's waker: before %+v, after %+v", original, before, after)
 	}
 }
 
-// D-c, AC3: the conversation keeps its original handle. After the duplicate
+// D-c, AC1 (§3.1): a conversation is one identity, found by its session id
+// whatever records a duplicate left. After the duplicate
 // pane is gone, the incumbent's next SessionStart (a compaction) in its own
 // pane keeps the handle it has held all along.
 // On ba1eb51 claim -> resumable (adopt.go:426) picks the conversation's
@@ -324,7 +330,7 @@ func TestSessionBindingDcIncumbentKeepsItsHandleAfterDuplicateLeft(t *testing.T)
 	w := newSBWorld(t)
 	original := w.startIncumbent(t)
 	w.resumeDuplicate(t)
-	t.Logf("after the duplicate's resume, who lists %v", sbHandles(sbWho(t, w.e)))
+	t.Logf("after the duplicate's resume, who lists %v", sbHandles(sbWho(t, w.e, sbIncumbentBlock)))
 
 	// The duplicate pane is closed; collection reconciles it.
 	w.term.closed = append(w.term.closed, sbDuplicateBlock)
@@ -333,13 +339,13 @@ func TestSessionBindingDcIncumbentKeepsItsHandleAfterDuplicateLeft(t *testing.T)
 	if err := w.e.Collect(context.Background()); err != nil {
 		t.Fatalf("collect: %v", err)
 	}
-	t.Logf("after collection, who lists %v", sbHandles(sbWho(t, w.e)))
+	t.Logf("after collection, who lists %v", sbHandles(sbWho(t, w.e, sbIncumbentBlock)))
 
 	r := w.hook(t, EventSessionStart, sbIncumbentBlock, w.incumbent, "compact")
 	a, ok := sbAgentIn(t, w.e, sbIncumbentBlock)
 	if !ok || a.Handle != original || a.Lifecycle.State != core.LifeLive {
-		t.Fatalf("D-c (AC3): the incumbent's compaction renamed it from %s to %s (the newest record of %s won); notice %q; who lists %v",
-			original, a.Handle, sbSession, r.Notice, sbHandles(sbWho(t, w.e)))
+		t.Fatalf("D-c (AC1, §3.1): the incumbent's compaction renamed it from %s to %s (the newest record of %s won); notice %q; who lists %v",
+			original, a.Handle, sbSession, r.Notice, sbHandles(sbWho(t, w.e, sbIncumbentBlock)))
 	}
 }
 
