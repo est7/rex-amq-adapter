@@ -86,7 +86,7 @@ func TestNotifyPersonalRingsOnlyTheLivePersonalAgent(t *testing.T) {
 	if code != 0 || !again.Deduped || again.MessageID != res.MessageID {
 		t.Fatalf("replay: exit %d %s", code, out)
 	}
-	if _, code, out := w.notify("--ref", "inbox:43", "--event-id", "ev-1"); code != 3 {
+	if _, code, out := w.notify("--ref", "inbox:43", "--event-id", "ev-1"); code != 5 || !strings.Contains(out, `"code":"conflict"`) {
 		t.Fatalf("event id reused for another ref: exit %d %s", code, out)
 	}
 	if left, _ := os.ReadDir(filepath.Join(w.root(), "agents", me, "inbox", "new")); len(left) != 1 {
