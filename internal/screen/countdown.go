@@ -61,6 +61,9 @@ func SelfDenyingCountdown(screen string) bool {
 	}
 	first := -1
 	for i := foot - 1; i >= 0 && i >= foot-optionsReach; i-- {
+		if strings.Contains(lines[i], dialogFooter) {
+			break // an earlier dialog's footer: the bottom one has no options
+		}
 		if firstOption.MatchString(lines[i]) {
 			first = i
 			break

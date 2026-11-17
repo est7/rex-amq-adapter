@@ -336,9 +336,10 @@ func TestClaudeSelfDenyingCountdown(t *testing.T) {
 		"in the preview": {"╌╌╌╌\n│ +one := \"⚠ Claude Code will automatically block this request in 1:24, to avoid holding up an unattended session\"\n╌╌╌╌\nDo you want to make this edit to screen_test.go?\n❯ 1. Yes\n  2. No\nEsc to cancel · Tab to amend\n", false},
 		// Below a quoted countdown dialog: another harness's prompt, a Claude
 		// question whose footer wraps, a draft in the input box.
-		"codex prompt below":   {dialog(one) + "Would you like to run the following command?\n› 1. Yes, proceed\n  2. No (esc)\n", false},
-		"wrapped footer below": {dialog(one) + "☐ Pick one\nWhich branch?\n❯ 1. main\n  2. dev\nEnter to select · ↑/↓ to navigate · Esc\nto cancel\n", false},
-		"draft below":          {dialog(one) + "────\n❯ half-typed reply\n────\n", false},
+		"codex prompt below":      {dialog(one) + "Would you like to run the following command?\n› 1. Yes, proceed\n  2. No (esc)\n", false},
+		"wrapped footer below":    {dialog(one) + "☐ Pick one\nWhich branch?\n❯ 1. main\n  2. dev\nEnter to select · ↑/↓ to navigate · Esc\nto cancel\n", false},
+		"optionless dialog below": {dialog(one) + "Press Enter to continue\nEsc to cancel\n", false},
+		"draft below":             {dialog(one) + "────\n❯ half-typed reply\n────\n", false},
 	} {
 		if got := SelfDenyingCountdown(tc.screen); got != tc.want {
 			t.Errorf("%s: got %v want %v", name, got, tc.want)
