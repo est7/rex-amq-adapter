@@ -89,6 +89,10 @@ type world struct {
 	env     []string
 	// lastBlock is shown when a test fails.
 	lastBlock string
+	// restore: the server saves its sessions and restores them when it starts
+	// again (restartServer); otherwise it starts empty and saves nothing.
+	restore bool
+	srv     *exec.Cmd // the Rex server this world runs; the only one it stops
 }
 
 // adapterBin is built once per test binary.
@@ -108,6 +112,18 @@ func TestMain(m *testing.M) {
 
 func newWorld(t *testing.T) *world {
 	t.Helper()
+	return newWorldWith(t, false)
+}
+
+// newRestartableWorld is a world whose server saves its sessions, so a
+// restart on the same state directory restores them.
+func newRestartableWorld(t *testing.T) *world {
+	t.Helper()
+	return newWorldWith(t, true)
+}
+
+func newWorldWith(t *testing.T, restore bool) *world {
+	t.Helper()
 	if testing.Short() {
 		t.Skip("needs real Rex and amq servers")
 	}
@@ -118,11 +134,11 @@ func newWorld(t *testing.T) *world {
 	t.Parallel()
 	rexBin, err := exec.LookPath("rex")
 	if err != nil {
-		t.Skip("rex is not installed")
+		t.Skip("rex is not installed: these tests need a real, throwaway Rex server")
 	}
 	amqBin, err := exec.LookPath("amq")
 	if err != nil {
-		t.Skip("amq is not installed")
+		t.Skip("amq is not installed: these tests need real amq wakers")
 	}
 	dir, err := os.MkdirTemp("/tmp", "rae") // t.TempDir is too long for a socket path
 	if err != nil {
@@ -141,7 +157,8 @@ func newWorld(t *testing.T) *world {
 	w := &world{
 		t: t, dir: dir, server: "unix://" + filepath.Join(dir, "s"),
 		rexBin: rexBin, amqBin: amqBin, adapter: adapterBin,
-		home: filepath.Join(t.TempDir(), "state"), // amq refuses an injector under /tmp
+		home:    filepath.Join(t.TempDir(), "state"), // amq refuses an injector under /tmp
+		restore: restore,
 	}
 	config := filepath.Join(dir, "init.lua")
 	script := filepath.Join(dir, "agent.sh")
@@ -203,7 +220,11 @@ func newWorld(t *testing.T) *world {
 			"prev=\nfor a in \"$@\"; do [ \"$prev\" = "+resume+" ] && n=$a; prev=$a; done\n"+
 			"exec /bin/sh '"+script+"' \"$n\" "+h+"\n")
 	}
-	w.startServer()
+	t.Cleanup(func() {
+		w.stopWakers()
+		w.stopServer()
+	})
+	w.startServer(w.restore)
 	return w
 }
 
@@ -214,29 +235,58 @@ func (w *world) write(path, text string) {
 	}
 }
 
-func (w *world) startServer() {
+// startServer runs the world's Rex server on its state directory: with
+// restore, it brings back the sessions it saved when it last stopped.
+func (w *world) startServer(restore bool) {
 	w.t.Helper()
 	cmd := exec.Command(w.rexBin, "--autostart=false", "server", "run", "--listen", w.server,
-		"--state-dir", filepath.Join(w.dir, "rex"), "--restore=false")
+		"--state-dir", filepath.Join(w.dir, "rex"), fmt.Sprintf("--restore=%v", restore))
 	cmd.Env = w.env
-	log, err := os.Create(filepath.Join(w.dir, "server.log"))
+	log, err := os.OpenFile(filepath.Join(w.dir, "server.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		w.t.Fatal(err)
 	}
 	cmd.Stdout, cmd.Stderr = log, log
 	if err := cmd.Start(); err != nil {
+		log.Close()
 		w.t.Fatal(err)
 	}
-	w.t.Cleanup(func() {
-		w.stopWakers()
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		log.Close()
-	})
+	// The child holds its own copy of the log; the server is this cmd itself,
+	// never a shell around it, so stopping it stops the server.
+	log.Close()
+	w.srv = cmd
 	w.until("the Rex server to answer", 10*time.Second, func() bool {
 		_, err := w.rexErr("whoami", "--json")
 		return err == nil
 	})
+}
+
+// stopServer stops the server this world started, as a restart does: SIGTERM,
+// then SIGKILL if it outlives the grace period.
+func (w *world) stopServer() {
+	if w.srv == nil {
+		return
+	}
+	cmd := w.srv
+	w.srv = nil
+	_ = cmd.Process.Signal(syscall.SIGTERM)
+	done := make(chan struct{})
+	go func() { _ = cmd.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		_ = cmd.Process.Kill()
+		<-done
+	}
+}
+
+// restartServer stops the server and starts it again on the same socket and
+// state directory: restore brings its sessions back (a normal restart);
+// without it the server starts empty (sessions must be rebuilt).
+func (w *world) restartServer(restore bool) {
+	w.t.Helper()
+	w.stopServer()
+	w.startServer(restore)
 }
 
 // stopWakers kills what the agents started, so nothing outlives the test.

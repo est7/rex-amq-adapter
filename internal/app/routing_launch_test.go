@@ -40,8 +40,8 @@ func adoptLaunched(t *testing.T, e Env, term *fakeTerm, l launch, kind core.Kind
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, blk := a.Agent.Handle, l.Block
-	t.Cleanup(func() { _, _ = e.AMQ.RetireFor(context.Background(), e.Paths.Root(), string(h), blk) })
+	h := a.Agent.Handle
+	t.Cleanup(func() { _, _ = e.AMQ.RetireHandle(context.Background(), e.Paths.Root(), string(h)) })
 	return a.Agent
 }
 

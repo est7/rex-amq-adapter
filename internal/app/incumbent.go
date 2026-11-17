@@ -93,16 +93,8 @@ func heldElsewhere(own agent, server, block string, inc store.Incarnation) bool 
 // A server that cannot be reached, or cannot say, proves nothing: the
 // incumbent keeps its lease.
 func (e Env) holderGone(ctx context.Context, q agent) (reason string, gone bool) {
-	inc := q.lease.Incarnation
-	if localServer(q.Server) && inc.PID > 0 {
-		if processGone(inc.PID) {
-			return "agent_gone", true
-		}
-		if inc.StartTime != 0 {
-			if st, err := processStartTime(inc.PID); err == nil && st != inc.StartTime {
-				return "incarnation_gone", true
-			}
-		}
+	if reason, gone := incarnationGone(q.Server, q.lease.Incarnation); gone {
+		return reason, true
 	}
 	on := e
 	if e.RexOn != nil && q.Server != "" {
@@ -131,6 +123,25 @@ func (e Env) holderGone(ctx context.Context, q agent) (reason string, gone bool)
 	// A doorbell waits out another foreground (an editor the agent opened);
 	// a takeover does not: the conversation's own process now runs elsewhere.
 	return o.Code, true
+}
+
+// incarnationGone reports whether inc, a lease's process on server, is
+// provably dead: it exited, or its pid now names a process that started at
+// another time. Only a local server's pids are this machine's; a remote
+// process proves nothing.
+func incarnationGone(server string, inc store.Incarnation) (reason string, gone bool) {
+	if !localServer(server) || inc.PID <= 0 {
+		return "", false
+	}
+	if processGone(inc.PID) {
+		return "agent_gone", true
+	}
+	if inc.StartTime != 0 {
+		if st, err := processStartTime(inc.PID); err == nil && st != inc.StartTime {
+			return "incarnation_gone", true
+		}
+	}
+	return "", false
 }
 
 // callerUnder checks that this command runs under rec's agent process, the

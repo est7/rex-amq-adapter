@@ -12,11 +12,12 @@ import (
 	"github.com/est7/rex-amq-adapter/internal/screen"
 )
 
-// InjectRequest is what amq wake passes the injector. amq's notification
-// payload is not used: it previews the sender's subject, which must not be
-// typed into a prompt (see core.Doorbell).
+// InjectRequest is what amq wake passes the injector: the handle to wake and
+// its mailbox root. Where the handle runs is its lease's, read when the
+// doorbell fires, so a waker survives its agent moving between blocks. amq's
+// notification payload is not used: it previews the sender's subject, which
+// must not be typed into a prompt (see core.Doorbell).
 type InjectRequest struct {
-	Block  string
 	Handle core.Handle
 	Root   string
 }
@@ -36,31 +37,64 @@ const (
 // Every outcome, including errors, is reported as a progress marker: amq
 // needs one to decide whether to retry.
 func (e Env) Inject(ctx context.Context, r InjectRequest) core.Outcome {
-	unlock, err := e.Store.LockInject(ctx, r.Block)
-	if err != nil {
-		return deferredErr("inject_locked", err)
-	}
-	o := e.inject(ctx, r)
+	o := e.injectLeased(ctx, r)
 	_ = e.Store.RecordInject(r.Handle, o, e.Now()) // the log is diagnostic; the marker is the contract
-	unlock()
 	return o
 }
 
-func (e Env) inject(ctx context.Context, r InjectRequest) core.Outcome {
-	rec, ok, err := e.agentAt(r.Block)
+// injectLeased finds the block r's handle runs in from its lease (spec §4.3),
+// and rings the doorbell there under that block's lock. It only reads the
+// lease: a holder found gone is the collector's to release.
+func (e Env) injectLeased(ctx context.Context, r InjectRequest) core.Outcome {
+	rec, o, ok := e.leasedAgent(r.Handle)
+	if !ok {
+		return o
+	}
+	if reason, gone := incarnationGone(rec.Server, rec.lease.Incarnation); gone {
+		return core.Outcome{Progress: core.Failed, Code: "holder_gone", Note: "the lease's process is gone (" + reason + "); collection releases it"}
+	}
+	unlock, err := e.Store.LockInject(ctx, rec.BlockID)
+	if err != nil {
+		return deferredErr("inject_locked", err)
+	}
+	defer unlock()
+	// The lease may have moved while this waited for the block: the block
+	// locked is then not the agent's, and the doorbell is rung again there.
+	now, o, ok := e.leasedAgent(r.Handle)
+	if !ok {
+		return o
+	}
+	if now.Server != rec.Server || now.BlockID != rec.BlockID {
+		return core.Outcome{Progress: core.Deferred, Code: "lease_moved", Note: "the lease moved from " + rec.BlockID + " to " + now.BlockID}
+	}
+	on := e
+	if e.RexOn != nil && now.Server != "" {
+		on.Rex = e.RexOn(now.Server)
+	}
+	return on.inject(ctx, r, now)
+}
+
+// leasedAgent is h with its lease; ok is false with the outcome to report
+// when h runs nowhere or its state cannot be read.
+func (e Env) leasedAgent(h core.Handle) (agent, core.Outcome, bool) {
+	rec, ok, err := e.agentOf(h)
 	switch {
 	case err != nil:
-		return deferredErr("state_unreadable", err)
-	case !ok || rec.Handle != r.Handle || !rec.Live():
-		return core.Outcome{Progress: core.Failed, Code: "not_adopted", Note: "no live record binds this handle to the block"}
+		return agent{}, deferredErr("state_unreadable", err), false
+	case !ok || !rec.Live():
+		return agent{}, core.Outcome{Progress: core.Failed, Code: "no_lease", Note: "the handle runs nowhere; its next adoption announces the mail"}, false
 	}
+	return rec, core.Outcome{}, true
+}
+
+func (e Env) inject(ctx context.Context, r InjectRequest, rec agent) core.Outcome {
 	if o, ok := e.checkBinding(ctx, rec); !ok {
 		return o
 	}
 	if o, ok := e.clearLeftover(ctx, rec); !ok {
 		return o
 	}
-	status, reports, err := e.Rex.ProgramStatus(ctx, r.Block)
+	status, reports, err := e.Rex.ProgramStatus(ctx, rec.BlockID)
 	if err != nil {
 		return rexOutcome(err)
 	}
@@ -69,7 +103,7 @@ func (e Env) inject(ctx context.Context, r InjectRequest) core.Outcome {
 	} else if isJob {
 		status, reports = jobStatus, jobReports
 	}
-	vt, err := e.Rex.CaptureVT(ctx, r.Block)
+	vt, err := e.Rex.CaptureVT(ctx, rec.BlockID)
 	if err != nil {
 		return rexOutcome(err)
 	}
@@ -93,12 +127,12 @@ func (e Env) inject(ctx context.Context, r InjectRequest) core.Outcome {
 	doorbell := core.Doorbell(len(unread), r.Handle, e.SelfBin)
 	// Recorded before the write: if this process dies after writing, the
 	// next attempt still knows which text in the box is ours.
-	if err := e.Store.SetPending(r.Block, doorbell); err != nil {
+	if err := e.Store.SetPending(rec.BlockID, doorbell); err != nil {
 		return deferredErr("state_unwritable", err)
 	}
 	// One write, bracketed: Codex treats a burst of typed text followed by
 	// Enter as a paste and swallows the Enter.
-	if err := e.Rex.Write(ctx, r.Block, bracketedPasteStart+doorbell+bracketedPasteEnd+"\r"); err != nil {
+	if err := e.Rex.Write(ctx, rec.BlockID, bracketedPasteStart+doorbell+bracketedPasteEnd+"\r"); err != nil {
 		return rexOutcome(err)
 	}
 	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), ConfirmBudget)

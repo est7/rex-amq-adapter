@@ -20,10 +20,6 @@ func (c CLI) Ensure(ctx context.Context, w Waker, logDir string) (WakeState, Wak
 	return Ensure(ctx, c.Bin, w, logDir)
 }
 
-func (c CLI) RetireFor(ctx context.Context, root, handle, block string) (bool, error) {
-	return RetireFor(ctx, c.Bin, root, handle, block)
-}
-
 func (c CLI) RetireHandle(ctx context.Context, root, handle string) (bool, error) {
 	return RetireHandle(ctx, c.Bin, root, handle)
 }

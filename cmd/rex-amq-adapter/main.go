@@ -181,7 +181,7 @@ Installation:
 
 Internal (run by installed hooks and by amq wake):
   hook <event> --agent K    session-start | user-prompt-submit | post-tool-use | pre-invocation | stop | stop-failure | session-end | mail | settle
-  inject <server> <block> <handle> <root> <payload>
+  inject <handle> <root> <payload>
   __internal skill          print the agent guide
   version, --version
 `
@@ -364,13 +364,14 @@ func hookFail(log *hookLog, err error) int {
 }
 
 func runInject(args []string) int {
-	if len(args) != 5 {
+	if len(args) != 3 {
 		fmt.Fprintln(os.Stderr, "AMQ_INJECT_PROGRESS=failed")
-		return fail(errors.New("inject: want <server> <block> <handle> <root> <payload>"))
+		return fail(errors.New("inject: want <handle> <root> <payload>"))
 	}
-	// The fifth argument is amq's notification payload, deliberately unused:
-	// it previews the sender's subject (see core.Doorbell).
-	server, block, handle, root := args[0], args[1], args[2], args[3]
+	// The third argument is amq's notification payload, deliberately unused:
+	// it previews the sender's subject (see core.Doorbell). The Rex server and
+	// block are the handle's lease's, read when the doorbell fires.
+	handle, root := args[0], args[1]
 	report := func(o core.Outcome) int {
 		fmt.Fprintf(os.Stderr, "AMQ_INJECT_PROGRESS=%s\n", o.Progress)
 		if o.Code != "" {
@@ -386,7 +387,7 @@ func runInject(args []string) int {
 	if err != nil {
 		return report(core.Outcome{Progress: core.Failed, Code: "usage", Note: err.Error()})
 	}
-	env, err := app.NewEnvAt(server, paths)
+	env, err := app.NewEnvAt("", paths)
 	if err != nil {
 		return report(core.Outcome{Progress: core.Deferred, Code: "environment", Note: err.Error()})
 	}
@@ -394,7 +395,7 @@ func runInject(args []string) int {
 	// the write gets 5 s; confirming after it has its own app.ConfirmBudget.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return report(env.Inject(ctx, app.InjectRequest{Block: block, Handle: h, Root: root}))
+	return report(env.Inject(ctx, app.InjectRequest{Handle: h, Root: root}))
 }
 
 // caller resolves the Rex location of the agent running a command (see

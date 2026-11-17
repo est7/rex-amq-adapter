@@ -32,9 +32,11 @@ const superviseFor = 1500 * time.Millisecond
 // runs inside every adoption's hook budget.
 const finishDepartureFor = time.Second
 
-// waker is the amq waker that wakes rec's agent.
+// waker is the amq waker that wakes rec's agent. It names the handle, not
+// a block: the injector reads the handle's lease when a doorbell fires, so a
+// lease that moves keeps its waker.
 func (e Env) waker(rec agent) amq.Waker {
-	return amq.Waker{InjectVia: e.injector(), Server: rec.Server, Block: rec.BlockID, Handle: string(rec.Handle), Root: e.Paths.Root()}
+	return amq.Waker{InjectVia: e.injector(), Handle: string(rec.Handle), Root: e.Paths.Root()}
 }
 
 // injector is the --inject-via every waker runs: a wrapper in the private
@@ -121,11 +123,8 @@ func (e Env) Depart(ctx context.Context, loc Location, in HookInput) error {
 }
 
 // park retires the handle's waker and releases its lease, for reason
-// (store.Placement.DepartReason). A moved job whose adoption failed after its
-// record took the new block still has a waker targeting the old one, so the
-// handle's waker is retired whichever block it wakes (amq.RetireHandle).
-// What follows can fail without undoing that: the departure stands, and
-// collection finishes it.
+// (store.Placement.DepartReason). What follows can fail without undoing
+// that: the departure stands, and collection finishes it.
 func (e Env) park(ctx context.Context, rec agent, reason string) error {
 	if !rec.Kind.InProcess() {
 		// amq wake retire checks the waker's --inject-via path exists; a

@@ -34,14 +34,14 @@ func TestParseWakeCheck(t *testing.T) {
 }
 
 func TestDecideWake(t *testing.T) {
-	w := Waker{InjectVia: "/bin/cur/rex-amq-adapter", Server: "unix:///s.sock", Block: "block:a", Handle: "claude-2", Root: "/root"}
+	w := Waker{InjectVia: "/bin/cur/rex-amq-adapter", Handle: "claude-2", Root: "/root"}
 	want := w.Target()
 	old := w
 	old.InjectVia = "/bin/old/rex-amq-adapter"
 	other := old.Target()
 	elsewhere := w
-	elsewhere.Block = "block:b"
-	moved := elsewhere.Target()
+	elsewhere.Root = "/other-root"
+	foreign := elsewhere.Target()
 	cases := []struct {
 		name string
 		js   string
@@ -54,7 +54,7 @@ func TestDecideWake(t *testing.T) {
 		// adapter is its supervisor and replaces it after an upgrade.
 		{"live same, old amq image", checkValidOldImage, want, true, DecisionReplace},
 		{"live old binary", checkValid, other, true, DecisionReplace},
-		{"live but waking another block", checkValid, moved, true, DecisionReplace},
+		{"live but for another root", checkValid, foreign, true, DecisionReplace},
 		{"live no target file", checkValid, WakeTarget{}, false, DecisionReplace},
 		{"stale same", checkStale, want, true, DecisionRepair},
 		{"stale other", checkStale, other, true, DecisionReplace},
@@ -75,9 +75,9 @@ func TestDecideWake(t *testing.T) {
 // The retire identity must be the saved target verbatim, in amq's flag
 // order, so a waker for another pane or binary is never matched.
 func TestRetireArgsFromTarget(t *testing.T) {
-	tgt := WakeTarget{InjectVia: "/a/adapter", InjectArgs: []string{"inject", "unix:///s.sock", "block:a", "bob", "/root"}, RetryUntil: "injected"}
+	tgt := WakeTarget{InjectVia: "/a/adapter", InjectArgs: []string{"inject", "bob", "/root"}, RetryUntil: "injected"}
 	got := tgt.retireArgs()
-	want := []string{"--inject-via", "/a/adapter", "--inject-arg", "inject", "--inject-arg", "unix:///s.sock", "--inject-arg", "block:a", "--inject-arg", "bob", "--inject-arg", "/root", "--retry-until", "injected"}
+	want := []string{"--inject-via", "/a/adapter", "--inject-arg", "inject", "--inject-arg", "bob", "--inject-arg", "/root", "--retry-until", "injected"}
 	if len(got) != len(want) {
 		t.Fatalf("got %v", got)
 	}
@@ -86,9 +86,32 @@ func TestRetireArgsFromTarget(t *testing.T) {
 			t.Fatalf("arg %d: got %q want %q", i, got[i], want[i])
 		}
 	}
-	w := Waker{InjectVia: "/a/adapter", Server: "unix:///s.sock", Block: "block:a", Handle: "bob", Root: "/root"}
+	w := Waker{InjectVia: "/a/adapter", Handle: "bob", Root: "/root"}
 	if !w.Target().Equal(tgt) {
 		t.Error("Target must equal the target amq saves for WakeArgs")
+	}
+}
+
+// A waker is the adapter's for a handle only by its handle-only target
+// (inject <handle> <root>): one naming a server and block, as wakers did
+// before handles followed their leases, or another handle or root, is not,
+// and RetireHandle leaves it alone.
+func TestOnlyTheHandleTargetIsTheAdapters(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{"handle target", []string{"inject", "bob", "/root"}, true},
+		{"block-pinned target", []string{"inject", "unix:///s.sock", "block:a", "bob", "/root"}, false},
+		{"another handle", []string{"inject", "alice", "/root"}, false},
+		{"another root", []string{"inject", "bob", "/elsewhere"}, false},
+		{"another verb", []string{"exec", "bob", "/root"}, false},
+	}
+	for _, c := range cases {
+		if got := wakes(WakeTarget{InjectVia: "/a/adapter", InjectArgs: c.args, RetryUntil: "injected"}, "bob", "/root"); got != c.want {
+			t.Errorf("%s: wakes = %v, want %v", c.name, got, c.want)
+		}
 	}
 }
 

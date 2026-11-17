@@ -56,7 +56,7 @@ func Spawn(amqBin string, w Waker, logDir string) error {
 		return err
 	}
 	defer logf.Close()
-	fmt.Fprintf(logf, "\n=== %s spawn handle=%s block=%s server=%s\n", time.Now().Format(time.RFC3339), w.Handle, w.Block, w.Server)
+	fmt.Fprintf(logf, "\n=== %s spawn handle=%s\n", time.Now().Format(time.RFC3339), w.Handle)
 	cmd := exec.Command(amqBin, append([]string{"--no-update-check"}, w.WakeArgs()...)...)
 	cmd.Env = amqEnv()
 	cmd.Dir = w.Root
@@ -98,27 +98,14 @@ func Ensure(ctx context.Context, amqBin string, w Waker, logDir string) (WakeSta
 	return live, decision, err
 }
 
-// RetireFor stops the waker holding handle if it wakes block, whatever its
-// injector path or generation: the saved target names the block, so a waker
-// for this block is the adapter's by construction, including one started by
-// an adoption that died before recording it. A waker for another block (the
-// handle was reused) is left alone. A lock that cannot be identified is an
-// error, so the caller keeps its record as the credential to try again.
-func RetireFor(ctx context.Context, amqBin, root, handle, block string) (retired bool, err error) {
-	return retire(ctx, amqBin, root, handle, func(t WakeTarget) bool { return wakes(t, block, handle, root) })
-}
-
-// RetireHandle stops the adapter's waker holding handle, whichever block it
-// wakes. A departing agent's record can name a block its waker no longer
-// targets (a job moved, and its adoption failed after the record was
-// written), and a handle belongs to one record, so a departure retires the
-// handle's waker wherever it points. Only a waker the adapter started for
-// handle under root is stopped.
+// RetireHandle stops the adapter's waker holding handle under root, whatever
+// its injector path or generation: the saved target names the handle and
+// root, so such a waker is the adapter's by construction, including one
+// started by an adoption that died before leasing. A waker that is not the
+// adapter's for handle and root is left alone. A lock that cannot be
+// identified is an error, so the caller keeps its lease as the credential to
+// try again.
 func RetireHandle(ctx context.Context, amqBin, root, handle string) (retired bool, err error) {
-	return retire(ctx, amqBin, root, handle, func(t WakeTarget) bool { return wakesAnyBlock(t, handle, root) })
-}
-
-func retire(ctx context.Context, amqBin, root, handle string, ours func(WakeTarget) bool) (retired bool, err error) {
 	st, err := WakeCheck(ctx, amqBin, root, handle)
 	if err != nil {
 		return false, err
@@ -128,7 +115,7 @@ func retire(ctx context.Context, amqBin, root, handle string, ours func(WakeTarg
 		return false, nil
 	case st.Generation == "" || !st.HasTarget:
 		return false, fmt.Errorf("wake lock for %s cannot be identified (generation %q, target present %v)", handle, st.Generation, st.HasTarget)
-	case !ours(st.Target):
+	case !wakes(st.Target, handle, root):
 		return false, nil
 	}
 	if err := WakeRetire(ctx, amqBin, root, handle, st); err != nil {
@@ -137,17 +124,11 @@ func retire(ctx context.Context, amqBin, root, handle string, ours func(WakeTarg
 	return true, nil
 }
 
-// wakes reports whether t is an adapter target for block, handle and root
-// (argv: inject <server> <block> <handle> <root>).
-func wakes(t WakeTarget, block, handle, root string) bool {
-	return wakesAnyBlock(t, handle, root) && t.InjectArgs[2] == block
-}
-
-// wakesAnyBlock reports whether t is an adapter target for handle and root,
-// whatever block it names.
-func wakesAnyBlock(t WakeTarget, handle, root string) bool {
+// wakes reports whether t is the adapter's target for handle and root
+// (argv: inject <handle> <root>).
+func wakes(t WakeTarget, handle, root string) bool {
 	a := t.InjectArgs
-	return len(a) == 5 && a[0] == "inject" && a[3] == handle && canonPath(a[4]) == canonPath(root)
+	return len(a) == 3 && a[0] == "inject" && a[1] == handle && canonPath(a[2]) == canonPath(root)
 }
 
 // EnsureMailbox makes handle a provisioned member of root. `amq init --force`

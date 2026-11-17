@@ -299,7 +299,7 @@ func TestAWorkingJobIsNotTypedInto(t *testing.T) {
 	rec, _, _ := w.e.liveRecordOf(core.Claude, jobSess)
 	writeJSON(t, filepath.Join(w.e.ClaudeDir, "jobs", "a1b2c3d4", "state.json"), map[string]string{"name": jobName, "state": "working"})
 	w.term.state = "" // the client reports nothing
-	o := w.e.Inject(context.Background(), InjectRequest{Block: rec.BlockID, Handle: rec.Handle, Root: w.e.Paths.Root()})
+	o := w.e.Inject(context.Background(), InjectRequest{Handle: rec.Handle, Root: w.e.Paths.Root()})
 	if o.Code != "agent_working" {
 		t.Errorf("a working job: %+v, want agent_working", o)
 	}
