@@ -247,8 +247,9 @@ func (e Env) liveRecordOf(kind core.Kind, session string) (agent, bool, error) {
 // and the hook then does nothing: REX_BLOCK names another agent's pane.
 // SessionEnd finds the record by session first: the supervisor may have
 // dropped the job from its roster already. It goes there only from the
-// record's own process: another pane that resumed the same conversation was
-// refused a lease, and its end ends nothing of the incumbent's. A roster that
+// record's own process (endsOwnLease): another pane that resumed the same
+// conversation was refused a lease, and its end ends nothing of the
+// incumbent's. A roster that
 // cannot be read leaves loc as it was, and is reported.
 func (e Env) jobLocation(ctx context.Context, event string, loc Location, in HookInput) (Location, HookInput, bool) {
 	rec, hasRec, err := e.liveRecordOf(core.Claude, in.SessionID)
@@ -261,7 +262,7 @@ func (e Env) jobLocation(ctx context.Context, event string, loc Location, in Hoo
 		fmt.Fprintf(Diagnostics, "Claude Code background session %s: %v\n", in.SessionID, err)
 	}
 	if event == EventSessionEnd && hasRec {
-		if !e.sameProcess(rec, in) {
+		if !e.endsOwnLease(rec, in) {
 			return loc, in, false
 		}
 		return at(rec.BlockID), in, true

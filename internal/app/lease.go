@@ -64,6 +64,19 @@ func (e Env) sameProcess(rec agent, in HookInput) bool {
 	return e.descendsFrom(rec)
 }
 
+// endsOwnLease reports whether a SessionEnd hook proves it comes from rec's
+// agent process: the authority to release its lease at once. A local lease's
+// process is known as sameProcess knows it, by the reported pid or else by
+// ancestry. A remote lease's ancestry cannot be read (descendsFrom takes it
+// as is), so only the agent's own reported pid proves it; without that
+// proof the release is collection's.
+func (e Env) endsOwnLease(rec agent, in HookInput) bool {
+	if !localServer(rec.Server) {
+		return in.AgentPID > 0 && in.AgentPID == rec.pid()
+	}
+	return e.sameProcess(rec, in)
+}
+
 // descendsFrom reports whether this process descends from rec's agent
 // process, the incarnation its lease records. Only a local server's pids are this machine's; a remote record
 // cannot be checked and is taken as is. Unreadable ancestry is not taken as a

@@ -172,3 +172,54 @@ func TestStartTimeBoundLocalAgentAsksNoServerInstance(t *testing.T) {
 		t.Fatalf("a bound local agent: %+v bound=%v, %d whoami calls; want bound with none", o, bound, calls)
 	}
 }
+
+// A late SessionEnd from a process the lease does not name (a Codex hook,
+// which reports no pid, from the pane's previous process) does not release
+// the current owner's lease: without a pid, its ancestry must place it under
+// the lease's process.
+func TestSessionEndOwnershipOfALateCodexEndNeedsAncestry(t *testing.T) {
+	e := realAmqEnv(t, &fakeTerm{state: "idle"})
+	owner, old := sbAgent(t), sbAgent(t)
+	plant(t, e, seed{Handle: "codex-01", Kind: core.Codex, Server: fakeServer, BlockID: block, AgentPID: owner.Process.Pid, AgentSessionID: "same-thread"})
+	e.Ancestors = func() ([]proc, error) {
+		return []proc{{PID: os.Getpid(), Name: "rex-amq-adapter"}, {PID: old.Process.Pid, Name: "codex"}}, nil
+	}
+	if _, err := e.Hook(context.Background(), EventSessionEnd, core.Codex, Location{Block: block}, HookInput{SessionID: "same-thread"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, live, _ := e.Store.LeaseOf("codex-01"); !live {
+		t.Fatal("a late SessionEnd from another process released the current owner's lease")
+	}
+	// The owner's own end, placed by its ancestry, releases it.
+	e.Ancestors = func() ([]proc, error) {
+		return []proc{{PID: os.Getpid(), Name: "rex-amq-adapter"}, {PID: owner.Process.Pid, Name: "codex"}}, nil
+	}
+	if _, err := e.Hook(context.Background(), EventSessionEnd, core.Codex, Location{Block: block}, HookInput{SessionID: "same-thread"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, live, _ := e.Store.LeaseOf("codex-01"); live {
+		t.Fatal("the owner's own SessionEnd did not release its lease")
+	}
+}
+
+// On a remote server the hook's ancestry is not checked (the Caller
+// exemption), so it is no authority to release: a duplicate pane's
+// SessionEnd, whose pid differs from the lease's, leaves the incumbent's
+// lease to collection. The incumbent's own end, naming its pid, releases it.
+func TestSessionEndOwnershipOfARemoteDuplicateIsNotProven(t *testing.T) {
+	const remote = "tcp://remote.example:7070"
+	e := realAmqEnv(t, &fakeTerm{state: "idle"})
+	plant(t, e, seed{Handle: "claude-01", Kind: core.Claude, Server: remote, BlockID: "block:remote-incumbent", AgentPID: 4101, AgentSessionID: sbSession})
+	if _, err := e.Hook(context.Background(), EventSessionEnd, core.Claude, Location{Server: remote, Block: "block:duplicate"}, HookInput{SessionID: sbSession, AgentPID: 4102}); err != nil {
+		t.Fatal(err)
+	}
+	if _, live, _ := e.Store.LeaseOf("claude-01"); !live {
+		t.Fatal("a remote duplicate's SessionEnd released the live incumbent although the reported pids differ")
+	}
+	if _, err := e.Hook(context.Background(), EventSessionEnd, core.Claude, Location{Server: remote, Block: "block:remote-incumbent"}, HookInput{SessionID: sbSession, AgentPID: 4101}); err != nil {
+		t.Fatal(err)
+	}
+	if _, live, _ := e.Store.LeaseOf("claude-01"); live {
+		t.Fatal("the remote incumbent's own SessionEnd did not release its lease")
+	}
+}
