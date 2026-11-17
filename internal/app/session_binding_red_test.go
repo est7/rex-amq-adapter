@@ -7,7 +7,7 @@ package app
 // ManagedMail as `drain` runs it) and observe only what an agent or the user
 // sees (who's agents, which handle a pane holds, the env exports, drain's
 // exit code and the inbox, the waker's pid and generation), so they keep
-// their meaning when store.Record and the 5-arg waker target are replaced.
+// their meaning when the old records/ state model and the 5-arg waker target are replaced.
 
 import (
 	"bytes"

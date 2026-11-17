@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
-	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 // The recorded pid is alive but is not the process this hook comes from: the
@@ -33,9 +32,9 @@ func TestHookRebindsWhenTheRecordedPIDIsAliveButNotItsAncestor(t *testing.T) {
 	}
 	e.Ancestors = nil
 	t.Cleanup(func() { _ = e.Depart(ctx, loc, HookInput{}) })
-	before, _, _ := e.Store.Record(block)
-	if before.AgentPID != other.Process.Pid {
-		t.Fatalf("setup: pid %d", before.AgentPID)
+	before, _, _ := e.agentAt(block)
+	if before.pid() != other.Process.Pid {
+		t.Fatalf("setup: pid %d", before.pid())
 	}
 	term.mu.Lock()
 	term.fgPID = os.Getpid()
@@ -43,8 +42,8 @@ func TestHookRebindsWhenTheRecordedPIDIsAliveButNotItsAncestor(t *testing.T) {
 	if _, err := e.Hook(ctx, EventPreInvocation, core.Agy, loc, HookInput{ConversationID: "c1"}); err != nil {
 		t.Fatal(err)
 	}
-	after, _, _ := e.Store.Record(block)
-	if after.AgentPID != os.Getpid() || after.Handle != before.Handle {
+	after, _, _ := e.agentAt(block)
+	if after.pid() != os.Getpid() || after.Handle != before.Handle {
 		t.Errorf("record not rebound to the hook's process: %+v", after)
 	}
 	b, err := e.observeBinding(ctx, after)
@@ -71,15 +70,15 @@ func TestAnotherKindInTheBlockIsAdoptedByItsFirstHook(t *testing.T) {
 	}
 	e.Ancestors = nil
 	t.Cleanup(func() { _ = e.Depart(ctx, loc, HookInput{}) })
-	agy, _, _ := e.Store.Record(block)
+	agy, _, _ := e.agentAt(block)
 	term.mu.Lock()
 	term.fgPID = os.Getpid()
 	term.mu.Unlock()
 	if _, err := e.Hook(ctx, EventPrompt, core.Codex, loc, HookInput{SessionID: "cx1", TranscriptPath: []byte(`"/tmp/cx1.jsonl"`)}); err != nil {
 		t.Fatal(err)
 	}
-	after, _, _ := e.Store.Record(block)
-	if after.Kind != core.Codex || after.AgentSessionID != "cx1" || after.AgentPID != os.Getpid() {
+	after, _, _ := e.agentAt(block)
+	if after.Kind != core.Codex || after.Session() != "cx1" || after.pid() != os.Getpid() {
 		t.Fatalf("Codex's first hook stayed bound to agy's record: %+v", after)
 	}
 	if left := recordOf(t, e, agy.Handle); left.Live() {
@@ -98,12 +97,12 @@ func TestAnotherKindThatReusedThePIDIsNotTakenForTheRecordsAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = e.Depart(ctx, loc, HookInput{}) })
-	agy, _, _ := e.Store.Record(block)
+	agy, _, _ := e.agentAt(block)
 	if _, err := e.Hook(ctx, EventPrompt, core.Codex, loc, HookInput{SessionID: "cx1", TranscriptPath: []byte(`"/tmp/cx1.jsonl"`)}); err != nil {
 		t.Fatal(err)
 	}
-	after, _, _ := e.Store.Record(block)
-	if after.Kind != core.Codex || after.AgentSessionID != "cx1" {
+	after, _, _ := e.agentAt(block)
+	if after.Kind != core.Codex || after.Session() != "cx1" {
 		t.Fatalf("Codex's hook was taken for agy's: %+v", after)
 	}
 	if after.Handle == agy.Handle {
@@ -129,14 +128,16 @@ func TestAnotherAgentWaitingToBeAdoptedReadsNoMail(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			e := fixture(t, &fakeTerm{state: "working"}, "old-session-mail")
-			rec, _, err := e.Store.Record(block)
+			rec, _, err := e.agentAt(block)
 			if err != nil {
 				t.Fatal(err)
 			}
-			rec.AgentPID, rec.AgentSessionID = c.pid, "previous"
-			if err := e.Store.PutRecord(rec); err != nil {
+			recSeed := seedOf(rec)
+			recSeed.AgentPID, recSeed.AgentSessionID = c.pid, "previous"
+			if err := putSeed(e.Store, recSeed); err != nil {
 				t.Fatal(err)
 			}
+			rec = recordNamed(t, e, rec.Handle)
 			if err := e.Store.SetAdoptFailed(block, time.Now()); err != nil {
 				t.Fatal(err)
 			}
@@ -165,17 +166,19 @@ func TestAnotherAgentWaitingToBeAdoptedReadsNoMail(t *testing.T) {
 // succeed, so a retry would leave a failure behind).
 func TestRecordedProcessFurtherUpTheAncestryIsCurrent(t *testing.T) {
 	e := fixture(t, &fakeTerm{state: "working"}, "m1")
-	rec, _, err := e.Store.Record(block)
+	rec, _, err := e.agentAt(block)
 	if err != nil {
 		t.Fatal(err)
 	}
-	rec.AgentSessionID = "s1"
-	if err := e.Store.PutRecord(rec); err != nil {
+	recSeed := seedOf(rec)
+	recSeed.AgentSessionID = "s1"
+	if err := putSeed(e.Store, recSeed); err != nil {
 		t.Fatal(err)
 	}
+	rec = recordNamed(t, e, rec.Handle)
 	const adapter, shell = 0x3ffffff1, 0x3ffffff2
 	e.Ancestors = func() ([]proc, error) {
-		return []proc{{adapter, "rex-amq-adapter"}, {shell, "sh"}, {rec.AgentPID, "codex"}}, nil
+		return []proc{{adapter, "rex-amq-adapter"}, {shell, "sh"}, {rec.pid(), "codex"}}, nil
 	}
 	r, err := e.Hook(context.Background(), EventPostTool, core.Codex, Location{Block: block}, HookInput{SessionID: "s1"})
 	if err != nil {
@@ -207,8 +210,8 @@ func TestUnreadableAncestryAdoptsAgain(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = e.Depart(ctx, loc, HookInput{}) })
-	if before, _, _ := e.Store.Record(block); before.AgentPID != os.Getpid() {
-		t.Fatalf("setup: pid %d", before.AgentPID)
+	if before, _, _ := e.agentAt(block); before.pid() != os.Getpid() {
+		t.Fatalf("setup: pid %d", before.pid())
 	}
 	e.Ancestors = func() ([]proc, error) { return nil, errors.New("sysctl failed") }
 	term.mu.Lock()
@@ -217,7 +220,7 @@ func TestUnreadableAncestryAdoptsAgain(t *testing.T) {
 	if _, err := e.Hook(ctx, EventPreInvocation, core.Agy, loc, HookInput{ConversationID: "c1"}); err != nil {
 		t.Fatal(err)
 	}
-	if after, _, _ := e.Store.Record(block); after.AgentPID != other.Process.Pid {
+	if after, _, _ := e.agentAt(block); after.pid() != other.Process.Pid {
 		t.Errorf("a lease the hook could not check was trusted: %+v", after)
 	}
 }
@@ -273,12 +276,12 @@ func TestRecordFitTrustsAnotherProcessOnlyForTheRecordsOwnSession(t *testing.T) 
 			{"own process, hook names no session", true, "s1", "", own},
 		} {
 			e := Env{Ancestors: func() ([]proc, error) { return ancestry[c.sameProcess], nil }}
-			rec := store.Record{Kind: kind, Server: "unix:///fake.sock", AgentPID: agentPID, AgentSessionID: c.recSess}
+			rec := seed{Kind: kind, Server: "unix:///fake.sock", AgentPID: agentPID, AgentSessionID: c.recSess}
 			in := HookInput{SessionID: c.hookSess}
 			if kind == core.Agy {
 				in = normalize(kind, HookInput{ConversationID: c.hookSess})
 			}
-			if got := e.recordFit(kind, rec, in); got != c.want {
+			if got := e.recordFit(kind, rec.asAgent(), in); got != c.want {
 				t.Errorf("%s, %s: fit %d, want %d (own %d, staleLease %d, foreign %d)", kind, c.name, got, c.want, own, staleLease, foreign)
 			}
 		}

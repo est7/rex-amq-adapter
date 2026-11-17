@@ -35,7 +35,7 @@ func TestANewAgentSkipsAHandleWithUnreadMail(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = e.Depart(ctx, loc, HookInput{}) })
-			if rec, _, _ := e.Store.Record(block); rec.Handle != c.want {
+			if rec, _, _ := e.agentAt(block); rec.Handle != c.want {
 				t.Errorf("handle %q, want %q", rec.Handle, c.want)
 			}
 		})

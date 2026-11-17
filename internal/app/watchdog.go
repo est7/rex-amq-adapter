@@ -14,7 +14,6 @@ import (
 	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/core"
 	"github.com/est7/rex-amq-adapter/internal/screen"
-	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 // The orchestrator watchdog runs inside the orchestrator watcher's tick (orchestrator.go). For every
@@ -41,10 +40,10 @@ const settleFor = 3 * time.Second
 
 // watchdog runs one look over every live agent in s. Errors are reported and
 // swallowed: a failing watchdog must not stop the orchestrator watcher.
-func (e Env) watchdog(ctx context.Context, orch store.Record, s Session) {
-	recs, err := e.Store.Records()
+func (e Env) watchdog(ctx context.Context, orch agent, s Session) {
+	recs, err := e.agents()
 	if err != nil {
-		e.wdLog(orch, store.Record{}, "records", "", err.Error())
+		e.wdLog(orch, agent{}, "records", "", err.Error())
 		return
 	}
 	for _, r := range recs {
@@ -82,7 +81,7 @@ type look struct {
 	window  string // "" when detached
 }
 
-func (e Env) observe(ctx context.Context, rec store.Record, unread int, history []core.Attempt) (look, bool, error) {
+func (e Env) observe(ctx context.Context, rec agent, unread int, history []core.Attempt) (look, bool, error) {
 	l := look{unread: unread}
 	var stuck bool
 	if l.code, l.since, stuck = core.Stuck(history, unread, e.Now()); !stuck {
@@ -116,7 +115,7 @@ func (e Env) observe(ctx context.Context, rec store.Record, unread int, history 
 // watchPeer decides and acts for one agent. Whatever a step did, the look
 // ends by settling the episode: a block out of every window is placed again,
 // and an episode ends only once its block is in a window.
-func (e Env) watchPeer(ctx context.Context, orch store.Record, s Session, rec store.Record) (err error) {
+func (e Env) watchPeer(ctx context.Context, orch agent, s Session, rec agent) (err error) {
 	defer func() {
 		if serr := e.settleEpisode(ctx, orch, rec, s); serr != nil && err == nil {
 			err = serr
@@ -125,7 +124,7 @@ func (e Env) watchPeer(ctx context.Context, orch store.Record, s Session, rec st
 	return e.stepPeer(ctx, orch, s, rec)
 }
 
-func (e Env) stepPeer(ctx context.Context, orch store.Record, s Session, rec store.Record) error {
+func (e Env) stepPeer(ctx context.Context, orch agent, s Session, rec agent) error {
 	unread, err := amq.Unread(e.Paths.Root(), string(rec.Handle))
 	if err != nil {
 		return err
@@ -146,7 +145,7 @@ func (e Env) stepPeer(ctx context.Context, orch store.Record, s Session, rec sto
 			return err
 		}
 	}
-	if open && !ep.Of(rec.Handle, rec.AgentPID) {
+	if open && !ep.Of(rec.Handle, rec.pid()) {
 		if ep.Placement == core.Detached {
 			return nil // settled (placed, then ended) before this agent gets one
 		}
@@ -165,7 +164,7 @@ func (e Env) stepPeer(ctx context.Context, orch store.Record, s Session, rec sto
 	}
 	if !open {
 		now := e.Now()
-		ep = core.Episode{ID: fmt.Sprintf("%s-%d", rec.Handle, now.Unix()), Handle: rec.Handle, Block: rec.BlockID, PID: rec.AgentPID, Session: s.id, StartedAt: now, Reported: map[string]time.Time{}}
+		ep = core.Episode{ID: fmt.Sprintf("%s-%d", rec.Handle, now.Unix()), Handle: rec.Handle, Block: rec.BlockID, PID: rec.pid(), Session: s.id, StartedAt: now, Reported: map[string]time.Time{}}
 	}
 	e.wdLog(orch, rec, "observe", ep.ID, fmt.Sprintf("unread %d, deferred %s since %s, %dx%d owner %q in %q, status %s/%s, box %s", l.unread, l.code, core.Ago(e.Now().Sub(l.since)), l.columns, l.rows, l.owner, l.window, l.status, l.kind, l.box))
 
@@ -198,7 +197,7 @@ func (e Env) stepPeer(ctx context.Context, orch store.Record, s Session, rec sto
 // is still undelivered: resize it if that never took and nobody renders it,
 // verify it, and hand the mail over. A recovery already reported failed, or
 // out of attempts, is left to the injector, which keeps ringing on its own.
-func (e Env) continueRecovery(ctx context.Context, orch store.Record, s Session, rec store.Record, ep *core.Episode, l look) error {
+func (e Env) continueRecovery(ctx context.Context, orch agent, s Session, rec agent, ep *core.Episode, l look) error {
 	if _, failed := ep.Reported[core.ReportRecoveryFailed]; failed {
 		return nil
 	}
@@ -226,7 +225,7 @@ func (e Env) continueRecovery(ctx context.Context, orch store.Record, s Session,
 // a step that failed counts an attempt. It runs after that step returned, so
 // the injector takes the block's lock itself. Placement and the end of the
 // episode are settleEpisode's.
-func (e Env) handOff(ctx context.Context, orch store.Record, rec store.Record, ep *core.Episode, v verdict, err error) error {
+func (e Env) handOff(ctx context.Context, orch agent, rec agent, ep *core.Episode, v verdict, err error) error {
 	if err != nil {
 		ep.Attempts++
 		_ = e.Store.PutEpisode(*ep)
@@ -244,7 +243,7 @@ func (e Env) handOff(ctx context.Context, orch store.Record, rec store.Record, e
 // placed (one try per look; a failure counts and is retried next look), and
 // an episode whose mail arrived, or that another agent's run left, ends once
 // its block is in a window.
-func (e Env) settleEpisode(ctx context.Context, orch, rec store.Record, s Session) error {
+func (e Env) settleEpisode(ctx context.Context, orch, rec agent, s Session) error {
 	ep, open, err := e.Store.Episode(rec.BlockID)
 	if err != nil || !open {
 		return err
@@ -254,7 +253,7 @@ func (e Env) settleEpisode(ctx context.Context, orch, rec store.Record, s Sessio
 			return err
 		}
 	}
-	if !ep.Of(rec.Handle, rec.AgentPID) {
+	if !ep.Of(rec.Handle, rec.pid()) {
 		e.wdLog(orch, rec, "episode-end", ep.ID, "another agent runs in the block")
 		return e.Store.ClearEpisode(rec.BlockID)
 	}
@@ -275,7 +274,7 @@ func (e Env) settleEpisode(ctx context.Context, orch, rec store.Record, s Sessio
 
 // recover detaches rec's block and resizes it, once, under the injector's
 // lock and after re-reading everything the decision rested on.
-func (e Env) recover(ctx context.Context, orch store.Record, rec store.Record, ep *core.Episode, s Session, l look) (v verdict, err error) {
+func (e Env) recover(ctx context.Context, orch agent, rec agent, ep *core.Episode, s Session, l look) (v verdict, err error) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), actBudget)
 	defer cancel()
 	unlock, err := e.Store.LockInject(ctx, rec.BlockID)
@@ -284,11 +283,11 @@ func (e Env) recover(ctx context.Context, orch store.Record, rec store.Record, e
 	}
 	defer unlock()
 	// Precondition, re-read under the lock.
-	cur, ok, err := e.Store.Record(rec.BlockID)
+	cur, ok, err := e.agentAt(rec.BlockID)
 	if err != nil {
 		return notReady, err
 	}
-	if !ok || cur.Handle != rec.Handle || cur.AgentPID != rec.AgentPID || cur.AgentSessionID != rec.AgentSessionID || !cur.Live() {
+	if !ok || cur.Handle != rec.Handle || cur.pid() != rec.pid() || cur.Session() != rec.Session() || !cur.Live() {
 		e.wdLog(orch, rec, "abort", ep.ID, "the record changed under the lock")
 		return notReady, nil
 	}
@@ -353,7 +352,7 @@ func (e Env) recover(ctx context.Context, orch store.Record, rec store.Record, e
 
 // resize gives the detached block its recovery size; a terminal still owned
 // by a client would ignore it, so that is checked first.
-func (e Env) resize(ctx context.Context, orch store.Record, rec store.Record, ep *core.Episode) (verdict, error) {
+func (e Env) resize(ctx context.Context, orch agent, rec agent, ep *core.Episode) (verdict, error) {
 	size, err := e.Rex.Size(ctx, rec.BlockID)
 	if err != nil {
 		return notReady, err
@@ -388,7 +387,7 @@ const (
 // verify waits, briefly, for the agent to redraw at its size: large enough
 // with an empty box is ready; a draft is never typed over. It only observes:
 // it may run under the injector's lock, before the block is placed.
-func (e Env) verify(ctx context.Context, orch store.Record, rec store.Record, epID string) (verdict, error) {
+func (e Env) verify(ctx context.Context, orch agent, rec agent, epID string) (verdict, error) {
 	var size rexSize
 	var box screen.Draft
 	// Bounded by polls, not the clock: tests freeze Env.Now.
@@ -423,7 +422,7 @@ type rexSize struct{ columns, rows int }
 // reconcile brings the journal up to what the block shows: a detach that
 // took before the journal said so, a block that sits in the overflow tab, a
 // block the user placed elsewhere (theirs from then on).
-func (e Env) reconcile(ctx context.Context, orch store.Record, rec store.Record, ep *core.Episode) error {
+func (e Env) reconcile(ctx context.Context, orch agent, rec agent, ep *core.Episode) error {
 	if ep.Placement == core.Theirs {
 		return nil
 	}
@@ -469,7 +468,7 @@ func placementName(p core.Placement) string {
 // one found elsewhere was placed by the user. A failure is reported once
 // under its own code, closes the shell a new tab was made with, and is
 // retried on every look; it spends none of the recovery's attempts.
-func (e Env) place(ctx context.Context, orch store.Record, rec store.Record, ep *core.Episode, s Session) error {
+func (e Env) place(ctx context.Context, orch agent, rec agent, ep *core.Episode, s Session) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), actBudget)
 	defer cancel()
 	blk, err := e.Rex.InspectBlock(ctx, rec.BlockID)
@@ -538,7 +537,7 @@ func (e Env) overflowTab(ctx context.Context, session string) (window, anchor, s
 // report tells the orchestrator once per code per episode, in the stuck
 // peer's name; a report about the orchestrator's own pane goes where
 // findingRecipient says, since its own inbox is the one that is stuck.
-func (e Env) report(ctx context.Context, orch store.Record, s Session, rec store.Record, ep *core.Episode, code, detail string, lines []string) error {
+func (e Env) report(ctx context.Context, orch agent, s Session, rec agent, ep *core.Episode, code, detail string, lines []string) error {
 	if ep.Reported == nil {
 		ep.Reported = map[string]time.Time{}
 	}
@@ -592,7 +591,7 @@ func lastLines(vt string, n int) []string {
 
 // wdLog appends one JSON line per step to logs/watchdog.log: who looked,
 // at whom, what was seen, what was done. Drafts and raw screens stay out.
-func (e Env) wdLog(orch, rec store.Record, step, episode, detail string) {
+func (e Env) wdLog(orch, rec agent, step, episode, detail string) {
 	entry := map[string]any{"at": e.Now().UTC().Format(time.RFC3339), "orchestrator": orch.Handle, "handle": rec.Handle, "block": rec.BlockID, "step": step, "detail": detail}
 	if episode != "" {
 		entry["episode"] = episode

@@ -25,12 +25,12 @@ func viewWorld(t *testing.T) Env {
 	t.Helper()
 	e := realAmqEnv(t, &fakeTerm{sessionLabel: "auth-refresh"})
 	put(t, e,
-		store.Record{Handle: "claude-01", Kind: core.Claude, Role: core.OrchestratorRole, SessionID: "session:a"},
-		store.Record{Handle: "claude-02", Kind: core.Claude, Role: "implementer", SessionID: "session:a", Task: "token refresh"},
-		store.Record{Handle: "codex-03", Kind: core.Codex, Role: "reviewer", SessionID: "session:a"},
-		store.Record{Handle: "pi-04", Kind: core.Pi, Role: core.NarratorRole, SessionID: "session:a"},
-		store.Record{Handle: "pi-05", Kind: core.Pi, Role: core.PersonalRole, SessionID: "session:p"},
-		store.Record{Handle: "pi-06", Kind: core.Pi, Role: core.PersonalRole, SessionID: "session:q"},
+		seed{Handle: "claude-01", Kind: core.Claude, Role: core.OrchestratorRole, SessionID: "session:a"},
+		seed{Handle: "claude-02", Kind: core.Claude, Role: "implementer", SessionID: "session:a", Task: "token refresh"},
+		seed{Handle: "codex-03", Kind: core.Codex, Role: "reviewer", SessionID: "session:a"},
+		seed{Handle: "pi-04", Kind: core.Pi, Role: core.NarratorRole, SessionID: "session:a"},
+		seed{Handle: "pi-05", Kind: core.Pi, Role: core.PersonalRole, SessionID: "session:p"},
+		seed{Handle: "pi-06", Kind: core.Pi, Role: core.PersonalRole, SessionID: "session:q"},
 	)
 	for _, h := range []string{"claude-01", "claude-02", "codex-03", "pi-04", "pi-05", "pi-06"} {
 		if err := e.AMQ.EnsureMailbox(context.Background(), e.Paths.Root(), h); err != nil {
@@ -310,13 +310,15 @@ func cockpitWorld(t *testing.T) (Env, string) {
 	}
 	for h, pid := range map[core.Handle]int{"claude-01": 701, "claude-02": 702, "codex-03": 703, "pi-04": 704} {
 		r := recordOf(t, e, h)
-		r.AgentPID, r.AgentSessionID = pid, "harness-"+string(h)
-		put(t, e, r)
+		rSeed := seedOf(r)
+		rSeed.AgentPID, rSeed.AgentSessionID = pid, "harness-"+string(h)
+		put(t, e, rSeed)
 	}
 	r := recordOf(t, e, "pi-05")
-	r.Cwd, r.AgentPID, r.AgentSessionID = filepath.Join(hub, "work"), 705, "harness-pi-05"
-	put(t, e, r)
-	put(t, e, store.Record{Handle: "claude-07", Kind: core.Claude, SessionID: "session:a", AgentPID: 707, AgentSessionID: "harness-claude-07"})
+	rSeed := seedOf(r)
+	rSeed.Cwd, rSeed.AgentPID, rSeed.AgentSessionID = filepath.Join(hub, "work"), 705, "harness-pi-05"
+	put(t, e, rSeed)
+	put(t, e, seed{Handle: "claude-07", Kind: core.Claude, SessionID: "session:a", AgentPID: 707, AgentSessionID: "harness-claude-07"})
 	for _, l := range []core.Link{
 		{Personal: core.SessionKey{Server: fakeServer, SessionID: "session:p"}, Epic: core.SessionKey{Server: fakeServer, SessionID: "session:b"}},
 		{Personal: core.SessionKey{Server: fakeServer, SessionID: "session:q"}, Epic: core.SessionKey{Server: fakeServer, SessionID: "session:c"}},
@@ -401,25 +403,25 @@ func TestCockpitViewRefusesEveryoneButThePersonalScope(t *testing.T) {
 	// A shell with no agent names one even when only one personal agent is
 	// live: being outside every agent is no grant by itself.
 	gone := recordOf(t, e, "pi-06")
-	put(t, e, departed(gone, time.Now()))
+	put(t, e, departed(seedOf(gone), time.Now()))
 	if _, err := e.ReadCockpitView(ctx, cockpitEnv(nil), CockpitViewRequest{}); !errors.Is(err, ErrUsage) {
 		t.Errorf("a bare shell with one personal agent live: %v", err)
 	}
-	put(t, e, gone)
+	put(t, e, seedOf(gone))
 	// Gate 3 against the real process table: this test process is an
 	// implementer's agent.
 	real := e
 	real.Ancestors = nil
-	put(t, real, store.Record{Handle: "claude-08", Kind: core.Claude, Role: "implementer", SessionID: "session:a", AgentPID: os.Getpid()})
+	put(t, real, seed{Handle: "claude-08", Kind: core.Claude, Role: "implementer", SessionID: "session:a", AgentPID: os.Getpid()})
 	if _, err := real.ReadCockpitView(ctx, cockpitEnv(nil), CockpitViewRequest{Personal: "pi-05"}); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "claude-08") {
 		t.Errorf("a command under an implementer, by the real process table: %v", err)
 	}
 	r8 := recordOf(t, e, "claude-08")
-	put(t, e, departed(r8, time.Now()))
+	put(t, e, departed(seedOf(r8), time.Now()))
 	// Two personal agents in one hub are not told apart by it.
 	r := recordOf(t, e, "pi-06")
 	r.Cwd = hub
-	put(t, e, r)
+	put(t, e, seedOf(r))
 	if _, err := e.ReadCockpitView(ctx, cockpitEnv(nil), CockpitViewRequest{Hub: hub}); !errors.Is(err, ErrUsage) {
 		t.Errorf("an ambiguous hub: %v", err)
 	}
@@ -523,13 +525,13 @@ func TestSessionViewPairEpicLeadIsTheControlPlane(t *testing.T) {
 	e := viewWorld(t)
 	noOpenObligations(e)
 	ctx := context.Background()
-	if err := e.Store.DeleteRecord("claude-01"); err != nil {
+	if err := unplant(e.Store, "claude-01"); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.Store.PutSessionCrew("session:a", store.SessionCrew{Crew: pairCrew, ClaimedBy: "pi-05", ClaimedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	put(t, e, store.Record{Handle: "claude-07", Kind: core.Claude, Role: "implementer", SessionID: "session:a", Parent: "claude-02", Depth: 1})
+	put(t, e, seed{Handle: "claude-07", Kind: core.Claude, Role: "implementer", SessionID: "session:a", Parent: "claude-02", Depth: 1})
 	if err := e.AMQ.EnsureMailbox(ctx, e.Paths.Root(), "claude-07"); err != nil {
 		t.Fatal(err)
 	}

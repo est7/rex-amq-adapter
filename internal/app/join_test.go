@@ -44,8 +44,8 @@ func TestJoiningACrewClaimsTheSessionAndTakesTheLead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if j.Record.Role != "implementer" || j.Label != "implementer(pi-01)" || term.renamed["block:a"] != j.Label {
-		t.Errorf("joined as %q, label %q, pane %q", j.Record.Role, j.Label, term.renamed["block:a"])
+	if j.Agent.Role != "implementer" || j.Label != "implementer(pi-01)" || term.renamed["block:a"] != j.Label {
+		t.Errorf("joined as %q, label %q, pane %q", j.Agent.Role, j.Label, term.renamed["block:a"])
 	}
 	if slices.Contains(term.renamedTabs, "window:1=pair") || term.tabs["window:1"] != "implementer(pi-01)" {
 		t.Errorf("the tab should follow its agent, not name the crew: renamed %v, now %q", term.renamedTabs, term.tabs["window:1"])
@@ -61,11 +61,11 @@ func TestJoiningACrewClaimsTheSessionAndTakesTheLead(t *testing.T) {
 	if strings.Contains(j.Briefing, "lead:") || strings.Contains(j.Briefing, "rex split") {
 		t.Errorf("the briefing carries the crew header or a split:\n%s", j.Briefing)
 	}
-	if r := recordOf(t, e, j.Record.Handle); r.Role != "implementer" {
+	if r := recordOf(t, e, j.Agent.Handle); r.Role != "implementer" {
 		t.Errorf("record role %q", r.Role)
 	}
 	notice(t, e, EventSessionStart, core.Pi, "block:a", "s1")
-	if r := recordOf(t, e, j.Record.Handle); r.Role != "implementer" {
+	if r := recordOf(t, e, j.Agent.Handle); r.Role != "implementer" {
 		t.Errorf("a repeated adoption dropped the role: %q", r.Role)
 	}
 	// block:z is in window:2 of the same session.
@@ -89,7 +89,7 @@ func TestJoiningAnotherCrewRefusesWhileOthersAreInTheSession(t *testing.T) {
 	if c, _, _ := e.Store.SessionCrew("session:s"); c.Crew != "pair" {
 		t.Errorf("a refused join changed the session crew to %q", c.Crew)
 	}
-	if r, _, _ := e.Store.Record("block:b"); r.Role != "" {
+	if r, _, _ := e.agentAt("block:b"); r.Role != "" {
 		t.Errorf("a refused join took the role %q", r.Role)
 	}
 	if len(term.renamedTabs) > 0 && slices.Contains(term.renamedTabs, "window:1=ship") {
@@ -108,15 +108,15 @@ func TestJoiningTheSessionsOwnCrewOrARole(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if j.Record.Role != "qa" || !strings.Contains(j.Briefing, "still needs implementer, reviewer") {
-		t.Errorf("joined %+v, briefing:\n%s", j.Record, j.Briefing)
+	if j.Agent.Role != "qa" || !strings.Contains(j.Briefing, "still needs implementer, reviewer") {
+		t.Errorf("joined %+v, briefing:\n%s", j.Agent, j.Briefing)
 	}
 	j, err = e.Join(context.Background(), Location{Block: "block:a"}, "", "Reviewer")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if j.Record.Role != "reviewer" || j.Crew.Name != "" || !strings.Contains(j.Briefing, `crew "ship"`) || strings.Contains(j.Briefing, "still needs") {
-		t.Errorf("a role in a crew's session: %+v\n%s", j.Record, j.Briefing)
+	if j.Agent.Role != "reviewer" || j.Crew.Name != "" || !strings.Contains(j.Briefing, `crew "ship"`) || strings.Contains(j.Briefing, "still needs") {
+		t.Errorf("a role in a crew's session: %+v\n%s", j.Agent, j.Briefing)
 	}
 }
 

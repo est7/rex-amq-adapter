@@ -13,7 +13,6 @@ import (
 	"github.com/est7/rex-amq-adapter/internal/core"
 	"github.com/est7/rex-amq-adapter/internal/crew"
 	"github.com/est7/rex-amq-adapter/internal/rex"
-	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 // epicWorld is a personal agent (claude-01, in session:me) and a goal
@@ -28,10 +27,10 @@ func openEpicWorld(t *testing.T) (Env, *fakeTerm, Location, string) {
 	trustTemp(t, e)
 	// Routing comes from the user's config too: never the host's.
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	if err := e.Store.DeleteRecord("codex"); err != nil {
+	if err := unplant(e.Store, "codex"); err != nil {
 		t.Fatal(err)
 	}
-	put(t, e, store.Record{Handle: "claude-01", Kind: core.Claude, Role: core.PersonalRole, BlockID: "block:me", SessionID: "session:me", WindowID: "window:me", AdoptedAt: time.Now()})
+	put(t, e, seed{Handle: "claude-01", Kind: core.Claude, Role: core.PersonalRole, BlockID: "block:me", SessionID: "session:me", WindowID: "window:me", AdoptedAt: time.Now()})
 	goal := filepath.Join(t.TempDir(), "20261112-epic.md")
 	if err := os.WriteFile(goal, []byte("GOAL: x\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -46,7 +45,7 @@ func openEpicWorld(t *testing.T) (Env, *fakeTerm, Location, string) {
 // adoptPane writes the live record a pane's first hook would.
 func adoptPane(t *testing.T, e Env, block string, h core.Handle, role string) {
 	t.Helper()
-	put(t, e, store.Record{Handle: h, Kind: core.Claude, Role: role, BlockID: block, SessionID: "session:epic-1", AdoptedAt: time.Now()})
+	put(t, e, seed{Handle: h, Kind: core.Claude, Role: role, BlockID: block, SessionID: "session:epic-1", AdoptedAt: time.Now()})
 }
 
 // One command opens the Epic: a session named for it holding the
@@ -118,7 +117,7 @@ func TestOpenEpicRefusesWithoutAGrantOrAPersonalCaller(t *testing.T) {
 			t.Errorf("%s: no refusal", name)
 		}
 	}
-	put(t, e, store.Record{Handle: "claude-07", Kind: core.Claude, Role: "implementer", BlockID: "block:worker", SessionID: "session:me", AdoptedAt: time.Now()})
+	put(t, e, seed{Handle: "claude-07", Kind: core.Claude, Role: "implementer", BlockID: "block:worker", SessionID: "session:me", AdoptedAt: time.Now()})
 	if _, err := e.OpenEpic(ctx, Location{Block: "block:worker"}, EpicRequest{Name: "x", Dir: dir, Asked: "start it"}); !errors.Is(err, ErrRefused) {
 		t.Errorf("a worker opened an Epic: %v", err)
 	}
@@ -220,7 +219,7 @@ func TestOpenEpicBriefsAnAgentAdoptedAtOnceWithItsCrew(t *testing.T) {
 	trustTemp(t, e)
 	e.Crews = func(string) crew.Library { return crew.Load("") }
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	put(t, e, store.Record{Handle: "claude-01", Kind: core.Claude, Role: core.PersonalRole, BlockID: "block:me", SessionID: "session:me", WindowID: "window:me", AdoptedAt: time.Now()})
+	put(t, e, seed{Handle: "claude-01", Kind: core.Claude, Role: core.PersonalRole, BlockID: "block:me", SessionID: "session:me", WindowID: "window:me", AdoptedAt: time.Now()})
 	adoptPane(t, e, "block:epic-1-1", "claude-02", core.NarratorRole)
 	type adopted struct {
 		notice string

@@ -20,7 +20,7 @@ import (
 func realAmqEnv(t *testing.T, term *fakeTerm) Env {
 	t.Helper()
 	e := fixture(t, term)
-	if err := e.Store.DeleteRecord("codex"); err != nil {
+	if err := unplant(e.Store, "codex"); err != nil {
 		t.Fatal(err)
 	}
 	injector := filepath.Join(t.TempDir(), "inject.sh")
@@ -88,8 +88,8 @@ func TestAdoptThenDepartRetiresTheWaker(t *testing.T) {
 	}
 	t.Cleanup(func() { _, _ = e.AMQ.RetireFor(context.Background(), e.Paths.Root(), "codex-01", block) })
 	first := wakeState(t, e, "codex-01")
-	if a.Record.Handle != "codex-01" || !first.Live || first.Generation == "" {
-		t.Fatalf("adoption: %+v waker %+v", a.Record, first)
+	if a.Agent.Handle != "codex-01" || !first.Live || first.Generation == "" {
+		t.Fatalf("adoption: %+v waker %+v", a.Agent, first)
 	}
 	again, err := e.Adopt(ctx, Location{Block: block}, core.Codex, HookInput{SessionID: "s1"})
 	if err != nil || again.Decision != amq.DecisionKeep || wakeState(t, e, "codex-01").Generation != first.Generation {
@@ -104,7 +104,7 @@ func TestAdoptThenDepartRetiresTheWaker(t *testing.T) {
 	if err := e.Depart(ctx, Location{Block: block}, HookInput{SessionID: "s1"}); err != nil {
 		t.Fatal(err)
 	}
-	rec, _, _ := e.Store.Record(block)
+	rec, _, _ := e.agentAt(block)
 	if rec.Live() || wakerLive(t, e, "codex-01") {
 		t.Fatalf("after departure: live=%v waker live=%v", rec.Live(), wakerLive(t, e, "codex-01"))
 	}
@@ -126,7 +126,7 @@ func TestFailedWakerStartLeavesTheRecord(t *testing.T) {
 	if _, err := e.Adopt(ctx, Location{Block: block}, core.Codex, HookInput{}); err == nil {
 		t.Fatal("adoption with a missing injector succeeded")
 	}
-	if rec, ok, err := e.Store.Record(block); err != nil || !ok || !rec.Live() {
+	if rec, ok, err := e.agentAt(block); err != nil || !ok || !rec.Live() {
 		t.Fatalf("no record left by a failed adoption: %+v %v %v", rec, ok, err)
 	}
 }
@@ -145,7 +145,7 @@ func TestCollectParksOnlyProvablyGoneAgents(t *testing.T) {
 	if err := e.Collect(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if rec, _, _ := e.Store.Record(block); !rec.Live() || !wakerLive(t, e, "codex-01") {
+	if rec, _, _ := e.agentAt(block); !rec.Live() || !wakerLive(t, e, "codex-01") {
 		t.Fatal("a live agent behind another process was collected")
 	}
 
@@ -153,7 +153,7 @@ func TestCollectParksOnlyProvablyGoneAgents(t *testing.T) {
 	if err := e.Collect(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if rec, _, _ := e.Store.Record(block); rec.Live() || wakerLive(t, e, "codex-01") {
+	if rec, _, _ := e.agentAt(block); rec.Live() || wakerLive(t, e, "codex-01") {
 		t.Fatal("an agent whose block is gone was not collected")
 	}
 
@@ -162,7 +162,7 @@ func TestCollectParksOnlyProvablyGoneAgents(t *testing.T) {
 	if err := e.Collect(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, _ := e.Store.Record(block); ok {
+	if _, ok, _ := e.agentAt(block); ok {
 		t.Fatal("an expired reservation was kept")
 	}
 }
@@ -184,8 +184,8 @@ func TestPiAdoptionHasNoWaker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.Record.Handle != "pi-01" || a.Record.Kind != core.Pi || a.Record.AgentPID != 4242 {
-		t.Fatalf("pi record: %+v", a.Record)
+	if a.Agent.Handle != "pi-01" || a.Agent.Kind != core.Pi || a.Agent.pid() != 4242 {
+		t.Fatalf("pi record: %+v", a.Agent)
 	}
 	if wakerLive(t, e, "codex-01") {
 		t.Fatal("the previous agent's waker survived; it would type into Pi")

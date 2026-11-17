@@ -81,19 +81,20 @@ var f14Events = []string{EventSessionStart, EventPrompt, EventPreInvocation, Eve
 
 // f14World is a pane owned by a live agent of o's kind (a real process),
 // adopted, with an unread message and a turn-error mark.
-func f14World(t *testing.T, o f14Owner, pid int) (Env, *fakeTerm, store.Record) {
+func f14World(t *testing.T, o f14Owner, pid int) (Env, *fakeTerm, agent) {
 	t.Helper()
 	term := &fakeTerm{state: "working", windows: map[string]string{}, fgs: map[string]rex.Process{block: {PID: pid, Name: o.name}}}
 	e := realAmqEnv(t, term)
 	now := time.Now().UTC()
-	owner := store.Record{Handle: core.Handle(string(o.kind) + "-07"), Kind: o.kind, Server: "unix:///fake.sock", BlockID: block, SessionID: "session:s", WindowID: "window:1",
+	owner := seed{Handle: core.Handle(string(o.kind) + "-07"), Kind: o.kind, Server: "unix:///fake.sock", BlockID: block, SessionID: "session:s", WindowID: "window:1",
 		AgentPID: pid, AgentSessionID: "owner-session", AdoptedAt: now, FirstAdoptedAt: now, Role: core.OrchestratorRole}
 	add(t, e, owner)
 	mail(t, e.Paths.Root(), string(owner.Handle), "inbox/new", "m1", "claude-09", "for the owner")
-	if err := e.Store.PutTurnError(block, store.TurnError{At: now, By: turnKey(owner)}); err != nil {
+	planted := recordNamed(t, e, owner.Handle)
+	if err := e.Store.PutTurnError(owner.Handle, store.TurnError{At: now, By: turnKey(planted)}); err != nil {
 		t.Fatal(err)
 	}
-	return e, term, owner
+	return e, term, planted
 }
 
 // nestedAncestry is a nested harness's hook: hook ← sh ← the nested CLI ←
@@ -118,8 +119,8 @@ func TestF14NestedHarnessHooksLeaveTheLiveOwnerAlone(t *testing.T) {
 						term.fgs[block] = rex.Process{PID: f14Nested, Name: n.proc}
 					}
 					e.Ancestors = nestedAncestry(n, o, pid)
-					before, _, _ := e.Store.Record(block)
-					beforeTE, _, _ := e.Store.TurnError(block)
+					before, _, _ := e.agentAt(block)
+					beforeTE, _, _ := e.Store.TurnError(owner.Handle)
 					ctx := context.Background()
 					for _, event := range f14Events {
 						r, err := e.Hook(ctx, event, n.kind, Location{Block: block}, n.in(pid))
@@ -127,17 +128,17 @@ func TestF14NestedHarnessHooksLeaveTheLiveOwnerAlone(t *testing.T) {
 							t.Errorf("%s: reply %+v, err %v; want nothing, successfully", event, r, err)
 						}
 					}
-					after, ok, _ := e.Store.Record(block)
+					after, ok, _ := e.agentAt(block)
 					if !ok || !reflect.DeepEqual(after, before) {
 						t.Errorf("the owner's record changed:\nbefore %+v\nafter  %+v", before, after)
 					}
-					if recs, _ := e.Store.Records(); len(recs) != 1 {
+					if recs, _ := e.agents(); len(recs) != 1 {
 						t.Errorf("records %+v, want the owner's alone", recs)
 					}
 					if _, failed, _ := e.Store.AdoptFailedAt(block); failed {
 						t.Error("a nested hook marked the pane's adoption failed: the owner's hooks would back off")
 					}
-					if te, ok, _ := e.Store.TurnError(block); !ok || te != beforeTE {
+					if te, ok, _ := e.Store.TurnError(owner.Handle); !ok || te != beforeTE {
 						t.Errorf("the owner's turn-error mark changed: %+v %v", te, ok)
 					}
 					if ledger, _ := e.Store.Announced(owner.Handle); len(ledger.IDs) != 0 {
@@ -197,10 +198,10 @@ func TestF14AHarnessNotUnderTheOwnerStillReplacesIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = e.Depart(ctx, Location{Block: block}, HookInput{}) })
-	if r := recordOf(t, e, owner.Handle); r.Live() || r.DepartReason != store.DepartReplaced {
-		t.Errorf("the owner: live %v, reason %q; want replaced", r.Live(), r.DepartReason)
+	if r := recordOf(t, e, owner.Handle); r.Live() || r.departReason() != store.DepartReplaced {
+		t.Errorf("the owner: live %v, reason %q; want replaced", r.Live(), r.departReason())
 	}
-	if rec, _, _ := e.Store.Record(block); !rec.Live() || rec.Kind != core.Codex || rec.AgentSessionID != "next" {
+	if rec, _, _ := e.agentAt(block); !rec.Live() || rec.Kind != core.Codex || rec.Session() != "next" {
 		t.Errorf("the new harness was not adopted: %+v", rec)
 	}
 }

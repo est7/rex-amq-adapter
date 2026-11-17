@@ -295,40 +295,6 @@ func (s Store) LockConsume(ctx context.Context, h core.Handle) (func(), error) {
 	return fsutil.Flock(ctx, filepath.Join(s.P.ledgers(), "."+fileKey(string(h))+".consume.lock"))
 }
 
-// RecordOf returns h's record (a handle has at most one); ok is false when
-// there is none.
-func (s Store) RecordOf(h core.Handle) (Record, bool, error) {
-	b, err := os.ReadFile(s.recordPath(h))
-	if errors.Is(err, fs.ErrNotExist) {
-		return Record{}, false, nil
-	}
-	if err != nil {
-		return Record{}, false, err
-	}
-	var r Record
-	if err := json.Unmarshal(b, &r); err != nil {
-		return Record{}, false, fmt.Errorf("decode record of %s: %w", h, err)
-	}
-	return r, true, nil
-}
-
-// Endpoint is r as the gateway sees it now.
-func (r Record) Endpoint() core.Endpoint {
-	return core.Endpoint{Handle: r.Handle, Role: r.Role, Server: r.Server, SessionID: r.SessionID, Generation: r.Generation}
-}
-
-// Placed returns r moved to session (on its server) and window at at, a new
-// generation when the session is another: mail addressed to it, or sent by
-// it, in the session it left is no longer its.
-func (r Record) Placed(server, session, window string, at time.Time) Record {
-	if r.SessionID != "" && (r.SessionID != session || r.Server != server) {
-		r.Generation++
-		r.PlacedAt = at.UTC()
-	}
-	r.Server, r.SessionID, r.WindowID = server, session, window
-	return r
-}
-
 func writeJSON(path string, v any) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err

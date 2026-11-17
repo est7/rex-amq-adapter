@@ -80,13 +80,13 @@ func eventsWorld(t *testing.T) (Env, *fakeTerm) {
 	}, sessions: map[string]string{"window:3": "session:t"}, tabs: map[string]string{"window:1": "Work"}}
 	paths := store.Paths{Home: t.TempDir()}
 	e := Env{Paths: paths, Store: store.Store{P: paths}, Rex: term, RexOn: func(string) Terminal { return term }, SelfBin: "/x/rex-amq-adapter", Now: time.Now}
-	for _, r := range []store.Record{
+	for _, r := range []seed{
 		{Handle: "codex-reviewer-01", Kind: core.Codex, Role: "reviewer", BlockID: "block:a", SessionID: "session:s", WindowID: "window:1"},
 		{Handle: "pi-01", Kind: core.Pi, BlockID: "block:b", SessionID: "session:s", WindowID: "window:2"},
 		{Handle: "claude-01", Kind: core.Claude, BlockID: "block:c", SessionID: "session:t", WindowID: "window:3"},
 	} {
 		r.Server, r.AgentPID, r.AdoptedAt = "unix:///fake.sock", os.Getpid(), time.Now().UTC()
-		if err := e.Store.PutRecord(r); err != nil {
+		if err := putSeed(e.Store, r); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -208,16 +208,16 @@ func TestStreamTellsTheSessionsChanges(t *testing.T) {
 		return f["type"] == "event" && f["kind"] == "drained" && f["msg_id"] == "2026-11-06T08-00-00.000Z_m1" && f["sender"] == "pi-01"
 	})
 
-	rec := recordNamed(t, e, "pi-01")
+	rec := seedOf(recordNamed(t, e, "pi-01"))
 	gone := time.Now().UTC()
 	rec.DepartedAt, rec.DepartReason = &gone, "block_gone"
-	if err := e.Store.PutRecord(rec); err != nil {
+	if err := putSeed(e.Store, rec); err != nil {
 		t.Fatal(err)
 	}
 	await(t, out, "the departure", func(f map[string]any) bool {
 		return f["type"] == "upsert" && f["key"] == "pi-01" && field(f, "value", "lifecycle", "state") == "departed" && field(f, "value", "lifecycle", "depart_reason") == "block_gone"
 	})
-	if err := e.Store.DeleteRecord("pi-01"); err != nil {
+	if err := unplant(e.Store, "pi-01"); err != nil {
 		t.Fatal(err)
 	}
 	await(t, out, "the removal", func(f map[string]any) bool { return f["type"] == "remove" && f["key"] == "pi-01" })

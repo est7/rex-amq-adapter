@@ -8,7 +8,6 @@ import (
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/core"
-	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 // An observer reads the adapter's state and Rex's layout, and writes nothing:
@@ -39,7 +38,7 @@ type view struct {
 
 // place is where the layout puts r's block now: its session, window, and
 // whether it is there at all.
-func (v view) place(r store.Record) (session, window string, placed bool) {
+func (v view) place(r agent) (session, window string, placed bool) {
 	for _, s := range v.sessions {
 		if w, ok := s.windowOf[r.BlockID]; ok && r.Server == s.server {
 			return s.id, w, true
@@ -61,7 +60,7 @@ func (v view) tab(session, window string) string {
 // holds reports whether r is in the scope: for a session, as discovery
 // decides; for a tab, an agent the session holds whose block is there now or,
 // once departed, was recorded there; for all, every record of the server.
-func (v view) holds(r store.Record) bool {
+func (v view) holds(r agent) bool {
 	switch v.scope.Kind {
 	case ScopeAll:
 		return r.Server == v.scope.Server
@@ -130,7 +129,7 @@ func (e Env) loadView(ctx context.Context, sc Scope) (view, error) {
 // observeAgents observes the agents of recs: their records, where v places
 // them, and their mail. activity, when not nil, is what each live agent last
 // reported (observeActivity).
-func (e Env) observeAgents(v view, recs []store.Record, activity map[core.Handle]*core.ActivityObservation) ([]core.AgentObservation, error) {
+func (e Env) observeAgents(v view, recs []agent, activity map[core.Handle]*core.ActivityObservation) ([]core.AgentObservation, error) {
 	out := make([]core.AgentObservation, 0, len(recs))
 	for _, r := range recs {
 		session, window, placed := v.place(r)
@@ -140,8 +139,8 @@ func (e Env) observeAgents(v view, recs []store.Record, activity map[core.Handle
 		o := core.AgentObservation{
 			Handle: r.Handle, Kind: r.Kind, Server: r.Server, SessionID: session, WindowID: window,
 			Tab: v.tab(session, window), BlockID: r.BlockID, Placed: placed, Task: r.Task, Role: r.Role, Model: r.Model, Effort: r.Effort,
-			Adopting: r.Live() && r.Unfinished == store.Adopting, Departing: !r.Live() && r.Unfinished == store.Departing,
-			AdoptedAt: r.AdoptedAt, DepartedAt: r.DepartedAt, DepartReason: r.DepartReason,
+			Adopting: !r.Adopted() && r.departure() == nil, Departing: r.departure() != nil && r.departure().Unfinished,
+			AdoptedAt: r.adoptedAt(), DepartedAt: r.departedAt(), DepartReason: r.departReason(),
 		}
 		if r.Live() {
 			o.Activity = activity[r.Handle]
@@ -168,7 +167,7 @@ func (e Env) observeAgents(v view, recs []store.Record, activity map[core.Handle
 // observeActivity asks what each live agent of recs is doing: a Claude Code
 // background job's supervisor, else Rex's program status of its block. A
 // failed look is reported as such, not as a state.
-func (e Env) observeActivity(ctx context.Context, recs []store.Record) map[core.Handle]*core.ActivityObservation {
+func (e Env) observeActivity(ctx context.Context, recs []agent) map[core.Handle]*core.ActivityObservation {
 	out := map[core.Handle]*core.ActivityObservation{}
 	for _, r := range recs {
 		if !r.Live() {
@@ -205,7 +204,7 @@ type headerCache map[string]amq.Header
 // they hold, unread, drained, or dead-lettered, and what they sent. A
 // recipient outside the scope is not looked at, so its copy counts for
 // nothing; mail neither sent nor received in the scope is not seen.
-func (e Env) observeMessages(handles []core.Handle, recs []store.Record, cache headerCache) ([]core.MessageObservation, error) {
+func (e Env) observeMessages(handles []core.Handle, recs []agent, cache headerCache) ([]core.MessageObservation, error) {
 	root := e.Paths.Root()
 	departed := map[string]bool{}
 	for _, r := range recs {

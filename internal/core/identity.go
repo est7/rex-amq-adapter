@@ -62,7 +62,7 @@ const DefaultBlockLabel = "shell"
 // NameHandle names an agent that holds no handle yet: <kind>-<NN>, with the
 // lowest NN (from 01) not in taken. The kind is always the agent's own, so a
 // handle never claims a harness it does not run on. The role is not part of
-// the handle: it is the record's (store.Record.Role), so an agent can take a
+// the handle: it is the identity's (store.Identity.Role), so an agent can take a
 // role, or change it, and keep its handle.
 func NameHandle(kind Kind, taken map[Handle]bool) Handle {
 	for n := 1; ; n++ {

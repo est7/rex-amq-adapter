@@ -48,13 +48,13 @@ case "$*" in
   'block ls -s session:1 --json')
     if [ "$WHO_TEST_MODE" = "list-failed" ]; then exit 4; fi
     echo '{"blocks":[{"block_id":"block:self","window_id":"window:1"},{"block_id":"block:mate","window_id":"window:1"},{"block_id":"block:moved-in","window_id":"window:1"},{"block_id":"block:other","window_id":"window:2"},{"block_id":"block:moved-out","window_id":"window:2"}]}' ;;
-  'block inspect block:closed --json') exit 3 ;;
+  'block inspect block:closed --json'|'block inspect block:closed-2 --json') exit 3 ;;
   'block inspect '* ) echo '{"session_id":"session:1","block":{"window_id":"window:1"}}' ;;
   'session inspect session:1 --json') echo '{"session_id":"session:1","label":"Project","windows":[{"window_id":"window:1","label":"Work"}]}' ;;
   'block call -b block:other process')
     if [ "$WHO_TEST_MODE" = "other-gone" ]; then exit 3; fi
     echo '{"foreground":{"pid":%d,"name":"pi"}}' ;;
-  'block call -b block:closed process') exit 3 ;;
+  'block call -b block:closed process'|'block call -b block:closed-2 process') exit 3 ;;
   'block call -b block:away process') exit 3 ;;
   'block call '* ) echo '{"foreground":{"pid":%d,"name":"pi"}}' ;;
   *) echo "unexpected Rex command: $*" >&2; exit 1 ;;
@@ -79,7 +79,7 @@ esac
 		{"pi-moved-out", "moved-out", "1", "test", ""},
 		{"pi-other-server", "mate", "1", "elsewhere", ""},
 	} {
-		if err := s.PutRecord(store.Record{
+		if err := putAgent(s, testAgent{
 			Handle: core.Handle(agent.handle), Kind: core.Pi, Role: agent.role, AgentPID: os.Getpid(),
 			BlockID: "block:" + agent.block, SessionID: "session:1", WindowID: "window:" + agent.window, Server: "unix:///" + agent.server + ".sock",
 		}); err != nil {
@@ -87,13 +87,13 @@ esac
 		}
 	}
 	now := time.Now()
-	for _, r := range []store.Record{
+	for _, r := range []testAgent{
 		{Handle: "pi-departed-1", SessionID: "session:1", WindowID: "window:1"},
 		{Handle: "pi-departed-2", SessionID: "session:1", WindowID: "window:2"},
 		{Handle: "pi-departed-elsewhere", SessionID: "session:2", WindowID: "window:9"},
 	} {
 		r.Kind, r.BlockID, r.Server, r.DepartedAt = core.Pi, "block:"+string(r.Handle), "unix:///test.sock", &now
-		if err := s.PutRecord(r); err != nil {
+		if err := putAgent(s, r); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -209,7 +209,7 @@ func TestWhoCannotFallBackToGlobalDiscovery(t *testing.T) {
 
 func TestWhoDoesNotExposeCollectionErrorsFromAnotherSession(t *testing.T) {
 	whoFixture(t) // amq fails, so an attempt to park shows on stderr
-	whoAgent(t, store.Record{Handle: "pi-away", BlockID: "block:away", SessionID: "session:2", WindowID: "window:9"})
+	whoAgent(t, testAgent{Handle: "pi-away", BlockID: "block:away", SessionID: "session:2", WindowID: "window:9"})
 	code, out, errout := captureWho(t)
 	if code != 0 || errout != "" {
 		t.Fatalf("another session's broken waker affected discovery: code=%d stderr=%q", code, errout)
@@ -234,7 +234,7 @@ func TestWhoStillCollectsAClosedBlockFromThisTab(t *testing.T) {
 	whoFixture(t)
 	dir := os.Getenv("REX_AMQ_ADAPTER_HOME")
 	s := store.Store{P: store.Paths{Home: dir}}
-	if err := s.PutRecord(store.Record{
+	if err := putAgent(s, testAgent{
 		Handle: "pi-closed", Kind: core.Pi, BlockID: "block:closed",
 		Server: "unix:///test.sock", SessionID: "session:1", WindowID: "window:1",
 	}); err != nil {
@@ -249,9 +249,9 @@ func TestWhoStillCollectsAClosedBlockFromThisTab(t *testing.T) {
 	if code != 0 || !slices.Contains(strings.Fields(out), "pi-closed") {
 		t.Fatalf("closed block must remain discoverable as departed: code=%d stdout=%s stderr=%s", code, out, errout)
 	}
-	rec, ok, err := s.Record("block:closed")
-	if err != nil || !ok || rec.Live() {
-		t.Fatalf("closed block was not collected: %+v %v %v", rec, ok, err)
+	p, live, err := placed(s, "pi-closed")
+	if err != nil || live || p.BlockID != "block:closed" {
+		t.Fatalf("closed block was not collected: %+v live=%v %v", p, live, err)
 	}
 }
 
@@ -271,7 +271,7 @@ func whoStore() store.Store {
 
 // whoAgent records a live agent on the fixture's server, recorded in
 // session:1, window:1 unless the caller changes it.
-func whoAgent(t *testing.T, r store.Record) {
+func whoAgent(t *testing.T, r testAgent) {
 	t.Helper()
 	r.Kind = core.Pi
 	if r.Server == "" {
@@ -283,24 +283,29 @@ func whoAgent(t *testing.T, r store.Record) {
 	if r.SessionID == "" {
 		r.SessionID = "session:1"
 	}
-	if err := whoStore().PutRecord(r); err != nil {
+	if err := putAgent(whoStore(), r); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func whoRecord(t *testing.T, handle core.Handle) store.Record {
+// whoState is where an agent runs or last ran, and whether it runs now.
+type whoState struct {
+	store.Place
+	live bool
+}
+
+func (w whoState) Live() bool { return w.live }
+
+func whoRecord(t *testing.T, handle core.Handle) whoState {
 	t.Helper()
-	recs, err := whoStore().Records()
+	if _, ok, err := whoStore().IdentityOf(handle); err != nil || !ok {
+		t.Fatalf("no identity for %s: %v", handle, err)
+	}
+	p, live, err := placed(whoStore(), handle)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, r := range recs {
-		if r.Handle == handle {
-			return r
-		}
-	}
-	t.Fatalf("no record for %s", handle)
-	return store.Record{}
+	return whoState{Place: p, live: live}
 }
 
 func TestWhoParksAnAgentWhoseProcessExitedInThisSession(t *testing.T) {
@@ -310,7 +315,7 @@ func TestWhoParksAnAgentWhoseProcessExitedInThisSession(t *testing.T) {
 	if err := gone.Run(); err != nil {
 		t.Fatal(err)
 	}
-	whoAgent(t, store.Record{Handle: "pi-mate", BlockID: "block:mate", AgentPID: gone.Process.Pid})
+	whoAgent(t, testAgent{Handle: "pi-mate", BlockID: "block:mate", AgentPID: gone.Process.Pid})
 	code, out, errout := captureWho(t, "--all")
 	if code != 0 || errout != "" {
 		t.Fatalf("who failed: code=%d stderr=%q", code, errout)
@@ -325,7 +330,7 @@ func TestWhoParksAnAgentWhoseProcessExitedInThisSession(t *testing.T) {
 
 func TestWhoLeavesAClosedBlockInAnotherSessionAlone(t *testing.T) {
 	whoFixture(t) // amq fails, so an attempt to park shows on stderr
-	for _, r := range []store.Record{
+	for _, r := range []testAgent{
 		{Handle: "pi-closed", BlockID: "block:closed", SessionID: "session:2", WindowID: "window:9"},
 	} {
 		whoAgent(t, r)
@@ -342,7 +347,7 @@ func TestWhoLeavesAClosedBlockInAnotherSessionAlone(t *testing.T) {
 func TestWhoLeavesAClosedBlockOnAnotherServerAlone(t *testing.T) {
 	whoFixture(t)
 	whoWorkingAmq(t)
-	whoAgent(t, store.Record{Handle: "pi-closed", BlockID: "block:closed", Server: "unix:///elsewhere.sock"})
+	whoAgent(t, testAgent{Handle: "pi-closed", BlockID: "block:closed", Server: "unix:///elsewhere.sock"})
 	if code, _, errout := captureWho(t); code != 0 || errout != "" {
 		t.Fatalf("who failed: code=%d stderr=%q", code, errout)
 	}
@@ -360,7 +365,7 @@ func TestWhoFollowsAnAgentMovedToAnotherTab(t *testing.T) {
 	if err := gone.Run(); err != nil {
 		t.Fatal(err)
 	}
-	whoAgent(t, store.Record{Handle: "pi-moved-out", BlockID: "block:moved-out", AgentPID: gone.Process.Pid})
+	whoAgent(t, testAgent{Handle: "pi-moved-out", BlockID: "block:moved-out", AgentPID: gone.Process.Pid})
 	if code, _, errout := captureWho(t); code != 0 || errout != "" {
 		t.Fatalf("who failed: code=%d stderr=%q", code, errout)
 	}
@@ -378,7 +383,7 @@ func TestWhoFollowsAnAgentMovedToAnotherTab(t *testing.T) {
 func TestWhoLeavesAnAgentMovedToAnotherSessionAlone(t *testing.T) {
 	whoFixture(t)
 	whoWorkingAmq(t)
-	whoAgent(t, store.Record{Handle: "pi-moved-away", BlockID: "block:elsewhere", AgentPID: os.Getpid()})
+	whoAgent(t, testAgent{Handle: "pi-moved-away", BlockID: "block:elsewhere", AgentPID: os.Getpid()})
 	code, out, errout := captureWho(t, "--all")
 	if code != 0 || errout != "" {
 		t.Fatalf("who failed: code=%d stderr=%q", code, errout)
@@ -393,7 +398,7 @@ func TestWhoLeavesAnAgentMovedToAnotherSessionAlone(t *testing.T) {
 
 func TestWhoListsThisSessionWhenRetiringAWakerFails(t *testing.T) {
 	whoFixture(t) // amq fails
-	whoAgent(t, store.Record{Handle: "pi-closed", BlockID: "block:closed"})
+	whoAgent(t, testAgent{Handle: "pi-closed", BlockID: "block:closed"})
 	code, out, errout := captureWho(t)
 	if code != 0 {
 		t.Fatalf("a failed retire cost the listing: code=%d stderr=%q", code, errout)
@@ -411,8 +416,8 @@ func TestWhoListsThisSessionWhenRetiringAWakerFails(t *testing.T) {
 
 func TestWhoReconcilesEveryRecordPastAFailure(t *testing.T) {
 	whoFixture(t) // amq fails
-	whoAgent(t, store.Record{Handle: "pi-closed-1", BlockID: "block:closed"})
-	whoAgent(t, store.Record{Handle: "pi-closed-2", BlockID: "block:closed"})
+	whoAgent(t, testAgent{Handle: "pi-closed-1", BlockID: "block:closed"})
+	whoAgent(t, testAgent{Handle: "pi-closed-2", BlockID: "block:closed-2"}) // one live agent per block (store I3)
 	_, _, errout := captureWho(t)
 	for _, handle := range []string{"pi-closed-1", "pi-closed-2"} {
 		if !strings.Contains(errout, handle) {

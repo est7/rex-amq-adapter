@@ -12,7 +12,6 @@ import (
 	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/core"
 	"github.com/est7/rex-amq-adapter/internal/rex"
-	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 func sameWindow(blocks ...string) *fakeTerm {
@@ -45,9 +44,9 @@ func drainMail(t *testing.T, e Env, h core.Handle) {
 	}
 }
 
-func afterTool(t *testing.T, e Env, rec store.Record) Reply {
+func afterTool(t *testing.T, e Env, rec agent) Reply {
 	t.Helper()
-	r, err := e.Hook(context.Background(), EventPostTool, rec.Kind, Location{Block: rec.BlockID}, HookInput{SessionID: rec.AgentSessionID})
+	r, err := e.Hook(context.Background(), EventPostTool, rec.Kind, Location{Block: rec.BlockID}, HookInput{SessionID: rec.Session()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -357,7 +356,7 @@ func TestOldOutboxIsNotBounced(t *testing.T) {
 		depart(t, e, "block:b", "s-left")
 		sendMail(t, e, old.Handle, left.Handle)
 		depart(t, e, "block:a", "s-old")
-		if err := e.Store.DeleteRecord(old.Handle); err != nil {
+		if err := unplant(e.Store, old.Handle); err != nil {
 			t.Fatal(err)
 		}
 
@@ -492,7 +491,7 @@ func TestEveryKindHearsTheBounce(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = e.Depart(context.Background(), loc, HookInput{}) })
-			sender, _, err := e.Store.Record("block:a")
+			sender, _, err := e.agentAt("block:a")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -529,7 +528,7 @@ func TestPiMailWatcherLeavesTheBounceForTheNextRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = e.Depart(context.Background(), loc, HookInput{}) })
-	sender, _, _ := e.Store.Record("block:a")
+	sender, _, _ := e.agentAt("block:a")
 	left := adoptIn(t, e, "block:b", "s-left", 0)
 	depart(t, e, "block:b", "s-left")
 	sendMail(t, e, sender.Handle, left.Handle)

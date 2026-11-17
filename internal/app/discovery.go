@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
-	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 // Session is a Rex session as its layout stands now, the boundary of
@@ -69,13 +68,13 @@ func (e Env) loadSession(ctx context.Context, server, id string) (Session, error
 // recorded reports whether r's agent was last recorded here. A record is only
 // as current as the last reconciliation of its session, so a moved agent's
 // may be out of date.
-func (s Session) recorded(r store.Record) bool {
+func (s Session) recorded(r agent) bool {
 	return r.Server == s.server && r.SessionID == s.id
 }
 
 // holds reports whether r belongs to this session: a live agent by the
 // layout, a departed one, which has no block to place, by its record.
-func (s Session) holds(r store.Record) bool {
+func (s Session) holds(r agent) bool {
 	if r.Live() {
 		_, placed := s.windowOf[r.BlockID]
 		return r.Server == s.server && placed
@@ -86,17 +85,17 @@ func (s Session) holds(r store.Record) bool {
 // reconciles reports whether collecting in this session covers r: everything
 // it holds, and an agent recorded here whose block left the session's layout.
 // That block closed or moved to another session; collectOne tells which.
-func (s Session) reconciles(r store.Record) bool {
+func (s Session) reconciles(r agent) bool {
 	_, placed := s.windowOf[r.BlockID]
 	return s.holds(r) || (s.recorded(r) && !placed)
 }
 
 // together reports whether a and b were last recorded in the same Rex
 // session.
-func together(a, b store.Record) bool { return a.SessionID != "" && a.SessionID == b.SessionID }
+func together(a, b agent) bool { return a.SessionID != "" && a.SessionID == b.SessionID }
 
 // placed reports whether r was recorded anywhere it can be told about.
-func placed(r store.Record) bool { return r.SessionID != "" }
+func placed(r agent) bool { return r.SessionID != "" }
 
 // tab is how who names window w: its label, else its id.
 func (s Session) tab(w string) string {
@@ -131,7 +130,7 @@ func (e Env) followMoves(ctx context.Context, s Session) error {
 		return err
 	}
 	defer unlock()
-	recs, err := e.Store.Records()
+	recs, err := e.agents()
 	if err != nil {
 		return err
 	}
@@ -141,8 +140,7 @@ func (e Env) followMoves(ctx context.Context, s Session) error {
 		if !ok || (r.WindowID == placed && r.SessionID == s.id) {
 			continue
 		}
-		r = r.Placed(r.Server, s.id, placed, e.Now())
-		if err := e.Store.PutRecord(r); err != nil {
+		if err := e.Store.Moved(r.Handle, s.id, placed, e.Now()); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", r.Handle, err))
 		}
 	}
@@ -162,7 +160,7 @@ func (e Env) SuperviseSession(ctx context.Context, s Session) error {
 		return err
 	}
 	defer unlock()
-	recs, err := e.Store.Records()
+	recs, err := e.agents()
 	if err != nil {
 		return err
 	}
@@ -182,12 +180,12 @@ func (e Env) SuperviseSession(ctx context.Context, s Session) error {
 // agents (a narrator, a personal agent) the ordinary view leaves out. It
 // reads records and mailboxes only.
 func (e Env) SessionAgents(s Session, all bool) ([]core.Agent, error) {
-	recs, err := e.Store.Records()
+	recs, err := e.agents()
 	if err != nil {
 		return nil, err
 	}
 	v := view{scope: Scope{Kind: ScopeSession, Server: s.server, SessionID: s.id}, sessions: []Session{s}}
-	var held []store.Record
+	var held []agent
 	for _, r := range recs {
 		if v.holds(r) && (r.Live() || all) && (all || !core.Stealth(r.Role)) {
 			held = append(held, r)

@@ -14,14 +14,14 @@ import (
 func TestAwaitDoesNotTakeADepartedRecordForAdoption(t *testing.T) {
 	term := &fakeTerm{state: "idle"}
 	e := fixture(t, term)
-	recs, err := e.Store.Records()
+	recs, err := e.agents()
 	if err != nil || len(recs) != 1 {
 		t.Fatalf("records: %v %v", recs, err)
 	}
-	rec := recs[0]
+	rec := seedOf(recs[0])
 	now := e.Now()
 	rec.DepartedAt = &now
-	if err := e.Store.PutRecord(rec); err != nil {
+	if err := putSeed(e.Store, rec); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
@@ -38,14 +38,14 @@ func TestAwaitDoesNotTakeADepartedRecordForAdoption(t *testing.T) {
 func TestAwaitReportsCodexHooksNeedReview(t *testing.T) {
 	term := &fakeTerm{state: "idle", box: "Hooks need review  1 hook is new or changed."}
 	e := fixture(t, term)
-	recs, err := e.Store.Records()
+	recs, err := e.agents()
 	if err != nil || len(recs) != 1 {
 		t.Fatalf("records: %v %v", recs, err)
 	}
-	rec := recs[0]
+	rec := seedOf(recs[0])
 	now := e.Now()
 	rec.DepartedAt = &now
-	if err := e.Store.PutRecord(rec); err != nil {
+	if err := putSeed(e.Store, rec); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

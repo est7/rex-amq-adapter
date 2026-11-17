@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
-	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 func hookTitle(t *testing.T, e Env, kind core.Kind, event string, in HookInput) string {
@@ -125,7 +124,7 @@ func TestPaneTitleNamesOnlyAnAgentOfThatKind(t *testing.T) {
 	if got := e.PaneTitle(loc, core.Agy, "/w/proj"); got != "proj" {
 		t.Errorf("a Codex record titled agy's window %q", got)
 	}
-	if err := e.Store.PutRecord(store.Record{Handle: "agy-01", Kind: core.Agy, Server: "unix:///fake.sock", BlockID: block, Task: "fix login"}); err != nil {
+	if err := putSeed(e.Store, seed{Handle: "agy-01", Kind: core.Agy, Server: "unix:///fake.sock", BlockID: block, Task: "fix login"}); err != nil {
 		t.Fatal(err)
 	}
 	if got := e.PaneTitle(loc, core.Agy, "/w/proj"); got != "agy-01 | fix login" {
@@ -144,8 +143,8 @@ func TestNewSessionInTheProcessIsGivenItsTitle(t *testing.T) {
 	first := hookTitle(t, e, core.Pi, EventSessionStart, HookInput{SessionID: "p1"})
 	t.Cleanup(func() { _ = e.Depart(context.Background(), Location{Block: block}, HookInput{}) })
 	second := hookTitle(t, e, core.Pi, EventSessionStart, HookInput{SessionID: "p2"})
-	if rec, _, _ := e.Store.Record(block); rec.AgentSessionID != "p2" || first == "" || second != first {
-		t.Fatalf("new session %q given title %q, first %q", rec.AgentSessionID, second, first)
+	if rec, _, _ := e.agentAt(block); rec.Session() != "p2" || first == "" || second != first {
+		t.Fatalf("new session %q given title %q, first %q", rec.Session(), second, first)
 	}
 	if got := hookTitle(t, e, core.Pi, EventSessionStart, HookInput{SessionID: "p2"}); got != "" {
 		t.Errorf("the same session restarted was given its title again: %q", got)
@@ -156,7 +155,7 @@ func TestNewSessionInTheProcessIsGivenItsTitle(t *testing.T) {
 // still live until its first turn. Its title must not name the old agent.
 func TestPaneTitleIgnoresAnotherProcessesRecord(t *testing.T) {
 	e := fixture(t, &fakeTerm{})
-	if err := e.Store.PutRecord(store.Record{Handle: "agy-old-01", Kind: core.Agy, Server: "unix:///fake.sock", BlockID: block, AgentPID: 12345, AgentSessionID: "old"}); err != nil {
+	if err := putSeed(e.Store, seed{Handle: "agy-old-01", Kind: core.Agy, Server: "unix:///fake.sock", BlockID: block, AgentPID: 12345, AgentSessionID: "old"}); err != nil {
 		t.Fatal(err)
 	}
 	e.Ancestors = func() ([]proc, error) { return []proc{{20000, "agy"}, {19999, "zsh"}}, nil }

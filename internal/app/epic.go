@@ -107,7 +107,7 @@ func (r EpicResult) Ready() bool {
 // (adoptCreated, reconcileOpen) and never creates another; the op id reused
 // for another request is refused.
 func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicResult, error) {
-	caller, ok, err := e.Store.Record(loc.Block)
+	caller, ok, err := e.agentAt(loc.Block)
 	if err != nil {
 		return EpicResult{}, err
 	}
@@ -315,7 +315,7 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 // before its crew and the grant its start notice names are recorded.
 // policyErr, crewErr, and notaryErr are what could not be recorded; the
 // session stands.
-func (e Env) newEpicSession(ctx context.Context, name string, panes []rex.Pane, crewName string, by store.Record, grant epicGrant) (session string, blocks []string, policyErr, crewErr, notaryErr, err error) {
+func (e Env) newEpicSession(ctx context.Context, name string, panes []rex.Pane, crewName string, by agent, grant epicGrant) (session string, blocks []string, policyErr, crewErr, notaryErr, err error) {
 	unlock, err := e.Store.LockLifecycle(ctx)
 	if err != nil {
 		return "", nil, nil, nil, nil, err

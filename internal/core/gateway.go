@@ -40,7 +40,7 @@ type SessionKey struct {
 
 // Endpoint is an agent as the gateway sees it at one moment: its handle and
 // role, and where it is. Generation counts the moves of the handle between
-// sessions (store.Record.Generation), so mail addressed to it before a move
+// sessions (store.Fence.Generation), so mail addressed to it before a move
 // is told from mail addressed to it now. Lead marks the agent that runs its
 // Epic's goal: the orchestrator, or a pair Epic's implementer, which takes
 // the orchestrator's place (the app layer knows which).

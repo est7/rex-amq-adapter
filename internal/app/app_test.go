@@ -261,7 +261,7 @@ func fixture(t *testing.T, term *fakeTerm, unread ...string) Env {
 	if term.fgPID == 0 {
 		term.fgPID = os.Getpid()
 	}
-	if err := e.Store.PutRecord(store.Record{Handle: "codex", Kind: core.Codex, Server: "unix:///fake.sock", BlockID: block, AgentPID: os.Getpid()}); err != nil {
+	if err := putSeed(e.Store, seed{Handle: "codex", Kind: core.Codex, Server: "unix:///fake.sock", BlockID: block, AgentPID: os.Getpid()}); err != nil {
 		t.Fatal(err)
 	}
 	inbox := filepath.Join(paths.Root(), "agents", "codex", "inbox", "new")
@@ -399,9 +399,10 @@ func TestBindingOutcomes(t *testing.T) {
 	}
 	for _, c := range cases {
 		e := fixture(t, c.term, "m1")
-		rec, _, _ := e.Store.Record(block)
+		got, _, _ := e.agentAt(block)
+		rec := seedOf(got)
 		rec.AgentPID = c.pid
-		if err := e.Store.PutRecord(rec); err != nil {
+		if err := putSeed(e.Store, rec); err != nil {
 			t.Fatal(err)
 		}
 		if o := inject(e); o.Progress != c.want || o.Code != c.code || len(c.term.writes) != 0 {
@@ -469,9 +470,9 @@ func TestHookOutputShapes(t *testing.T) {
 func TestAgyHookOutputShapes(t *testing.T) {
 	f := &fakeTerm{state: "working"}
 	e := fixture(t, f, "m1")
-	rec, _, _ := e.Store.Record(block)
+	rec, _, _ := e.agentAt(block)
 	rec.Kind = core.Agy
-	if err := e.Store.PutRecord(rec); err != nil {
+	if err := putSeed(e.Store, seedOf(rec)); err != nil {
 		t.Fatal(err)
 	}
 	// PreInvocation announces new mail as an ephemeral injected step.
@@ -520,7 +521,7 @@ func TestAgyHookOutputShapes(t *testing.T) {
 func TestFailedAdoptionBacksOff(t *testing.T) {
 	f := &fakeTerm{}
 	e := fixture(t, f)
-	if err := e.Store.DeleteRecord("codex"); err != nil {
+	if err := unplant(e.Store, "codex"); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.Store.SetAdoptFailed(block, time.Now()); err != nil {
@@ -543,9 +544,9 @@ func TestFailedAdoptionBacksOff(t *testing.T) {
 func TestPiHookFlow(t *testing.T) {
 	f := &fakeTerm{state: "idle"}
 	e := fixture(t, f, "m1")
-	rec, _, _ := e.Store.Record(block)
+	rec, _, _ := e.agentAt(block)
 	rec.Kind = core.Pi
-	if err := e.Store.PutRecord(rec); err != nil {
+	if err := putSeed(e.Store, seedOf(rec)); err != nil {
 		t.Fatal(err)
 	}
 	var out struct{ Notice, Inbox string }

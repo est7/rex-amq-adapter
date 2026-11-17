@@ -462,7 +462,8 @@ hooks that omit the field keep their existing behavior.
 ## State
 
 `~/.local/state/rex-amq-adapter/` (override with `REX_AMQ_ADAPTER_HOME`):
-`amq-root/` (the shared AMQ root), `bin/inject` (the wrapper wakers run), `records/` (one per handle),
+`amq-root/` (the shared AMQ root), `bin/inject` (the wrapper wakers run), `identities/` (who each handle is, one per handle),
+`leases/` (where each running handle's agent runs: its block, process, and epoch),
 `ledger/` (announced message ids), `window/` (join and departure notes waiting
 for an agent's next prompt), `tabs/` (who names each tab: a follower, a crew,
 or you), `inject/<handle>.jsonl` (every doorbell

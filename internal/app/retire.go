@@ -91,26 +91,26 @@ func (e Env) Retire(ctx context.Context, loc Location, r RetireRequest) (RetireR
 // agent's own hooks, its SessionEnd included, wait for the close and then
 // find a departed record. It returns the target and the terminal of its
 // server.
-func (e Env) retireLocked(ctx context.Context, loc Location, r RetireRequest, res *RetireResult) (store.Record, Terminal, error) {
+func (e Env) retireLocked(ctx context.Context, loc Location, r RetireRequest, res *RetireResult) (agent, Terminal, error) {
 	unlock, err := e.Store.LockLifecycle(ctx)
 	if err != nil {
-		return store.Record{}, nil, err
+		return agent{}, nil, err
 	}
 	defer unlock()
-	caller, ok, err := e.Store.Record(loc.Block)
+	caller, ok, err := e.agentAt(loc.Block)
 	if err != nil {
-		return store.Record{}, nil, err
+		return agent{}, nil, err
 	}
 	if !ok || !caller.Adopted() {
-		return store.Record{}, nil, errors.New("no AMQ identity for this pane, so nothing can retire an agent")
+		return agent{}, nil, errors.New("no AMQ identity for this pane, so nothing can retire an agent")
 	}
 	target, err := e.retireTarget(caller, r.Handle)
 	if err != nil {
-		return store.Record{}, nil, err
+		return agent{}, nil, err
 	}
 	res.Block = target.BlockID
 	if !target.Live() {
-		res.Action, res.DepartReason = RetireAlreadyDeparted, target.DepartReason
+		res.Action, res.DepartReason = RetireAlreadyDeparted, target.departReason()
 		return target, nil, nil
 	}
 	on := e.Rex
@@ -161,7 +161,7 @@ func (e Env) retireLocked(ctx context.Context, loc Location, r RetireRequest, re
 // paneOfRetired says what to do with rec's block, read on its server: ""
 // when it still shows rec's agent, to be closed; PaneGone when Rex no longer
 // has it; PaneLeftOpen, with why, when it shows something else.
-func (e Env) paneOfRetired(ctx context.Context, on Terminal, rec store.Record) (pane, note string, err error) {
+func (e Env) paneOfRetired(ctx context.Context, on Terminal, rec agent) (pane, note string, err error) {
 	ctx, cancel := context.WithTimeout(ctx, retireRexFor)
 	defer cancel()
 	probe := e
@@ -191,34 +191,34 @@ func (e Env) paneOfRetired(ctx context.Context, on Terminal, rec store.Record) (
 
 // retireTarget is the record caller may retire as h, refused per Retire. A
 // departed one is returned for the no-op.
-func (e Env) retireTarget(caller store.Record, h core.Handle) (store.Record, error) {
+func (e Env) retireTarget(caller agent, h core.Handle) (agent, error) {
 	if h == caller.Handle {
-		return store.Record{}, fmt.Errorf("%w: an agent does not retire itself; end your turn, and whoever briefed you retires you", ErrRefused)
+		return agent{}, fmt.Errorf("%w: an agent does not retire itself; end your turn, and whoever briefed you retires you", ErrRefused)
 	}
 	target, ok, err := e.recordByHandle(h)
 	if err != nil {
-		return store.Record{}, err
+		return agent{}, err
 	}
 	if !ok || target.Server != caller.Server || !placed(caller) || !together(target, caller) {
-		return store.Record{}, fmt.Errorf("%w: no agent %s in your Rex session (`rex-amq-adapter who --all` lists them)", ErrRefused, h)
+		return agent{}, fmt.Errorf("%w: no agent %s in your Rex session (`rex-amq-adapter who --all` lists them)", ErrRefused, h)
 	}
 	switch target.Role {
 	case core.NarratorRole, core.PersonalRole, core.OrchestratorRole:
-		return store.Record{}, fmt.Errorf("%w: %s is the session's %s agent, which retire does not close", ErrRefused, h, target.Role)
+		return agent{}, fmt.Errorf("%w: %s is the session's %s agent, which retire does not close", ErrRefused, h, target.Role)
 	}
 	return target, nil
 }
 
 // recordByHandle is h's record; ok is false when there is none.
-func (e Env) recordByHandle(h core.Handle) (store.Record, bool, error) {
-	recs, err := e.Store.Records()
+func (e Env) recordByHandle(h core.Handle) (agent, bool, error) {
+	recs, err := e.agents()
 	if err != nil {
-		return store.Record{}, false, err
+		return agent{}, false, err
 	}
 	for _, r := range recs {
 		if r.Handle == h {
 			return r, true, nil
 		}
 	}
-	return store.Record{}, false, nil
+	return agent{}, false, nil
 }

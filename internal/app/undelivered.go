@@ -8,7 +8,6 @@ import (
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/core"
-	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 // checkSentFor is how long a batch of sent mail waits for its recipients to be
@@ -35,7 +34,7 @@ const checkSentFor = time.Minute
 // next hook's. It reaches Rex only when there is new mail. It must run outside
 // any ledger lock: parking takes the ledger locks of the parked agent's session,
 // which can include rec's.
-func (e Env) checkableSent(ctx context.Context, rec store.Record) []string {
+func (e Env) checkableSent(ctx context.Context, rec agent) []string {
 	cursor, begun, err := e.Store.SentCursor(rec.Handle)
 	if err != nil {
 		fmt.Fprintf(Diagnostics, "read the sent cursor of %s: %v\n", rec.Handle, err)
@@ -60,7 +59,7 @@ func (e Env) checkableSent(ctx context.Context, rec store.Record) []string {
 
 // settleRecipients parks the agents mailed in sent that are gone, and reports
 // whether every one of them is now known to be live or gone.
-func (e Env) settleRecipients(ctx context.Context, rec store.Record, sent []string) bool {
+func (e Env) settleRecipients(ctx context.Context, rec agent, sent []string) bool {
 	ctx, cancel := context.WithTimeout(ctx, superviseFor)
 	defer cancel()
 	unlock, err := e.Store.LockLifecycle(ctx)
@@ -69,7 +68,7 @@ func (e Env) settleRecipients(ctx context.Context, rec store.Record, sent []stri
 		return false
 	}
 	defer unlock()
-	recs, err := e.Store.Records()
+	recs, err := e.agents()
 	if err != nil {
 		fmt.Fprintf(Diagnostics, "check the agents %s mailed: %v\n", rec.Handle, err)
 		return false
@@ -93,7 +92,7 @@ func (e Env) settleRecipients(ctx context.Context, rec store.Record, sent []stri
 // and own, the ids in sent that rec wrote. Mail the adapter sent in rec's
 // name (amq.SystemLabel) is in neither: rec did not write it. A message that
 // cannot be read is reported and skipped, so that it does not hide the rest.
-func (e Env) recipients(rec store.Record, sent []string, recs []store.Record) (mailed []store.Record, own []string) {
+func (e Env) recipients(rec agent, sent []string, recs []agent) (mailed []agent, own []string) {
 	to := map[core.Handle]bool{}
 	for _, id := range sent {
 		h, err := amq.SentHeader(e.Paths.Root(), string(rec.Handle), id)
@@ -117,7 +116,7 @@ func (e Env) recipients(rec store.Record, sent []string, recs []store.Record) (m
 	return mailed, own
 }
 
-func (e Env) checkOverdue(rec store.Record, oldest string) bool {
+func (e Env) checkOverdue(rec agent, oldest string) bool {
 	at, err := amq.SentAt(e.Paths.Root(), string(rec.Handle), oldest)
 	if err != nil {
 		fmt.Fprintf(Diagnostics, "read %s, sent by %s: %v\n", oldest, rec.Handle, err)
@@ -149,7 +148,7 @@ func (e Env) seedSentCursor(h core.Handle) {
 
 // takeUndelivered tells rec's agent about the mail in sent that no agent will
 // read, once. The caller holds rec's ledger lock.
-func (e Env) takeUndelivered(rec store.Record, sent []string) string {
+func (e Env) takeUndelivered(rec agent, sent []string) string {
 	if len(sent) == 0 {
 		return ""
 	}
@@ -161,7 +160,7 @@ func (e Env) takeUndelivered(rec store.Record, sent []string) string {
 	return notice
 }
 
-func (e Env) undeliveredNotice(rec store.Record, sent []string) (string, error) {
+func (e Env) undeliveredNotice(rec agent, sent []string) (string, error) {
 	cursor, _, err := e.Store.SentCursor(rec.Handle)
 	if err != nil {
 		return "", err
@@ -171,7 +170,7 @@ func (e Env) undeliveredNotice(rec store.Record, sent []string) (string, error) 
 	if len(sent) == 0 {
 		return "", nil
 	}
-	recs, err := e.Store.Records()
+	recs, err := e.agents()
 	if err != nil {
 		return "", err
 	}
@@ -190,8 +189,8 @@ func (e Env) undeliveredNotice(rec store.Record, sent []string) (string, error) 
 // sent. Unread in a departed agent's inbox is the fact itself: it needs no
 // comparison of when the mail went out and when the departure was noticed,
 // which for a crash is much later.
-func (e Env) departedRecipients(rec store.Record, sent []string, recs []store.Record) []store.Record {
-	var missed []store.Record
+func (e Env) departedRecipients(rec agent, sent []string, recs []agent) []agent {
+	var missed []agent
 	mailed, own := e.recipients(rec, sent, recs)
 	for _, r := range mailed {
 		if r.Live() {
@@ -210,7 +209,7 @@ func (e Env) departedRecipients(rec store.Record, sent []string, recs []store.Re
 }
 
 // occupant is the live agent in block, if any.
-func occupant(recs []store.Record, block string) *core.Peer {
+func occupant(recs []agent, block string) *core.Peer {
 	for _, r := range recs {
 		if r.Live() && r.BlockID == block {
 			p := peerOf(r)
@@ -222,7 +221,7 @@ func occupant(recs []store.Record, block string) *core.Peer {
 
 // sessionMates are the live agents recorded in rec's session, other than
 // rec's.
-func sessionMates(recs []store.Record, rec store.Record) []core.Peer {
+func sessionMates(recs []agent, rec agent) []core.Peer {
 	var mates []core.Peer
 	for _, r := range recs {
 		if r.Live() && r.Handle != rec.Handle && together(r, rec) {

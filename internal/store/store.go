@@ -1,6 +1,7 @@
-// Package store owns the adapter's state directory: one record per adopted
-// block (the single source of truth for an agent's identity), per-handle
-// announcement ledgers and injector logs, and the locks that serialise them.
+// Package store owns the adapter's state directory: each handle's Identity
+// and, while its agent runs, its Lease (identity.go), per-handle
+// announcement ledgers and injector logs, per-block pane state, and the locks
+// that serialise them.
 package store
 
 import (
@@ -36,7 +37,6 @@ func DefaultPaths() (Paths, error) {
 
 func (p Paths) Root() string        { return filepath.Join(p.Home, "amq-root") }
 func (p Paths) Logs() string        { return filepath.Join(p.Home, "logs") }
-func (p Paths) records() string     { return filepath.Join(p.Home, "records") }
 func (p Paths) ledgers() string     { return filepath.Join(p.Home, "ledger") }
 func (p Paths) injects() string     { return filepath.Join(p.Home, "inject") }
 func (p Paths) lifecycle() string   { return filepath.Join(p.Home, "lifecycle.lock") }
@@ -59,220 +59,10 @@ func PathsForRoot(root string) (Paths, error) {
 	return Paths{Home: filepath.Dir(root)}, nil
 }
 
-// Record binds an AMQ handle to one agent session, and while that session runs,
-// to its process in one Rex block. It holds only facts the adapter owns; the
-// waker's identity and liveness belong to amq and are read with `amq wake
-// check` when needed. Records are stored by handle, so a handle has at most
-// one record: a departed record keeps the handle for its agent session after
-// the block is gone.
-type Record struct {
-	Handle  core.Handle `json:"handle"`
-	Kind    core.Kind   `json:"kind"`
-	Server  string      `json:"server"`
-	BlockID string      `json:"block_id"`
-	// SessionID and WindowID are the Rex session and window (tab) the block
-	// was last seen in: at adoption, then whenever its session is reconciled.
-	// The session is the agent's awareness boundary: departure tells the agents
-	// recorded in it, because a crashed agent's block can no longer be placed.
-	SessionID string `json:"session_id,omitempty"`
-	WindowID  string `json:"window_id,omitempty"`
-	// Generation counts the handle's moves between sessions (Placed): mail
-	// addressed to it in a session it left is fenced from it
-	// (core.CanExchange).
-	Generation int `json:"generation,omitempty"`
-	// PlacedAt is when Generation last changed: the handle's copies of mail
-	// sent before it are fenced from it.
-	PlacedAt       time.Time `json:"placed_at,omitempty"`
-	AgentPID       int       `json:"agent_pid"`
-	AgentSessionID string    `json:"agent_session_id,omitempty"`
-	// Role is what the agent is for ("reviewer", "orchestrator"; "" for none): the
-	// launcher's pane label at adoption, or a crew role taken with join. It
-	// chooses the agent's briefing and makes an orchestrator; the pane label
-	// shows it before the handle.
-	Role string `json:"role,omitempty"`
-	// Task is what the agent said it is doing (core.Task), shown after the
-	// handle in its pane label. It follows the handle, so a resume in another
-	// pane shows it again and a newly named agent starts without one.
-	Task           string    `json:"task,omitempty"`
-	AdoptedAt      time.Time `json:"adopted_at"`
-	FirstAdoptedAt time.Time `json:"first_adopted_at,omitempty"`
-	// Cwd is the directory the agent runs in, from its foreground process at
-	// adoption; a resume starts there.
-	Cwd string `json:"cwd,omitempty"`
-	// Launched is set when the adapter launched the agent, and then Model and
-	// Effort are what it launched it on (its routing, carried to adoption as
-	// LaunchModelEnv and LaunchEffortEnv; empty for the CLI's default); a
-	// resume reuses them. An agent the user started, or one launched before
-	// records kept them, has none.
-	Launched bool   `json:"launched,omitempty"`
-	Model    string `json:"model,omitempty"`
-	Effort   string `json:"effort,omitempty"`
-	// Parent is the agent whose summon started this one ("" for an agent the
-	// user started), Depth how many summons lie between the user and it (the
-	// user's agents are 0), SummonedFor why the parent summoned it.
-	Parent      core.Handle `json:"parent,omitempty"`
-	Depth       int         `json:"depth,omitempty"`
-	SummonedFor string      `json:"summoned_for,omitempty"`
-	// Unattended is set when the agent runs unattended for an Epic (never on
-	// a personal agent): it was launched with ME_UNATTENDED=1, or adopted in
-	// a session whose EpicPolicy says so. A resume keeps it, and `env`
-	// exports it to the agent's shells.
-	Unattended bool `json:"unattended,omitempty"`
-	// DepartedAt is set when the agent ended. A departed record keeps its
-	// handle reserved for its agent session (a resume, in any block) until
-	// collected.
-	DepartedAt *time.Time `json:"departed_at,omitempty"`
-	// DepartReason says why: DepartSessionEnd, DepartReplaced, DepartEpicClosed, DepartRetired, or the binding
-	// check's code when collection found the agent gone (block_gone,
-	// agent_gone, agent_left_pane). Shown to observers; only the session
-	// pulse decides on it (a retired agent's leaving is routine).
-	DepartReason string `json:"depart_reason,omitempty"`
-	// Unfinished names the transition this record was committed in the middle
-	// of, so whoever reads it next can finish it.
-	Unfinished Transition `json:"unfinished,omitempty"`
-}
-
-// Transition is a change of an agent's state with steps after the record is
-// written: a process can die, or a hook run out of time, between them.
-type Transition string
-
-const (
-	Adopting  Transition = "adoption"
-	Departing Transition = "departure"
-)
-
-// Reasons a departure records that are not a binding check's code.
-const (
-	DepartSessionEnd = "session_end" // the harness ended the session
-	DepartReplaced   = "replaced"    // another agent or session took the block
-	DepartEpicClosed = "epic_closed" // the personal agent closed its Epic's session
-	DepartRetired    = "retired"     // a session-mate retired it as finished (rex-amq-adapter retire)
-)
-
-// Live reports whether the record describes a running agent.
-func (r Record) Live() bool { return r.DepartedAt == nil }
-
-// Adopted reports whether r's agent finished adoption: it has its waker and
-// was told who it is. A live record that has not has a mailbox, and no more.
-func (r Record) Adopted() bool { return r.Live() && r.Unfinished != Adopting }
-
-// InitialAdoptedAt is when the handle's agent session was first adopted,
-// preserved across resumes so tab-ownership order stays monotonic.
-func (r Record) InitialAdoptedAt() time.Time {
-	if !r.FirstAdoptedAt.IsZero() {
-		return r.FirstAdoptedAt
-	}
-	return r.AdoptedAt
-}
-
 // Store reads and writes state under Paths.
 type Store struct{ P Paths }
 
 func fileKey(id string) string { return strings.NewReplacer(":", "_", "/", "_").Replace(id) }
-
-func (s Store) recordPath(h core.Handle) string {
-	return filepath.Join(s.P.records(), fileKey(string(h))+".json")
-}
-
-// Record returns the record bound to block: its live one, else the one that
-// departed last. ok is false when there is none.
-func (s Store) Record(block string) (Record, bool, error) {
-	recs, err := s.readRecords()
-	if err != nil {
-		return Record{}, false, err
-	}
-	var best Record
-	ok := false
-	for _, r := range recs {
-		if r.BlockID != block {
-			continue
-		}
-		if !ok || r.Live() || (!best.Live() && r.DepartedAt.After(*best.DepartedAt)) {
-			best, ok = r, true
-		}
-		if r.Live() {
-			break
-		}
-	}
-	return best, ok, nil
-}
-
-// PutRecord writes r as its handle's only record.
-func (s Store) PutRecord(r Record) error {
-	if r.BlockID == "" || r.Handle == "" {
-		return errors.New("record needs a block id and a handle")
-	}
-	b, err := json.MarshalIndent(r, "", "  ")
-	if err != nil {
-		return err
-	}
-	return fsutil.WriteAtomic(s.recordPath(r.Handle), append(b, '\n'))
-}
-
-// DeleteRecord forgets handle h: its record and its delivery history (the
-// announcement ledger and the inject log), so a later agent given h starts
-// clean. Its mailbox is amq's and stays.
-func (s Store) DeleteRecord(h core.Handle) error {
-	for _, p := range []string{s.recordPath(h), s.ledgerPath(h), s.sentCursorPath(h), s.injectLog(h), s.titlePath(h), s.titleStatePath(h), s.taskAskedPath(h)} {
-		if err := os.Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return err
-		}
-	}
-	return nil
-}
-
-// Records lists every record, sorted by handle. An unreadable record is an
-// error rather than skipped: it may hold the generation needed to retire a
-// waker.
-func (s Store) Records() ([]Record, error) {
-	out, err := s.readRecords()
-	if err != nil {
-		return nil, err
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Handle < out[j].Handle })
-	return out, nil
-}
-
-// RecordsChanged is when a record was last written or removed: the records
-// directory's modification time, which every write moves because it renames a
-// file into place. Zero when there is no directory yet.
-func (s Store) RecordsChanged() (time.Time, error) {
-	st, err := os.Stat(s.P.records())
-	if errors.Is(err, fs.ErrNotExist) {
-		return time.Time{}, nil
-	}
-	if err != nil {
-		return time.Time{}, err
-	}
-	return st.ModTime(), nil
-}
-
-// readRecords reads every record file (recordPath: one per handle).
-func (s Store) readRecords() ([]Record, error) {
-	entries, err := os.ReadDir(s.P.records())
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	var out []Record
-	for _, e := range entries {
-		if !strings.HasSuffix(e.Name(), ".json") || strings.HasPrefix(e.Name(), ".") {
-			continue
-		}
-		b, err := os.ReadFile(filepath.Join(s.P.records(), e.Name()))
-		if err != nil {
-			return nil, err
-		}
-		var r Record
-		if err := json.Unmarshal(b, &r); err != nil {
-			return nil, fmt.Errorf("decode record %s: %w", e.Name(), err)
-		}
-		out = append(out, r)
-	}
-	return out, nil
-}
 
 // LockWatch is held by the watcher of session k, so a session has at most
 // one, whichever orchestrator or narrator started it.
@@ -784,8 +574,8 @@ func (s Store) PutHealthMark(block string, m HealthMark) error {
 	return fsutil.WriteAtomic(s.healthPath(block), b)
 }
 
-// TurnError is a stop hook's note that the agent run By (turnKey) ended a
-// turn in an error At; that agent's next turn removes it. It is one value
+// TurnError is a stop hook's note that the agent run By (turnKey) of a
+// handle ended a turn in an error At; that agent's next turn removes it. It is one value
 // in a file of its own, written whole and removed whole, so the hooks need
 // no lock and never wait on the watchdog.
 type TurnError struct {
@@ -793,13 +583,13 @@ type TurnError struct {
 	By string    `json:"by"`
 }
 
-func (s Store) turnErrorPath(block string) string {
-	return filepath.Join(s.P.Home, "turn-error", fileKey(block)+".json")
+func (s Store) turnErrorPath(h core.Handle) string {
+	return filepath.Join(s.P.Home, "turn-error", fileKey(string(h))+".json")
 }
 
-// TurnError returns block's turn error; ok is false when there is none.
-func (s Store) TurnError(block string) (te TurnError, ok bool, err error) {
-	b, err := os.ReadFile(s.turnErrorPath(block))
+// TurnError returns h's turn error; ok is false when there is none.
+func (s Store) TurnError(h core.Handle) (te TurnError, ok bool, err error) {
+	b, err := os.ReadFile(s.turnErrorPath(h))
 	if errors.Is(err, fs.ErrNotExist) {
 		return TurnError{}, false, nil
 	}
@@ -807,23 +597,23 @@ func (s Store) TurnError(block string) (te TurnError, ok bool, err error) {
 		return TurnError{}, false, err
 	}
 	if err := json.Unmarshal(b, &te); err != nil {
-		return TurnError{}, false, fmt.Errorf("%s: %w", s.turnErrorPath(block), err)
+		return TurnError{}, false, fmt.Errorf("%s: %w", s.turnErrorPath(h), err)
 	}
 	return te, !te.At.IsZero(), nil
 }
 
-// PutTurnError replaces block's turn error.
-func (s Store) PutTurnError(block string, te TurnError) error {
+// PutTurnError replaces h's turn error.
+func (s Store) PutTurnError(h core.Handle, te TurnError) error {
 	b, err := json.Marshal(te)
 	if err != nil {
 		return err
 	}
-	return fsutil.WriteAtomic(s.turnErrorPath(block), b)
+	return fsutil.WriteAtomic(s.turnErrorPath(h), b)
 }
 
-// ClearTurnError removes block's turn error.
-func (s Store) ClearTurnError(block string) error {
-	err := os.Remove(s.turnErrorPath(block))
+// ClearTurnError removes h's turn error.
+func (s Store) ClearTurnError(h core.Handle) error {
+	err := os.Remove(s.turnErrorPath(h))
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
@@ -832,7 +622,7 @@ func (s Store) ClearTurnError(block string) error {
 
 // Summon is what a summoner wrote before launching an agent, keyed by the
 // token the launch carries in its environment, for the adoption with that
-// token to copy into its record. Until then it reserves a place in the
+// token to copy into its identity. Until then it reserves a place in the
 // session's cap.
 type Summon struct {
 	Parent  core.Handle `json:"parent"`
@@ -862,7 +652,7 @@ func (s Store) PutSummon(token string, sm Summon) error {
 }
 
 // Summon reads the launch under token without consuming its reservation.
-// The caller deletes it only after committing the adopting record.
+// The caller deletes it only after committing the adopting identity.
 func (s Store) Summon(token string) (Summon, bool, error) {
 	if token == "" {
 		return Summon{}, false, nil

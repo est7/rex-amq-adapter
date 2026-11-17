@@ -8,7 +8,6 @@ import (
 	"slices"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
-	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 // sessionVars are the variables each harness sets afresh in its tool shells,
@@ -51,7 +50,7 @@ func (e Env) Caller(ctx context.Context, getenv func(string) string) (Location, 
 	if len(sessions) == 0 {
 		return here(getenv)
 	}
-	var found []store.Record
+	var found []agent
 	for _, s := range sessions {
 		rec, err := e.sessionRecord(ctx, s.kind, s.session)
 		if err != nil {
@@ -71,27 +70,27 @@ func (e Env) Caller(ctx context.Context, getenv func(string) string) (Location, 
 
 // sessionRecord is the live record of a harness session a command's
 // environment names.
-func (e Env) sessionRecord(ctx context.Context, kind core.Kind, session string) (store.Record, error) {
+func (e Env) sessionRecord(ctx context.Context, kind core.Kind, session string) (agent, error) {
 	rec, hasRec, err := e.liveRecordOf(kind, session)
 	if err != nil {
-		return store.Record{}, err
+		return agent{}, err
 	}
 	if kind == core.Claude {
 		job, isJob, err := e.claudeJob(session)
 		if err != nil {
-			return store.Record{}, err
+			return agent{}, err
 		}
 		switch {
 		case isJob && hasRec:
 			if shown, err := e.showsJob(ctx, rec.BlockID, rec, job); err != nil || !shown {
-				return store.Record{}, fmt.Errorf("%w now (it was last in %s), so it has no AMQ identity until one does", ErrJobNotShown, rec.BlockID)
+				return agent{}, fmt.Errorf("%w now (it was last in %s), so it has no AMQ identity until one does", ErrJobNotShown, rec.BlockID)
 			}
 		case isJob:
-			return store.Record{}, fmt.Errorf("%w yet, so it has no AMQ identity; it gets one at its next prompt once a pane shows it", ErrJobNotShown)
+			return agent{}, fmt.Errorf("%w yet, so it has no AMQ identity; it gets one at its next prompt once a pane shows it", ErrJobNotShown)
 		}
 	}
 	if !hasRec {
-		return store.Record{}, fmt.Errorf("this %s session (%s) has no AMQ identity: its hooks have not adopted it, and no other agent's identity is its own", kind, session)
+		return agent{}, fmt.Errorf("this %s session (%s) has no AMQ identity: its hooks have not adopted it, and no other agent's identity is its own", kind, session)
 	}
 	return rec, nil
 }
@@ -99,13 +98,13 @@ func (e Env) sessionRecord(ctx context.Context, kind core.Kind, session string) 
 // nearest is the record in recs of the agent nearest this process: the
 // command runs in that agent's tool shell, and the others are agents it was
 // started under.
-func (e Env) nearest(recs []store.Record) (store.Record, error) {
+func (e Env) nearest(recs []agent) (agent, error) {
 	ancestors, err := e.ancestors()
 	if err != nil {
-		return store.Record{}, fmt.Errorf("tell which of several agents runs this command: %w", err)
+		return agent{}, fmt.Errorf("tell which of several agents runs this command: %w", err)
 	}
 	for _, p := range ancestors {
-		if i := slices.IndexFunc(recs, func(r store.Record) bool { return r.AgentPID == p.PID }); i >= 0 {
+		if i := slices.IndexFunc(recs, func(r agent) bool { return r.pid() == p.PID }); i >= 0 {
 			return recs[i], nil
 		}
 	}
@@ -113,7 +112,7 @@ func (e Env) nearest(recs []store.Record) (store.Record, error) {
 	for i, r := range recs {
 		handles[i] = string(r.Handle)
 	}
-	return store.Record{}, fmt.Errorf("this command's environment names the sessions of %v, and it descends from none of their agents", handles)
+	return agent{}, fmt.Errorf("this command's environment names the sessions of %v, and it descends from none of their agents", handles)
 }
 
 // ErrNotInRex: the caller's terminal is not a Rex block.

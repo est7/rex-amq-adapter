@@ -10,14 +10,13 @@ import (
 	"testing"
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
-	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 func TestManagedMailRejectsHiddenRoutingOverrides(t *testing.T) {
 	for _, verb := range []string{"send", "reply"} {
 		t.Run(verb, func(t *testing.T) {
 			e, ctx := managedWorld(t)
-			put(t, e, store.Record{Handle: "claude-10", SessionID: "session:b"})
+			put(t, e, seed{Handle: "claude-10", SessionID: "session:b"})
 			if err := e.AMQ.EnsureMailbox(ctx, e.Paths.Root(), "claude-10"); err != nil {
 				t.Fatal(err)
 			}

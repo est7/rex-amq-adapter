@@ -17,7 +17,7 @@ func epicWorld(epic string) *fakeTerm {
 // titleState is the tracked conversation title of the agent in block.
 func titleState(t *testing.T, e Env) core.TitleState {
 	t.Helper()
-	rec, ok, err := e.Store.Record(block)
+	rec, ok, err := e.agentAt(block)
 	if err != nil || !ok {
 		t.Fatalf("no record in %s: %v", block, err)
 	}
@@ -103,7 +103,7 @@ func TestEpicTitlePiOffersOnAnyHook(t *testing.T) {
 	if _, err := e.Join(context.Background(), Location{Block: block}, "", "reviewer"); err != nil {
 		t.Fatal(err)
 	}
-	rec, _, _ := e.Store.Record(block)
+	rec, _, _ := e.agentAt(block)
 	want := "reviewer(" + string(rec.Handle) + ") | [auth-refresh]"
 	if st := titleState(t, e); st.Status != core.TitleDesired || st.Desired != want || st.Offered != string(rec.Handle) {
 		t.Errorf("after join: title state %+v, want desired %q over offered %q", st, want, rec.Handle)
@@ -129,13 +129,13 @@ func TestEpicTitleUnsupportedForCodexAndAgy(t *testing.T) {
 		if got := hookTitle(t, e, c.kind, EventSessionStart, c.in); got != "" {
 			t.Errorf("%s start carried title %q", c.kind, got)
 		}
-		rec, _, _ := e.Store.Record(block)
+		rec, _, _ := e.agentAt(block)
 		head := core.PaneHead(rec.Handle, rec.Role)
 		wantState(t, e, string(c.kind)+" start", core.TitleState{Status: core.TitleUnsupported, Desired: head + " | [auth-refresh]"})
 		setTask(t, e, block, "fix login")
 		wantState(t, e, string(c.kind)+" task set", core.TitleState{Status: core.TitleUnsupported, Desired: head + " | [auth-refresh] fix login"})
 		if c.kind == core.Agy {
-			e.Ancestors = func() ([]proc, error) { return []proc{{rec.AgentPID, "agy"}}, nil }
+			e.Ancestors = func() ([]proc, error) { return []proc{{rec.pid(), "agy"}}, nil }
 			if got := e.PaneTitle(Location{Block: block}, core.Agy, "/w/proj"); got != head+" | fix login" {
 				t.Errorf("agy's window title %q is not its pane label", got)
 			}

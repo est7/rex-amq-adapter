@@ -11,7 +11,6 @@ import (
 	"slices"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
-	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 // lineage is the session ids that make up in's conversation, its own first,
@@ -23,7 +22,7 @@ import (
 //
 // The transcript format is Claude Code's own, so a lineage that cannot be read
 // is reported and left out: the agent is named afresh, as without this check.
-func lineage(recs []store.Record, kind core.Kind, in HookInput) []string {
+func lineage(recs []agent, kind core.Kind, in HookInput) []string {
 	if in.SessionID == "" {
 		return nil
 	}
@@ -44,9 +43,9 @@ func lineage(recs []store.Record, kind core.Kind, in HookInput) []string {
 	return sessions
 }
 
-func sessionRecorded(recs []store.Record, kind core.Kind, session string) bool {
-	return slices.ContainsFunc(recs, func(r store.Record) bool {
-		return r.Kind == kind && r.AgentSessionID == session
+func sessionRecorded(recs []agent, kind core.Kind, session string) bool {
+	return slices.ContainsFunc(recs, func(r agent) bool {
+		return r.Kind == kind && slices.Contains(r.Sessions, session)
 	})
 }
 

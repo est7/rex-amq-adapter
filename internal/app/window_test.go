@@ -22,7 +22,7 @@ func startPi(t *testing.T, e Env, b, session string) (core.Handle, string) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = e.Depart(ctx, Location{Block: b}, HookInput{}) })
-	rec, ok, err := e.Store.Record(b)
+	rec, ok, err := e.agentAt(b)
 	if err != nil || !ok {
 		t.Fatalf("no record for %s: %v", b, err)
 	}
@@ -188,11 +188,13 @@ func TestCollectionTellsTheSessionOfACrash(t *testing.T) {
 	crashed, _ := startPi(t, e, "block:b", "s2")
 	_ = notice(t, e, EventPrompt, core.Pi, "block:a", "s1")
 
-	rec, _, _ := e.Store.Record("block:b")
-	rec.AgentPID = 999999 // the process in block:b is gone; another runs in its place
-	if err := e.Store.PutRecord(rec); err != nil {
+	rec, _, _ := e.agentAt("block:b")
+	recSeed := seedOf(rec)
+	recSeed.AgentPID = 999999 // the process in block:b is gone; another runs in its place
+	if err := putSeed(e.Store, recSeed); err != nil {
 		t.Fatal(err)
 	}
+	rec = recordNamed(t, e, rec.Handle)
 	term.mu.Lock()
 	term.fgPID = 999998
 	term.mu.Unlock()
@@ -215,8 +217,8 @@ func TestADepartureRecordsItsReason(t *testing.T) {
 	ctx := context.Background()
 	ended, _ := startPi(t, e, "block:a", "s1")
 	depart(t, e, "block:a", "s1")
-	if r := recordOf(t, e, ended); r.DepartReason != store.DepartSessionEnd {
-		t.Errorf("SessionEnd: reason %q", r.DepartReason)
+	if r := recordOf(t, e, ended); r.departReason() != store.DepartSessionEnd {
+		t.Errorf("SessionEnd: reason %q", r.departReason())
 	}
 
 	replaced, _ := startPi(t, e, "block:b", "s2")
@@ -224,23 +226,25 @@ func TestADepartureRecordsItsReason(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = e.Depart(ctx, Location{Block: "block:b"}, HookInput{}) })
-	if r := recordOf(t, e, replaced); r.DepartReason != store.DepartReplaced {
-		t.Errorf("replaced in its block: reason %q", r.DepartReason)
+	if r := recordOf(t, e, replaced); r.departReason() != store.DepartReplaced {
+		t.Errorf("replaced in its block: reason %q", r.departReason())
 	}
 
 	crashed, _ := startPi(t, e, "block:c", "s3")
 	rec := recordOf(t, e, crashed)
-	rec.AgentPID = 999999 // gone; another process runs in its place
-	if err := e.Store.PutRecord(rec); err != nil {
+	recSeed := seedOf(rec)
+	recSeed.AgentPID = 999999 // gone; another process runs in its place
+	if err := putSeed(e.Store, recSeed); err != nil {
 		t.Fatal(err)
 	}
+	rec = recordNamed(t, e, rec.Handle)
 	term.mu.Lock()
 	term.fgs = map[string]rex.Process{"block:c": {PID: 999998, Name: "zsh"}}
 	term.mu.Unlock()
 	if err := e.Collect(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if r := recordOf(t, e, crashed); r.Live() || r.DepartReason != "agent_gone" {
-		t.Errorf("collected: live %v, reason %q", r.Live(), r.DepartReason)
+	if r := recordOf(t, e, crashed); r.Live() || r.departReason() != "agent_gone" {
+		t.Errorf("collected: live %v, reason %q", r.Live(), r.departReason())
 	}
 }

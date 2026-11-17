@@ -58,7 +58,7 @@ func newJobWorld(t *testing.T) jobWorld {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		recs, _ := e.Store.Records()
+		recs, _ := e.agents()
 		for _, r := range recs {
 			if r.Live() {
 				_ = e.park(ctx, r, store.DepartSessionEnd)
@@ -103,9 +103,9 @@ func (w jobWorld) jobHook(t *testing.T, event string) Reply {
 	return r
 }
 
-func (w jobWorld) tuiRecord(t *testing.T) store.Record {
+func (w jobWorld) tuiRecord(t *testing.T) agent {
 	t.Helper()
-	rec, ok, err := w.e.Store.Record(tuiBlock)
+	rec, ok, err := w.e.agentAt(tuiBlock)
 	if err != nil || !ok {
 		t.Fatalf("block:tui's record: %+v %v %v", rec, ok, err)
 	}
@@ -123,10 +123,10 @@ func TestBackgroundJobIsAdoptedInThePaneThatShowsIt(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("the job was not adopted: %v", err)
 	}
-	if rec.BlockID != viewBlock || rec.AgentPID != w.jobPID || rec.Handle == before.Handle {
-		t.Errorf("job adopted as %s in %s with pid %d; want its own handle in %s with pid %d", rec.Handle, rec.BlockID, rec.AgentPID, viewBlock, w.jobPID)
+	if rec.BlockID != viewBlock || rec.pid() != w.jobPID || rec.Handle == before.Handle {
+		t.Errorf("job adopted as %s in %s with pid %d; want its own handle in %s with pid %d", rec.Handle, rec.BlockID, rec.pid(), viewBlock, w.jobPID)
 	}
-	if after := w.tuiRecord(t); after.Handle != before.Handle || !after.Live() || after.AgentSessionID != "tui-session" {
+	if after := w.tuiRecord(t); after.Handle != before.Handle || !after.Live() || after.Session() != "tui-session" {
 		t.Errorf("the terminal session's record changed: %+v", after)
 	}
 }
@@ -249,7 +249,7 @@ func TestANestedClaudeIsNotThePanesAgent(t *testing.T) {
 	if r.Notice != "" {
 		t.Errorf("the nested session was told %q", r.Notice)
 	}
-	if after := w.tuiRecord(t); after.Handle != before.Handle || !after.Live() || after.AgentSessionID != "tui-session" {
+	if after := w.tuiRecord(t); after.Handle != before.Handle || !after.Live() || after.Session() != "tui-session" {
 		t.Errorf("the pane's agent was replaced: %+v", after)
 	}
 }
@@ -410,7 +410,7 @@ func TestAJobMoveThatFailsIsFinishedLater(t *testing.T) {
 	if _, err := w.e.Hook(context.Background(), EventPrompt, core.Claude, Location{Block: tuiBlock}, HookInput{SessionID: jobSess, AgentPID: w.jobPID}); err == nil {
 		t.Fatal("setup: the move should fail")
 	}
-	if rec, _, _ := w.e.liveRecordOf(core.Claude, jobSess); rec.BlockID != next || rec.Unfinished != store.Adopting {
+	if rec, _, _ := w.e.liveRecordOf(core.Claude, jobSess); rec.BlockID != next || rec.unfinished() != adopting {
 		t.Errorf("after a failed move: %+v, want it in %s and unfinished", rec, next)
 	}
 }
@@ -491,11 +491,11 @@ func TestAJobIsNeverAdoptedIntoAPaneThatDoesNotShowIt(t *testing.T) {
 	w.term.windows[stale] = "window:3"
 	w.term.fgs[stale] = rex.Process{PID: 4242, Name: "claude"}
 	w.term.titles[stale] = "✳ another conversation"
-	if err := w.e.Store.PutRecord(store.Record{Handle: "claude-old", Kind: core.Claude, Server: "unix:///fake.sock", BlockID: stale, AgentPID: 4242, AgentSessionID: jobSess}); err != nil {
+	if err := putSeed(w.e.Store, seed{Handle: "claude-old", Kind: core.Claude, Server: "unix:///fake.sock", BlockID: stale, AgentPID: 4242, AgentSessionID: jobSess}); err != nil {
 		t.Fatal(err)
 	}
 	w.jobHook(t, EventPostTool)
-	if rec, _, _ := w.e.liveRecordOf(core.Claude, jobSess); rec.BlockID == stale && rec.AgentPID == w.jobPID {
+	if rec, _, _ := w.e.liveRecordOf(core.Claude, jobSess); rec.BlockID == stale && rec.pid() == w.jobPID {
 		t.Errorf("the job was adopted into a pane that shows something else: %+v", rec)
 	}
 	if label, ok := w.term.renamed[stale]; ok {
@@ -503,7 +503,7 @@ func TestAJobIsNeverAdoptedIntoAPaneThatDoesNotShowIt(t *testing.T) {
 	}
 	// Its next prompt finds the pane that shows it.
 	w.jobHook(t, EventPrompt)
-	if rec, _, _ := w.e.liveRecordOf(core.Claude, jobSess); rec.BlockID != viewBlock || rec.AgentPID != w.jobPID {
+	if rec, _, _ := w.e.liveRecordOf(core.Claude, jobSess); rec.BlockID != viewBlock || rec.pid() != w.jobPID {
 		t.Errorf("the job's next prompt did not move it to its pane: %+v", rec)
 	}
 }
@@ -518,11 +518,11 @@ func TestAStaleJobRecordIsMovedByAToolCall(t *testing.T) {
 	w.term.windows[stale] = "window:3"
 	w.term.fgs[stale] = rex.Process{PID: 4242, Name: "claude"}
 	w.term.titles[stale] = "✳ another conversation"
-	if err := w.e.Store.PutRecord(store.Record{Handle: "claude-old", Kind: core.Claude, Server: "unix:///fake.sock", BlockID: stale, AgentPID: 4242, AgentSessionID: jobSess}); err != nil {
+	if err := putSeed(w.e.Store, seed{Handle: "claude-old", Kind: core.Claude, Server: "unix:///fake.sock", BlockID: stale, AgentPID: 4242, AgentSessionID: jobSess}); err != nil {
 		t.Fatal(err)
 	}
 	w.jobHook(t, EventPostTool)
-	if rec, _, _ := w.e.liveRecordOf(core.Claude, jobSess); rec.BlockID != viewBlock || rec.AgentPID != w.jobPID || rec.Handle != "claude-old" {
+	if rec, _, _ := w.e.liveRecordOf(core.Claude, jobSess); rec.BlockID != viewBlock || rec.pid() != w.jobPID || rec.Handle != "claude-old" {
 		t.Errorf("a tool call did not move the stale job to its pane: %+v", rec)
 	}
 	if _, failed, _ := w.e.Store.AdoptFailedAt(stale); failed {

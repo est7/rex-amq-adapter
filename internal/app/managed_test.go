@@ -9,11 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/core"
-	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 // managedWorld is three agents on a real amq: two members of Epic a, one of
@@ -23,9 +21,9 @@ func managedWorld(t *testing.T) (Env, context.Context) {
 	e := realAmqEnv(t, &fakeTerm{})
 	ctx := context.Background()
 	put(t, e,
-		store.Record{Handle: "codex-01", Role: "reviewer", SessionID: "session:a"},
-		store.Record{Handle: "claude-02", Role: "implementer", SessionID: "session:a"},
-		store.Record{Handle: "claude-09", SessionID: "session:b"},
+		seed{Handle: "codex-01", Role: "reviewer", SessionID: "session:a"},
+		seed{Handle: "claude-02", Role: "implementer", SessionID: "session:a"},
+		seed{Handle: "claude-09", SessionID: "session:b"},
 	)
 	for _, h := range []string{"codex-01", "claude-02", "claude-09"} {
 		if err := e.AMQ.EnsureMailbox(ctx, e.Paths.Root(), h); err != nil {
@@ -134,8 +132,7 @@ func TestManagedMailReadDrainAndThread(t *testing.T) {
 		t.Fatalf("list: %v %s", err, out)
 	}
 	// claude-02 leaves Epic a and comes back: its old mail is fenced.
-	rec, _, _ := e.Store.RecordOf("claude-02")
-	put(t, e, rec.Placed(rec.Server, "session:b", "window:X", time.Now()).Placed(rec.Server, "session:a", "window:X", time.Now()))
+	moveThrough(t, e, "claude-02", "window:X", "session:b", "session:a")
 	for _, c := range [][]string{{"read", "--id", first.ID}, {"trace", first.ID}} {
 		if _, _, err := run(t, e, ctx, "claude-02", c[0], c[1:]...); !errors.Is(err, ErrRefused) {
 			t.Fatalf("%s after the move: %v", c[0], err)
@@ -197,8 +194,8 @@ func TestManagedMailReply(t *testing.T) {
 func TestManagedMailNarratorControlReachesOnlyTheOrchestrator(t *testing.T) {
 	e, ctx := managedWorld(t)
 	put(t, e,
-		store.Record{Handle: "claude-05", Role: core.NarratorRole, SessionID: "session:a"},
-		store.Record{Handle: "claude-03", Role: core.OrchestratorRole, SessionID: "session:a"},
+		seed{Handle: "claude-05", Role: core.NarratorRole, SessionID: "session:a"},
+		seed{Handle: "claude-03", Role: core.OrchestratorRole, SessionID: "session:a"},
 	)
 	for _, h := range []string{"claude-05", "claude-03"} {
 		if err := e.AMQ.EnsureMailbox(ctx, e.Paths.Root(), h); err != nil {
@@ -229,7 +226,7 @@ func TestManagedMailNarratorControlReachesOnlyTheOrchestrator(t *testing.T) {
 	if err != nil || !ok || p.Op != core.OpControl || p.ControlRequestID != "req-7" {
 		t.Fatalf("provenance %+v %v %v", p, ok, err)
 	}
-	orch, _, _ := e.Store.Record("block:claude-03")
+	orch, _, _ := e.agentAt("block:claude-03")
 	kept, err := e.admit(orch)
 	if err != nil || len(kept) != 1 || kept[0] != sent.ID {
 		t.Fatalf("the orchestrator's gate kept %v (%v), want %s", kept, err, sent.ID)

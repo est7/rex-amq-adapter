@@ -15,9 +15,9 @@ import (
 // Joined is what join made of the agent: its record, its pane label, and the
 // briefing it now works under.
 type Joined struct {
-	Record store.Record
-	Label  string
-	Crew   crew.Crew // zero when no crew was named
+	Agent agent
+	Label string
+	Crew  crew.Crew // zero when no crew was named
 	// Briefing is the notice text: the crew's conventions and the role's
 	// prompt, then who else the crew needs.
 	Briefing string
@@ -36,7 +36,7 @@ var ErrCrewTaken = errors.New("this Rex session already works as another crew")
 // since their conventions would change under them. A narrator or personal
 // agent (core.Stealth) never joins a crew.
 func (e Env) Join(ctx context.Context, loc Location, crewName, role string) (Joined, error) {
-	rec, ok, err := e.Store.Record(loc.Block)
+	rec, ok, err := e.agentAt(loc.Block)
 	if err != nil {
 		return Joined{}, err
 	}
@@ -81,7 +81,7 @@ func (e Env) Join(ctx context.Context, loc Location, crewName, role string) (Joi
 		return Joined{}, err
 	}
 	var mates []core.Peer
-	if recs, err := e.Store.Records(); err != nil {
+	if recs, err := e.agents(); err != nil {
 		fmt.Fprintf(Diagnostics, "read the records: %v\n", err)
 	} else {
 		mates = e.joinSession(ctx, rec, blk, recs, false)
@@ -93,7 +93,7 @@ func (e Env) Join(ctx context.Context, loc Location, crewName, role string) (Joi
 	if err := e.ensureSessionWatcher(rec); err != nil {
 		fmt.Fprintf(Diagnostics, "%v\n", err)
 	}
-	out := Joined{Record: rec, Label: core.PaneLabel(rec.Handle, rec.Role, rec.Task), Crew: c}
+	out := Joined{Agent: rec, Label: core.PaneLabel(rec.Handle, rec.Role, rec.Task), Crew: c}
 	out.Briefing = joinNotices(core.BriefNotice(e.briefingIn(ctx, rec, rec.Role, e.sessionCrew(blk.SessionID, rec.Role))))
 	if rec.Role != core.OrchestratorRole && !core.Stealth(rec.Role) {
 		if orch := core.OrchestratorNotice(mates); orch != "" {
@@ -128,7 +128,7 @@ func (e Env) claimSessionCrew(ctx context.Context, h core.Handle, session, name 
 		return nil
 	}
 	if ok {
-		recs, err := e.Store.Records()
+		recs, err := e.agents()
 		if err != nil {
 			return err
 		}
@@ -162,22 +162,22 @@ func (e Env) sessionCrew(session, role string) string {
 
 // takeRole records role for the agent h in loc and shows it in the pane and
 // in a tab that follows it.
-func (e Env) takeRole(ctx context.Context, loc Location, h core.Handle, role string) (store.Record, error) {
+func (e Env) takeRole(ctx context.Context, loc Location, h core.Handle, role string) (agent, error) {
 	unlock, err := e.Store.LockLifecycle(ctx)
 	if err != nil {
-		return store.Record{}, err
+		return agent{}, err
 	}
 	defer unlock()
-	rec, ok, err := e.Store.Record(loc.Block)
+	rec, ok, err := e.agentAt(loc.Block)
 	if err != nil {
-		return store.Record{}, err
+		return agent{}, err
 	}
 	if !ok || !rec.Live() || rec.Handle != h {
-		return store.Record{}, fmt.Errorf("the agent in %s changed while joining", loc.Block)
+		return agent{}, fmt.Errorf("the agent in %s changed while joining", loc.Block)
 	}
 	rec.Role = role
-	if err := e.Store.PutRecord(rec); err != nil {
-		return store.Record{}, err
+	if err := e.Store.PutIdentity(rec.Identity); err != nil {
+		return agent{}, err
 	}
 	e.refreshTitle(ctx, rec)
 	if err := e.Rex.RenameBlock(ctx, loc.Block, core.PaneLabel(rec.Handle, rec.Role, rec.Task)); err != nil {

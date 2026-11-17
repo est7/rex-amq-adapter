@@ -8,7 +8,6 @@ import (
 	"sort"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
-	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 // A Rex tab (window) is named by whoever the tab ledger (store.Tab) says owns
@@ -48,7 +47,7 @@ func (e Env) followTab(ctx context.Context, session, window string) {
 // followTabs follows each window of s's layout (all of them when none is
 // named).
 func (e Env) followTabs(ctx context.Context, s Session, windows ...string) error {
-	recs, err := e.Store.Records()
+	recs, err := e.agents()
 	if err != nil {
 		return err
 	}
@@ -68,7 +67,7 @@ func (e Env) followTabs(ctx context.Context, s Session, windows ...string) error
 }
 
 // followTabIn follows window by s's layout and the records recs.
-func (e Env) followTabIn(ctx context.Context, s Session, window string, recs []store.Record) error {
+func (e Env) followTabIn(ctx context.Context, s Session, window string, recs []agent) error {
 	label := s.tabs[window]
 	if label == "" { // Rex did not describe it
 		return nil

@@ -36,12 +36,17 @@ func TestNestedHarnessHookExitsZeroAndLeavesTheOwner(t *testing.T) {
 
 	s := store.Store{P: store.Paths{Home: dir}}
 	now := time.Now().UTC()
-	owner := store.Record{Handle: "claude-07", Kind: core.Claude, Role: core.OrchestratorRole, Server: "unix:///test.sock", BlockID: "block:pane",
+	owner := testAgent{Handle: "claude-07", Kind: core.Claude, Role: core.OrchestratorRole, Server: "unix:///test.sock", BlockID: "block:pane",
 		SessionID: "session:1", WindowID: "window:1", AgentPID: os.Getppid(), AgentSessionID: "owner", AdoptedAt: now, FirstAdoptedAt: now}
-	if err := s.PutRecord(owner); err != nil {
+	if err := putAgent(s, owner); err != nil {
 		t.Fatal(err)
 	}
-	before, _, _ := s.Record("block:pane")
+	snapshot := func() ([]store.Identity, []store.Lease) {
+		ids, _ := s.Identities()
+		leases, _ := s.Leases()
+		return ids, leases
+	}
+	beforeIDs, beforeLeases := snapshot()
 	for _, event := range []string{"session-start", "post-tool-use", "stop", "session-end"} {
 		stdin, err := os.CreateTemp(dir, "stdin")
 		if err != nil {
@@ -63,11 +68,8 @@ func TestNestedHarnessHookExitsZeroAndLeavesTheOwner(t *testing.T) {
 			t.Errorf("hook %s exited %d, want 0\n%s", event, code, log)
 		}
 	}
-	if after, ok, _ := s.Record("block:pane"); !ok || !reflect.DeepEqual(after, before) {
-		t.Errorf("the owner's record changed:\nbefore %+v\nafter  %+v", before, after)
-	}
-	if recs, _ := s.Records(); len(recs) != 1 {
-		t.Errorf("records %+v, want the owner's alone", recs)
+	if ids, leases := snapshot(); !reflect.DeepEqual(ids, beforeIDs) || !reflect.DeepEqual(leases, beforeLeases) || len(ids) != 1 || len(leases) != 1 {
+		t.Errorf("the owner's identity or lease changed, or another appeared:\nbefore %+v %+v\nafter  %+v %+v", beforeIDs, beforeLeases, ids, leases)
 	}
 	if _, failed, _ := s.AdoptFailedAt("block:pane"); failed {
 		t.Error("the nested hook marked the pane's adoption failed")

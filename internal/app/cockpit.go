@@ -104,10 +104,10 @@ func (e Env) ReadCockpitView(ctx context.Context, getenv func(string) string, re
 // A personal caller reads its own scope, and naming another is refused;
 // anyone else names exactly one live personal agent by --personal, --hub, or
 // both.
-func (e Env) cockpitScope(ctx context.Context, getenv func(string) string, req CockpitViewRequest) (store.Record, error) {
-	recs, err := e.Store.Records()
+func (e Env) cockpitScope(ctx context.Context, getenv func(string) string, req CockpitViewRequest) (agent, error) {
+	recs, err := e.agents()
 	if err != nil {
-		return store.Record{}, err
+		return agent{}, err
 	}
 	for _, v := range sessionVars {
 		id := getenv(v.name)
@@ -117,54 +117,54 @@ func (e Env) cockpitScope(ctx context.Context, getenv func(string) string, req C
 		// One no hook adopted is Caller's to refuse, below.
 		rec, ok, err := e.liveRecordOf(v.kind, id)
 		if err != nil {
-			return store.Record{}, err
+			return agent{}, err
 		}
 		if ok && rec.Role != core.PersonalRole {
-			return store.Record{}, cockpitRefused(rec)
+			return agent{}, cockpitRefused(rec)
 		}
 	}
-	var caller store.Record
+	var caller agent
 	isPersonal := false
 	loc, err := e.Caller(ctx, getenv)
 	switch {
 	case errors.Is(err, ErrNotInRex):
 	case err != nil:
-		return store.Record{}, fmt.Errorf("%w: the cockpit's caller: %v", ErrRefused, err)
+		return agent{}, fmt.Errorf("%w: the cockpit's caller: %v", ErrRefused, err)
 	default:
-		rec, ok, err := e.Store.Record(loc.Block)
+		rec, ok, err := e.agentAt(loc.Block)
 		if err != nil {
-			return store.Record{}, err
+			return agent{}, err
 		}
 		if ok && rec.Live() {
 			if rec.Role != core.PersonalRole {
-				return store.Record{}, cockpitRefused(rec)
+				return agent{}, cockpitRefused(rec)
 			}
 			caller, isPersonal = rec, true
 		}
 	}
 	ancestors, err := e.ancestors()
 	if err != nil {
-		return store.Record{}, fmt.Errorf("tell which agent runs the cockpit: %w", err)
+		return agent{}, fmt.Errorf("tell which agent runs the cockpit: %w", err)
 	}
-	if r, ok := agentAncestor(ancestors, recs, func(r store.Record) bool { return r.Role != core.PersonalRole }); ok {
-		return store.Record{}, cockpitRefused(r)
+	if r, ok := agentAncestor(ancestors, recs, func(r agent) bool { return r.Role != core.PersonalRole }); ok {
+		return agent{}, cockpitRefused(r)
 	}
 	if getenv("ME_UNATTENDED") == "1" && !isPersonal {
-		return store.Record{}, fmt.Errorf("%w: the cockpit is the human's or a personal agent's, and this command runs unattended (ME_UNATTENDED=1)", ErrRefused)
+		return agent{}, fmt.Errorf("%w: the cockpit is the human's or a personal agent's, and this command runs unattended (ME_UNATTENDED=1)", ErrRefused)
 	}
 	if isPersonal {
 		if req.Personal != "" && core.Handle(req.Personal) != caller.Handle {
-			return store.Record{}, fmt.Errorf("%w: %s reads its own cockpit, not %s's", ErrRefused, caller.Handle, req.Personal)
+			return agent{}, fmt.Errorf("%w: %s reads its own cockpit, not %s's", ErrRefused, caller.Handle, req.Personal)
 		}
 		if req.Hub != "" && !dirWithin(caller.Cwd, req.Hub) {
-			return store.Record{}, fmt.Errorf("%w: %s does not work in %s", ErrRefused, caller.Handle, req.Hub)
+			return agent{}, fmt.Errorf("%w: %s does not work in %s", ErrRefused, caller.Handle, req.Hub)
 		}
 		return caller, nil
 	}
 	if req.Personal == "" && req.Hub == "" {
-		return store.Record{}, fmt.Errorf("%w: name the personal agent whose Epics to read (--personal HANDLE or --hub DIR)", ErrUsage)
+		return agent{}, fmt.Errorf("%w: name the personal agent whose Epics to read (--personal HANDLE or --hub DIR)", ErrUsage)
 	}
-	var found []store.Record
+	var found []agent
 	for _, r := range recs {
 		if !r.Live() || r.Role != core.PersonalRole || !placed(r) {
 			continue
@@ -175,7 +175,7 @@ func (e Env) cockpitScope(ctx context.Context, getenv func(string) string, req C
 	}
 	switch len(found) {
 	case 0:
-		return store.Record{}, fmt.Errorf("%w: no live %s agent matches %s", ErrRefused, core.PersonalRole, cockpitTarget(req))
+		return agent{}, fmt.Errorf("%w: no live %s agent matches %s", ErrRefused, core.PersonalRole, cockpitTarget(req))
 	case 1:
 		return found[0], nil
 	}
@@ -183,25 +183,25 @@ func (e Env) cockpitScope(ctx context.Context, getenv func(string) string, req C
 	for i, r := range found {
 		handles[i] = string(r.Handle)
 	}
-	return store.Record{}, fmt.Errorf("%w: %d live %s agents match %s (%s); name one with --personal", ErrUsage, len(found), core.PersonalRole, cockpitTarget(req), strings.Join(handles, ", "))
+	return agent{}, fmt.Errorf("%w: %d live %s agents match %s (%s); name one with --personal", ErrUsage, len(found), core.PersonalRole, cockpitTarget(req), strings.Join(handles, ", "))
 }
 
 // agentAncestor is the live record among recs, of those match accepts, whose
 // agent is one of ancestors (this process and its ancestors, nearest first):
 // a command an agent runs, even with its environment stripped (`env -i`),
 // descends from that agent's process.
-func agentAncestor(ancestors []proc, recs []store.Record, match func(store.Record) bool) (store.Record, bool) {
+func agentAncestor(ancestors []proc, recs []agent, match func(agent) bool) (agent, bool) {
 	for _, p := range ancestors {
 		for _, r := range recs {
-			if r.Live() && r.AgentPID > 1 && r.AgentPID == p.PID && match(r) {
+			if r.Live() && r.pid() > 1 && r.pid() == p.PID && match(r) {
 				return r, true
 			}
 		}
 	}
-	return store.Record{}, false
+	return agent{}, false
 }
 
-func cockpitRefused(rec store.Record) error {
+func cockpitRefused(rec agent) error {
 	role := rec.Role
 	if role == "" {
 		role = "no role"

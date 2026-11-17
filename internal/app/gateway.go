@@ -25,7 +25,7 @@ type adapterContext struct {
 // endpointOf is h as the gateway sees it now; a handle without a record is
 // in no session.
 func (e Env) endpointOf(h core.Handle) (core.Endpoint, error) {
-	r, ok, err := e.Store.RecordOf(h)
+	r, ok, err := e.agentOf(h)
 	if err != nil || !ok {
 		return core.Endpoint{Handle: h}, err
 	}
@@ -35,7 +35,7 @@ func (e Env) endpointOf(h core.Handle) (core.Endpoint, error) {
 // gatewayEndpoint is rec as the gateway sees it now: its endpoint, marked
 // Lead when rec runs its Epic's goal (an orchestrator, or a pair Epic's lead:
 // pairLead), which is whom a narrator's control mail may reach.
-func (e Env) gatewayEndpoint(rec store.Record) (core.Endpoint, error) {
+func (e Env) gatewayEndpoint(rec agent) (core.Endpoint, error) {
 	ep := rec.Endpoint()
 	if rec.Role == core.OrchestratorRole {
 		ep.Lead = true
@@ -78,7 +78,7 @@ func (e Env) judge(reader core.Endpoint, h amq.Header, links []core.Link) (core.
 // cannot be read (corrupt, unclosed, of another schema) names no sender to
 // judge, and is quarantined too. amq renames whole files into place, so none
 // is read mid-write.
-func (e Env) admit(rec store.Record) ([]string, error) {
+func (e Env) admit(rec agent) ([]string, error) {
 	root, h := e.Paths.Root(), string(rec.Handle)
 	ids, err := amq.Unread(root, h)
 	if err != nil || len(ids) == 0 {
@@ -314,7 +314,7 @@ func (e Env) findMessage(h core.Handle, id string) (located, bool, error) {
 // another or an earlier session, or one it may not receive at all), or one
 // it sent from a placement it has since left.
 func (e Env) exposed(reader core.Handle, m located) error {
-	rec, ok, err := e.Store.RecordOf(reader)
+	rec, ok, err := e.agentOf(reader)
 	if err != nil {
 		return err
 	}
@@ -369,7 +369,7 @@ func joinHandles(hs []core.Handle) string {
 // (link false) revokes it. Either takes effect on the next decision, for
 // running wakers and hooks too. changed is false when nothing changed.
 func (e Env) Link(ctx context.Context, loc Location, epic string, link bool) (l core.Link, changed bool, err error) {
-	rec, ok, err := e.Store.Record(loc.Block)
+	rec, ok, err := e.agentAt(loc.Block)
 	if err != nil {
 		return l, false, err
 	}
@@ -395,7 +395,7 @@ func (e Env) Link(ctx context.Context, loc Location, epic string, link bool) (l 
 
 // LinksOf lists the links of the Personal agent in loc.
 func (e Env) LinksOf(loc Location) ([]core.Link, error) {
-	rec, ok, err := e.Store.Record(loc.Block)
+	rec, ok, err := e.agentAt(loc.Block)
 	if err != nil || !ok {
 		return nil, err
 	}
@@ -412,7 +412,7 @@ func (e Env) LinksOf(loc Location) ([]core.Link, error) {
 // sentHere reports whether rec sent h from where it is now: its provenance
 // names rec's current placement, or, without provenance, it was created
 // after rec's last move.
-func (e Env) sentHere(rec store.Record, h amq.Header) bool {
+func (e Env) sentHere(rec agent, h amq.Header) bool {
 	var ac adapterContext
 	h.ContextOf(store.ProvenanceContextKey, &ac)
 	p, ok, err := e.Store.ProvenanceOf(h.ID, ac.Token, rec.Handle, h.To)
@@ -423,5 +423,5 @@ func (e Env) sentHere(rec store.Record, h amq.Header) bool {
 		now := rec.Endpoint()
 		return p.From.Server == now.Server && p.From.SessionID == now.SessionID && p.From.Generation == now.Generation
 	}
-	return rec.Generation == 0 || !h.Created.Before(rec.PlacedAt)
+	return rec.Fence.Generation == 0 || !h.Created.Before(rec.Fence.PlacedAt)
 }

@@ -80,14 +80,14 @@ func TestPairEpicLeadHandsBackAndReadsTheView(t *testing.T) {
 		}
 	}
 	put(t, e,
-		store.Record{Handle: "claude-10", Kind: core.Claude, Role: implementerRole, SessionID: "session:pair", AdoptedAt: now},
-		store.Record{Handle: "codex-11", Kind: core.Codex, Role: implementerRole, SessionID: "session:pair", Parent: "claude-10", Depth: 1, AdoptedAt: now},
-		store.Record{Handle: "codex-12", Kind: core.Codex, Role: "reviewer", SessionID: "session:pair", Parent: "claude-10", Depth: 1, AdoptedAt: now},
-		store.Record{Handle: "agy-13", Kind: core.Agy, Role: core.NarratorRole, SessionID: "session:pair", AdoptedAt: now},
-		store.Record{Handle: "claude-20", Kind: core.Claude, Role: implementerRole, SessionID: "session:had-orch", AdoptedAt: now},
-		store.Record{Handle: "claude-21", Kind: core.Claude, Role: core.OrchestratorRole, SessionID: "session:had-orch", AdoptedAt: now, DepartedAt: &now},
-		store.Record{Handle: "claude-30", Kind: core.Claude, Role: implementerRole, SessionID: "session:dev", AdoptedAt: now},
-		store.Record{Handle: "claude-40", Kind: core.Claude, Role: implementerRole, SessionID: "session:none", AdoptedAt: now},
+		seed{Handle: "claude-10", Kind: core.Claude, Role: implementerRole, SessionID: "session:pair", AdoptedAt: now},
+		seed{Handle: "codex-11", Kind: core.Codex, Role: implementerRole, SessionID: "session:pair", Parent: "claude-10", Depth: 1, AdoptedAt: now},
+		seed{Handle: "codex-12", Kind: core.Codex, Role: "reviewer", SessionID: "session:pair", Parent: "claude-10", Depth: 1, AdoptedAt: now},
+		seed{Handle: "agy-13", Kind: core.Agy, Role: core.NarratorRole, SessionID: "session:pair", AdoptedAt: now},
+		seed{Handle: "claude-20", Kind: core.Claude, Role: implementerRole, SessionID: "session:had-orch", AdoptedAt: now},
+		seed{Handle: "claude-21", Kind: core.Claude, Role: core.OrchestratorRole, SessionID: "session:had-orch", AdoptedAt: now, DepartedAt: &now},
+		seed{Handle: "claude-30", Kind: core.Claude, Role: implementerRole, SessionID: "session:dev", AdoptedAt: now},
+		seed{Handle: "claude-40", Kind: core.Claude, Role: implementerRole, SessionID: "session:none", AdoptedAt: now},
 	)
 	ctx := context.Background()
 	for _, c := range []struct {
@@ -158,13 +158,13 @@ func TestPairEpicNarratorControlReachesTheLead(t *testing.T) {
 		}
 	}
 	put(t, e,
-		store.Record{Handle: "claude-01", Role: core.PersonalRole, SessionID: "session:personal", AdoptedAt: now},
-		store.Record{Handle: "claude-10", Role: implementerRole, SessionID: "session:pair", AdoptedAt: now},
-		store.Record{Handle: "codex-11", Role: implementerRole, SessionID: "session:pair", Parent: "claude-10", Depth: 1, AdoptedAt: now},
-		store.Record{Handle: "agy-13", Role: core.NarratorRole, SessionID: "session:pair", AdoptedAt: now},
-		store.Record{Handle: "claude-20", Role: implementerRole, SessionID: "session:had-orch", AdoptedAt: now},
-		store.Record{Handle: "claude-21", Role: core.OrchestratorRole, SessionID: "session:had-orch", AdoptedAt: now, DepartedAt: &now},
-		store.Record{Handle: "agy-23", Role: core.NarratorRole, SessionID: "session:had-orch", AdoptedAt: now},
+		seed{Handle: "claude-01", Role: core.PersonalRole, SessionID: "session:personal", AdoptedAt: now},
+		seed{Handle: "claude-10", Role: implementerRole, SessionID: "session:pair", AdoptedAt: now},
+		seed{Handle: "codex-11", Role: implementerRole, SessionID: "session:pair", Parent: "claude-10", Depth: 1, AdoptedAt: now},
+		seed{Handle: "agy-13", Role: core.NarratorRole, SessionID: "session:pair", AdoptedAt: now},
+		seed{Handle: "claude-20", Role: implementerRole, SessionID: "session:had-orch", AdoptedAt: now},
+		seed{Handle: "claude-21", Role: core.OrchestratorRole, SessionID: "session:had-orch", AdoptedAt: now, DepartedAt: &now},
+		seed{Handle: "agy-23", Role: core.NarratorRole, SessionID: "session:had-orch", AdoptedAt: now},
 	)
 	if err := e.Store.PutLink(core.Link{Personal: core.SessionKey{Server: fakeServer, SessionID: "session:personal"}, Epic: core.SessionKey{Server: fakeServer, SessionID: "session:pair"}}); err != nil {
 		t.Fatal(err)
@@ -211,9 +211,9 @@ func TestPairEpicNarratorControlReachesTheLead(t *testing.T) {
 // review needs.
 func TestPairEpicLeadSummonsItsReviewer(t *testing.T) {
 	e, term, loc := summonWorld(t)
-	rec, _, _ := e.Store.Record(loc.Block)
+	rec, _, _ := e.agentAt(loc.Block)
 	rec.Role = implementerRole
-	add(t, e, rec)
+	add(t, e, seedOf(rec))
 	if err := e.Store.PutSessionCrew(rec.SessionID, store.SessionCrew{Crew: pairCrew, ClaimedBy: rec.Handle, ClaimedAt: e.Now()}); err != nil {
 		t.Fatal(err)
 	}
@@ -243,9 +243,9 @@ func TestPairEpicRunsItsLeadAndItsReviewerUnattended(t *testing.T) {
 	}
 
 	e2, term2, loc2 := summonWorld(t)
-	lead, _, _ := e2.Store.Record(loc2.Block)
+	lead, _, _ := e2.agentAt(loc2.Block)
 	lead.Role = implementerRole
-	add(t, e2, lead)
+	add(t, e2, seedOf(lead))
 	if err := e2.Store.PutSessionCrew(lead.SessionID, store.SessionCrew{Crew: pairCrew, ClaimedBy: lead.Handle, ClaimedAt: e2.Now()}); err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +277,7 @@ func TestPairEpicOpIDReconcilesItsSessionWithItsLeadAndPolicy(t *testing.T) {
 		t.Fatalf("setup: the first run wrote no policy to lose: %v", err)
 	}
 	for i, role := range []string{core.NarratorRole, implementerRole} {
-		put(t, e, store.Record{Handle: core.Handle(fmt.Sprintf("claude-%02d", i+2)), Kind: core.Claude, Role: role, BlockID: fmt.Sprintf("block:epic-1-%d", i+1), SessionID: "session:epic-1", AdoptedAt: time.Now()})
+		put(t, e, seed{Handle: core.Handle(fmt.Sprintf("claude-%02d", i+2)), Kind: core.Claude, Role: role, BlockID: fmt.Sprintf("block:epic-1-%d", i+1), SessionID: "session:epic-1", AdoptedAt: time.Now()})
 	}
 	again, err := openWithin(e, loc, req, 5*time.Second)
 	if err != nil {
@@ -307,7 +307,7 @@ func TestPairEpicLeadHandBackIsNumberedAndBackfilled(t *testing.T) {
 	if err := e.Store.PutSessionCrew("session:pair", store.SessionCrew{Crew: pairCrew, ClaimedBy: "claude-01", ClaimedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	put(t, e, store.Record{Handle: "claude-10", Kind: core.Claude, Role: implementerRole, SessionID: "session:pair", AdoptedAt: now})
+	put(t, e, seed{Handle: "claude-10", Kind: core.Claude, Role: implementerRole, SessionID: "session:pair", AdoptedAt: now})
 	ctx := context.Background()
 	lead := Location{Block: "block:claude-10"}
 	lifecycle := filepath.Join(e.Paths.SessionDir("session:pair"), "lifecycle.json")

@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
-	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 // titleCarried reports whether a hook's reply can set its harness's own
@@ -40,7 +39,7 @@ func titleCarried(kind core.Kind, event string) bool {
 // recorded unsupported. Other hooks run on every tool call and are left
 // alone: reading the Epic asks Rex, and SetTask and join track their changes
 // themselves.
-func (e Env) syncTitle(ctx context.Context, kind core.Kind, event string, rec store.Record, session string) string {
+func (e Env) syncTitle(ctx context.Context, kind core.Kind, event string, rec agent, session string) string {
 	carried := titleCarried(kind, event)
 	if !carried && event != EventSessionStart && event != EventPrompt {
 		return ""
@@ -77,7 +76,7 @@ func (e Env) syncTitle(ctx context.Context, kind core.Kind, event string, rec st
 // hook: a harness that takes titles now wants one its conversation was not
 // offered yet, until its next hook that carries a title. Advice: a failure is
 // reported.
-func (e Env) refreshTitle(ctx context.Context, rec store.Record) {
+func (e Env) refreshTitle(ctx context.Context, rec agent) {
 	want, err := e.conversationTitle(ctx, rec)
 	if err == nil {
 		var unlock func()
@@ -85,7 +84,7 @@ func (e Env) refreshTitle(ctx context.Context, rec store.Record) {
 			defer unlock()
 			var shown map[string]string
 			if shown, err = e.Store.TitlesShown(rec.Handle); err == nil {
-				err = e.Store.SetTitleState(rec.Handle, core.TrackTitle(rec.Kind, want, shown[rec.AgentSessionID]))
+				err = e.Store.SetTitleState(rec.Handle, core.TrackTitle(rec.Kind, want, shown[rec.Session()]))
 			}
 		}
 	}
@@ -97,7 +96,7 @@ func (e Env) refreshTitle(ctx context.Context, rec store.Record) {
 // conversationTitle is the title rec's conversation should have: its pane
 // label with the Epic its Rex session is named for. A record in no known
 // session has no Epic.
-func (e Env) conversationTitle(ctx context.Context, rec store.Record) (string, error) {
+func (e Env) conversationTitle(ctx context.Context, rec agent) (string, error) {
 	epic := ""
 	if rec.SessionID != "" {
 		s, err := e.Rex.InspectSession(ctx, rec.SessionID)
@@ -117,7 +116,7 @@ func (e Env) conversationTitle(ctx context.Context, rec store.Record) (string, e
 // session is asked once, at its first prompt: a session that stays without a
 // task (a quick question), or clears the task it started with, is not asked
 // again. An unfinished adoption is not asked: its pane is not relabelled yet.
-func (e Env) askTask(ctx context.Context, kind core.Kind, event string, rec store.Record, session string) string {
+func (e Env) askTask(ctx context.Context, kind core.Kind, event string, rec agent, session string) string {
 	if kind != core.Claude && kind != core.Pi || event != EventPrompt || session == "" || !rec.Adopted() {
 		return ""
 	}
@@ -149,7 +148,7 @@ func (e Env) askTask(ctx context.Context, kind core.Kind, event string, rec stor
 // or a record that cannot be read, gives the name of the directory it works
 // in, so the title never names another agent.
 func (e Env) PaneTitle(loc Location, kind core.Kind, cwd string) string {
-	if rec, ok, err := e.Store.Record(loc.Block); err == nil && ok && rec.Live() && rec.Kind == kind && e.descendsFrom(rec) {
+	if rec, ok, err := e.agentAt(loc.Block); err == nil && ok && rec.Live() && rec.Kind == kind && e.descendsFrom(rec) {
 		return core.PaneLabel(rec.Handle, rec.Role, rec.Task)
 	}
 	return DirTitle(cwd)

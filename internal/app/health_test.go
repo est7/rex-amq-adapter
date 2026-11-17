@@ -18,20 +18,19 @@ import (
 // healthWorld is stuckWorld without stuck mail: the peer codex has a Codex
 // rollout under TranscriptHome, the orchestrator orch-01 a Claude transcript, both
 // written by the test. Notifications to the desktop are captured.
-func healthWorld(t *testing.T) (Env, *fakeTerm, store.Record, Session, *time.Time, *[]string) {
+func healthWorld(t *testing.T) (Env, *fakeTerm, agent, Session, *time.Time, *[]string) {
 	t.Helper()
 	e, term, orch, s, now := stuckWorld(t, "", "idle", false)
 	e.TranscriptHome = t.TempDir()
 	var desktop []string
 	e.Notify = func(title, text string) { desktop = append(desktop, text) }
 	for _, r := range []struct{ h, sid string }{{"codex", "thread-1"}, {"orch-01", "sid-g"}} {
-		rec, _, _ := e.Store.Record(map[string]string{"codex": block, "orch-01": "block:g"}[r.h])
+		got, _, _ := e.agentAt(map[string]string{"codex": block, "orch-01": "block:g"}[r.h])
+		rec := seedOf(got)
 		rec.AgentSessionID = r.sid
-		if err := e.Store.PutRecord(rec); err != nil {
-			t.Fatal(err)
-		}
+		planted := plant(t, e, rec)
 		if r.h == "orch-01" {
-			orch = rec // the watcher passes the live record, native session id included
+			orch = planted // the watcher passes the live record, native session id included
 		}
 	}
 	// Drain the brief stuckWorld sent, so the orchestrator's inbox counts notices only.
@@ -149,7 +148,7 @@ func TestHealthAboutTheOrchestratorGoesToAnotherFamily(t *testing.T) {
 	// Without an agent of another family, the orchestrator's own finding reaches the desktop only.
 	e2, term2, orch2, s2, now2, desktop2 := healthWorld(t)
 	stallAll(t, e2, term2, now2)
-	if err := e2.Store.DeleteRecord("codex"); err != nil {
+	if err := unplant(e2.Store, "codex"); err != nil {
 		t.Fatal(err)
 	}
 	e2.watchdog(context.Background(), orch2, s2)
@@ -192,21 +191,19 @@ func TestHealthReportsAHungToolAndAStall(t *testing.T) {
 }
 
 // claude04 adds a live Claude agent in its own pane and session.
-func claude04(t *testing.T, e Env) store.Record {
+func claude04(t *testing.T, e Env) agent {
 	t.Helper()
 	e.Rex.(*fakeTerm).windows["block:c"] = "window:1"
-	rec := store.Record{
+	rec := seed{
 		Handle: "claude-04", Kind: core.Claude, Server: "unix:///fake.sock",
 		BlockID: "block:c", SessionID: "session:s", WindowID: "window:1",
 		AgentPID: 42, AgentSessionID: "sid-c4", AdoptedAt: e.Now(), FirstAdoptedAt: e.Now(),
 	}
-	if err := e.Store.PutRecord(rec); err != nil {
-		t.Fatal(err)
-	}
+	planted := plant(t, e, rec)
 	if err := e.AMQ.EnsureMailbox(context.Background(), e.Paths.Root(), "claude-04"); err != nil {
 		t.Fatal(err)
 	}
-	return rec
+	return planted
 }
 
 // Claude's StopFailure reaches the orchestrator once, with Claude's own
@@ -254,7 +251,7 @@ func TestClaudeStopFailureReportsOnceAndMarksTheAgentRun(t *testing.T) {
 	}
 	// Another agent run in the same pane inherits nothing.
 	next := rec
-	next.Handle, next.AgentSessionID = "claude-05", "sid-c5"
+	next.Handle, next.Sessions = "claude-05", []string{"sid-c5"}
 	if e.flagged(next) {
 		t.Fatal("a new agent in the pane inherited the error mark")
 	}
@@ -262,7 +259,7 @@ func TestClaudeStopFailureReportsOnceAndMarksTheAgentRun(t *testing.T) {
 	if _, err := e.Hook(context.Background(), EventPrompt, core.Claude, loc, HookInput{SessionID: "sid-c4", AgentPID: 42}); err != nil {
 		t.Fatal(err)
 	}
-	if m, ok, _ := e.Store.TurnError("block:c"); e.flagged(rec) || ok {
+	if m, ok, _ := e.Store.TurnError("claude-04"); e.flagged(rec) || ok {
 		t.Fatalf("a new turn left the mark: %+v", m)
 	}
 	// So does time, when the agent never takes another turn.
@@ -348,12 +345,12 @@ func TestAgyStopClassifiesTerminationReasons(t *testing.T) {
 	e, _, _, _, now, _ := healthWorld(t)
 	writeClaude(t, e.TranscriptHome, claudeOK)
 	e.Rex.(*fakeTerm).windows["block:agy"] = "window:1"
-	agyRec := store.Record{
+	agyRec := seed{
 		Handle: "agy-09", Kind: core.Agy, Server: "unix:///fake.sock",
 		BlockID: "block:agy", SessionID: "session:s", WindowID: "window:1",
 		AgentPID: os.Getpid(), AgentSessionID: "conv-9", AdoptedAt: *now, FirstAdoptedAt: *now,
 	}
-	if err := e.Store.PutRecord(agyRec); err != nil {
+	if err := putSeed(e.Store, agyRec); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.AMQ.EnsureMailbox(context.Background(), e.Paths.Root(), "agy-09"); err != nil {
@@ -417,7 +414,7 @@ func TestAgyStopClassifiesTerminationReasons(t *testing.T) {
 	if err != nil || r.Notice == "" {
 		t.Fatalf("NO_TOOL_CALL with unread mail must announce: r=%+v err=%v", r, err)
 	}
-	if m, ok, err := e.Store.TurnError("block:agy"); err != nil || ok {
+	if m, ok, err := e.Store.TurnError("agy-09"); err != nil || ok {
 		t.Fatalf("normal stop must clear TurnErroredAt: %+v err=%v", m, err)
 	}
 
@@ -428,7 +425,7 @@ func TestAgyStopClassifiesTerminationReasons(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if m, ok, err := e.Store.TurnError("block:agy"); err != nil || ok {
+	if m, ok, err := e.Store.TurnError("agy-09"); err != nil || ok {
 		t.Fatalf("turn_limit must not set TurnErroredAt: %+v err=%v", m, err)
 	}
 }
@@ -440,12 +437,12 @@ func TestPiSettleClassifiesOutcomes(t *testing.T) {
 	e, _, _, _, now, _ := healthWorld(t)
 	writeClaude(t, e.TranscriptHome, claudeOK)
 	e.Rex.(*fakeTerm).windows["block:pi"] = "window:1"
-	piRec := store.Record{
+	piRec := seed{
 		Handle: "pi-06", Kind: core.Pi, Server: "unix:///fake.sock",
 		BlockID: "block:pi", SessionID: "session:s", WindowID: "window:1",
 		AgentPID: os.Getpid(), AgentSessionID: "sid-pi6", AdoptedAt: *now, FirstAdoptedAt: *now,
 	}
-	if err := e.Store.PutRecord(piRec); err != nil {
+	if err := putSeed(e.Store, piRec); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.AMQ.EnsureMailbox(context.Background(), e.Paths.Root(), "pi-06"); err != nil {
@@ -491,7 +488,7 @@ func TestPiSettleClassifiesOutcomes(t *testing.T) {
 	if err != nil || r.Notice == "" {
 		t.Fatalf("Pi completed settle with unread mail must announce: r=%+v err=%v", r, err)
 	}
-	if m, ok, err := e.Store.TurnError("block:pi"); err != nil || ok {
+	if m, ok, err := e.Store.TurnError("pi-06"); err != nil || ok {
 		t.Fatalf("completed settle must clear TurnErroredAt: %+v err=%v", m, err)
 	}
 	if len(inboxOf(t, e, "orch-01")) != 1 {
@@ -684,21 +681,21 @@ func TestFirstAdoptedAtPreservedAcrossResumeWhileAdoptedAtUpdates(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a1Resumed.Record.Handle != a1.Record.Handle {
-		t.Fatalf("resumed handle changed: %s != %s", a1Resumed.Record.Handle, a1.Record.Handle)
+	if a1Resumed.Agent.Handle != a1.Agent.Handle {
+		t.Fatalf("resumed handle changed: %s != %s", a1Resumed.Agent.Handle, a1.Agent.Handle)
 	}
-	if !a1Resumed.Record.FirstAdoptedAt.Equal(tOwnerInit) {
-		t.Fatalf("FirstAdoptedAt not preserved: got %v, want %v", a1Resumed.Record.FirstAdoptedAt, tOwnerInit)
+	if !a1Resumed.Agent.FirstAdoptedAt.Equal(tOwnerInit) {
+		t.Fatalf("FirstAdoptedAt not preserved: got %v, want %v", a1Resumed.Agent.FirstAdoptedAt, tOwnerInit)
 	}
-	if !a1Resumed.Record.AdoptedAt.Equal(tOwnerResume) {
-		t.Fatalf("AdoptedAt did not update on resume: got %v, want %v", a1Resumed.Record.AdoptedAt, tOwnerResume)
+	if !a1Resumed.Agent.adoptedAt().Equal(tOwnerResume) {
+		t.Fatalf("AdoptedAt did not update on resume: got %v, want %v", a1Resumed.Agent.adoptedAt(), tOwnerResume)
 	}
 
 	// 4. When peer (adopted at 1:05) errors at 1:16, owner (FirstAdoptedAt 1:00,
 	// resumed at 1:15) is still recognized as the earlier tab owner!
-	got, why, ok := core.ErrorRecipient(peerOf(a2.Record), []core.Peer{peerOf(a1Resumed.Record)}, "", core.NoticeTurnError, nil)
-	if !ok || got.Handle != a1Resumed.Record.Handle || why != "its tab owner" {
-		t.Fatalf("after owner resume, ErrorRecipient=(%s, %q, %v), want (%s, \"its tab owner\", true)", got.Handle, why, ok, a1Resumed.Record.Handle)
+	got, why, ok := core.ErrorRecipient(peerOf(a2.Agent), []core.Peer{peerOf(a1Resumed.Agent)}, "", core.NoticeTurnError, nil)
+	if !ok || got.Handle != a1Resumed.Agent.Handle || why != "its tab owner" {
+		t.Fatalf("after owner resume, ErrorRecipient=(%s, %q, %v), want (%s, \"its tab owner\", true)", got.Handle, why, ok, a1Resumed.Agent.Handle)
 	}
 }
 
@@ -766,14 +763,14 @@ func TestTurnErrorRoutingThroughTheHook(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	member := claude04(t, e2)
 	member.Role = "reviewer"
-	if err := e2.Store.PutRecord(member); err != nil {
+	if err := putSeed(e2.Store, seedOf(member)); err != nil {
 		t.Fatal(err)
 	}
 	if err := e2.Store.PutSessionCrew(member.SessionID, store.SessionCrew{Crew: "pair"}); err != nil {
 		t.Fatal(err)
 	}
-	lead := store.Record{Handle: "agy-07", Kind: core.Agy, Server: "unix:///fake.sock", BlockID: "block:l", SessionID: "session:s", WindowID: "window:2", AgentPID: 7, Role: "implementer", AdoptedAt: e2.Now(), FirstAdoptedAt: e2.Now()}
-	if err := e2.Store.PutRecord(lead); err != nil {
+	lead := seed{Handle: "agy-07", Kind: core.Agy, Server: "unix:///fake.sock", BlockID: "block:l", SessionID: "session:s", WindowID: "window:2", AgentPID: 7, Role: "implementer", AdoptedAt: e2.Now(), FirstAdoptedAt: e2.Now()}
+	if err := putSeed(e2.Store, lead); err != nil {
 		t.Fatal(err)
 	}
 	if err := e2.AMQ.EnsureMailbox(context.Background(), e2.Paths.Root(), "agy-07"); err != nil {
@@ -792,7 +789,7 @@ func TestTurnErrorRoutingThroughTheHook(t *testing.T) {
 	e3, _, _, _, _, desktop3 := healthWorld(t)
 	claude04(t, e3)
 	for _, h := range []core.Handle{"orch-01", "codex"} {
-		if err := e3.Store.DeleteRecord(h); err != nil {
+		if err := unplant(e3.Store, h); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -818,7 +815,7 @@ func TestTurnErrorHooksNamingNoSessionFromAnotherProcessAreIgnored(t *testing.T)
 	if err := e.markTurnError(rec); err != nil {
 		t.Fatal(err)
 	}
-	marked, _, err := e.Store.TurnError("block:c")
+	marked, _, err := e.Store.TurnError("claude-04")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -832,7 +829,7 @@ func TestTurnErrorHooksNamingNoSessionFromAnotherProcessAreIgnored(t *testing.T)
 	if len(inboxOf(t, e, "orch-01")) != 0 || len(inboxOf(t, e, "codex")) != 0 || len(*desktop) != 0 {
 		t.Fatalf("a hook naming no session reported in claude-04's name: orchestrator %v codex %v desktop %v", inboxOf(t, e, "orch-01"), inboxOf(t, e, "codex"), *desktop)
 	}
-	if m, ok, err := e.Store.TurnError("block:c"); err != nil || !ok || !m.At.Equal(marked.At) {
+	if m, ok, err := e.Store.TurnError("claude-04"); err != nil || !ok || !m.At.Equal(marked.At) {
 		t.Fatalf("a hook naming no session re-marked claude-04: before %v after %+v err %v", marked.At, m, err)
 	}
 	_, _ = e.Hook(context.Background(), EventPrompt, core.Claude, loc, nameless)

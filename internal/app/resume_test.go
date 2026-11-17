@@ -3,16 +3,16 @@ package app
 import (
 	"context"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
-	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 // adoptIn adopts a Codex session in block b and departs it at cleanup.
-func adoptIn(t *testing.T, e Env, b, session string, pid int) store.Record {
+func adoptIn(t *testing.T, e Env, b, session string, pid int) agent {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -21,7 +21,7 @@ func adoptIn(t *testing.T, e Env, b, session string, pid int) store.Record {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = e.Depart(context.Background(), Location{Block: b}, HookInput{}) })
-	return a.Record
+	return a.Agent
 }
 
 func depart(t *testing.T, e Env, b, session string) {
@@ -31,9 +31,9 @@ func depart(t *testing.T, e Env, b, session string) {
 	}
 }
 
-func recordOf(t *testing.T, e Env, h core.Handle) store.Record {
+func recordOf(t *testing.T, e Env, h core.Handle) agent {
 	t.Helper()
-	recs, err := e.Store.Records()
+	recs, err := e.agents()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func recordOf(t *testing.T, e Env, h core.Handle) store.Record {
 		}
 	}
 	t.Fatalf("no record for %s in %+v", h, recs)
-	return store.Record{}
+	return agent{}
 }
 
 // Closing a pane and resuming its session in a new one keeps the handle, so
@@ -64,7 +64,7 @@ func TestResumedSessionTakesItsHandleBackInANewPane(t *testing.T) {
 	if !wakerLive(t, e, string(first.Handle)) {
 		t.Fatal("the resumed agent has no waker")
 	}
-	if r, _, _ := e.Store.Record("block:a"); r.Handle == first.Handle && r.BlockID == "block:a" {
+	if r, _, _ := e.agentAt("block:a"); r.Handle == first.Handle && r.BlockID == "block:a" {
 		t.Fatalf("the old pane still holds the resumed handle: %+v", r)
 	}
 }
@@ -79,7 +79,7 @@ func TestNewSessionInAPaneGetsANewHandle(t *testing.T) {
 	if second.Handle == first.Handle {
 		t.Fatalf("a new session inherited %s", first.Handle)
 	}
-	if r := recordOf(t, e, first.Handle); r.Live() || r.AgentSessionID != "s1" {
+	if r := recordOf(t, e, first.Handle); r.Live() || r.Session() != "s1" {
 		t.Fatalf("the previous session's reservation was lost: %+v", r)
 	}
 }
@@ -93,11 +93,11 @@ func TestSessionSwitchInOneProcessFollowsTheSession(t *testing.T) {
 	depart(t, e, "block:b", "s2")
 	before := adoptIn(t, e, block, "s1", 0)
 	after := adoptIn(t, e, block, "s2", 0)
-	if after.Handle != elsewhere.Handle || after.AgentPID != before.AgentPID {
+	if after.Handle != elsewhere.Handle || after.pid() != before.pid() {
 		t.Fatalf("switch to s2: got %+v, want %s", after, elsewhere.Handle)
 	}
 	left := recordOf(t, e, before.Handle)
-	if left.Live() || left.AgentSessionID != "s1" || wakerLive(t, e, string(before.Handle)) {
+	if left.Live() || left.Session() != "s1" || wakerLive(t, e, string(before.Handle)) {
 		t.Fatalf("the session left behind: %+v (waker live=%v)", left, wakerLive(t, e, string(before.Handle)))
 	}
 }
@@ -137,7 +137,7 @@ func TestReadoptionOfTheSameSessionRepeatsNoIdentity(t *testing.T) {
 	if err != nil || r.Notice != "" {
 		t.Fatalf("re-adopting the same session: notice %q, err %v", r.Notice, err)
 	}
-	if rec := recordOf(t, e, "pi-01"); !rec.Live() || rec.AgentSessionID != "s1" {
+	if rec := recordOf(t, e, "pi-01"); !rec.Live() || rec.Session() != "s1" {
 		t.Fatalf("the session did not take pi-01 back: %+v", rec)
 	}
 
@@ -187,9 +187,9 @@ func TestAgyResumedInANewProcessRebindsItsRecord(t *testing.T) {
 	}
 	e.Ancestors = nil
 	t.Cleanup(func() { _ = e.Depart(ctx, loc, HookInput{}) })
-	before, _, _ := e.Store.Record(block)
-	if before.AgentPID != deadPID {
-		t.Fatalf("setup: pid %d", before.AgentPID)
+	before, _, _ := e.agentAt(block)
+	if before.pid() != deadPID {
+		t.Fatalf("setup: pid %d", before.pid())
 	}
 
 	term.mu.Lock()
@@ -202,8 +202,8 @@ func TestAgyResumedInANewProcessRebindsItsRecord(t *testing.T) {
 	if r.Notice != "" {
 		t.Errorf("rebinding the same conversation repeated its identity: %q", r.Notice)
 	}
-	after, _, _ := e.Store.Record(block)
-	if after.AgentPID != os.Getpid() || after.Handle != before.Handle {
+	after, _, _ := e.agentAt(block)
+	if after.pid() != os.Getpid() || after.Handle != before.Handle {
 		t.Errorf("record not rebound to the live process: %+v", after)
 	}
 	b, err := e.observeBinding(ctx, after)
@@ -238,7 +238,7 @@ func TestAgySubagentDoesNotTakeThePane(t *testing.T) {
 		}
 	}
 	t.Cleanup(func() { _ = e.Depart(ctx, loc, HookInput{}) })
-	started, _, _ := e.Store.Record(block)
+	started, _, _ := e.agentAt(block)
 	for _, conversation := range []string{"child", "parent", "child", "parent"} {
 		r, err := e.Hook(ctx, EventPreInvocation, core.Agy, loc, HookInput{ConversationID: conversation})
 		if err != nil {
@@ -247,11 +247,11 @@ func TestAgySubagentDoesNotTakeThePane(t *testing.T) {
 		if r.Notice != "" {
 			t.Errorf("a hook from %s adopted again: %q", conversation, r.Notice)
 		}
-		if now, _, _ := e.Store.Record(block); now != started {
+		if now, _, _ := e.agentAt(block); !reflect.DeepEqual(now, started) {
 			t.Fatalf("a hook from %s rewrote the pane's record: %+v, was %+v", conversation, now, started)
 		}
 	}
-	recs, err := e.Store.Records()
+	recs, err := e.agents()
 	if err != nil {
 		t.Fatal(err)
 	}

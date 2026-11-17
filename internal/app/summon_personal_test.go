@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
-	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 // A personal agent's summon is refused before anything happens: no pane is
@@ -14,10 +13,10 @@ import (
 // the target is live, departed, or new. The reason names `epic`.
 func TestSummonRefusesAPersonalCallerBeforeAnyPane(t *testing.T) {
 	e, term, loc := summonWorld(t)
-	me, _, _ := e.Store.Record(loc.Block)
+	me, _, _ := e.agentAt(loc.Block)
 	me.Role = core.PersonalRole
-	add(t, e, me)
-	add(t, e, departed(store.Record{Handle: "codex-07", Kind: core.Codex, Server: "unix:///fake.sock", BlockID: "block:gone", SessionID: "session:s", Role: "reviewer", AgentPID: 7, AgentSessionID: "thread-7", AdoptedAt: e.Now().Add(-time.Hour), Cwd: t.TempDir()}, e.Now().Add(-time.Minute)))
+	add(t, e, seedOf(me))
+	add(t, e, departed(seed{Handle: "codex-07", Kind: core.Codex, Server: "unix:///fake.sock", BlockID: "block:gone", SessionID: "session:s", Role: "reviewer", AgentPID: 7, AgentSessionID: "thread-7", AdoptedAt: e.Now().Add(-time.Hour), Cwd: t.TempDir()}, e.Now().Add(-time.Minute)))
 	for _, target := range []string{"implementer", "reviewer", "codex-07"} {
 		res := summon(t, e, loc, target, func(r *SummonRequest) { r.Asked = "开个 agent" })
 		if res.Action != "refused" || !strings.Contains(res.Reason, "rex-amq-adapter epic") || res.Mailed || res.Block != "" {

@@ -82,12 +82,12 @@ func TestSummonExplicitCodexWithUnapprovedHooksRefusesBeforeAnyPane(t *testing.T
 func TestSummonReviewerDefaultSkipsTheCallersFamily(t *testing.T) {
 	e, term, loc := summonWorld(t)
 	e.LookPath = installedOnly(core.Codex, core.Agy, core.Claude)
-	caller, _, err := e.Store.Record(block)
+	caller, _, err := e.agentAt(block)
 	if err != nil {
 		t.Fatal(err)
 	}
 	caller.Kind = core.Codex
-	if err := e.Store.PutRecord(caller); err != nil {
+	if err := putSeed(e.Store, seedOf(caller)); err != nil {
 		t.Fatal(err)
 	}
 	res := summon(t, e, loc, "qa", func(r *SummonRequest) { r.Asked = "test it" })
@@ -169,7 +169,7 @@ func TestSummonCouncilSeatsReviewersOnDistinctHarnessesInOneWorktree(t *testing.
 		}
 		rec := adoptLaunch(t, e, term, term.launches[n], want, session)
 		rec.Cwd = wt
-		add(t, e, rec)
+		add(t, e, seedOf(rec))
 	}
 	seat("", core.Codex, "sess-codex")
 	seat("", core.Agy, "sess-agy")
@@ -189,7 +189,7 @@ func TestSummonCouncilSeatsReviewersOnDistinctHarnessesInOneWorktree(t *testing.
 	}
 	w := adoptLaunch(t, e, term, term.launches[n], core.Claude, "sess-writer")
 	w.Cwd = wt
-	add(t, e, w)
+	add(t, e, seedOf(w))
 	if res := summon(t, e, loc, "implementer", func(r *SummonRequest) { r.Asked = "build it"; r.Cwd = wt; r.Harness = "codex" }); res.Action != "refused" || !strings.Contains(res.Reason, "would edit the same files") {
 		t.Errorf("a second writer on another harness in the council's worktree: %+v", res)
 	}

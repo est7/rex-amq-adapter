@@ -39,7 +39,7 @@ func TestManagedMailDrainTakesOnlyAdmittedMail(t *testing.T) {
 	e, ctx := managedWorld(t)
 	needsAmq(t, e, "amq's read verb")
 	first := sendJSON(t, e, ctx, "codex-01", "--to", "claude-02", "--subject", "s", "--body", "admitted")
-	rec, _, _ := e.Store.RecordOf("claude-02")
+	rec, _, _ := e.agentOf("claude-02")
 	kept, err := e.admit(rec)
 	if err != nil || len(kept) != 1 {
 		t.Fatalf("admit %v %v", kept, err)
@@ -197,9 +197,7 @@ func TestQuarantineKeepsProvenanceOfASendThatTimedOut(t *testing.T) {
 	if _, ok, _ := e.Store.ProvenanceOf(unread[0], "", "", nil); !ok {
 		t.Fatal("provenance dropped for a delivered message")
 	}
-	rec, _, _ := e.Store.RecordOf("claude-02")
-	rec = rec.Placed(rec.Server, "session:b", "w", time.Now()).Placed(rec.Server, "session:a", "w", time.Now())
-	put(t, e, rec)
+	rec := moveThrough(t, e, "claude-02", "w", "session:b", "session:a")
 	if kept, _ := e.admit(rec); len(kept) != 0 {
 		t.Fatalf("fence lost: kept %v", kept)
 	}
@@ -228,9 +226,7 @@ func TestQuarantineKeepsPendingProvenanceWhenDeliveryIsUnknown(t *testing.T) {
 	if p, ok, err := e.Store.ProvenanceOf("fault-1", ac.Token, "codex-01", hdr.To); err != nil || !ok || p.To[0].Generation != 0 {
 		t.Fatalf("pending provenance %+v %v %v", p, ok, err)
 	}
-	rec, _, _ := e.Store.RecordOf("claude-02")
-	rec = rec.Placed(rec.Server, "session:b", "w", time.Now()).Placed(rec.Server, "session:a", "w", time.Now())
-	put(t, e, rec)
+	rec := moveThrough(t, e, "claude-02", "w", "session:b", "session:a")
 	if kept, _ := e.admit(rec); len(kept) != 0 {
 		t.Fatalf("fence lost: kept %v", kept)
 	}
@@ -247,8 +243,7 @@ func TestManagedMailFencesSentMailAfterAMove(t *testing.T) {
 		t.Fatal(err)
 	}
 	time.Sleep(10 * time.Millisecond)
-	rec, _, _ := e.Store.RecordOf("claude-02")
-	put(t, e, rec.Placed(rec.Server, "session:b", "w", time.Now()))
+	moveThrough(t, e, "claude-02", "w", "session:b")
 	for _, id := range []string{before, raw.ID} {
 		_, _, err := run(t, e, ctx, "claude-02", "read", "--id", id)
 		if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), core.ReasonFenced) {
@@ -258,7 +253,7 @@ func TestManagedMailFencesSentMailAfterAMove(t *testing.T) {
 	if _, code, err := run(t, e, ctx, "claude-02", "thread", "--id", "t/a", "--include-body"); code != 3 || err == nil {
 		t.Fatalf("thread after the move: %d %v", code, err)
 	}
-	put(t, e, store.Record{Handle: "pi-04", SessionID: "session:b"})
+	put(t, e, seed{Handle: "pi-04", SessionID: "session:b"})
 	if err := e.AMQ.EnsureMailbox(ctx, e.Paths.Root(), "pi-04"); err != nil {
 		t.Fatal(err)
 	}
@@ -275,7 +270,7 @@ func TestManagedMailFencesSentMailAfterAMove(t *testing.T) {
 func TestManagedMailTraceShowsOnlyScopedEvidence(t *testing.T) {
 	e, ctx := managedWorld(t)
 	needsAmq(t, e, "amq's trace verb")
-	put(t, e, store.Record{Handle: "pi-03", SessionID: "session:a"})
+	put(t, e, seed{Handle: "pi-03", SessionID: "session:a"})
 	// The fixture's codex mailbox is partial; amq trace scans every one.
 	for _, h := range []string{"pi-03", "codex"} {
 		if err := e.AMQ.EnsureMailbox(ctx, e.Paths.Root(), h); err != nil {

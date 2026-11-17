@@ -35,7 +35,7 @@ const handBackMax = 256 << 10
 // lists.
 func (e Env) RecordHandBack(ctx context.Context, loc Location, body string) (store.HandBack, error) {
 	var h store.HandBack
-	rec, ok, err := e.Store.Record(loc.Block)
+	rec, ok, err := e.agentAt(loc.Block)
 	if err != nil {
 		return h, err
 	}
@@ -162,7 +162,7 @@ func numbered(h store.HandBack) store.HandBack {
 // or departed. It runs the goal in the orchestrator's place, so it records
 // the hand-back and reads the view; an implementer an orchestrator summoned,
 // or one in an Epic whose orchestrator left, does neither.
-func (e Env) pairLead(rec store.Record) (bool, error) {
+func (e Env) pairLead(rec agent) (bool, error) {
 	if rec.Role != implementerRole || rec.Parent != "" || !placed(rec) {
 		return false, nil
 	}
@@ -170,7 +170,7 @@ func (e Env) pairLead(rec store.Record) (bool, error) {
 	if err != nil || !ok || c.Crew != pairCrew {
 		return false, err
 	}
-	recs, err := e.Store.Records()
+	recs, err := e.agents()
 	if err != nil {
 		return false, err
 	}
