@@ -213,7 +213,7 @@ func (e Env) retireTarget(caller agent, h core.Handle) (agent, error) {
 		return agent{}, err
 	}
 	if !ok || target.Server != caller.Server || !placed(caller) || !together(target, caller) {
-		return agent{}, fmt.Errorf("%w: no agent %s in your Rex session (`rex-amq-adapter agent list --all` lists them)", ErrRefused, h)
+		return agent{}, refusal(fault.NotFound, "not_in_session", "no agent %s in your Rex session (`rex-amq-adapter agent list --all` lists them)", h).With("kind", "agent")
 	}
 	switch target.Role {
 	case core.NarratorRole, core.PersonalRole, core.OrchestratorRole:

@@ -50,8 +50,9 @@ func trustCheck(c *cli.Ctx, in cli.Input) (cli.Result, error) {
 
 // trustGrant is the user's "yes, I trust this folder" for every harness:
 // one result per directory; a directory that fails is reported and the
-// rest go on (meta.complete=false). --dry-run resolves each project and
-// writes nothing.
+// rest go on (meta.complete=false), and when none was granted the first
+// failure is the command's. --dry-run resolves each project and writes
+// nothing.
 func trustGrant(c *cli.Ctx, in cli.Input) (cli.Result, error) {
 	g, err := trustGate(c)
 	if err != nil {
@@ -61,12 +62,19 @@ func trustGrant(c *cli.Ctx, in cli.Input) (cli.Result, error) {
 	defer cancel()
 	items := []map[string]any{}
 	res := cli.Result{}
+	var first error
+	failed := func(d string, err error) {
+		items = append(items, map[string]any{"dir": d, "status": "failed", "error": err.Error()})
+		res.Incomplete = true
+		if first == nil {
+			first = err
+		}
+	}
 	for _, d := range in.Rest("dir") {
 		if in.DryRun() {
 			p, err := trust.Resolve(d)
 			if err != nil {
-				items = append(items, map[string]any{"dir": d, "status": "failed", "error": err.Error()})
-				res.Incomplete = true
+				failed(d, err)
 				continue
 			}
 			items = append(items, map[string]any{"dir": p.Dir, "root": p.Root, "status": "would_grant", "git": p.Git()})
@@ -74,13 +82,15 @@ func trustGrant(c *cli.Ctx, in cli.Input) (cli.Result, error) {
 		}
 		r, err := g.Grant(ctx, d, "explicit")
 		if err != nil {
-			items = append(items, map[string]any{"dir": d, "status": "failed", "error": err.Error()})
-			res.Incomplete = true
+			failed(d, err)
 			continue
 		}
 		items = append(items, map[string]any{"dir": r.Dir, "root": r.Root, "status": "granted", "source": r.Source, "claude": r.Claude, "codex": r.Codex})
 	}
 	res.Data = map[string]any{"items": items, "total": len(items), "truncated": false, "dry_run": in.DryRun()}
+	if first != nil && !slices.ContainsFunc(items, func(it map[string]any) bool { return it["status"] != "failed" }) {
+		return res, first
+	}
 	return res, nil
 }
 

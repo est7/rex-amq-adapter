@@ -391,7 +391,8 @@ func TestInjectArgvUnchanged(t *testing.T) {
 			t.Errorf("%q: exit %d, stdout %q, stderr %q", c.args, r.code, r.stdout, r.stderr)
 		}
 	}
-	if r := invoke(t, "", "inject", "a", "b"); r.code != 1 || !strings.HasPrefix(r.stderr, "AMQ_INJECT_PROGRESS=failed\nrex-amq-adapter: usage: inject: want <handle> <root> <payload>\n") {
+	// The wrong argc answers with v1's exact bytes.
+	if r := invoke(t, "", "inject", "a", "b"); r.code != 1 || r.stdout != "" || r.stderr != "AMQ_INJECT_PROGRESS=failed\nrex-amq-adapter: inject: want <handle> <root> <payload>\n" {
 		t.Errorf("wrong argc: %d %q", r.code, r.stderr)
 	}
 }

@@ -189,7 +189,7 @@ func (s Value) check(v string) (string, error) {
 			return v, nil
 		}
 		if p, ok := strings.CutPrefix(v, "@"); ok {
-			return checkPath(p, KindFile)
+			return atPath(p)
 		}
 		if err := CheckBody(v); err != nil {
 			return "", err
@@ -270,7 +270,7 @@ func (s Value) check(v string) (string, error) {
 			return v, nil
 		}
 		if p, ok := strings.CutPrefix(v, "@"); ok {
-			return checkPath(p, KindFile)
+			return atPath(p)
 		}
 		return "", bad("is not @FILE, -, or a JSON object")
 	case KindCommand:
@@ -281,6 +281,16 @@ func (s Value) check(v string) (string, error) {
 		return "", bad("has no declared kind %q", s.Kind)
 	}
 	return v, nil
+}
+
+// atPath checks the file of an @FILE value and keeps the @, so the value
+// still says "read this file" to whoever reads it after validation.
+func atPath(p string) (string, error) {
+	abs, err := checkPath(p, KindFile)
+	if err != nil {
+		return "", err
+	}
+	return "@" + abs, nil
 }
 
 // checkPath validates an input path: no control or format characters, made

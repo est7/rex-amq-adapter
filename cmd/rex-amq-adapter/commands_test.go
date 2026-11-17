@@ -397,7 +397,11 @@ func TestTrustGrantAndRootCommands(t *testing.T) {
 	if got := roots("trust", "root", "list"); len(got) != 1 || got[0] != root {
 		t.Fatalf("root list: %v", got)
 	}
-	check(t, []want{{[]string{"trust", "root", "add", home}, 1, "internal"}})
+	check(t, []want{{[]string{"trust", "root", "add", home}, 1, "internal"}, {[]string{"trust", "grant", home}, 1, "internal"}})
+	code, env = machine(t, "trust", "grant", home, repo)
+	if err := json.Unmarshal(env.Data, &g); code != 0 || err != nil || len(g.Items) != 2 || g.Items[0].Status != "failed" || g.Items[1].Status != "granted" {
+		t.Errorf("a batch with one failure: %d %s", code, env.Data)
+	}
 	if got := roots("trust", "root", "remove", root); len(got) != 0 {
 		t.Fatalf("root remove: %v", got)
 	}
@@ -468,4 +472,37 @@ func TestManagedMailCodes(t *testing.T) {
 	if ids, _ := amq.Unread(paths.Root(), "claude-09"); len(ids) != 0 {
 		t.Fatalf("delivered across Epics: %v", ids)
 	}
+}
+
+// A stream that fails before it connects answers with one envelope, like
+// any command; nothing else reaches stdout.
+func TestStreamFailsBeforeConnectingWithAnEnvelope(t *testing.T) {
+	isolate(t)
+	t.Setenv("REX_AMQ_REX", filepath.Join(t.TempDir(), "no-rex"))
+	check(t, []want{
+		{[]string{"stream", "events", "--session", "session:01a1eac4-f222-7d79-9291-9a8a86d39ec3"}, 1, "rex_unavailable"},
+		{[]string{"stream", "events", "--all"}, 1, "rex_unavailable"},
+		{[]string{"stream", "events"}, 5, "failed_precondition"},
+	})
+}
+
+// From outside Rex, epic list and epic show are the human's cockpit: they
+// name the personal agent, refuse one that is not live, and refuse an
+// unattended or agent shell.
+func TestEpicListAndShowOutsideRex(t *testing.T) {
+	isolate(t)
+	stubTools(t)
+	s := "session:01a1eac4-f222-7d79-9291-9a8a86d39ec3"
+	check(t, []want{
+		{[]string{"epic", "list"}, 2, "usage"},
+		{[]string{"epic", "list", "--personal", "pi-01"}, 3, "permission_denied"},
+		{[]string{"epic", "list", "--hub", t.TempDir()}, 3, "permission_denied"},
+		{[]string{"epic", "show"}, 2, "usage"},
+		{[]string{"epic", "show", s}, 2, "usage"},
+	})
+	t.Setenv("ME_UNATTENDED", "1")
+	check(t, []want{
+		{[]string{"epic", "list", "--personal", "pi-01"}, 6, "guard_denied"},
+		{[]string{"epic", "show", s}, 6, "guard_denied"},
+	})
 }

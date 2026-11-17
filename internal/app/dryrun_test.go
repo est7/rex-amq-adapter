@@ -1,0 +1,190 @@
+package app
+
+import (
+	"context"
+	"io/fs"
+	"maps"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/est7/rex-amq-adapter/internal/amq"
+	"github.com/est7/rex-amq-adapter/internal/core"
+	"github.com/est7/rex-amq-adapter/internal/store"
+)
+
+// stateFiles is every file under the state directory with its contents.
+// Lock files are left out: a preview may take a lock (§3.7), it leaves no
+// state beside it.
+func stateFiles(t *testing.T, e Env) map[string]string {
+	t.Helper()
+	files := map[string]string{}
+	err := filepath.WalkDir(e.Paths.Home, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || strings.HasSuffix(p, ".lock") {
+			return err
+		}
+		b, err := os.ReadFile(p)
+		files[p] = string(b)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return files
+}
+
+func sameState(t *testing.T, what string, before, after map[string]string) {
+	t.Helper()
+	if maps.Equal(before, after) {
+		return
+	}
+	for k, v := range after {
+		if before[k] != v {
+			t.Errorf("%s changed %s", what, k)
+		}
+	}
+	for k := range before {
+		if _, ok := after[k]; !ok {
+			t.Errorf("%s removed %s", what, k)
+		}
+	}
+}
+
+// --dry-run runs a mutator's whole resolution and every guard, then stops
+// before its effect: each preview below leaves the state directory as it
+// was, and asks Rex to kill, close, launch, or open nothing, and amq to
+// deliver nothing.
+func TestDryRunWritesNothing(t *testing.T) {
+	ctx := context.Background()
+	t.Run("epic close", func(t *testing.T) {
+		e, term, loc := closeWorld(t)
+		before := stateFiles(t, e)
+		res, err := e.CloseEpic(ctx, loc, CloseRequest{Session: "session:epic", Asked: "close it", DryRun: true})
+		if err != nil || !res.DryRun {
+			t.Fatalf("preview: %+v %v", res, err)
+		}
+		sameState(t, "epic close --dry-run", before, stateFiles(t, e))
+		if len(term.killed) != 0 || len(term.closed) != 0 {
+			t.Errorf("killed %v closed %v", term.killed, term.closed)
+		}
+	})
+	t.Run("epic link, unlink, handback", func(t *testing.T) {
+		e, _, loc := closeWorld(t)
+		before := stateFiles(t, e)
+		if _, changed, err := e.PreviewLink(ctx, loc, "session:epic", false); err != nil || !changed {
+			t.Fatalf("unlink preview: changed=%v %v", changed, err)
+		}
+		if _, changed, err := e.PreviewLink(ctx, loc, "session:epic", true); err != nil || changed {
+			t.Fatalf("link preview of a linked Epic: changed=%v %v", changed, err)
+		}
+		if h, err := e.PreviewHandBack(Location{Block: "block:o"}, "## Review queue\n"); err != nil || h.By == "" || h.Digest == "" {
+			t.Fatalf("handback preview: %+v %v", h, err)
+		}
+		if _, err := e.PreviewHandBack(Location{Block: "block:w"}, "report"); err == nil {
+			t.Error("a worker's handback preview passed the lead check")
+		}
+		sameState(t, "link, unlink, handback --dry-run", before, stateFiles(t, e))
+	})
+	t.Run("agent retire", func(t *testing.T) {
+		e, term, _, fake := retireWorld(t)
+		before := stateFiles(t, e)
+		res, err := e.Retire(ctx, Location{Block: "block:o"}, RetireRequest{Handle: "codex-03", DryRun: true})
+		if err != nil || !res.DryRun || res.Action != RetireRetired {
+			t.Fatalf("preview: %+v %v", res, err)
+		}
+		sameState(t, "agent retire --dry-run", before, stateFiles(t, e))
+		if len(term.closed) != 0 || fake.Waker(e.Paths.Root(), "codex-03").Status == "missing" {
+			t.Errorf("closed %v, waker %+v", term.closed, fake.Waker(e.Paths.Root(), "codex-03"))
+		}
+	})
+	t.Run("agent summon", func(t *testing.T) {
+		e, term, loc := summonWorld(t)
+		add(t, e, seed{Handle: "codex-02", Kind: core.Codex, Server: "unix:///fake.sock", BlockID: "block:b", SessionID: "session:s", Role: "reviewer", AgentPID: 2, AdoptedAt: e.Now()})
+		before := stateFiles(t, e)
+		dry := func(r *SummonRequest) { r.DryRun = true }
+		if res := summon(t, e, loc, "reviewer", dry); res.Action != "deliver" || res.Mailed || !res.DryRun {
+			t.Fatalf("deliver preview: %+v", res)
+		}
+		if res := summon(t, e, loc, "implementer", dry, func(r *SummonRequest) { r.Asked = "start one" }); res.Action != "start" || res.Harness == "" {
+			t.Fatalf("start preview: %+v", res)
+		}
+		sameState(t, "agent summon --dry-run", before, stateFiles(t, e))
+		if ids, _ := amq.Unread(e.Paths.Root(), "codex-02"); len(ids) != 0 || len(term.launches) != 0 || len(term.newTabs) != 0 {
+			t.Errorf("unread %v launches %v tabs %v", ids, term.launches, term.newTabs)
+		}
+	})
+	t.Run("mail send", func(t *testing.T) {
+		e, _ := managedWorld(t)
+		before := stateFiles(t, e)
+		p, err := e.PreviewPost(Location{Block: "block:claude-02"}, []core.Handle{"codex-01"}, "", "")
+		if err != nil || len(p.Recipients) != 1 || !p.Recipients[0].Allow {
+			t.Fatalf("preview: %+v %v", p, err)
+		}
+		if _, err := e.PreviewPost(Location{Block: "block:claude-02"}, []core.Handle{"claude-09"}, "", ""); err == nil {
+			t.Error("a cross-Epic preview was allowed")
+		}
+		sameState(t, "mail send --dry-run", before, stateFiles(t, e))
+		if wakerLive(t, e, "codex-01") {
+			t.Error("a preview started the recipient's waker")
+		}
+	})
+	t.Run("hub notify", func(t *testing.T) {
+		hub := t.TempDir()
+		e, _ := notifyWorld(t, hub)
+		before := stateFiles(t, e)
+		n, err := ParseNotify(NotifyRequest{Ref: "inbox:1", EventID: "ev-1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		res, err := e.PreviewNotify(cctx, n)
+		if err != nil || res.Status != NotifyNotified || res.To != "claude-01" || !res.DryRun || res.MessageID != "" {
+			t.Fatalf("preview: %+v %v", res, err)
+		}
+		sameState(t, "hub notify --dry-run", before, stateFiles(t, e))
+		if ids, _ := amq.Unread(e.Paths.Root(), "claude-01"); len(ids) != 0 {
+			t.Errorf("a preview delivered %v", ids)
+		}
+	})
+	t.Run("epic open", func(t *testing.T) {
+		e, term, loc := closeWorld(t)
+		before := stateFiles(t, e)
+		dir := t.TempDir()
+		res, err := e.OpenEpic(ctx, loc, EpicRequest{Name: "preview", Dir: dir, Asked: "open it", OpID: "op-preview", DryRun: true})
+		if err != nil || !res.DryRun || res.Plan == nil || res.SessionID != "" || res.Lead != core.OrchestratorRole {
+			t.Fatalf("preview: %+v %v", res, err)
+		}
+		sameState(t, "epic open --dry-run", before, stateFiles(t, e))
+		if len(term.sessions_) != 0 || len(term.launches) != 0 {
+			t.Errorf("sessions %v launches %v", term.sessions_, term.launches)
+		}
+		if _, ok, _ := e.Store.EpicOp(store.EpicOpOpen, "op-preview"); ok {
+			t.Error("a preview recorded its op id")
+		}
+	})
+}
+
+// agent join --dry-run resolves the agent, the crew, and the role it would
+// take, refuses what Join refuses, and claims nothing.
+func TestPreviewJoin(t *testing.T) {
+	e, _ := joinWorld(t, "Window 1a2b")
+	ctx := context.Background()
+	before := stateFiles(t, e)
+	p, err := e.PreviewJoin(ctx, Location{Block: "block:a"}, "pair", "")
+	if err != nil || p.Crew != "pair" || p.Role != "implementer" || !strings.HasPrefix(p.Label, "implementer(") {
+		t.Fatalf("preview: %+v %v", p, err)
+	}
+	if _, err := e.PreviewJoin(ctx, Location{Block: "block:a"}, "nosuch", ""); err == nil {
+		t.Error("an unknown crew previewed")
+	}
+	if _, err := e.PreviewJoin(ctx, Location{Block: "block:a"}, "pair", core.NarratorRole); err == nil {
+		t.Error("a narrator joining a crew previewed")
+	}
+	sameState(t, "agent join --dry-run", before, stateFiles(t, e))
+	if c := e.sessionCrew("session:s", "implementer"); c != "" {
+		t.Errorf("the preview claimed crew %q", c)
+	}
+}

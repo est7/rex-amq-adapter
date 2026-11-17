@@ -22,6 +22,13 @@ func Classify(err error) *fault.Error {
 		return nil
 	}
 	if f, ok := fault.As(err); ok {
+		if f != err {
+			// Wrapped on its way out (a hint appended): the code and
+			// details are the source's, the message the whole text.
+			whole := *f
+			whole.Message = err.Error()
+			return &whole
+		}
 		return f
 	}
 	msg := err.Error()

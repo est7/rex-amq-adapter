@@ -161,7 +161,9 @@ func hookFail(s out.Streams, log *hookLog, err error) int {
 // and exits 0 or 1.
 func runInject(args []string, s out.Streams) int {
 	if len(args) != 3 {
-		out.InjectProgress(s, string(core.Failed), "usage", "inject: want <handle> <root> <payload>")
+		// The baseline's bytes: the progress line, then the usage line.
+		out.InjectProgress(s, string(core.Failed), "", "")
+		fmt.Fprintln(s.Stderr, "rex-amq-adapter: inject: want <handle> <root> <payload>")
 		return 1
 	}
 	handle, root := args[0], args[1]

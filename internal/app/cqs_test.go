@@ -41,3 +41,14 @@ func TestMailSendRepairsWaker(t *testing.T) {
 		t.Fatal("a send to an agent whose waker died did not bring it back")
 	}
 }
+
+// A thread with nothing the caller may read is not_found (exit 4) naming
+// kind thread; it was exit 3.
+func TestMailThreadEmptyIsNotFound(t *testing.T) {
+	e, ctx := managedWorld(t)
+	_, _, err := run(t, e, ctx, "claude-02", "thread", "--id", "p2p/claude-02__nobody")
+	f := Classify(err)
+	if err == nil || f.Code != "not_found" || f.Exit() != 4 || f.Details["kind"] != "thread" {
+		t.Fatalf("empty thread: %v → %+v", err, f)
+	}
+}

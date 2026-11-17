@@ -9,6 +9,7 @@ import (
 
 	"github.com/est7/rex-amq-adapter/internal/core"
 	"github.com/est7/rex-amq-adapter/internal/crew"
+	"github.com/est7/rex-amq-adapter/internal/rex"
 	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
@@ -36,45 +37,15 @@ var ErrCrewTaken = errors.New("this Rex session already works as another crew")
 // since their conventions would change under them. A narrator or personal
 // agent (core.Stealth) never joins a crew.
 func (e Env) Join(ctx context.Context, loc Location, crewName, role string) (Joined, error) {
-	rec, ok, err := e.agentIn(loc)
+	plan, err := e.joinPlan(ctx, loc, crewName, role)
 	if err != nil {
 		return Joined{}, err
 	}
-	if !ok || !rec.Live() {
-		return Joined{}, fmt.Errorf("no AMQ identity for this Rex block (%s), so there is no agent to join a crew", loc.Block)
-	}
-	if e.Crews == nil {
-		return Joined{}, errors.New("no crews are available")
-	}
-	blk, err := e.Rex.InspectBlock(ctx, loc.Block)
-	if err != nil {
-		return Joined{}, err
-	}
-	role = crew.Name(role)
-	var c crew.Crew
-	if name := crew.Name(crewName); name != "" {
-		var found bool
-		if c, found, err = e.Crews(e.agentDir(ctx, rec)).Crew(name); err != nil {
+	rec, blk, c, role := plan.rec, plan.blk, plan.crew, plan.role
+	if c.Name != "" {
+		if err := e.claimSessionCrew(ctx, rec.Handle, blk.SessionID, c.Name); err != nil {
 			return Joined{}, err
 		}
-		if !found {
-			return Joined{}, fmt.Errorf("no crew %q: `rex-amq-adapter crew list` lists them", name)
-		}
-		if role == "" {
-			role = c.Lead
-		}
-		if role == "" {
-			return Joined{}, fmt.Errorf("crew %s names no lead: pass --role", name)
-		}
-		if core.Stealth(role) || core.Stealth(rec.Role) {
-			return Joined{}, fmt.Errorf("%w: a %s or %s agent never joins a crew", ErrRefused, core.NarratorRole, core.PersonalRole)
-		}
-		if err := e.claimSessionCrew(ctx, rec.Handle, blk.SessionID, name); err != nil {
-			return Joined{}, err
-		}
-	}
-	if role == "" {
-		return Joined{}, errors.New("name a crew, a role (--role), or both")
 	}
 	was := rec.Role
 	if rec, err = e.takeRole(ctx, loc, rec.Handle, role); err != nil {
@@ -194,4 +165,75 @@ func othersNeeded(members []string, role string) []string {
 		rest = slices.Delete(rest, i, i+1)
 	}
 	return rest
+}
+
+// joinPlan is what a join of the agent in loc resolves before it changes
+// anything: the agent, its block, the crew, and the role it would take.
+type joinPlan struct {
+	rec  agent
+	blk  rex.Block
+	crew crew.Crew
+	role string
+}
+
+func (e Env) joinPlan(ctx context.Context, loc Location, crewName, role string) (joinPlan, error) {
+	rec, ok, err := e.agentIn(loc)
+	if err != nil {
+		return joinPlan{}, err
+	}
+	if !ok || !rec.Live() {
+		return joinPlan{}, fmt.Errorf("no AMQ identity for this Rex block (%s), so there is no agent to join a crew", loc.Block)
+	}
+	if e.Crews == nil {
+		return joinPlan{}, errors.New("no crews are available")
+	}
+	blk, err := e.Rex.InspectBlock(ctx, loc.Block)
+	if err != nil {
+		return joinPlan{}, err
+	}
+	role = crew.Name(role)
+	var c crew.Crew
+	if name := crew.Name(crewName); name != "" {
+		var found bool
+		if c, found, err = e.Crews(e.agentDir(ctx, rec)).Crew(name); err != nil {
+			return joinPlan{}, err
+		}
+		if !found {
+			return joinPlan{}, fmt.Errorf("no crew %q: `rex-amq-adapter crew list` lists them", name)
+		}
+		c.Name = name
+		if role == "" {
+			role = c.Lead
+		}
+		if role == "" {
+			return joinPlan{}, fmt.Errorf("crew %s names no lead: pass --role", name)
+		}
+		if core.Stealth(role) || core.Stealth(rec.Role) {
+			return joinPlan{}, fmt.Errorf("%w: a %s or %s agent never joins a crew", ErrRefused, core.NarratorRole, core.PersonalRole)
+		}
+	}
+	if role == "" {
+		return joinPlan{}, errors.New("name a crew, a role (--role), or both")
+	}
+	return joinPlan{rec: rec, blk: blk, crew: c, role: role}, nil
+}
+
+// JoinPreview is what `agent join --dry-run` reports.
+type JoinPreview struct {
+	Handle core.Handle `json:"handle"`
+	Crew   string      `json:"crew,omitempty"`
+	Role   string      `json:"role"`
+	Label  string      `json:"label"`
+	DryRun bool        `json:"dry_run"`
+}
+
+// PreviewJoin runs Join's checks on the agent, the crew, and the role and
+// changes nothing; whether the session's crew claim would conflict is
+// decided only when the claim is made.
+func (e Env) PreviewJoin(ctx context.Context, loc Location, crewName, role string) (JoinPreview, error) {
+	p, err := e.joinPlan(ctx, loc, crewName, role)
+	if err != nil {
+		return JoinPreview{}, err
+	}
+	return JoinPreview{Handle: p.rec.Handle, Crew: p.crew.Name, Role: p.role, Label: core.PaneLabel(p.rec.Handle, p.role, p.rec.Task), DryRun: true}, nil
 }

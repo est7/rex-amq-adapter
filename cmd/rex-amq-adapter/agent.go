@@ -189,11 +189,15 @@ func agentJoin(c *cli.Ctx, in cli.Input) (cli.Result, error) {
 	if err != nil {
 		return cli.Result{}, err
 	}
-	if in.DryRun() {
-		return cli.Result{Data: map[string]any{"dry_run": true, "would": "join", "crew": crewName, "role": role, "block": loc.Block}}, nil
-	}
 	ctx, cancel := within(c, 20*time.Second)
 	defer cancel()
+	if in.DryRun() {
+		p, err := env.PreviewJoin(ctx, loc, crewName, role)
+		if err != nil {
+			return cli.Result{}, err
+		}
+		return cli.Result{Data: p}, nil
+	}
 	j, err := env.Join(ctx, loc, crewName, role)
 	if err != nil {
 		return cli.Result{}, err

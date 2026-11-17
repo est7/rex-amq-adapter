@@ -11,6 +11,7 @@ import (
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/core"
+	"github.com/est7/rex-amq-adapter/internal/fault"
 	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
@@ -130,7 +131,14 @@ func (e Env) admit(rec agent) ([]string, error) {
 var ErrRefused = errors.New("refused by the gateway")
 
 func refused(what string, d core.Decision) error {
-	return fmt.Errorf("%w: %s (%s)", ErrRefused, what, d.Reason)
+	return refusal(fault.PermissionDenied, string(d.Reason), "%s (%s)", what, d.Reason)
+}
+
+// refusal is a refusal carrying its code and details.reason from where it
+// is decided, its message the same "refused by the gateway: …" text, and
+// still matching ErrRefused.
+func refusal(code fault.Code, reason, format string, a ...any) *fault.Error {
+	return fault.New(code, "%s: %s", ErrRefused, fmt.Sprintf(format, a...)).WithCause(ErrRefused).With("reason", reason)
 }
 
 // refusedSend is refused for from's send to to, pointing a member that tried

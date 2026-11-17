@@ -13,6 +13,7 @@ import (
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/core"
+	"github.com/est7/rex-amq-adapter/internal/fault"
 	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
@@ -195,8 +196,8 @@ func (e Env) notifyPersonal(ctx context.Context, n Notify, dryRun bool) (NotifyR
 	}
 	if ok {
 		if prior.Ref != n.ref || prior.Hub != n.hub || prior.Personal != n.personal {
-			return res, fmt.Errorf("%w: event id %q already notified %s of %s (--hub %q, --personal %q); a replay asks the same",
-				ErrRefused, n.eventID, prior.Handle, prior.Ref, prior.Hub, prior.Personal)
+			return res, refusal(fault.Conflict, "event_id_reused", "event id %q already notified %s of %s (--hub %q, --personal %q); a replay asks the same",
+				n.eventID, prior.Handle, prior.Ref, prior.Hub, prior.Personal)
 		}
 		res.Status, res.To, res.SessionID, res.MessageID, res.Deduped = NotifyNotified, prior.Handle, prior.SessionID, prior.MessageID, true
 		return res, nil
@@ -220,7 +221,7 @@ func (e Env) notifyPersonal(ctx context.Context, n Notify, dryRun bool) (NotifyR
 		for _, t := range targets {
 			hs = append(hs, string(t.Handle))
 		}
-		return res, fmt.Errorf("%w: %d live personal agents (%s); name one with --personal or --hub", ErrRefused, len(targets), strings.Join(hs, ", "))
+		return res, refusal(fault.FailedPrecondition, "ambiguous_personal", "%d live personal agents (%s); name one with --personal or --hub", len(targets), strings.Join(hs, ", "))
 	}
 	target := targets[0]
 	if dryRun {
