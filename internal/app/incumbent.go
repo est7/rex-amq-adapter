@@ -87,8 +87,9 @@ func heldElsewhere(own agent, server, block string, inc store.Incarnation) bool 
 //   - its process exited, or its pid now names another process (local only);
 //   - its Rex server restarted (the server's instance id changed);
 //   - its block no longer exists;
-//   - its block's foreground is no longer it (for a background job: its pane
-//     no longer shows it), or the conversation left the pane.
+//   - its block's foreground is no longer it nor a process it started (for a
+//     background job: its pane no longer shows it), or the conversation left
+//     the pane.
 //
 // A server that cannot be reached, or cannot say, proves nothing: the
 // incumbent keeps its lease.
@@ -120,9 +121,26 @@ func (e Env) holderGone(ctx context.Context, q agent) (reason string, gone bool)
 	case o.Progress == core.Failed:
 		return o.Code, true
 	}
-	// A doorbell waits out another foreground (an editor the agent opened);
-	// a takeover does not: the conversation's own process now runs elsewhere.
+	// Another foreground. One the incumbent started (an editor, a pager, a
+	// shell escape) is its own: it still runs the conversation. Any other (the
+	// shell it exited to) proves it left. A remote process's ancestry cannot
+	// be read here, and a local one that cannot be read proves nothing.
+	if localServer(q.Server) && b.ForegroundPID > 0 {
+		if under, err := descendsFromPID(b.ForegroundPID, q.pid()); err != nil || under {
+			return "", false
+		}
+	}
 	return o.Code, true
+}
+
+// descendsFromPID reports whether pid is a descendant of ancestor, on this
+// machine.
+func descendsFromPID(pid, ancestor int) (bool, error) {
+	procs, err := processAncestorsOf(pid)
+	if err != nil {
+		return false, err
+	}
+	return slices.ContainsFunc(procs[min(1, len(procs)):], func(p proc) bool { return p.PID == ancestor }), nil
 }
 
 // incarnationGone reports whether inc, a lease's process on server, is

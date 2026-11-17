@@ -1,8 +1,11 @@
 package app
 
 import (
+	"bufio"
 	"context"
 	"os"
+	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -222,4 +225,72 @@ func TestSessionEndOwnershipOfARemoteDuplicateIsNotProven(t *testing.T) {
 	if _, live, _ := e.Store.LeaseOf("claude-01"); live {
 		t.Fatal("the remote incumbent's own SessionEnd did not release its lease")
 	}
+}
+
+// The incumbent opened an editor (or a pager, or a shell escape): the
+// editor, its child, is its block's foreground. The incumbent still runs the
+// conversation, so a duplicate pane is refused, as at any other time. A
+// foreground that is not the incumbent's child proves it left
+// (TestTakeoverNeedsProofTheHolderIsGone).
+func TestForegroundDescendantOfTheIncumbentKeepsItsLease(t *testing.T) {
+	w := newSBWorld(t)
+	owner := exec.Command("/bin/sh", "-c", "sleep 60 & echo $!; wait")
+	pipe, err := owner.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = owner.Start(); err != nil {
+		t.Fatal(err)
+	}
+	line, err := bufio.NewReader(pipe).ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	editor, err := strconv.Atoi(strings.TrimSpace(line))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if p, err := os.FindProcess(editor); err == nil {
+			_ = p.Kill()
+		}
+		_ = owner.Process.Kill()
+		_ = owner.Wait()
+	})
+	w.incumbent = owner
+	w.term.mu.Lock()
+	w.term.fgs[sbIncumbentBlock] = rex.Process{PID: owner.Process.Pid, Name: "claude"}
+	w.term.mu.Unlock()
+	original := w.startIncumbent(t)
+	w.term.mu.Lock()
+	w.term.fgs[sbIncumbentBlock] = rex.Process{PID: editor, Name: "vim"}
+	w.term.mu.Unlock()
+	a, err := w.adoptDuplicate(t)
+	if err == nil {
+		t.Fatalf("the live incumbent %s lost its lease to the duplicate while its editor was the foreground: %s", original, a.Agent.BlockID)
+	}
+	wantDuplicate(t, err, original, sbIncumbentBlock)
+	if l := leaseOf(t, w.e, original); l.BlockID != sbIncumbentBlock || l.Incarnation.PID != owner.Process.Pid {
+		t.Fatalf("the incumbent's lease changed: %+v", l)
+	}
+}
+
+// orphan starts a live process that descends from no process of the test's:
+// its parent shell exits, and the process is reparented to init.
+func orphan(t *testing.T) int {
+	t.Helper()
+	out, err := exec.Command("/bin/sh", "-c", "sleep 60 >/dev/null 2>&1 & echo $!").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if p, err := os.FindProcess(pid); err == nil {
+			_ = p.Kill()
+		}
+	})
+	return pid
 }
