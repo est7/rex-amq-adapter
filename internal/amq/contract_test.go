@@ -164,7 +164,7 @@ func TestQueueContract(t *testing.T) {
 				t.Fatalf("first ensure: %+v %s %v", st, decision, err)
 			}
 			t.Cleanup(func() { _, _ = q.RetireHandle(context.Background(), root, "bob") })
-			if again, decision, err := q.Ensure(ctx, w, filepath.Join(dir, "logs")); err != nil || decision != DecisionKeep || again.Generation != st.Generation {
+			if again, decision, err := q.Ensure(ctx, w, filepath.Join(dir, "logs")); err != nil || decision != DecisionKeep || again.Generation != st.Generation || again.PID != st.PID {
 				t.Fatalf("second ensure keeps the waker: %+v %s %v", again, decision, err)
 			}
 			if got, err := tc.wakes(ctx, root, "bob"); err != nil || !got.Live || got.Generation != st.Generation || !slices.Equal(got.Target.InjectArgs, w.Target().InjectArgs) {

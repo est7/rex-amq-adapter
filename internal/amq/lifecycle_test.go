@@ -60,7 +60,7 @@ func TestLifecycleAgainstRealAmq(t *testing.T) {
 	}
 	t.Cleanup(func() { _, _ = RetireHandle(context.Background(), amqBin, root, "bob") })
 	again, decision, err := Ensure(ctx, amqBin, w, logs)
-	if err != nil || decision != DecisionKeep || again.Generation != st.Generation {
+	if err != nil || decision != DecisionKeep || again.Generation != st.Generation || again.PID != st.PID {
 		t.Fatalf("second ensure must keep the same waker: %+v %s %v", again, decision, err)
 	}
 

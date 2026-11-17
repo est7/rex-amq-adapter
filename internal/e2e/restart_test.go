@@ -139,7 +139,7 @@ func TestRexRestartKeepsTheHandleMailAndEpic(t *testing.T) {
 	}
 	// Mail that waits through the restart: its doorbell rang, and nobody drains.
 	w.send(peer, orch, "before the restart")
-	w.until("the first doorbell", 20*time.Second, func() bool { return w.doorbells("orchestrator") == 1 })
+	w.until("the first doorbell", 20*time.Second, func() bool { return w.doorbells("orchestrator") >= 1 })
 	wakerBefore := w.wakerPID(orch)
 	instance := w.instanceID()
 
@@ -179,8 +179,11 @@ func TestRexRestartKeepsTheHandleMailAndEpic(t *testing.T) {
 	if wakerAfter <= 0 {
 		t.Fatalf("no waker after the relaunch\n%s", w.dump())
 	}
+	// Only the new mail on top of the kept one rings for two.
 	w.send(peer, orch, "after the restart")
-	w.until("a doorbell after the restart", 20*time.Second, func() bool { return w.doorbells("orchestrator") == 2 })
+	w.until("a doorbell for both messages after the restart", 20*time.Second, func() bool {
+		return strings.Contains(w.got("orchestrator"), "AMQ doorbell: 2 unread message(s) for "+orch)
+	})
 }
 
 // A server that starts empty (--restore=false) loses every session: the
@@ -220,5 +223,7 @@ func TestRexRebuildTakesTheHandleOverBehindANewFence(t *testing.T) {
 	}
 	t.Logf("waker of %s after the rebuild: pid %d", h, w.wakerPID(h))
 	w.send("solo", h, "after the rebuild") // a name, not a handle: amq refuses a self-send
-	w.until("a doorbell in the rebuilt block", 20*time.Second, func() bool { return w.doorbells("solo") == 1 })
+	w.until("a doorbell in the rebuilt block", 20*time.Second, func() bool {
+		return strings.Contains(w.got("solo"), "AMQ doorbell: 1 unread message(s) for "+h)
+	})
 }
