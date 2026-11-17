@@ -294,3 +294,34 @@ func orphan(t *testing.T) int {
 	})
 	return pid
 }
+
+// A pane's agent switches, inside its own process, to a conversation another
+// pane's live agent holds (Claude's /resume). Its process still matches its
+// pane's lease, but the conversation is another identity's: the pane is told
+// at each prompt that it has no identity (AC1), and takes the conversation's
+// handle over once the incumbent is gone (AC3).
+func TestInProcessResumeIntoAHeldConversationIsADuplicate(t *testing.T) {
+	w := newSBWorld(t)
+	original := w.startIncumbent(t)
+	if _, err := w.e.Hook(context.Background(), EventSessionStart, core.Claude, Location{Block: sbDuplicateBlock}, HookInput{SessionID: "fresh-conv", AgentPID: w.duplicate.Process.Pid, Source: "startup"}); err != nil {
+		t.Fatal(err)
+	}
+	prev, ok, err := w.e.liveAt(sbDuplicateBlock)
+	if err != nil || !ok || prev.Handle == original {
+		t.Fatalf("setup: the duplicate pane's own agent: %+v ok=%v err=%v", prev, ok, err)
+	}
+	r := w.hook(t, EventPrompt, sbDuplicateBlock, w.duplicate, "")
+	wantNotice := "conversation " + sbSession + " is live as " + string(original) + " in " + sbIncumbentBlock + "; this pane has no AMQ identity until that pane closes"
+	if r.Notice != wantNotice {
+		t.Fatalf("AC1: a prompt after an in-process resume into %s's conversation: notice %q, want %q", original, r.Notice, wantNotice)
+	}
+	_ = w.incumbent.Process.Kill()
+	_ = w.incumbent.Wait()
+	w.hook(t, EventPrompt, sbDuplicateBlock, w.duplicate, "")
+	if l := leaseOf(t, w.e, original); l.BlockID != sbDuplicateBlock || l.Incarnation.PID != w.duplicate.Process.Pid {
+		t.Fatalf("AC3: after the incumbent closed, %s is %+v; want it in %s", original, l, sbDuplicateBlock)
+	}
+	if r := recordNamed(t, w.e, prev.Handle); r.Live() {
+		t.Fatalf("the pane's previous agent %s still runs beside the conversation it switched to", prev.Handle)
+	}
+}

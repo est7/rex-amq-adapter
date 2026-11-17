@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
+	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 // maxAncestors bounds the walk up the process tree.
@@ -48,7 +49,27 @@ func (e Env) recordFit(kind core.Kind, rec agent, in HookInput) fit {
 	// Another session from the record's own process is not taken as a
 	// switch: agy runs each subagent as a conversation of its own in the same
 	// process, and its hooks carry the subagent's id from the parent's pane.
+	// A session another identity holds is: the process switched to that
+	// conversation (an in-process resume), whose identity and lease decide
+	// who speaks for it (Adopt).
+	if in.SessionID != "" && !slices.Contains(rec.Sessions, in.SessionID) && e.heldByAnother(kind, rec.Handle, in.SessionID) {
+		return foreign
+	}
 	return own
+}
+
+// heldByAnother reports whether an identity of kind other than h holds
+// session. Identities that cannot be read are reported and taken as none: the
+// record stays the hook's, as before the conversation switched.
+func (e Env) heldByAnother(kind core.Kind, h core.Handle, session string) bool {
+	ids, err := e.Store.Identities()
+	if err != nil {
+		fmt.Fprintf(Diagnostics, "identities holding %s: %v\n", session, err)
+		return false
+	}
+	return slices.ContainsFunc(ids, func(id store.Identity) bool {
+		return id.Handle != h && id.Kind == kind && slices.Contains(id.Sessions, session)
+	})
 }
 
 // sameProcess reports whether the hook comes from rec's agent process. A
