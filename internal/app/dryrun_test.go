@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"maps"
 	"os"
@@ -269,4 +270,26 @@ func TestSummonDryRunMatchesTheRealDecision(t *testing.T) {
 		}
 		nothing(t, e, term, before)
 	})
+}
+
+// agent join --dry-run runs the session's crew claim too: a switch to
+// another crew while others work under the first is refused as Join would
+// refuse it, and the preview records nothing.
+func TestPreviewJoinRefusesATakenCrew(t *testing.T) {
+	e, _ := joinWorld(t, "Window 1a2b3c4d", "block:b")
+	ctx := context.Background()
+	if _, err := e.Join(ctx, Location{Block: "block:a"}, "pair", ""); err != nil {
+		t.Fatal(err)
+	}
+	before := stateFiles(t, e)
+	if _, err := e.PreviewJoin(ctx, Location{Block: "block:b"}, "ship", ""); !errors.Is(err, ErrCrewTaken) || !strings.Contains(err.Error(), "pair") {
+		t.Fatalf("a taken crew previewed: %v", err)
+	}
+	if p, err := e.PreviewJoin(ctx, Location{Block: "block:b"}, "pair", "reviewer"); err != nil || p.Crew != "pair" {
+		t.Fatalf("joining the session's own crew: %+v %v", p, err)
+	}
+	sameState(t, "agent join --dry-run", before, stateFiles(t, e))
+	if c, _, _ := e.Store.SessionCrew("session:s"); c.Crew != "pair" {
+		t.Errorf("the session crew is %q", c.Crew)
+	}
 }

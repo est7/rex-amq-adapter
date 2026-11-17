@@ -83,6 +83,12 @@ func (e Env) Join(ctx context.Context, loc Location, crewName, role string) (Joi
 // another crew is claimed only while no other live agent outside the Stealth
 // ones is in it.
 func (e Env) claimSessionCrew(ctx context.Context, h core.Handle, session, name string) error {
+	return e.sessionCrewClaim(ctx, h, session, name, false)
+}
+
+// sessionCrewClaim decides, under the lifecycle lock, whether h may claim
+// crew name for session, and records the claim unless preview.
+func (e Env) sessionCrewClaim(ctx context.Context, h core.Handle, session, name string, preview bool) error {
 	if session == "" {
 		return errors.New("cannot determine this Rex session")
 	}
@@ -112,6 +118,9 @@ func (e Env) claimSessionCrew(ctx context.Context, h core.Handle, session, name 
 		if len(others) > 0 {
 			return fmt.Errorf("%w (%s, with %s in it); a goal for crew %s is another Epic, in a Rex session of its own", ErrCrewTaken, cur.Crew, strings.Join(others, ", "), name)
 		}
+	}
+	if preview {
+		return nil
 	}
 	return e.Store.PutSessionCrew(session, store.SessionCrew{Crew: name, ClaimedBy: h, ClaimedAt: e.Now().UTC()})
 }
@@ -227,13 +236,17 @@ type JoinPreview struct {
 	DryRun bool        `json:"dry_run"`
 }
 
-// PreviewJoin runs Join's checks on the agent, the crew, and the role and
-// changes nothing; whether the session's crew claim would conflict is
-// decided only when the claim is made.
+// PreviewJoin runs Join's checks on the agent, the crew, the role, and the
+// session's crew claim, and changes nothing.
 func (e Env) PreviewJoin(ctx context.Context, loc Location, crewName, role string) (JoinPreview, error) {
 	p, err := e.joinPlan(ctx, loc, crewName, role)
 	if err != nil {
 		return JoinPreview{}, err
+	}
+	if p.crew.Name != "" {
+		if err := e.sessionCrewClaim(ctx, p.rec.Handle, p.blk.SessionID, p.crew.Name, true); err != nil {
+			return JoinPreview{}, err
+		}
 	}
 	return JoinPreview{Handle: p.rec.Handle, Crew: p.crew.Name, Role: p.role, Label: core.PaneLabel(p.rec.Handle, p.role, p.rec.Task), DryRun: true}, nil
 }
