@@ -268,9 +268,9 @@ func TestNotifyPersonalOfflineSendsNothing(t *testing.T) {
 }
 
 // Two live personal agents are never both rung: without --hub or --personal
-// the call is refused; either one picks a single agent. --hub matches the
-// agent's directory or one below it, through symlinks, and not a sibling
-// that shares its prefix.
+// the one the user spoke to last rings (C26); either flag picks a single
+// agent. --hub matches the agent's directory or one below it, through
+// symlinks, and not a sibling that shares its prefix.
 func TestNotifyPersonalRefusesToBroadcast(t *testing.T) {
 	root := t.TempDir()
 	hubA, hubB := filepath.Join(root, "me"), filepath.Join(root, "me-work")
@@ -284,14 +284,12 @@ func TestNotifyPersonalRefusesToBroadcast(t *testing.T) {
 		t.Fatal(err)
 	}
 	e, _ := notifyWorld(t, filepath.Join(hubA, "sub"), hubB)
-	if res, err := notify(t, e, NotifyRequest{Ref: "inbox:1", EventID: "ev-both"}); !errors.Is(err, ErrRefused) || res.Status != "" ||
-		!strings.Contains(err.Error(), "claude-01, codex-02") {
-		t.Fatalf("ambiguous: %+v %v", res, err)
+	e.touchActivity(recordNamed(t, e, "codex-02"))
+	if res, err := notify(t, e, NotifyRequest{Ref: "inbox:1", EventID: "ev-both"}); err != nil || res.Status != NotifyNotified || res.To != "codex-02" {
+		t.Fatalf("two live: %+v %v", res, err)
 	}
-	for _, h := range []core.Handle{"claude-01", "codex-02"} {
-		if _, err := os.Stat(amq.Inbox(e.Paths.Root(), string(h))); err == nil && len(unreadMail(t, e, h)) != 0 {
-			t.Fatalf("an ambiguous call mailed %s", h)
-		}
+	if _, err := os.Stat(amq.Inbox(e.Paths.Root(), "claude-01")); err == nil && len(unreadMail(t, e, "claude-01")) != 0 {
+		t.Fatal("both personal agents were rung")
 	}
 	for _, c := range []struct {
 		r    NotifyRequest

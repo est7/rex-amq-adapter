@@ -197,7 +197,11 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 		return EpicResult{OpID: r.OpID, Lead: lead, DryRun: true,
 			Plan: &EpicPlan{Name: name, Dir: physical, Crew: crewName, LeadHarness: kind, NarratorHarness: narrator}}, nil
 	}
-	seed := store.EpicLifecycle{Name: name, Dir: physical, PersonalHandle: caller.Handle, PersonalSessionID: caller.SessionID, Server: caller.Server, Crew: crewName, OpenOpID: r.OpID}
+	callerHub, err := e.hubOfSession(caller.SessionID)
+	if err != nil {
+		return EpicResult{}, err
+	}
+	seed := store.EpicLifecycle{Name: name, Dir: physical, Hub: callerHub, PersonalHandle: caller.Handle, PersonalSessionID: caller.SessionID, Server: caller.Server, Crew: crewName, OpenOpID: r.OpID}
 	var op *store.EpicOpRecord
 	// release frees LockEpicLifecycle when an op id took it: once the new
 	// session is recorded, or on any return before.
@@ -250,7 +254,7 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 		}
 		return EpicResult{}, fmt.Errorf("trust preflight: %w", err)
 	}
-	narrate := fmt.Sprintf("Narrate the Epic %q for the personal agent %s. On this first turn, refresh the view, add your reading with --summary, and end your turn: do not mail %s now. Mail it only when your role prompt says so (its question, a hand-back or orchestrator departure, a wait on the human).", name, caller.Handle, caller.Handle)
+	narrate := fmt.Sprintf("Narrate the Epic %q for its Hub's personal agent (%s opened it). On this first turn, refresh the view, add your reading with --summary, and end your turn: do not mail %s now, nor any personal agent. Mail one only when your role prompt says so (its question, a hand-back or orchestrator departure, a wait on the human), always as `rex-amq-adapter mail send --to personal`: the adapter delivers to whichever personal agent of the Hub is with the user.", name, caller.Handle, caller.Handle)
 	// The narrator's tab first and the orchestrator's last, which Rex makes
 	// the session's active tab; both keep Rex's placeholder name, so each
 	// follows its agent (core.FollowTab).

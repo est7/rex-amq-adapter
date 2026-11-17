@@ -164,6 +164,15 @@ func (m managed) post(ctx context.Context, verb string, args []string) (int, err
 		*body = string(b)
 	}
 	o.Args = append(mailFlagArgs(fs, "subject", "kind", "priority", "labels", "allow-empty", "allow-self", "strict", "thread", "refs", "wait-for", "wait-timeout"), "--body="+*body)
+	// A narrator's mail to its Hub's personal agent goes to whichever is
+	// with the user (C26).
+	var route *MailRoute
+	if m.rec.Role == core.NarratorRole {
+		var err error
+		if route, err = m.e.routeNarratorMail(ctx, m.rec, &o, func(name string) bool { return mailFlagPresent(fs, name) }); err != nil {
+			return 1, err
+		}
+	}
 	sent, out, err := m.e.post(ctx, o)
 	if err != nil {
 		if len(out) > 0 {
@@ -173,10 +182,13 @@ func (m managed) post(ctx context.Context, verb string, args []string) (int, err
 	}
 	m.e.repairWakers(ctx, sent.To)
 	if *asJSON {
-		_, err = m.stdout.Write(out)
+		_, err = m.stdout.Write(withRoute(out, route))
 		return 0, err
 	}
 	past := map[string]string{"send": "Sent", "reply": "Replied"}[verb]
+	if o.ReplyTo == "" && verb == "reply" {
+		past = "Sent"
+	}
 	_, err = fmt.Fprintf(m.stdout, "%s %s to %s\n", past, sent.ID, strings.Join(sent.To, ","))
 	return 0, err
 }

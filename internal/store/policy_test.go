@@ -43,3 +43,34 @@ func TestEpicPolicyStore(t *testing.T) {
 		t.Errorf("a corrupt policy read as ok=%v err=%v", ok, err)
 	}
 }
+
+// A policy written before policies had a kind (only epic wrote one) reads
+// as an Epic's, unattended as it was; a Hub's reads as a Hub's, and an
+// unknown kind is an error.
+func TestSessionPolicyReadsALegacyEpicPolicy(t *testing.T) {
+	s := Store{P: Paths{Home: t.TempDir()}}
+	path := s.P.policyPath("session:old")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"session_id":"session:old","server":"unix:///s.sock","unattended":true,"created_by":"claude-01","created_at":"2026-11-15T00:00:00Z"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p, ok, err := s.SessionPolicy("session:old")
+	if err != nil || !ok || !p.Epic() || p.Hub() || !p.Unattended || p.Kind != "" {
+		t.Fatalf("legacy policy %+v %v %v", p, ok, err)
+	}
+	hub := SessionPolicy{Kind: PolicyHub, SessionID: "session:h", HubKey: "unix:///s.sock|/me"}
+	if err := s.PutSessionPolicy(hub); err != nil {
+		t.Fatal(err)
+	}
+	if p, ok, _ := s.SessionPolicy("session:h"); !ok || !p.Hub() || p.Epic() || p.HubKey != hub.HubKey {
+		t.Fatalf("hub policy %+v", p)
+	}
+	if err := os.WriteFile(path, []byte(`{"kind":"other","session_id":"session:old"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := s.SessionPolicy("session:old"); err == nil || ok {
+		t.Errorf("an unknown kind read as ok=%v err=%v", ok, err)
+	}
+}

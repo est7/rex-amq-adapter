@@ -169,6 +169,7 @@ func TestHubSessionPure(t *testing.T) {
 	}{
 		"labelled implementer": {"implementer | fix", HookInput{}},
 		"summoned":             {"", HookInput{SummonToken: "0123456789abcdef"}},
+		"summoned as personal": {"personal | x", HookInput{SummonToken: "0123456789abcdef"}},
 	} {
 		r := hookAs(t, e, term, "block:b", "b-"+strings.ReplaceAll(name, " ", "-"), in.label, in.in)
 		if r.Notice != core.HubRefusalNotice || !strings.Contains(r.Notice, "epic open") {

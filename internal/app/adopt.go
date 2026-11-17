@@ -323,6 +323,10 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 		}
 		rec.lease.Adopting = false
 	}
+	if rec.Role == core.PersonalRole && arrived {
+		// Mail its Hub's departed personal agents left pending (C26).
+		e.redeliverPending(ctx, rec)
+	}
 	out.Agent = rec
 	return out, nil
 }

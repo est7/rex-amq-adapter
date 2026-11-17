@@ -1,5 +1,7 @@
 package core
 
+import "fmt"
+
 // Admission (Claim C25): a Rex session is a Hub's or an Epic's, never both.
 // A session with a Hub policy or a live personal agent holds only personal
 // agents; a personal agent lives only in such a session. Adoption, join, and
@@ -71,3 +73,15 @@ func AutoPersonal(f SessionFacts, labelled, summoned, unattended, inHub bool) bo
 // HubRefusalNotice is what an agent refused admission to a Hub session is
 // told instead of an identity.
 const HubRefusalNotice = "AMQ: this Rex session is a Hub, for personal agents only, so this agent got no AMQ identity, mailbox, or lease. Multi-agent work opens an Epic: `rex-amq-adapter epic open <name> --cwd <dir> --asked \"<the user's words>\"`."
+
+// ObligationNotice is the start-notice line for n (> 0) Epics linked to a
+// personal agent's Hub whose hand-back waits for it; "" for none.
+func ObligationNotice(n int) string {
+	switch {
+	case n <= 0:
+		return ""
+	case n == 1:
+		return "1 linked Epic has a pending hand-back: `rex-amq-adapter epic list`."
+	}
+	return fmt.Sprintf("%d linked Epics have pending hand-backs: `rex-amq-adapter epic list`.", n)
+}
