@@ -11,7 +11,7 @@
 # A project's .agents/crews/routing.toml, then the user's
 # $XDG_CONFIG_HOME/rex-amq-adapter/crews/routing.toml, override this file
 # role by role: the first file with a table for the role wins it whole.
-# `rex-amq-adapter crews show --role <R>` prints what applies and from where.
+# `rex-amq-adapter crew show --role <R>` prints what applies and from where.
 #
 # effort: off|minimal|low|medium|high|xhigh|max, as the CLI takes it
 # (claude and agy: low..max; codex: off..max, off as "none"; pi: off..max).
