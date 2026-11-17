@@ -342,7 +342,8 @@ func (s Store) DepartedFrom(block string) (Identity, bool, error) {
 // AcquireLease records that l.Handle's agent runs as l.Incarnation in
 // l.BlockID from at, and returns the lease written. The handle needs an
 // identity. A lease the same process already holds keeps its epoch; any
-// other starts the next one, continuing past the handle's last placement.
+// other, including a process of the same pid on another server, starts the
+// next one, continuing past the handle's last placement.
 // AcquiredAt is the caller's. The identity's fence
 // moves to the lease's session (a new generation when it is another). Any
 // other handle's lease on the block is released as DepartReplaced (I3).
@@ -367,7 +368,7 @@ func (s Store) AcquireLease(l Lease, at time.Time) (Lease, error) {
 	}
 	for _, o := range leases {
 		switch {
-		case o.Handle == l.Handle && o.Incarnation.Same(l.Incarnation):
+		case o.Handle == l.Handle && o.Server == l.Server && o.Incarnation.Same(l.Incarnation):
 			l.Epoch = o.Epoch
 		case o.Handle == l.Handle:
 			l.Epoch = max(l.Epoch, o.Epoch+1)

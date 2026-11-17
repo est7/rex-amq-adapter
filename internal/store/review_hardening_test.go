@@ -77,3 +77,28 @@ func TestLeaseReadersDuringReleaseRace(t *testing.T) {
 	close(stop)
 	wg.Wait()
 }
+
+// Two servers' processes are different processes even when their pids are
+// equal, and a remote incarnation's start time is unknown: a lease acquired
+// on another server starts the next epoch, so the old holder's epoch cannot
+// release it (I4).
+func TestLeaseAdvancesEpochAcrossServers(t *testing.T) {
+	s := testStore(t)
+	mustIdentity(t, s, Identity{Handle: "claude-01", Kind: core.Claude})
+	old := Lease{Handle: "claude-01", Place: Place{Server: "tcp://old-host", BlockID: "block:old"}, Incarnation: Incarnation{PID: 42}}
+	first := mustLease(t, s, old, t0)
+	moved := old
+	moved.Place = Place{Server: "tcp://new-host", BlockID: "block:new"}
+	next := mustLease(t, s, moved, t0)
+	if next.Epoch != first.Epoch+1 {
+		t.Fatalf("the same pid on another server kept epoch %d -> %d", first.Epoch, next.Epoch)
+	}
+	if released, err := s.ReleaseLease("claude-01", first.Epoch, Departure{Reason: DepartSessionEnd, At: t0}); err != nil || released {
+		t.Fatalf("the old server's epoch released the new lease: %v %v", released, err)
+	}
+	// The same process acquiring again on its own server keeps its epoch.
+	again := mustLease(t, s, moved, t0)
+	if again.Epoch != next.Epoch {
+		t.Fatalf("the same process re-acquiring moved the epoch %d -> %d", next.Epoch, again.Epoch)
+	}
+}
