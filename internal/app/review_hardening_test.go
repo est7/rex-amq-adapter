@@ -406,3 +406,29 @@ func TestServerScopeOfTheIdentityFallback(t *testing.T) {
 		t.Fatalf("the remote codex-01 moved: %+v", far)
 	}
 }
+
+// The agent resumes, inside its own process, an earlier conversation of its
+// own identity (one it left with /clear). The hook adopts again so that
+// conversation is current: its tool shells find their identity by it.
+// A conversation the identity never recorded (an agy subagent's) changes
+// nothing (TestAgySubagentDoesNotTakeThePane).
+func TestInProcessResumeOfAnEarlierOwnSessionMakesItCurrent(t *testing.T) {
+	e := realAmqEnv(t, &fakeTerm{state: "idle"})
+	plant(t, e, seed{Handle: "claude-01", Kind: core.Claude, Server: fakeServer, BlockID: block, AgentPID: os.Getpid(), AgentSessionID: "before-clear"})
+	id, _, err := e.Store.IdentityOf("claude-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = e.Store.PutIdentity(id.WithSession("after-clear")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = e.Hook(context.Background(), EventPrompt, core.Claude, Location{Server: fakeServer, Block: block}, HookInput{SessionID: "before-clear", AgentPID: os.Getpid()}); err != nil {
+		t.Fatal(err)
+	}
+	if got := recordNamed(t, e, "claude-01"); got.Session() != "before-clear" || !got.Live() {
+		t.Fatalf("after resuming before-clear in-process, claude-01's current session is %q (live=%v)", got.Session(), got.Live())
+	}
+	if c, err := e.Caller(context.Background(), envOf("CLAUDE_CODE_SESSION_ID", "before-clear")); err != nil || c.Block != block {
+		t.Fatalf("the resumed conversation's tool shell: %+v %v; want claude-01's %s", c, err, block)
+	}
+}

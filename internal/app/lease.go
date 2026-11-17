@@ -23,9 +23,11 @@ const (
 	// own: the record is this agent's, held by its current process.
 	own fit = iota
 	// staleLease: this agent's session, but the record names a process the
-	// hook does not descend from. The conversation was resumed in a new
-	// process (agy fires no SessionStart for that), or the recorded pid now
-	// belongs to another program. Adopt again; the mailbox is still its own.
+	// hook does not descend from, or another of its sessions as current. The
+	// conversation was resumed in a new process (agy fires no SessionStart for
+	// that), the recorded pid now belongs to another program, or the process
+	// resumed an earlier conversation of its own. Adopt again; the mailbox is
+	// still its own.
 	staleLease
 	// foreign: the record belongs to another agent: another kind replaced it
 	// in the block, or another process does not name the record's session.
@@ -49,10 +51,21 @@ func (e Env) recordFit(kind core.Kind, rec agent, in HookInput) fit {
 	// Another session from the record's own process is not taken as a
 	// switch: agy runs each subagent as a conversation of its own in the same
 	// process, and its hooks carry the subagent's id from the parent's pane.
-	// A session another identity holds is: the process switched to that
-	// conversation (an in-process resume), whose identity and lease decide
-	// who speaks for it (Adopt).
-	if in.SessionID != "" && !slices.Contains(rec.Sessions, in.SessionID) && e.heldByAnother(kind, rec.Handle, in.SessionID) {
+	// A session the record knows, or another identity holds, is: the process
+	// switched to that conversation (an in-process resume). An earlier one of
+	// its own becomes its current session again; another identity's decides
+	// who speaks for it (Adopt). Not for agy: a subagent's SessionStart
+	// records the subagent's id among the parent's sessions, so its hooks and
+	// the parent's would take the pane in turns.
+	switch {
+	case in.SessionID == "" || in.SessionID == rec.Session():
+		return own
+	case slices.Contains(rec.Sessions, in.SessionID):
+		if kind == core.Agy {
+			return own
+		}
+		return staleLease
+	case e.heldByAnother(kind, rec.Handle, in.SessionID):
 		return foreign
 	}
 	return own
