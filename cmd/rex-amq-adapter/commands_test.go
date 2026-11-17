@@ -548,3 +548,15 @@ func TestListCommandsAreBounded(t *testing.T) {
 		{[]string{"mail", "dlq", "list", "--limit", "5", "--fields", "id"}, 5, "failed_precondition"},
 	})
 }
+
+// A flag's value is never a global option: the hostile --to is still
+// validated rather than answered with help, and --body --text stays in
+// machine mode (one envelope).
+func TestFlagValuesAreNotGlobals(t *testing.T) {
+	isolate(t)
+	stubTools(t)
+	check(t, []want{
+		{[]string{"mail", "send", "--to", "../../etc/passwd", "--subject", "s", "--body", "--help"}, 2, "invalid_input"},
+		{[]string{"mail", "send", "--to", "claude-02", "--subject", "s", "--body", "--text"}, 5, "failed_precondition"},
+	})
+}

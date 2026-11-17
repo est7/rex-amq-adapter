@@ -129,27 +129,52 @@ type Globals struct {
 	JSON, Text, Help bool
 }
 
-// ScanGlobals finds --json, --text, and --help (or -h) before "--".
-func ScanGlobals(args []string) Globals {
+// ScanGlobals finds --json, --text, and --help (or -h) where a flag
+// stands, before "--": the value of a flag that takes one is that value,
+// never a global (mail send --body --help sends "--help").
+func (r *Registry) ScanGlobals(args []string) Globals {
+	cmd, _ := r.resolve(args)
 	var g Globals
-	for _, a := range args {
-		switch a {
-		case "--":
+	for i := 0; i < len(args); i++ {
+		switch a := args[i]; {
+		case a == "--":
 			return g
-		case "--json":
+		case a == "--json":
 			g.JSON = true
-		case "--text":
+		case a == "--text":
 			g.Text = true
-		case "--help", "-h":
+		case a == "--help" || a == "-h":
 			g.Help = true
+		case cmd != nil && strings.HasPrefix(a, "--") && !strings.Contains(a, "="):
+			if f := cmd.flag(a[2:]); f != nil && f.Kind != KindBool {
+				i++ // its value, whatever it looks like
+			}
 		}
 	}
 	return g
 }
 
-// Printer is the printer for args, before any command is resolved.
-func Printer(args []string, s out.Streams, getenv func(string) string) out.Printer {
-	g := ScanGlobals(args)
+// resolve is the longest declared command the leading words of args name,
+// and how many words it takes.
+func (r *Registry) resolve(args []string) (*Command, int) {
+	var words []string
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") {
+			break
+		}
+		words = append(words, a)
+	}
+	for i := len(words); i > 0; i-- {
+		if c := r.Find(words[:i]...); c != nil {
+			return c, i
+		}
+	}
+	return nil, 0
+}
+
+// Printer is the printer for args, before the command runs.
+func (r *Registry) Printer(args []string, s out.Streams, getenv func(string) string) out.Printer {
+	g := r.ScanGlobals(args)
 	return out.Printer{Streams: s, Mode: out.SelectMode(g.JSON, g.Text, s.StdoutTTY), TraceID: out.TraceID(getenv)}
 }
 
@@ -157,7 +182,7 @@ func Printer(args []string, s out.Streams, getenv func(string) string) out.Print
 // status. ctx carries the context, environment, stdin, and printer.
 func (r *Registry) Execute(ctx *Ctx, args []string) int {
 	p := ctx.Out
-	g := ScanGlobals(args)
+	g := r.ScanGlobals(args)
 	if g.JSON && g.Text {
 		return p.Fail(Usage(nil, "--json and --text pick opposite output modes: give one").WithHint("run `rex-amq-adapter --help`"))
 	}
@@ -168,15 +193,7 @@ func (r *Registry) Execute(ctx *Ctx, args []string) int {
 		}
 		words = append(words, a)
 	}
-	// The longest declared command the leading words name.
-	var cmd *Command
-	n := 0
-	for i := len(words); i > 0; i-- {
-		if c := r.Find(words[:i]...); c != nil {
-			cmd, n = c, i
-			break
-		}
-	}
+	cmd, n := r.resolve(args)
 	if cmd == nil {
 		// The longest group the leading words name.
 		k := 0

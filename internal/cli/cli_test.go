@@ -243,3 +243,28 @@ func TestSignalledCommandAnswersWithTheSignal(t *testing.T) {
 		}
 	}
 }
+
+// --json, --text, and --help are global only where a flag stands: as the
+// value of a flag that takes one, or after --, they are that value.
+func TestGlobalsAreNotFlagValues(t *testing.T) {
+	r := &Registry{Commands: []*Command{{Path: []string{"mail", "send"}, Tier: TierRead, Examples: []string{"a", "b"},
+		Flags: []Flag{{Name: "body", Value: Value{Kind: KindBody}}, {Name: "to", Value: Value{Kind: KindHandle}}, {Name: "dry-run", Value: Value{Kind: KindBool}}},
+		Run:   func(*Ctx, Input) (Result, error) { return Result{}, nil }}}}
+	if err := r.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	for args, want := range map[string]Globals{
+		"mail send --body --help":           {},
+		"mail send --body --text --to x":    {},
+		"mail send --to x --body=--json":    {},
+		"mail send --dry-run --help":        {Help: true},
+		"mail send --to x --json":           {JSON: true},
+		"mail send --to x -- --text":        {},
+		"nonesuch --help":                   {Help: true},
+		"mail send --body x --text --to -h": {Text: true},
+	} {
+		if got := r.ScanGlobals(strings.Fields(args)); got != want {
+			t.Errorf("%q: %+v, want %+v", args, got, want)
+		}
+	}
+}

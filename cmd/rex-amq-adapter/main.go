@@ -44,7 +44,7 @@ func run(args []string, s out.Streams, getenv func(string) string, stdin io.Read
 			return runInternal(args[1:], s, getenv, stdin)
 		}
 	}
-	p := cli.Printer(args, s, getenv)
+	p := registry().Printer(args, s, getenv)
 	c := &cli.Ctx{Getenv: getenv, Stdin: stdin, Out: p}
 	return protect(c, func() int { return execute(c, args) })
 }
