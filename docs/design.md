@@ -423,9 +423,10 @@ lock, as every adoption, departure, and collection does):
 
 The **incarnation** is the agent's process: its pid and its start time, so a
 pid the kernel reused for another program is not taken for the agent. The
-start time is the `p_starttime` of the `kinfo_proc` the ancestry read already
-fetches on macOS, and field 22 of `/proc/<pid>/stat` on Linux; it is 0 where
-it cannot be read (a remote server's process), and 0 matches any start time.
+start time is `p_starttime` from the process's `kinfo_proc`, the sysctl record
+the ancestry walk reads, on macOS, and field 22 (`starttime`) of
+`/proc/<pid>/stat` on Linux; it is 0 where it cannot be read (a remote
+server's process), and 0 matches any start time.
 The **epoch** orders a handle's leases: a lease the same process already holds
 keeps its epoch (a repeated hook, a `/clear`, a Claude job shown in another
 pane), and any other process takes the next one, continuing past the last
@@ -457,11 +458,14 @@ of its generation. An adoption that leases the handle ensures its waker; a
 departure that releases the lease retires it. A lease that moves to another
 block in the same process (a Claude job shown in another pane) keeps the same
 waker, pid and generation, since nothing in its target changed (executed in
-`session_binding_red_test.go`). A handle taken over by another process (a pane
-that resumes it after its holder closed, a conversation started again after a
-Rex restart) follows the holder's release, which retired the old waker, and
-its adoption starts a new one, which rings for the mail kept unread (executed
-in `internal/e2e/restart_test.go`).
+`session_binding_red_test.go`). A handle another process takes over keeps its
+waker the same way when the old lease is still held at the takeover: the
+lease moves at the next epoch without a release (traced, `adopt.go` takeover
+and `amq.Ensure`). When the old lease was released first, by its holder's
+`SessionEnd` or by a collection that found the holder gone (as after a Rex
+restart), the release retired the waker, and the adoption starts a new one
+that rings for the mail kept unread (executed in
+`internal/e2e/restart_test.go`).
 
 The binding is the lease: `(server, block_id, incarnation)`, with the
 server's instance id. A different process in the same block is a different
@@ -666,7 +670,7 @@ The shared AMQ root is transport, not a discovery scope; the agent guide
 uses the adapter's `who` instead of the global `amq who` directory.
 Rex publishes layout events (`session_view_changed`, `block_closed`,
 `terminal.child_exited`, which `rex-durable` subscribes to), but the adapter
-subscribes to none and keeps no process running to hear them: the moment that
+subscribes to none: the moment that
 matters, an agent appearing, is an adoption, so adoption does the work under
 the lifecycle lock, which also serialises agents that start together:
 
@@ -1205,7 +1209,8 @@ content hash).
 non-zero (amq treats a deferred marker with exit 0 as `uncertain`). The
 payload, amq's notification, is not used: it previews the sender's subject,
 which must never be typed into a prompt. Any other number of arguments is
-`failed` (`usage`).
+`failed` (`inject: want <handle> <root> <payload>`); a handle or root that
+does not parse is `failed` (`usage`).
 
 The waker names no server or block. Where the handle runs is read from its
 lease when the doorbell fires, and the injector only reads it: releasing a
@@ -1483,8 +1488,7 @@ Rex kept:
   sent to it in the old session is fenced from it, and nothing under
   `sessions/<old session>/` is attached to the new session: the Epic's
   lifecycle, view, crew, policy, and links stay with the old id. The adapter
-  does not merge sessions; an Epic that must continue after a rebuild is
-  opened again. The handle, lease, and fence are executed with
+  does not merge sessions. The handle, lease, and fence are executed with
   `--restore=false` (`TestRexRebuildTakesTheHandleOverBehindANewFence`); the
   Epic boundary follows from that state being keyed by session id (traced,
   `internal/store/session.go`); `--discard` itself was not run.
@@ -1548,15 +1552,16 @@ modeled on `rex skill`:
   Rex's own skill, so an agent needs one skill lookup, not two.
 - **Upgrading from the record model.** There is no migration and no
   compatibility path: identities and leases replace the earlier per-handle
-  record files, and the waker target names only the handle and root. The
-  upgrade stops the adapter's running `amq wake` processes and deletes the
+  record files, and the waker target names only the handle and root. Whoever
+  upgrades stops the adapter's running `amq wake` processes and deletes the
   state directory (`~/.local/state/rex-amq-adapter`, or
   `REX_AMQ_ADAPTER_HOME`) before the new binary runs; the adapter itself never
   deletes it. The shared AMQ root lives there, so mail still unread at the
   upgrade goes with it. Each live agent is adopted afresh at its next hook,
-  into `identities/` and `leases/`, under a handle named afresh. A waker left
-  running from before calls the injector with the earlier five arguments and
-  gets `failed` (`usage`), so it never types into a pane.
+  into `identities/` and `leases/`, under a handle named afresh. Should an old
+  waker keep running over a state directory that was not wiped, it calls the
+  injector with the earlier five arguments and gets `failed`, so it never
+  types into a pane.
 
 ## 8. Paths
 
@@ -1589,7 +1594,7 @@ Overridable with `REX_AMQ_ADAPTER_HOME` (tests use a temporary directory).
 ├── ledger/<handle>.json      announced message ids
 ├── ledger/<handle>.sent      the last sent message checked for a departed recipient
 ├── inject/<handle>.jsonl     injector outcomes
-├── inject/.<block>.lock      held while the injector or the watchdog types into a block
+├── inject/.<block>.lock      the injector's lock for a block, which the watchdog also takes before it acts on the pane
 ├── logs/<handle>.log         amq wake stdout/stderr
 ├── logs/watch-<session>.log  a session watcher's stdout/stderr
 ├── logs/hooks.log            hook failures

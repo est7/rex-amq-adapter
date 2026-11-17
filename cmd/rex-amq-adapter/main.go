@@ -761,13 +761,8 @@ func runSummon(args []string) int {
 			return fail(err)
 		}
 		if st.Handle != "" {
-			if res, err = env.Adopted(res, st.Handle); err != nil {
-				return fail(err)
-			}
-			out = summonOutput(res)
-		}
-		out["startup"] = st.Status
-		if st.Handle != "" {
+			// The brief first: reading the adopted identity back only adds
+			// its session and directory to the result.
 			if !res.Mailed {
 				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 				err = env.Deliver(ctx, loc, st.Handle, *kind, *subject, *body)
@@ -775,9 +770,14 @@ func runSummon(args []string) int {
 				if err != nil {
 					return fail(err)
 				}
-				out["mailed"] = true
+				res.Mailed = true
 			}
+			if res, err = env.Adopted(res, st.Handle); err != nil {
+				return fail(err)
+			}
+			out = summonOutput(res)
 		}
+		out["startup"] = st.Status
 	}
 	b, _ := json.Marshal(out)
 	fmt.Println(string(b))
