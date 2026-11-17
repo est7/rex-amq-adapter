@@ -274,11 +274,14 @@ func messageIDs(dir string) ([]string, error) {
 	return ids, nil
 }
 
+// ErrNoBinary is no amq binary found.
+var ErrNoBinary = errors.New("amq not found")
+
 // ResolveBin finds amq on PATH, then in ~/.local/bin and Homebrew.
 func ResolveBin() (string, error) {
 	if p := os.Getenv("REX_AMQ_AMQ"); p != "" {
 		if st, err := os.Stat(p); err != nil || st.IsDir() {
-			return "", fmt.Errorf("REX_AMQ_AMQ=%q names no amq binary", p)
+			return "", fmt.Errorf("%w: REX_AMQ_AMQ=%q names no amq binary", ErrNoBinary, p)
 		}
 		return p, nil
 	}
@@ -291,7 +294,7 @@ func ResolveBin() (string, error) {
 			return p, nil
 		}
 	}
-	return "", errors.New("amq not found on PATH, ~/.local/bin, or Homebrew; set REX_AMQ_AMQ")
+	return "", fmt.Errorf("%w on PATH, ~/.local/bin, or Homebrew; set REX_AMQ_AMQ", ErrNoBinary)
 }
 
 // Poster sends mail (amq send or reply): CLI and Fake are Posters.
@@ -351,6 +354,10 @@ func Run(ctx context.Context, amqBin string, stdin io.Reader, stdout, stderr io.
 	var ee *exec.ExitError
 	if errors.As(err, &ee) {
 		return ee.ExitCode(), nil
+	}
+	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrPermission) {
+		// The binary itself cannot be started: as unavailable as no binary.
+		return 1, fmt.Errorf("%w: %w", ErrNoBinary, err)
 	}
 	if err != nil {
 		return 1, err

@@ -3,7 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -99,50 +99,35 @@ esac
 	}
 }
 
-func captureWho(t *testing.T, args ...string) (int, string, string) {
+// agentText runs an agent verb in text mode (--text): the table on stdout,
+// diagnostics on stderr.
+func agentText(t *testing.T, args ...string) (int, string, string) {
 	t.Helper()
-	out, err := os.CreateTemp(t.TempDir(), "stdout")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer out.Close()
-	errout, err := os.CreateTemp(t.TempDir(), "stderr")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer errout.Close()
-	beforeOut, beforeErr := os.Stdout, os.Stderr
-	os.Stdout, os.Stderr = out, errout
-	defer func() { os.Stdout, os.Stderr = beforeOut, beforeErr }()
-	code := runWho(args)
-	if _, err := out.Seek(0, io.SeekStart); err != nil {
-		t.Fatal(err)
-	}
-	b, err := io.ReadAll(out)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := errout.Seek(0, io.SeekStart); err != nil {
-		t.Fatal(err)
-	}
-	e, err := io.ReadAll(errout)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return code, string(b), string(e)
+	r := invoke(t, "", append(args, "--text")...)
+	return r.code, r.stdout, r.stderr
 }
 
-func TestWhoOnlyListsAgentsInCallersSession(t *testing.T) {
+// collect runs `agent collect` in machine mode and returns its exit status
+// and its warnings joined: what reconciliation could not settle.
+func collect(t *testing.T) (int, string) {
+	t.Helper()
+	code, env := machine(t, "agent", "collect")
+	return code, strings.Join(env.Warnings, "\n")
+}
+
+// agent list shows the caller's Rex session only, both tabs of it, and
+// with --all its departed agents too; the text table has ROLE and TAB.
+func TestAgentListOnlyListsAgentsInCallersSession(t *testing.T) {
 	for _, all := range []bool{false, true} {
 		t.Run(fmt.Sprintf("all=%v", all), func(t *testing.T) {
 			whoFixture(t)
-			var args []string
+			args := []string{"agent", "list"}
 			if all {
-				args = []string{"--all"}
+				args = append(args, "--all")
 			}
-			code, out, errout := captureWho(t, args...)
+			code, out, errout := agentText(t, args...)
 			if code != 0 {
-				t.Fatalf("who failed: %d %s", code, errout)
+				t.Fatalf("agent list failed: %d %s", code, errout)
 			}
 			got := strings.Fields(out)
 			want := []string{"pi-self", "pi-mate", "pi-moved-in", "pi-other", "pi-moved-out"}
@@ -165,8 +150,6 @@ func TestWhoOnlyListsAgentsInCallersSession(t *testing.T) {
 					t.Errorf("departed agent %s appeared without --all:\n%s", handle, out)
 				}
 			}
-			// The tab is where the layout places a live agent, by its label
-			// (window:2 has none), and where a departed one was recorded.
 			rows := map[string][]string{}
 			for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 				f := strings.Fields(line)
@@ -191,7 +174,9 @@ func TestWhoOnlyListsAgentsInCallersSession(t *testing.T) {
 	}
 }
 
-func TestWhoCannotFallBackToGlobalDiscovery(t *testing.T) {
+// Without its session resolved, agent list fails and lists nothing: it
+// never falls back to every record.
+func TestAgentListCannotFallBackToGlobalDiscovery(t *testing.T) {
 	for _, mode := range []string{"outside-rex", "unavailable", "unknown", "list-failed"} {
 		t.Run(mode, func(t *testing.T) {
 			whoFixture(t)
@@ -199,55 +184,181 @@ func TestWhoCannotFallBackToGlobalDiscovery(t *testing.T) {
 			if mode == "outside-rex" {
 				t.Setenv("REX_BLOCK", "")
 			}
-			code, out, _ := captureWho(t)
-			if code == 0 || out != "" {
-				t.Fatalf("unresolved session must fail without listing agents: code=%d output=%q", code, out)
+			code, env := machine(t, "agent", "list")
+			if code == 0 || env.OK || string(env.Data) != "null" {
+				t.Fatalf("unresolved session must fail without listing agents: code=%d data=%s", code, env.Data)
 			}
 		})
 	}
 }
 
-func TestWhoDoesNotExposeCollectionErrorsFromAnotherSession(t *testing.T) {
-	whoFixture(t) // amq fails, so an attempt to park shows on stderr
-	whoAgent(t, testAgent{Handle: "pi-away", BlockID: "block:away", SessionID: "session:2", WindowID: "window:9"})
-	code, out, errout := captureWho(t)
-	if code != 0 || errout != "" {
-		t.Fatalf("another session's broken waker affected discovery: code=%d stderr=%q", code, errout)
+// snapshot is every file under dir with its contents.
+func snapshot(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	files := map[string]string{}
+	err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			files[p+"/"] = ""
+			return nil
+		}
+		b, err := os.ReadFile(p)
+		files[p] = string(b)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if strings.Contains(out, "pi-away") {
-		t.Fatalf("another session's agent was exposed: %s", out)
+	return files
+}
+
+// agent list is a pure read (CQS): over a session whose agents a
+// collection would park (a process that exited, a closed block) and with
+// amq set to fail any waker repair, it changes no byte of the state
+// directory, warns of nothing, and still shows the stale agents live;
+// `agent collect` is what reconciles them.
+func TestAgentListPure(t *testing.T) {
+	whoFixture(t)
+	gone := exec.Command("/usr/bin/true")
+	if err := gone.Run(); err != nil {
+		t.Fatal(err)
+	}
+	whoAgent(t, testAgent{Handle: "pi-mate", BlockID: "block:mate", AgentPID: gone.Process.Pid})
+	whoAgent(t, testAgent{Handle: "pi-closed", BlockID: "block:closed"})
+	marker := filepath.Join(t.TempDir(), "amq-ran")
+	amq := filepath.Join(t.TempDir(), "amq")
+	if err := os.WriteFile(amq, []byte("#!/bin/sh\ntouch "+marker+"\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("REX_AMQ_AMQ", amq)
+	home := os.Getenv("REX_AMQ_ADAPTER_HOME")
+	before := snapshot(t, home)
+	for _, args := range [][]string{{"agent", "list"}, {"agent", "list", "--all"}, {"agent", "list", "--fields", "handle,lifecycle,delivery"}} {
+		code, env := machine(t, args...)
+		if code != 0 || len(env.Warnings) != 0 {
+			t.Fatalf("%v: exit %d, warnings %v", args, code, env.Warnings)
+		}
+	}
+	if after := snapshot(t, home); !maps.Equal(before, after) {
+		for k := range after {
+			if before[k] != after[k] {
+				t.Errorf("agent list changed %s", k)
+			}
+		}
+		for k := range before {
+			if _, ok := after[k]; !ok {
+				t.Errorf("agent list removed %s", k)
+			}
+		}
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("agent list ran amq (a waker check or repair)")
+	}
+	if !whoRecord(t, "pi-mate").Live() || !whoRecord(t, "pi-closed").Live() {
+		t.Fatal("agent list parked an agent")
+	}
+	// The same state is what agent collect reconciles.
+	whoWorkingAmq(t)
+	if code, warnings := collect(t); code != 0 {
+		t.Fatalf("agent collect: exit %d, warnings %q", code, warnings)
+	}
+	if whoRecord(t, "pi-mate").Live() {
+		t.Error("agent collect did not park an agent whose process exited")
+	}
+}
+
+// agent list's default fields are handle, kind, role, tab, state, and
+// unread; --fields takes any core.Agent field, and the page says whether
+// it is complete.
+func TestAgentListFieldsAndPage(t *testing.T) {
+	whoFixture(t)
+	code, env := machine(t, "agent", "list", "--all")
+	if code != 0 {
+		t.Fatalf("exit %d %+v", code, env.Error)
+	}
+	var page struct {
+		Items     []map[string]any `json:"items"`
+		Total     int              `json:"total"`
+		Truncated bool             `json:"truncated"`
+	}
+	if err := json.Unmarshal(env.Data, &page); err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 7 || len(page.Items) != 7 || page.Truncated {
+		t.Fatalf("page %d/%d truncated=%v", len(page.Items), page.Total, page.Truncated)
+	}
+	for _, it := range page.Items {
+		keys := slices.Sorted(maps.Keys(it))
+		if !slices.Equal(keys, []string{"handle", "kind", "role", "state", "tab", "unread"}) {
+			t.Fatalf("default fields %v", keys)
+		}
+	}
+	code, env = machine(t, "agent", "list", "--fields", "handle,role,tab,lifecycle", "--limit", "2")
+	if code != 0 {
+		t.Fatalf("exit %d %+v", code, env.Error)
+	}
+	var proj struct {
+		Items      []core.Agent `json:"items"`
+		Truncated  bool         `json:"truncated"`
+		NextCursor string       `json:"next_cursor"`
+	}
+	if err := json.Unmarshal(env.Data, &proj); err != nil {
+		t.Fatal(err)
+	}
+	if len(proj.Items) != 2 || !proj.Truncated || proj.NextCursor == "" {
+		t.Fatalf("page of 2: %+v", proj)
+	}
+	for _, a := range proj.Items {
+		if a.Handle == "pi-mate" && (a.Role != "reviewer" || a.Tab != "Work" || a.Lifecycle.State != core.LifeLive) {
+			t.Errorf("pi-mate: %+v", a)
+		}
+	}
+	if code, env := machine(t, "agent", "list", "--cursor", proj.NextCursor, "--all"); code != 2 || env.code() != "invalid_input" {
+		t.Errorf("a cursor of another listing: exit %d %s", code, env.code())
+	}
+	if code, env := machine(t, "agent", "list", "--fields", "nonesuch"); code != 2 || env.code() != "invalid_input" {
+		t.Errorf("an unknown field: exit %d %s", code, env.code())
+	}
+}
+
+// Reconciliation reports what it could not settle in band and never puts
+// another session's records in the caller's view.
+func TestAgentCollectDoesNotExposeAnotherSession(t *testing.T) {
+	whoFixture(t) // amq fails, so an attempt to park is a warning
+	whoAgent(t, testAgent{Handle: "pi-away", BlockID: "block:away", SessionID: "session:2", WindowID: "window:9"})
+	if code, warnings := collect(t); code != 0 || strings.Contains(warnings, "pi-away") {
+		t.Fatalf("another session's broken waker affected collection: code=%d warnings=%q", code, warnings)
 	}
 }
 
 // Another tab of the session is the caller's to reconcile: its agents are on
 // the same task.
-func TestWhoCollectsAnotherTabOfTheSession(t *testing.T) {
-	whoFixture(t) // amq fails, so an attempt to park shows on stderr
+func TestAgentCollectReconcilesAnotherTabOfTheSession(t *testing.T) {
+	whoFixture(t) // amq fails, so an attempt to park is a warning
 	t.Setenv("WHO_TEST_MODE", "other-gone")
-	code, _, errout := captureWho(t)
-	if code != 0 || !strings.Contains(errout, "pi-other") {
-		t.Fatalf("another tab's agent was not reconciled: code=%d stderr=%q", code, errout)
+	if code, warnings := collect(t); code != 0 || !strings.Contains(warnings, "pi-other") {
+		t.Fatalf("another tab's agent was not reconciled: code=%d warnings=%q", code, warnings)
 	}
 }
 
-func TestWhoStillCollectsAClosedBlockFromThisTab(t *testing.T) {
+func TestAgentCollectParksAClosedBlockOfThisTab(t *testing.T) {
 	whoFixture(t)
-	dir := os.Getenv("REX_AMQ_ADAPTER_HOME")
-	s := store.Store{P: store.Paths{Home: dir}}
+	s := whoStore()
 	if err := putAgent(s, testAgent{
 		Handle: "pi-closed", Kind: core.Pi, BlockID: "block:closed",
 		Server: "unix:///test.sock", SessionID: "session:1", WindowID: "window:1",
 	}); err != nil {
 		t.Fatal(err)
 	}
-	bin := filepath.Join(dir, "amq")
-	if err := os.WriteFile(bin, []byte("#!/bin/sh\necho '{\"schema\":2,\"wake\":{\"status\":\"missing\",\"live\":false}}'\n"), 0o700); err != nil {
-		t.Fatal(err)
+	whoWorkingAmq(t)
+	if code, warnings := collect(t); code != 0 {
+		t.Fatalf("collect: %d %q", code, warnings)
 	}
-	t.Setenv("REX_AMQ_AMQ", bin)
-	code, out, errout := captureWho(t, "--all")
+	code, out, errout := agentText(t, "agent", "list", "--all")
 	if code != 0 || !slices.Contains(strings.Fields(out), "pi-closed") {
-		t.Fatalf("closed block must remain discoverable as departed: code=%d stdout=%s stderr=%s", code, out, errout)
+		t.Fatalf("a closed block must remain discoverable as departed: code=%d stdout=%s stderr=%s", code, out, errout)
 	}
 	p, live, err := placed(s, "pi-closed")
 	if err != nil || live || p.BlockID != "block:closed" {
@@ -308,7 +419,7 @@ func whoRecord(t *testing.T, handle core.Handle) whoState {
 	return whoState{Place: p, live: live}
 }
 
-func TestWhoParksAnAgentWhoseProcessExitedInThisSession(t *testing.T) {
+func TestAgentCollectParksAnAgentWhoseProcessExitedInThisSession(t *testing.T) {
 	whoFixture(t)
 	whoWorkingAmq(t)
 	gone := exec.Command("/usr/bin/true")
@@ -316,40 +427,39 @@ func TestWhoParksAnAgentWhoseProcessExitedInThisSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	whoAgent(t, testAgent{Handle: "pi-mate", BlockID: "block:mate", AgentPID: gone.Process.Pid})
-	code, out, errout := captureWho(t, "--all")
-	if code != 0 || errout != "" {
-		t.Fatalf("who failed: code=%d stderr=%q", code, errout)
+	if code, warnings := collect(t); code != 0 || warnings != "" {
+		t.Fatalf("collect failed: code=%d warnings=%q", code, warnings)
 	}
 	if whoRecord(t, "pi-mate").Live() {
 		t.Fatal("an agent whose process exited was not parked")
 	}
+	_, out, _ := agentText(t, "agent", "list", "--all")
 	if !strings.Contains(out, "departed") {
 		t.Fatalf("parked agent is not listed as departed:\n%s", out)
 	}
 }
 
-func TestWhoLeavesAClosedBlockInAnotherSessionAlone(t *testing.T) {
+func TestAgentCollectLeavesAClosedBlockInAnotherSessionAlone(t *testing.T) {
 	whoFixture(t) // amq fails, so an attempt to park shows on stderr
 	for _, r := range []testAgent{
 		{Handle: "pi-closed", BlockID: "block:closed", SessionID: "session:2", WindowID: "window:9"},
 	} {
 		whoAgent(t, r)
 	}
-	code, _, errout := captureWho(t)
-	if code != 0 || strings.Contains(errout, "pi-closed") {
-		t.Fatalf("another session's closed block was collected: code=%d stderr=%q", code, errout)
+	if code, warnings := collect(t); code != 0 || strings.Contains(warnings, "pi-closed") {
+		t.Fatalf("another session's closed block was collected: code=%d warnings=%q", code, warnings)
 	}
 	if !whoRecord(t, "pi-closed").Live() {
 		t.Fatal("another session's agent was parked")
 	}
 }
 
-func TestWhoLeavesAClosedBlockOnAnotherServerAlone(t *testing.T) {
+func TestAgentCollectLeavesAClosedBlockOnAnotherServerAlone(t *testing.T) {
 	whoFixture(t)
 	whoWorkingAmq(t)
 	whoAgent(t, testAgent{Handle: "pi-closed", BlockID: "block:closed", Server: "unix:///elsewhere.sock"})
-	if code, _, errout := captureWho(t); code != 0 || errout != "" {
-		t.Fatalf("who failed: code=%d stderr=%q", code, errout)
+	if code, warnings := collect(t); code != 0 || warnings != "" {
+		t.Fatalf("collect failed: code=%d warnings=%q", code, warnings)
 	}
 	if !whoRecord(t, "pi-closed").Live() {
 		t.Fatal("another server's agent was parked")
@@ -358,7 +468,7 @@ func TestWhoLeavesAClosedBlockOnAnotherServerAlone(t *testing.T) {
 
 // An agent moved to another tab of the session stays this session's: who
 // reconciles it, and records where it is now.
-func TestWhoFollowsAnAgentMovedToAnotherTab(t *testing.T) {
+func TestAgentCollectFollowsAnAgentMovedToAnotherTab(t *testing.T) {
 	whoFixture(t)
 	whoWorkingAmq(t)
 	gone := exec.Command("/usr/bin/true")
@@ -366,8 +476,8 @@ func TestWhoFollowsAnAgentMovedToAnotherTab(t *testing.T) {
 		t.Fatal(err)
 	}
 	whoAgent(t, testAgent{Handle: "pi-moved-out", BlockID: "block:moved-out", AgentPID: gone.Process.Pid})
-	if code, _, errout := captureWho(t); code != 0 || errout != "" {
-		t.Fatalf("who failed: code=%d stderr=%q", code, errout)
+	if code, warnings := collect(t); code != 0 || warnings != "" {
+		t.Fatalf("collect failed: code=%d warnings=%q", code, warnings)
 	}
 	r := whoRecord(t, "pi-moved-out")
 	if r.Live() {
@@ -380,14 +490,14 @@ func TestWhoFollowsAnAgentMovedToAnotherTab(t *testing.T) {
 
 // A block absent from this session's layout may have moved to another session,
 // where it is alive. Only its absence from Rex proves it gone.
-func TestWhoLeavesAnAgentMovedToAnotherSessionAlone(t *testing.T) {
+func TestAgentCollectLeavesAnAgentMovedToAnotherSessionAlone(t *testing.T) {
 	whoFixture(t)
 	whoWorkingAmq(t)
 	whoAgent(t, testAgent{Handle: "pi-moved-away", BlockID: "block:elsewhere", AgentPID: os.Getpid()})
-	code, out, errout := captureWho(t, "--all")
-	if code != 0 || errout != "" {
-		t.Fatalf("who failed: code=%d stderr=%q", code, errout)
+	if code, warnings := collect(t); code != 0 || warnings != "" {
+		t.Fatalf("collect failed: code=%d warnings=%q", code, warnings)
 	}
+	_, out, _ := agentText(t, "agent", "list", "--all")
 	if !whoRecord(t, "pi-moved-away").Live() {
 		t.Fatal("a live agent moved to another session was parked")
 	}
@@ -396,95 +506,45 @@ func TestWhoLeavesAnAgentMovedToAnotherSessionAlone(t *testing.T) {
 	}
 }
 
-func TestWhoListsThisSessionWhenRetiringAWakerFails(t *testing.T) {
+func TestAgentCollectReportsAFailedWakerRetire(t *testing.T) {
 	whoFixture(t) // amq fails
 	whoAgent(t, testAgent{Handle: "pi-closed", BlockID: "block:closed"})
-	code, out, errout := captureWho(t)
+	code, warnings := collect(t)
 	if code != 0 {
-		t.Fatalf("a failed retire cost the listing: code=%d stderr=%q", code, errout)
+		t.Fatalf("a failed retire failed the collection: code=%d warnings=%q", code, warnings)
 	}
-	if !slices.Contains(strings.Fields(out), "pi-mate") {
-		t.Fatalf("this session's agents were not listed:\n%s", out)
-	}
-	if !strings.Contains(errout, "pi-closed") {
-		t.Fatalf("the failure was not reported: stderr=%q", errout)
+	if !strings.Contains(warnings, "pi-closed") {
+		t.Fatalf("the failure was not reported: warnings=%q", warnings)
 	}
 	if !whoRecord(t, "pi-closed").Live() {
 		t.Fatal("an agent whose waker survived was parked")
 	}
 }
 
-func TestWhoReconcilesEveryRecordPastAFailure(t *testing.T) {
+func TestAgentCollectReconcilesEveryRecordPastAFailure(t *testing.T) {
 	whoFixture(t) // amq fails
 	whoAgent(t, testAgent{Handle: "pi-closed-1", BlockID: "block:closed"})
 	whoAgent(t, testAgent{Handle: "pi-closed-2", BlockID: "block:closed-2"}) // one live agent per block (store I3)
-	_, _, errout := captureWho(t)
+	_, warnings := collect(t)
 	for _, handle := range []string{"pi-closed-1", "pi-closed-2"} {
-		if !strings.Contains(errout, handle) {
-			t.Errorf("collection stopped before %s: stderr=%q", handle, errout)
+		if !strings.Contains(warnings, handle) {
+			t.Errorf("collection stopped before %s: warnings=%q", handle, warnings)
 		}
 	}
 }
 
-func TestWhoListsThisSessionWhenTheLifecycleLockCannotBeTaken(t *testing.T) {
+func TestAgentCollectReportsAnUnusableLifecycleLock(t *testing.T) {
 	whoFixture(t)
 	lock := filepath.Join(os.Getenv("REX_AMQ_ADAPTER_HOME"), "lifecycle.lock")
 	if err := os.WriteFile(lock, nil, 0o400); err != nil {
 		t.Fatal(err)
 	}
-	code, out, errout := captureWho(t)
-	if code != 0 {
-		t.Fatalf("an unusable lock cost the listing: code=%d stderr=%q", code, errout)
+	if code, warnings := collect(t); code != 0 || !strings.Contains(warnings, "lifecycle.lock") {
+		t.Fatalf("the failure was not reported: code=%d warnings=%q", code, warnings)
 	}
+	code, out, errout := agentText(t, "agent", "list")
 	got := strings.Fields(out)
-	if !slices.Contains(got, "pi-mate") || !slices.Contains(got, "pi-other") || slices.Contains(got, "pi-other-server") {
-		t.Fatalf("listing is not this session's:\n%s", out)
-	}
-	if !strings.Contains(errout, "lifecycle.lock") {
-		t.Fatalf("the failure was not reported: stderr=%q", errout)
-	}
-}
-
-// who --json lists the same agents as the table, as core.Agent objects (the
-// shape events' snapshot uses), so an agent reads roles and tabs without
-// parsing columns.
-func TestWhoJSONListsTheSameAgentsAsTheTable(t *testing.T) {
-	for _, all := range []bool{false, true} {
-		t.Run(fmt.Sprintf("all=%v", all), func(t *testing.T) {
-			whoFixture(t)
-			args := []string{"--json"}
-			if all {
-				args = append(args, "--all")
-			}
-			code, out, errout := captureWho(t, args...)
-			if code != 0 {
-				t.Fatalf("who --json: %d %s", code, errout)
-			}
-			var got struct {
-				Agents []core.Agent `json:"agents"`
-			}
-			if err := json.Unmarshal([]byte(out), &got); err != nil {
-				t.Fatalf("not JSON: %v\n%s", err, out)
-			}
-			byHandle := map[core.Handle]core.Agent{}
-			for _, a := range got.Agents {
-				byHandle[a.Handle] = a
-			}
-			want := []core.Handle{"pi-self", "pi-mate", "pi-moved-in", "pi-other", "pi-moved-out"}
-			if all {
-				want = append(want, "pi-departed-1", "pi-departed-2")
-			}
-			if len(got.Agents) != len(want) {
-				t.Errorf("%d agents, want %d: %+v", len(got.Agents), len(want), got.Agents)
-			}
-			for _, h := range want {
-				if _, ok := byHandle[h]; !ok {
-					t.Errorf("missing %s", h)
-				}
-			}
-			if m := byHandle["pi-mate"]; m.Role != "reviewer" || m.Tab != "Work" || m.Lifecycle.State != core.LifeLive {
-				t.Errorf("pi-mate: %+v", m)
-			}
-		})
+	if code != 0 || !slices.Contains(got, "pi-mate") || !slices.Contains(got, "pi-other") || slices.Contains(got, "pi-other-server") {
+		t.Fatalf("listing is not this session's: %d %s\n%s", code, errout, out)
 	}
 }

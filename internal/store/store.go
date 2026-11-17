@@ -6,6 +6,8 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,6 +39,7 @@ func DefaultPaths() (Paths, error) {
 
 func (p Paths) Root() string        { return filepath.Join(p.Home, "amq-root") }
 func (p Paths) Logs() string        { return filepath.Join(p.Home, "logs") }
+func (p Paths) Blobs() string       { return filepath.Join(p.Home, "cache", "blobs") }
 func (p Paths) ledgers() string     { return filepath.Join(p.Home, "ledger") }
 func (p Paths) injects() string     { return filepath.Join(p.Home, "inject") }
 func (p Paths) lifecycle() string   { return filepath.Join(p.Home, "lifecycle.lock") }
@@ -62,7 +65,18 @@ func PathsForRoot(root string) (Paths, error) {
 // Store reads and writes state under Paths.
 type Store struct{ P Paths }
 
-func fileKey(id string) string { return strings.NewReplacer(":", "_", "/", "_").Replace(id) }
+// fileKey is the file name an id is stored under: ":", "/", and a
+// backslash become "_", so no id names another directory. An id that would still name no
+// file of its own ("", ".", "..") is stored under a hash of itself. Every
+// id the adapter stores keeps the key it always had.
+func fileKey(id string) string {
+	k := strings.NewReplacer(":", "_", "/", "_", "\\", "_").Replace(id)
+	if k == "" || strings.Trim(k, ".") == "" {
+		sum := sha256.Sum256([]byte(id))
+		return "h_" + hex.EncodeToString(sum[:16])
+	}
+	return k
+}
 
 // LockWatch is held by the watcher of session k, so a session has at most
 // one, whichever orchestrator or narrator started it.

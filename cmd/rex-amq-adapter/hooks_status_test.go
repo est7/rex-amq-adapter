@@ -29,15 +29,15 @@ func TestStatusHookApprovalNote(t *testing.T) {
 // summon's JSON line names the harness a start launched and each default it
 // passed over (agy-29's s1 review: the CLI dropped both).
 func TestSummonOutputNamesTheFallbackHarness(t *testing.T) {
-	out := summonOutput(app.SummonResult{Action: "start", Harness: core.Agy, Passed: []string{"codex: unapproved_hooks: …"}})
+	out := summonData(app.SummonResult{Action: "start", Harness: core.Agy, Passed: []string{"codex: unapproved_hooks: …"}})
 	if out["harness"] != core.Agy || len(out["passed_over"].([]string)) != 1 {
 		t.Fatalf("start: %v", out)
 	}
-	out = summonOutput(app.SummonResult{Action: "refused", Passed: []string{"codex: not installed", "agy: not installed"}})
+	out = summonData(app.SummonResult{Action: "refused", Passed: []string{"codex: not installed", "agy: not installed"}})
 	if _, ok := out["harness"]; ok || len(out["passed_over"].([]string)) != 2 {
 		t.Fatalf("refusal: %v", out)
 	}
-	if out := summonOutput(app.SummonResult{Action: "deliver"}); out["harness"] != nil || out["passed_over"] != nil {
+	if out := summonData(app.SummonResult{Action: "deliver"}); out["harness"] != nil || out["passed_over"] != nil {
 		t.Fatalf("a delivery: %v", out)
 	}
 }
@@ -70,11 +70,11 @@ func TestStatusCodexHookApprovalsReadTheAgentsHooks(t *testing.T) {
 // summon's JSON line names the agent session and directory of the agent it
 // reached, once known, and leaves both out before.
 func TestSummonOutputNamesTheAgentSessionAndCwd(t *testing.T) {
-	out := summonOutput(app.SummonResult{Action: "deliver", Handles: []core.Handle{"codex-02"}, AgentSessionID: "thread-2", Cwd: "/work/review"})
+	out := summonData(app.SummonResult{Action: "deliver", Handles: []core.Handle{"codex-02"}, AgentSessionID: "thread-2", Cwd: "/work/review"})
 	if out["agent_session_id"] != "thread-2" || out["cwd"] != "/work/review" {
 		t.Fatalf("deliver: %v", out)
 	}
-	out = summonOutput(app.SummonResult{Action: "refused"})
+	out = summonData(app.SummonResult{Action: "refused"})
 	if _, ok := out["agent_session_id"]; ok {
 		t.Fatalf("refusal: %v", out)
 	}

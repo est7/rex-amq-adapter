@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"slices"
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/core"
@@ -369,6 +370,16 @@ func joinHandles(hs []core.Handle) string {
 // (link false) revokes it. Either takes effect on the next decision, for
 // running wakers and hooks too. changed is false when nothing changed.
 func (e Env) Link(ctx context.Context, loc Location, epic string, link bool) (l core.Link, changed bool, err error) {
+	return e.link(ctx, loc, epic, link, false)
+}
+
+// PreviewLink is Link's every check with nothing written: changed says
+// whether Link would change the record.
+func (e Env) PreviewLink(ctx context.Context, loc Location, epic string, link bool) (core.Link, bool, error) {
+	return e.link(ctx, loc, epic, link, true)
+}
+
+func (e Env) link(ctx context.Context, loc Location, epic string, link, dryRun bool) (l core.Link, changed bool, err error) {
 	rec, ok, err := e.agentIn(loc)
 	if err != nil {
 		return l, false, err
@@ -384,13 +395,25 @@ func (e Env) Link(ctx context.Context, loc Location, epic string, link bool) (l 
 	}
 	l = core.Link{Personal: rec.Endpoint().Session(), Epic: core.SessionKey{Server: rec.Server, SessionID: epic}}
 	if !link {
+		if dryRun {
+			return l, e.hasLink(l), nil
+		}
 		changed, err = e.Store.DeleteLink(l)
 		return l, changed, err
 	}
 	if _, err := e.Rex.InspectSession(ctx, epic); err != nil {
 		return l, false, fmt.Errorf("Epic session %s: %w", epic, err)
 	}
+	if dryRun {
+		return l, !e.hasLink(l), nil
+	}
 	return l, true, e.Store.PutLink(l)
+}
+
+// hasLink reports whether l is recorded; an unreadable store counts as no.
+func (e Env) hasLink(l core.Link) bool {
+	all, err := e.Store.Links()
+	return err == nil && slices.Contains(all, l)
 }
 
 // LinksOf lists the links of the Personal agent in loc.

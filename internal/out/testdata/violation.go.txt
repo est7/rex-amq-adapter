@@ -1,0 +1,25 @@
+package planted
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"syscall"
+)
+
+func leak() {
+	fmt.Println("one")
+	fmt.Printf("%s\n", "two")
+	fmt.Print("three")
+	println("four")
+	print("five")
+	_ = json.NewEncoder(os.Stdout).Encode(6)
+	cmd := exec.Command("true")
+	cmd.Stdout = os.Stdout
+	_, _ = os.Stdout.Write([]byte("seven"))
+	f := os.NewFile(1, "stdout")
+	_ = f
+	_, _ = syscall.Write(syscall.Stdout, []byte("eight"))
+	fmt.Fprintln(os.Stderr, "allowed: stderr")
+}

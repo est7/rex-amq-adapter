@@ -73,37 +73,60 @@ const MaxMessage = 10 << 20
 // (a CR before its newline allowed), then one JSON object, then "---". It
 // reads no further than the header.
 func readHeader(r io.Reader) (Header, error) {
+	h, _, err := readMessage(r)
+	return h, err
+}
+
+// readMessage reads a message's header and returns the reader positioned
+// at its body.
+func readMessage(r io.Reader) (Header, *bufio.Reader, error) {
 	br := bufio.NewReader(io.LimitReader(r, MaxMessage))
 	line, err := br.ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
-		return Header{}, err
+		return Header{}, nil, err
 	}
 	if strings.TrimRight(line, "\r\n") != "---json" {
-		return Header{}, errors.New("message has no JSON header")
+		return Header{}, nil, errors.New("message has no JSON header")
 	}
 	dec := json.NewDecoder(br)
 	var h Header
 	if err := dec.Decode(&h); err != nil {
-		return Header{}, fmt.Errorf("decode message header: %w", err)
+		return Header{}, nil, fmt.Errorf("decode message header: %w", err)
 	}
 	rest := bufio.NewReader(io.MultiReader(dec.Buffered(), br))
 	for {
 		b, err := rest.ReadByte()
 		if err != nil {
-			return Header{}, errors.New("message header is not closed")
+			return Header{}, nil, errors.New("message header is not closed")
 		}
 		if b == ' ' || b == '\t' || b == '\r' || b == '\n' {
 			continue
 		}
 		if b != '-' {
-			return Header{}, errors.New("message header is not closed")
+			return Header{}, nil, errors.New("message header is not closed")
 		}
 		var tail [2]byte
 		if _, err := io.ReadFull(rest, tail[:]); err != nil || tail != [2]byte{'-', '-'} {
-			return Header{}, errors.New("message header is not closed")
+			return Header{}, nil, errors.New("message header is not closed")
 		}
-		return h, nil
+		return h, rest, nil
 	}
+}
+
+// BodyPrefix is at most max bytes of the body of message id in handle's
+// box: enough for a list's snippet, never the whole of a large message.
+func BodyPrefix(root, handle string, box Box, id string, max int) (string, error) {
+	f, err := os.Open(filepath.Join(root, "agents", handle, filepath.FromSlash(string(box)), id+".md"))
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	_, rest, err := readMessage(f)
+	if err != nil {
+		return "", err
+	}
+	b, err := io.ReadAll(io.LimitReader(rest, int64(max)))
+	return string(b), err
 }
 
 func parseHeader(b []byte) (Header, error) { return readHeader(bytes.NewReader(b)) }

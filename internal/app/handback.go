@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -35,25 +34,9 @@ const handBackMax = 256 << 10
 // lists.
 func (e Env) RecordHandBack(ctx context.Context, loc Location, body string) (store.HandBack, error) {
 	var h store.HandBack
-	rec, ok, err := e.agentIn(loc)
+	rec, err := e.handBackCaller(loc, body)
 	if err != nil {
 		return h, err
-	}
-	if !ok || !rec.Live() || !placed(rec) {
-		return h, fmt.Errorf("no AMQ identity in a Rex session for this block (%s), so there is no run to hand back", loc.Block)
-	}
-	lead, err := e.pairLead(rec)
-	if err != nil {
-		return h, err
-	}
-	if rec.Role != core.OrchestratorRole && !lead {
-		return h, fmt.Errorf("%w: only a session's %s, or a pair Epic's own %s, records its hand-back, and %s is %q", ErrRefused, core.OrchestratorRole, implementerRole, rec.Handle, rec.Role)
-	}
-	if strings.TrimSpace(body) == "" {
-		return h, errors.New("a hand-back needs its report: TEXT, @FILE, or - for stdin")
-	}
-	if len(body) > handBackMax {
-		return h, fmt.Errorf("the hand-back is %d bytes, over the %d the view holds whole; shorten it", len(body), handBackMax)
 	}
 	unlock, err := e.Store.LockEpicLifecycle(ctx)
 	if err != nil {
@@ -180,4 +163,41 @@ func (e Env) pairLead(rec agent) (bool, error) {
 		}
 	}
 	return true, nil
+}
+
+// PreviewHandBack runs RecordHandBack's checks on the caller and the report
+// and records nothing: what --dry-run shows is who would record it, its
+// size, and its digest.
+func (e Env) PreviewHandBack(loc Location, body string) (store.HandBack, error) {
+	rec, err := e.handBackCaller(loc, body)
+	if err != nil {
+		return store.HandBack{}, err
+	}
+	return store.HandBack{By: rec.Handle, At: e.Now().UTC(), Body: body, Digest: store.HandBackDigest(body)}, nil
+}
+
+// handBackCaller is the live lead in loc that may record body as its
+// session's hand-back.
+func (e Env) handBackCaller(loc Location, body string) (agent, error) {
+	rec, ok, err := e.agentIn(loc)
+	if err != nil {
+		return agent{}, err
+	}
+	if !ok || !rec.Live() || !placed(rec) {
+		return agent{}, fmt.Errorf("no AMQ identity in a Rex session for this block (%s), so there is no run to hand back", loc.Block)
+	}
+	lead, err := e.pairLead(rec)
+	if err != nil {
+		return agent{}, err
+	}
+	if rec.Role != core.OrchestratorRole && !lead {
+		return agent{}, fmt.Errorf("%w: only a session's %s, or a pair Epic's own %s, records its hand-back, and %s is %q", ErrRefused, core.OrchestratorRole, implementerRole, rec.Handle, rec.Role)
+	}
+	if strings.TrimSpace(body) == "" {
+		return agent{}, fmt.Errorf("%w: a hand-back needs its report: TEXT, @FILE, or - for stdin", ErrUsage)
+	}
+	if len(body) > handBackMax {
+		return agent{}, fmt.Errorf("%w: the hand-back is %d bytes, over the %d the view holds whole; shorten it", ErrUsage, len(body), handBackMax)
+	}
+	return rec, nil
 }

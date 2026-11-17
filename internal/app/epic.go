@@ -38,6 +38,19 @@ type EpicRequest struct {
 	// OpID names this request, so a retry with the same OpID reconciles the
 	// Epic the first run started instead of starting another; "" for none.
 	OpID string
+	// DryRun runs the caller, name, directory, routing, grant, and crew
+	// checks, then reports the plan: no session, op record, trust grant,
+	// or link is made.
+	DryRun bool
+}
+
+// EpicPlan is what a dry run of OpenEpic would start.
+type EpicPlan struct {
+	Name            string    `json:"name"`
+	Dir             string    `json:"dir"`
+	Crew            string    `json:"crew,omitempty"`
+	LeadHarness     core.Kind `json:"lead_harness"`
+	NarratorHarness core.Kind `json:"narrator_harness"`
 }
 
 // EpicAgent is where one of the Epic's agents was started and how its
@@ -67,6 +80,9 @@ type EpicResult struct {
 	// notarized grant (grant.md), once written.
 	GoalPath  string `json:"goal_path,omitempty"`
 	GrantPath string `json:"grant_path,omitempty"`
+	// DryRun marks a preview, and Plan is what it would start.
+	DryRun bool      `json:"dry_run,omitempty"`
+	Plan   *EpicPlan `json:"plan,omitempty"`
 }
 
 // EpicGoalMax bounds a goal contract piped in with --goal -, as handBackMax
@@ -175,6 +191,10 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 	physical, err := filepath.EvalSymlinks(dir)
 	if err != nil {
 		return EpicResult{}, err
+	}
+	if r.DryRun {
+		return EpicResult{OpID: r.OpID, Lead: lead, DryRun: true,
+			Plan: &EpicPlan{Name: name, Dir: physical, Crew: crewName, LeadHarness: kind, NarratorHarness: narrator}}, nil
 	}
 	seed := store.EpicLifecycle{Name: name, Dir: physical, PersonalHandle: caller.Handle, PersonalSessionID: caller.SessionID, Server: caller.Server, Crew: crewName, OpenOpID: r.OpID}
 	var op *store.EpicOpRecord

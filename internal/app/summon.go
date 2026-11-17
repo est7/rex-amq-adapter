@@ -54,6 +54,10 @@ type SummonRequest struct {
 	// Council fans a review role out to one seat per harness in its
 	// routing (council.go): only for a review role, never with Harness.
 	Council bool
+	// DryRun resolves the target and runs the guards, then reports what
+	// would happen: no mail, no reservation, no pane. The trust preflight,
+	// which may grant a project under a declared root, does not run.
+	DryRun bool
 }
 
 // SummonResult is what happened. Block is set when an agent was launched
@@ -80,6 +84,8 @@ type SummonResult struct {
 	Passed  []string  `json:"passed_over,omitempty"`
 	// Seats is a council's outcome, one per harness of the role's routing.
 	Seats []SeatResult `json:"seats,omitempty"`
+	// DryRun marks a preview: Action is what would happen, nothing did.
+	DryRun bool `json:"dry_run,omitempty"`
 	// brief is the body a council mailed, which AwaitCouncil mails again to
 	// each seat adopted after its start.
 	brief string
@@ -111,6 +117,10 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 		}
 	}
 	if r.Council {
+		if r.DryRun {
+			return SummonResult{Action: "council", DryRun: true, Parent: caller.Handle, Depth: caller.Depth + 1,
+				Reason: "a council's seats are resolved when it runs; --dry-run checked its usage and the summoner"}, nil
+		}
 		return e.council(ctx, loc, caller, r, target)
 	}
 	s, err := e.FindSession(ctx, loc.Block)
@@ -142,7 +152,7 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 			departed = &recs[i]
 		}
 	}
-	res := SummonResult{Parent: caller.Handle, Depth: caller.Depth + 1}
+	res := SummonResult{Parent: caller.Handle, Depth: caller.Depth + 1, DryRun: r.DryRun}
 	if r.Split && stealthTarget(recs, target, isHandle) {
 		res.Action, res.Reason = "refused", "a narrator or personal agent never shares a worker's tab: it runs in a tab of its own, so summon it without --split"
 		e.summonLog(caller, r, res)
@@ -193,22 +203,29 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 	}
 	if len(live) > 0 {
 		for _, rec := range live {
-			if err := e.mailAs(ctx, caller.Handle, rec.Handle, r.Kind, r.Subject, r.Body); err != nil {
-				return res, err
+			if !r.DryRun {
+				if err := e.mailAs(ctx, caller.Handle, rec.Handle, r.Kind, r.Subject, r.Body); err != nil {
+					return res, err
+				}
 			}
 			res.Handles = append(res.Handles, rec.Handle)
 			res.AgentSessionID, res.Cwd = rec.Session(), rec.Cwd
 		}
-		res.Action, res.Mailed = "deliver", true
+		res.Action, res.Mailed = "deliver", !r.DryRun
+		if r.DryRun {
+			return res, nil
+		}
 		e.summonLog(caller, r, res)
 		return res, nil
 	}
 	if departed != nil {
 		// Its mailbox waits for a resume whatever the guards say.
-		if err := e.mailAs(ctx, caller.Handle, departed.Handle, r.Kind, r.Subject, r.Body); err != nil {
-			return res, err
+		if !r.DryRun {
+			if err := e.mailAs(ctx, caller.Handle, departed.Handle, r.Kind, r.Subject, r.Body); err != nil {
+				return res, err
+			}
 		}
-		res.Mailed = true
+		res.Mailed = !r.DryRun
 		res.Handles = []core.Handle{departed.Handle}
 		res.AgentSessionID, res.Cwd = departed.Session(), departed.Cwd
 	}
@@ -219,7 +236,7 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 	}
 	// The guards and the reservation, together under the lifecycle lock:
 	// two summoners racing the cap both see the other's reservation.
-	tokens, err := e.reserve(ctx, caller, s, r.Kind, chain, target, []*agent{departed})
+	tokens, err := e.reserve(ctx, caller, s, r.Kind, chain, target, []*agent{departed}, r.DryRun)
 	if err != nil {
 		var refusal core.SummonCheck
 		if errors.As(err, &refusal) {
@@ -227,6 +244,9 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 			return e.refused(caller, r, res, departed)
 		}
 		return res, err
+	}
+	if r.DryRun {
+		return e.planDry(caller, r, target, busy, departed, res)
 	}
 	res.Token = tokens[0]
 	if departed != nil {
@@ -236,7 +256,7 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 }
 
 func (e Env) refused(caller agent, r SummonRequest, res SummonResult, departed *agent) (SummonResult, error) {
-	if departed != nil {
+	if departed != nil && !r.DryRun {
 		res.Reason += "; the message waits in " + string(departed.Handle) + "'s mailbox for a resume"
 	}
 	e.summonLog(caller, r, res)
@@ -294,7 +314,7 @@ func (e Env) chain(recs []agent, rec agent) (chain []core.Peer, complete bool) {
 // fresh token, which reserves a place until adoption consumes it or it
 // expires. Each launch is a resume of the departed agent it names, or a
 // start (nil); either all of them fit the cap or none is reserved.
-func (e Env) reserve(ctx context.Context, caller agent, s Session, kind string, chain []core.Peer, target string, launches []*agent) ([]string, error) {
+func (e Env) reserve(ctx context.Context, caller agent, s Session, kind string, chain []core.Peer, target string, launches []*agent, dry bool) ([]string, error) {
 	unlock, err := e.Store.LockLifecycle(ctx)
 	if err != nil {
 		return nil, err
@@ -327,6 +347,9 @@ func (e Env) reserve(ctx context.Context, caller agent, s Session, kind string, 
 	if live+pending+len(launches) > core.SummonCap {
 		return nil, core.SummonCheck{Refused: true, Reason: fmt.Sprintf("%d new agents would take the session past its cap of %d: it already holds %d live agents and pending launches; deliver to the live ones or wait for one to finish", len(launches), core.SummonCap, live+pending)}
 	}
+	if dry {
+		return nil, nil
+	}
 	var tokens []string
 	for _, departed := range launches {
 		token, err := newToken()
@@ -345,6 +368,50 @@ func (e Env) reserve(ctx context.Context, caller agent, s Session, kind string, 
 		tokens = append(tokens, token)
 	}
 	return tokens, nil
+}
+
+// planDry is what a summon that passed every guard would launch: a resume
+// of departed, or a start of role on the harness its routing names first
+// (or --harness). It reads the routing only.
+func (e Env) planDry(caller agent, r SummonRequest, role string, busy []core.Kind, departed *agent, res SummonResult) (SummonResult, error) {
+	if departed != nil {
+		res.Action, res.Harness = "resume", departed.Kind
+		return res, nil
+	}
+	refuse := func(reason string) (SummonResult, error) {
+		res.Action, res.Reason = "refused", reason
+		return res, nil
+	}
+	if core.LooksLikeHandle(r.Target) {
+		return refuse(fmt.Sprintf("no agent %s in this session, live or departed; a new agent is started by role, not by handle", r.Target))
+	}
+	if refusal := startAuthorized(r); refusal != "" {
+		return refuse(refusal)
+	}
+	cwd := caller.Cwd
+	if r.Cwd != "" {
+		cwd = r.Cwd
+	}
+	route, err := e.route(cwd, role)
+	if err != nil {
+		return refuse(fmt.Sprintf("the routing of role %s cannot be read: %v", role, err))
+	}
+	kinds := route.Harnesses[:1]
+	switch {
+	case r.Harness != "":
+		kind, err := core.ParseKind(r.Harness)
+		if err != nil {
+			return refuse(err.Error())
+		}
+		kinds = []core.Kind{kind}
+	case core.ReviewRole(role):
+		kinds = slices.DeleteFunc(otherFamilies(route, core.Family(caller.Kind, caller.Model)), func(k core.Kind) bool { return slices.Contains(busy, k) })
+		if len(kinds) == 0 {
+			return refuse(fmt.Sprintf("no free harness in the routing of %s runs a model family known to differ from yours", role))
+		}
+	}
+	res.Action, res.Harness, res.Cwd = "start", kinds[0], cwd
+	return res, nil
 }
 
 // release gives back reservations whose launches will not happen.
@@ -799,6 +866,9 @@ func (e Env) Deliver(ctx context.Context, loc Location, h core.Handle, kind, sub
 // audit trail: a failure is reported to Diagnostics and never fails the
 // summon, whose mail or pane already exists.
 func (e Env) summonLog(caller agent, r SummonRequest, res SummonResult) {
+	if r.DryRun {
+		return // a preview leaves no trace
+	}
 	entry := map[string]any{"at": e.Now().UTC().Format(time.RFC3339), "summoner": caller.Handle, "parent": caller.Parent, "depth": caller.Depth, "target": r.Target, "kind": r.Kind, "subject": r.Subject, "action": res.Action, "handles": res.Handles, "block": res.Block, "reason": res.Reason, "grant": r.Grant, "asked": r.Asked}
 	if res.Harness != "" {
 		entry["harness"] = res.Harness

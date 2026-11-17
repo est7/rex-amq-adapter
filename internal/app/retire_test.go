@@ -181,7 +181,7 @@ func TestRetireRefusesWithoutItsGuards(t *testing.T) {
 		}
 	}
 	term.states = map[string]rex.Status{"block:w": {State: "working"}}
-	if _, err := retire(e, "block:o", "codex-03", false); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "codex-03: working") || !strings.Contains(err.Error(), "--force") {
+	if _, err := retire(e, "block:o", "codex-03", false); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "codex-03: working") || !forceOnlyInNextAction(err) {
 		t.Errorf("a working target: %v", err)
 	}
 	term.states = nil

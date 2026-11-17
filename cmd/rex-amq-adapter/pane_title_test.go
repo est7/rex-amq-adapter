@@ -1,8 +1,6 @@
 package main
 
 import (
-	"io"
-	"os"
 	"strings"
 	"testing"
 )
@@ -23,24 +21,14 @@ func TestPaneTitleAlwaysAnswers(t *testing.T) {
 	}
 }
 
-// `eval ""` succeeds, so a failing env must print a failing command: agents
-// run `eval "$(rex-amq-adapter env)" && …` and must not carry on without an
-// identity.
+// `eval ""` succeeds, so a failing `agent env --sh` must print a failing
+// command: agents run `eval "$(rex-amq-adapter agent env --sh)" && …` and
+// must not carry on without an identity. It answers on the shell protocol
+// only: no envelope follows the `false`.
 func TestAFailingEnvStopsTheEvalChain(t *testing.T) {
-	t.Setenv("REX_BLOCK", "")
-	clearHarnessSessions(t)
-	t.Setenv("REX_AMQ_ADAPTER_HOME", t.TempDir())
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	stdout, stderr := os.Stdout, os.Stderr
-	os.Stdout, os.Stderr = w, w
-	code := runEnv()
-	os.Stdout, os.Stderr = stdout, stderr
-	w.Close()
-	out, _ := io.ReadAll(r)
-	if code == 0 || !strings.HasPrefix(string(out), "false\n") {
-		t.Errorf("env outside Rex: exit %d, output %q", code, out)
+	isolate(t)
+	r := invoke(t, "", "agent", "env", "--sh")
+	if r.code == 0 || r.stdout != "false\n" || !strings.HasPrefix(r.stderr, "rex-amq-adapter: ") {
+		t.Errorf("agent env --sh outside Rex: exit %d, stdout %q, stderr %q", r.code, r.stdout, r.stderr)
 	}
 }

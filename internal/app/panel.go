@@ -21,7 +21,7 @@ import (
 // agent's session, the Epics linked to it. It reads as events does: no lock,
 // no mail moved, no receipt, nothing written. It is the human's only (a
 // floating pane with no agent in it), never an agent's, so it refuses any
-// caller that runs as or under an agent of any role (panelGate) before it
+// caller that runs as or under an agent of any role (HumanGate) before it
 // resolves a scope or asks Rex anything.
 
 // PanelProjection is the panel of a session: the snapshot's panel field, and
@@ -75,12 +75,12 @@ type panelState struct {
 // Panel streams the panel of the caller's Rex session, or of session when
 // set, to w until ctx ends, for the caller whose environment getenv reads.
 func (e Env) Panel(ctx context.Context, w io.Writer, getenv func(string) string, session string, ticks StreamTicks) error {
-	if err := e.panelGate(getenv); err != nil {
+	if err := e.HumanGate(getenv); err != nil {
 		return err
 	}
 	var loc Location
 	if session == "" {
-		// No harness runs this (panelGate), so the caller is its pane.
+		// No harness runs this (HumanGate), so the caller is its pane.
 		var err error
 		if loc, err = here(getenv); err != nil {
 			return err
@@ -93,62 +93,6 @@ func (e Env) Panel(ctx context.Context, w io.Writer, getenv func(string) string,
 		return err
 	}
 	return e.stream(ctx, w, sc, ticks, true)
-}
-
-// panelGate refuses, failing closed, every caller but the human's:
-//
-//  1. a harness session the environment names (sessionVars), adopted or not;
-//  2. ME_UNATTENDED=1;
-//  3. a REX_BLOCK holding a live agent of any role, personal, orchestrator,
-//     and narrator included: the panel runs in a pane of its own;
-//  4. this process descending from a live agent of any role, so `env -i`
-//     under an agent is refused too; a walk up the process tree that stopped
-//     at its bound (maxAncestors) before the root proves nothing, so it is
-//     refused as well.
-func (e Env) panelGate(getenv func(string) string) error {
-	for _, v := range sessionVars {
-		if getenv(v.name) != "" {
-			return fmt.Errorf("%w: the panel is the human's, and this command runs in a %s session (%s is set)", ErrRefused, v.kind, v.name)
-		}
-	}
-	if getenv("ME_UNATTENDED") == "1" {
-		return fmt.Errorf("%w: the panel is the human's, and this command runs unattended (ME_UNATTENDED=1)", ErrRefused)
-	}
-	if block := getenv("REX_BLOCK"); block != "" {
-		rec, ok, err := e.agentAt(block)
-		if err != nil {
-			return err
-		}
-		if ok && rec.Live() {
-			return panelRefused(rec)
-		}
-	}
-	recs, err := e.agents()
-	if err != nil {
-		return err
-	}
-	ancestors, err := e.ancestors()
-	if err != nil {
-		return fmt.Errorf("tell which agent runs the panel: %w", err)
-	}
-	if rec, ok := agentAncestor(ancestors, recs, func(agent) bool { return true }); ok {
-		return panelRefused(rec)
-	}
-	// The walkers stop at maxAncestors without an error, so a full walk may
-	// have left an agent above it unread. A chain that reaches the root in
-	// exactly maxAncestors steps is refused too: no human's pane is that deep.
-	if len(ancestors) >= maxAncestors {
-		return fmt.Errorf("%w: the panel is the human's, and this command runs at least %d processes deep, too deep to tell that no agent started it", ErrRefused, maxAncestors)
-	}
-	return nil
-}
-
-func panelRefused(rec agent) error {
-	role := rec.Role
-	if role == "" {
-		role = "no role"
-	}
-	return fmt.Errorf("%w: the panel is the human's, and this command runs as or under %s (%s)", ErrRefused, rec.Handle, role)
 }
 
 // panelNow is the panel of the stream's session now; held are its records

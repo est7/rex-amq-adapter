@@ -146,7 +146,7 @@ func (e Env) council(ctx context.Context, loc Location, caller agent, r SummonRe
 		if !complete {
 			return refuse("your summon chain cannot be checked: an agent that summoned you is no longer recorded, so no seat was mailed or launched")
 		}
-		if tokens, err = e.reserve(ctx, caller, s, r.Kind, chain, role, launches); err != nil {
+		if tokens, err = e.reserve(ctx, caller, s, r.Kind, chain, role, launches, false); err != nil {
 			var refusal core.SummonCheck
 			if errors.As(err, &refusal) {
 				return refuse(refusal.Reason + "; no seat was mailed or launched")

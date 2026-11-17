@@ -153,6 +153,8 @@ type NotifyResult struct {
 	Ref       string      `json:"ref"`
 	EventID   string      `json:"event_id"`
 	Deduped   bool        `json:"deduped,omitempty"`
+	// DryRun marks a preview: Status and To are what a send would do now.
+	DryRun bool `json:"dry_run,omitempty"`
 }
 
 // NotifyPersonal rings the live personal agent for n's event, once per event
@@ -166,15 +168,27 @@ type NotifyResult struct {
 // Delivery is at least once: a run that dies after amq delivered and before
 // the record is written sends again on retry.
 func (e Env) NotifyPersonal(ctx context.Context, n Notify) (NotifyResult, error) {
+	return e.notifyPersonal(ctx, n, false)
+}
+
+// PreviewNotify is NotifyPersonal's replay check and target resolution
+// with nothing sent, recorded, collected, or woken.
+func (e Env) PreviewNotify(ctx context.Context, n Notify) (NotifyResult, error) {
+	return e.notifyPersonal(ctx, n, true)
+}
+
+func (e Env) notifyPersonal(ctx context.Context, n Notify, dryRun bool) (NotifyResult, error) {
 	if n.eventID == "" {
 		return NotifyResult{}, fmt.Errorf("%w: a notification needs ParseNotify", ErrUsage)
 	}
-	res := NotifyResult{Ref: n.ref, EventID: n.eventID}
-	unlock, err := e.Store.LockNotify(ctx)
-	if err != nil {
-		return res, err
+	res := NotifyResult{Ref: n.ref, EventID: n.eventID, DryRun: dryRun}
+	if !dryRun {
+		unlock, err := e.Store.LockNotify(ctx)
+		if err != nil {
+			return res, err
+		}
+		defer unlock()
 	}
-	defer unlock()
 	prior, ok, err := e.Store.Notification(n.eventID)
 	if err != nil {
 		return res, err
@@ -189,7 +203,9 @@ func (e Env) NotifyPersonal(ctx context.Context, n Notify) (NotifyResult, error)
 	}
 	// Collection parks the agents whose panes are gone (failures are per
 	// record, and the live check below covers what it could not settle).
-	_ = e.Collect(ctx)
+	if !dryRun {
+		_ = e.Collect(ctx)
+	}
 	targets, err := e.livePersonals(ctx, n)
 	if err != nil {
 		return res, err
@@ -207,6 +223,10 @@ func (e Env) NotifyPersonal(ctx context.Context, n Notify) (NotifyResult, error)
 		return res, fmt.Errorf("%w: %d live personal agents (%s); name one with --personal or --hub", ErrRefused, len(targets), strings.Join(hs, ", "))
 	}
 	target := targets[0]
+	if dryRun {
+		res.Status, res.To, res.SessionID = NotifyNotified, target.Handle, target.SessionID
+		return res, nil
+	}
 	sent, _, err := e.post(ctx, Outgoing{
 		Op: core.Operation{Kind: core.OpNotify, System: true}, From: target.Handle, To: []core.Handle{target.Handle},
 		Args: []string{"--allow-self", "--kind", "status", "--priority", "normal", "--labels", amq.SystemLabel,

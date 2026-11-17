@@ -146,9 +146,18 @@ func here(getenv func(string) string) (Location, error) {
 // RexExports is the shell text that points rex at block and its session, for
 // a caller whose inherited REX_BLOCK names another pane.
 func (e Env) RexExports(ctx context.Context, block string) (string, error) {
+	session, err := e.SessionOfBlock(ctx, block)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("export REX_BLOCK=%s REX_SESSION=%s\n", shellQuote(block), shellQuote(session)), nil
+}
+
+// SessionOfBlock is the Rex session block is in now.
+func (e Env) SessionOfBlock(ctx context.Context, block string) (string, error) {
 	b, err := e.Rex.InspectBlock(ctx, block)
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("export REX_BLOCK=%s REX_SESSION=%s\n", shellQuote(block), shellQuote(b.SessionID)), nil
+	return b.SessionID, nil
 }

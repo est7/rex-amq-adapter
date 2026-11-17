@@ -1,9 +1,7 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -11,48 +9,50 @@ import (
 	"strings"
 
 	"github.com/est7/rex-amq-adapter/internal/app"
+	"github.com/est7/rex-amq-adapter/internal/cli"
 	"github.com/est7/rex-amq-adapter/internal/core"
-	"github.com/est7/rex-amq-adapter/internal/guide"
 	"github.com/est7/rex-amq-adapter/internal/install"
-	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
-type kindList []core.Kind
-
-func (k *kindList) String() string { return fmt.Sprint(*k) }
-func (k *kindList) Set(s string) error {
-	kind, err := core.ParseKind(s)
-	if err != nil {
-		return err
-	}
-	*k = append(*k, kind)
-	return nil
+// installResult is what install setup, status, and remove return.
+type installResult struct {
+	Binary     string         `json:"binary"`
+	DryRun     bool           `json:"dry_run"`
+	Items      []install.Item `json:"items"`
+	CodexHooks []codexHooks   `json:"codex_hooks,omitempty"`
+	Notes      []string       `json:"notes"`
+	verb       string
 }
 
-func runInstall(cmd string, args []string) int {
-	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
-	var only kindList
-	fs.Var(&only, "agent", "only this agent: claude, codex, agy, or pi (repeatable)")
-	dryRun := fs.Bool("dry-run", false, "report what would change without changing anything")
-	force := fs.Bool("force", false, "replace what setup did not install: a rex-amq-adapter skill or Pi extension, Antigravity's window title command, a shared supervisor you set on, or native task tools you set off")
-	asJSON := fs.Bool("json", false, "print the result as JSON")
-	if err := fs.Parse(args); err != nil {
-		return 2
+func installSetup(c *cli.Ctx, in cli.Input) (cli.Result, error) { return runInstall(c, in, "setup") }
+
+func installStatus(c *cli.Ctx, in cli.Input) (cli.Result, error) { return runInstall(c, in, "status") }
+
+func installRemove(c *cli.Ctx, in cli.Input) (cli.Result, error) { return runInstall(c, in, "remove") }
+
+func runInstall(c *cli.Ctx, in cli.Input, verb string) (cli.Result, error) {
+	var only []core.Kind
+	for _, k := range in.All("agent") {
+		kind, err := core.ParseKind(k)
+		if err != nil {
+			return cli.Result{}, cli.Usage(c.Cmd, "%v", err)
+		}
+		only = append(only, kind)
 	}
 	self, err := selfPath()
 	if err != nil {
-		return fail(err)
+		return cli.Result{}, err
 	}
 	agents, err := install.Agents(only)
 	if err != nil {
-		return fail(err)
+		return cli.Result{}, err
 	}
 	if len(only) == 0 {
 		agents = foundOnly(agents)
 	}
-	opts := install.Options{SelfBin: self, DryRun: *dryRun, Force: *force}
+	opts := install.Options{SelfBin: self, DryRun: in.DryRun(), Force: in.Bool("force")}
 	var items []install.Item
-	switch cmd {
+	switch verb {
 	case "setup":
 		items, err = install.Setup(agents, opts)
 	case "status":
@@ -61,44 +61,57 @@ func runInstall(cmd string, args []string) int {
 		items, err = install.Remove(agents, opts)
 	}
 	if err != nil {
-		return fail(err)
+		return cli.Result{}, err
+	}
+	res := installResult{Binary: self, DryRun: in.DryRun(), Items: items, Notes: []string{}, verb: verb}
+	if res.Items == nil {
+		res.Items = []install.Item{}
 	}
 	// Codex runs none of the adapter's hooks until the user approves them
 	// in /hooks: status reports which still wait (read-only).
-	var approvals []codexHooks
-	if cmd == "status" {
-		if approvals, err = codexHookApprovals(agents); err != nil {
-			return fail(err)
+	if verb == "status" {
+		if res.CodexHooks, err = codexHookApprovals(agents); err != nil {
+			return cli.Result{}, err
+		}
+		for _, a := range res.CodexHooks {
+			res.Notes = append(res.Notes, strings.TrimSpace(a.note()))
 		}
 	}
-	if *asJSON {
-		out := map[string]any{"binary": self, "dry_run": *dryRun, "items": items}
-		if cmd == "status" {
-			out["codex_hooks"] = approvals
-		}
-		b, err := json.MarshalIndent(out, "", "  ")
-		if err != nil {
-			return fail(err)
-		}
-		fmt.Println(string(b))
-		return 0
-	}
-	printItems(cmd, items)
-	for _, a := range approvals {
-		fmt.Print(a.note())
-	}
-	switch cmd {
+	switch verb {
 	case "setup":
-		printSetupNotes(agents, items)
+		res.Notes = append(res.Notes, setupNotes(agents, items)...)
 	case "remove":
 		for _, it := range items {
 			if it.Kind == "hook" && it.Change == "removed" && strings.Contains(it.Path, ".codex") {
-				fmt.Println("\nCodex trusts hooks by their position: hooks that came after the removed entries may ask for approval again in /hooks.")
+				res.Notes = append(res.Notes, "Codex trusts hooks by their position: hooks that came after the removed entries may ask for approval again in /hooks.")
 				break
 			}
 		}
 	}
-	return 0
+	return cli.Result{Data: res, Human: res.text}, nil
+}
+
+func (r installResult) text(w io.Writer) error {
+	home, _ := os.UserHomeDir()
+	last := ""
+	for _, it := range r.Items {
+		if it.Agent != last {
+			if last != "" {
+				fmt.Fprintln(w)
+			}
+			fmt.Fprintln(w, it.Agent)
+			last = it.Agent
+		}
+		col := it.State
+		if r.verb != "status" {
+			col = it.Change
+		}
+		fmt.Fprintf(w, "  %-10s %-10s %s\n", it.Kind, col, strings.Replace(it.Path, home, "~", 1))
+	}
+	for _, n := range r.Notes {
+		fmt.Fprintf(w, "\n%s\n", n)
+	}
+	return nil
 }
 
 // codexHooks is a Codex hooks file and the hooks in it the user has not
@@ -133,7 +146,7 @@ func (c codexHooks) note() string {
 	for _, h := range c.Unapproved {
 		which = append(which, "  "+h.Key+" ("+h.Status+")")
 	}
-	return fmt.Sprintf("\nCodex hooks: %d hook(s) in %s wait for your approval (unapproved_hooks):\n%s\nUntil you approve them with /hooks in a Codex session, every new Codex session stops on \"Hooks need review\", `epic` and `summon --harness codex` refuse Codex, and `summon` without --harness starts a review role in another family.\n",
+	return fmt.Sprintf("\nCodex hooks: %d hook(s) in %s wait for your approval (unapproved_hooks):\n%s\nUntil you approve them with /hooks in a Codex session, every new Codex session stops on \"Hooks need review\", `epic open` and `agent summon --harness codex` refuse Codex, and `agent summon` without --harness starts a review role in another family.\n",
 		len(c.Unapproved), c.File, strings.Join(which, "\n"))
 }
 
@@ -160,25 +173,6 @@ func selfPath() (string, error) {
 	return self, nil
 }
 
-func printItems(cmd string, items []install.Item) {
-	home, _ := os.UserHomeDir()
-	last := ""
-	for _, it := range items {
-		if it.Agent != last {
-			if last != "" {
-				fmt.Println()
-			}
-			fmt.Println(it.Agent)
-			last = it.Agent
-		}
-		col := it.State
-		if cmd != "status" {
-			col = it.Change
-		}
-		fmt.Printf("  %-10s %-10s %s\n", it.Kind, col, strings.Replace(it.Path, home, "~", 1))
-	}
-}
-
 // conflictWhat names what a conflicting item holds.
 func conflictWhat(kind string) string {
 	switch kind {
@@ -190,63 +184,22 @@ func conflictWhat(kind string) string {
 	return "a rex-amq-adapter skill"
 }
 
-func printSetupNotes(agents []install.Agent, items []install.Item) {
+func setupNotes(agents []install.Agent, items []install.Item) []string {
+	var notes []string
 	for _, it := range items {
-		if it.Change == "conflict" && it.Kind == "supervisor" {
-			fmt.Printf("\n%s: %s keeps the shared supervisor that runs sessions outside their pane (README, Recommended configuration) on: %s.\n", it.Agent, it.Path, it.Note)
-			continue
-		}
-		if it.Change == "conflict" && it.Kind == "tasks" {
-			fmt.Printf("\n%s: %s keeps native task-list tools (README, Recommended configuration) off: %s.\n", it.Agent, it.Path, it.Note)
-			continue
-		}
-		if it.Change == "conflict" {
-			fmt.Printf("\n%s: %s holds %s that setup did not install; it was left alone. Use --force to replace it.\n", it.Agent, it.Path, conflictWhat(it.Kind))
+		switch {
+		case it.Change == "conflict" && it.Kind == "supervisor":
+			notes = append(notes, fmt.Sprintf("%s: %s keeps the shared supervisor that runs sessions outside their pane (README, Recommended configuration) on: %s.", it.Agent, it.Path, it.Note))
+		case it.Change == "conflict" && it.Kind == "tasks":
+			notes = append(notes, fmt.Sprintf("%s: %s keeps native task-list tools (README, Recommended configuration) off: %s.", it.Agent, it.Path, it.Note))
+		case it.Change == "conflict":
+			notes = append(notes, fmt.Sprintf("%s: %s holds %s that setup did not install; it was left alone. Use --force to replace it.", it.Agent, it.Path, conflictWhat(it.Kind)))
 		}
 	}
 	for _, a := range agents {
 		if a.Kind == core.Codex {
-			fmt.Println("\nStart Codex with --no-daemon in Rex so its hooks and tools inherit the pane's Rex environment. Codex asks before it runs a new or changed hook. Approve the adapter's hooks with /hooks in Codex; until then Codex skips them and the agent is not adopted.")
+			notes = append(notes, "Start Codex with --no-daemon in Rex so its hooks and tools inherit the pane's Rex environment. Codex asks before it runs a new or changed hook. Approve the adapter's hooks with /hooks in Codex; until then Codex skips them and the agent is not adopted.")
 		}
 	}
-	fmt.Println("\nStart a new agent session in a Rex terminal to use it.")
-}
-
-func runInternal(args []string) int {
-	if len(args) == 1 && args[0] == "skill" {
-		fmt.Print(guide.Skill)
-		return 0
-	}
-	if len(args) == 3 && args[0] == "watch" {
-		return runWatch(args[1], args[2])
-	}
-	if len(args) == 3 && args[0] == "pane-title" && args[1] == "--agent" {
-		fmt.Println(paneTitle(args[2], os.Stdin))
-		return 0
-	}
-	return fail(errors.New("__internal: want `skill`, `watch <server> <session>`, or `pane-title --agent K`"))
-}
-
-// paneTitle answers a harness that asks for its window title (Antigravity's
-// "title" command, with its status JSON on stdin). It always prints a line
-// and never fails: agy stops asking after repeated failures.
-func paneTitle(agent string, stdin io.Reader) string {
-	var status struct {
-		Cwd string `json:"cwd"`
-	}
-	_ = json.NewDecoder(io.LimitReader(stdin, 1<<20)).Decode(&status)
-	kind, err := core.ParseKind(agent)
-	if err != nil {
-		return app.DirTitle(status.Cwd)
-	}
-	loc, err := app.Here()
-	if err != nil {
-		return app.DirTitle(status.Cwd)
-	}
-	paths, err := store.DefaultPaths()
-	if err != nil {
-		return app.DirTitle(status.Cwd)
-	}
-	env := app.Env{Paths: paths, Store: store.Store{P: paths}}
-	return env.PaneTitle(loc, kind, status.Cwd)
+	return append(notes, "Start a new agent session in a Rex terminal to use it.")
 }

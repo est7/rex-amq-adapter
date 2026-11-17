@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/est7/rex-amq-adapter/internal/fault"
 	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
@@ -43,6 +44,9 @@ type RetireRequest struct {
 	// Force retires an agent that is working, waiting on a dialog, holds
 	// unread mail, or reports no state.
 	Force bool
+	// DryRun runs every guard, the busy check included, and stops before
+	// the departure: nothing is marked, retired, or closed.
+	DryRun bool
 }
 
 // RetireResult is what was retired.
@@ -55,6 +59,8 @@ type RetireResult struct {
 	// why it was left open; both are empty when nothing was retired.
 	Pane     string `json:"pane,omitempty"`
 	PaneNote string `json:"pane_note,omitempty"`
+	// DryRun marks a preview: Action says what would happen.
+	DryRun bool `json:"dry_run,omitempty"`
 }
 
 // Retire retires r.Handle for the agent in loc: it marks the record departed
@@ -125,8 +131,15 @@ func (e Env) retireLocked(ctx context.Context, loc Location, r RetireRequest, re
 			return target, on, err
 		}
 		if why != "" {
-			return target, on, fmt.Errorf("%w: not at rest (%s); wait for it, or pass --force to retire it anyway", ErrRefused, why)
+			return target, on, fault.New(fault.Busy, "%s: %s is not at rest (%s); wait for it to finish", ErrRefused, r.Handle, why).
+				WithCause(ErrRefused).With("reason", "not_at_rest").
+				WithHint("--force retires it anyway; use it only when the user says to retire it while it works").
+				WithNext("rex-amq-adapter agent retire " + string(r.Handle) + " --force")
 		}
+	}
+	if r.DryRun {
+		res.Action, res.DryRun = RetireRetired, true
+		return target, on, nil
 	}
 	if err := e.departQuietly(ctx, target, store.DepartRetired); err != nil {
 		return target, on, fmt.Errorf("retire %s: %w", r.Handle, err)

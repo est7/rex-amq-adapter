@@ -446,20 +446,38 @@ func (e Env) SetTask(ctx context.Context, loc Location, task string) (string, er
 
 // Exports is the shell text `rex-amq-adapter env` prints for the agent in loc.
 func (e Env) Exports(loc Location) (string, error) {
-	rec, ok, err := e.agentIn(loc)
+	se, err := e.ShellEnvOf(loc)
 	if err != nil {
 		return "", err
 	}
+	unattended := ""
+	if se.Unattended {
+		unattended = " " + UnattendedEnv + "=1"
+	}
+	return fmt.Sprintf("export AM_ROOT=%s AM_ME=%s%s\n", shellQuote(se.AMRoot), shellQuote(se.AMMe), unattended), nil
+}
+
+// ShellEnv is the AMQ identity an agent's shell takes: its amq root and
+// handle, and whether its shells run unattended.
+type ShellEnv struct {
+	AMRoot     string `json:"AM_ROOT"`
+	AMMe       string `json:"AM_ME"`
+	Unattended bool   `json:"ME_UNATTENDED"`
+	Role       string `json:"role"`
+}
+
+// ShellEnvOf is the shell identity of the live agent in loc.
+func (e Env) ShellEnvOf(loc Location) (ShellEnv, error) {
+	rec, ok, err := e.agentIn(loc)
+	if err != nil {
+		return ShellEnv{}, err
+	}
 	if !ok || !rec.Live() {
-		return "", fmt.Errorf("no AMQ identity for this Rex block (%s); it is assigned when an agent's first turn starts here with the adapter's hooks installed", loc.Block)
+		return ShellEnv{}, fmt.Errorf("no AMQ identity for this Rex block (%s); it is assigned when an agent's first turn starts here with the adapter's hooks installed", loc.Block)
 	}
 	// An unattended agent's shells carry the marker even when its harness
 	// dropped it; nothing here ever clears it (unattended.go).
-	unattended := ""
-	if rec.Unattended && rec.Role != core.PersonalRole {
-		unattended = " " + UnattendedEnv + "=1"
-	}
-	return fmt.Sprintf("export AM_ROOT=%s AM_ME=%s%s\n", shellQuote(e.Paths.Root()), shellQuote(string(rec.Handle)), unattended), nil
+	return ShellEnv{AMRoot: e.Paths.Root(), AMMe: string(rec.Handle), Unattended: rec.Unattended && rec.Role != core.PersonalRole, Role: rec.Role}, nil
 }
 
 func shellQuote(s string) string {

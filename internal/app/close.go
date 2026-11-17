@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/est7/rex-amq-adapter/internal/fault"
 	"strings"
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
@@ -29,6 +30,9 @@ type CloseRequest struct {
 	// OpID names this request, so a retry with the same OpID finishes the
 	// close the first run started, even once its link is gone; "" for none.
 	OpID string
+	// DryRun runs every guard, the busy check included, and stops before
+	// anything is recorded, killed, parked, or unlinked.
+	DryRun bool
 }
 
 // CloseResult is what was closed. Replayed says a retry of OpID found the
@@ -40,6 +44,8 @@ type CloseResult struct {
 	OpID           string        `json:"op_id,omitempty"`
 	LifecycleState string        `json:"lifecycle_state,omitempty"`
 	Replayed       bool          `json:"replayed,omitempty"`
+	// DryRun marks a preview of a close every guard allowed.
+	DryRun bool `json:"dry_run,omitempty"`
 }
 
 // CloseEpic closes the Epic session r.Session for the personal agent in
@@ -67,7 +73,8 @@ func (e Env) CloseEpic(ctx context.Context, loc Location, r CloseRequest) (Close
 		return res, fmt.Errorf("%w: only a %s agent closes Epics, and %s is %q", ErrRefused, core.PersonalRole, caller.Handle, caller.Role)
 	}
 	if strings.TrimSpace(r.Asked) == "" {
-		return res, fmt.Errorf("%w: closing an Epic kills its Rex session and what its panes show; it needs the user's own words asking for it (--asked \"<their words>\")", ErrRefused)
+		return res, fault.New(fault.ConfirmationRequired, "%s: closing an Epic kills its Rex session and what its panes show; it needs the user's own words asking for it (--asked \"<their words>\")", ErrRefused).
+			WithCause(ErrRefused).WithNext("rex-amq-adapter epic close " + r.Session + " --asked \"<the user's words>\"")
 	}
 	if err := ValidOpID(r.OpID); err != nil {
 		return res, err
@@ -92,8 +99,15 @@ func (e Env) CloseEpic(ctx context.Context, loc Location, r CloseRequest) (Close
 		if busy, err := e.unsettled(ctx, on, link.Epic); err != nil {
 			return res, err
 		} else if len(busy) > 0 {
-			return res, fmt.Errorf("%w: not every agent of the Epic is at rest (%s); ask the user again, or pass --force when they say to close it anyway", ErrRefused, strings.Join(busy, "; "))
+			return res, fault.New(fault.Busy, "%s: not every agent of the Epic is at rest (%s); ask the user again", ErrRefused, strings.Join(busy, "; ")).
+				WithCause(ErrRefused).With("reason", "not_at_rest").With("busy", busy).
+				WithHint("--force closes it anyway; use it only when the user says to close it while its agents work").
+				WithNext("rex-amq-adapter epic close " + r.Session + " --asked \"<the user's words>\" --force")
 		}
+	}
+	if r.DryRun {
+		res.DryRun, res.Parked = true, []core.Handle{}
+		return res, nil
 	}
 	unlockEpic, err := e.Store.LockEpicLifecycle(ctx)
 	if err != nil {
