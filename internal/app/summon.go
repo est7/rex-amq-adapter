@@ -68,6 +68,12 @@ type SummonResult struct {
 	Parent  core.Handle   `json:"parent,omitempty"`
 	Depth   int           `json:"depth"`
 	Mailed  bool          `json:"mailed"` // the message is in a mailbox already
+	// AgentSessionID and Cwd are the reached agent's: the agent session its
+	// handle runs as, or last ran as, and the directory it runs in (a launch's
+	// directory until its adoption reports one). A start has no session until
+	// it is adopted (Adopted).
+	AgentSessionID string `json:"agent_session_id,omitempty"`
+	Cwd            string `json:"cwd,omitempty"`
 	// Harness is the CLI a start launched; Passed names each default
 	// harness it passed over, and why (not installed, unapproved_hooks, …).
 	Harness core.Kind `json:"harness,omitempty"`
@@ -191,6 +197,7 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 				return res, err
 			}
 			res.Handles = append(res.Handles, rec.Handle)
+			res.AgentSessionID, res.Cwd = rec.Session(), rec.Cwd
 		}
 		res.Action, res.Mailed = "deliver", true
 		e.summonLog(caller, r, res)
@@ -203,6 +210,7 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 		}
 		res.Mailed = true
 		res.Handles = []core.Handle{departed.Handle}
+		res.AgentSessionID, res.Cwd = departed.Session(), departed.Cwd
 	}
 	chain, complete := e.chain(recs, caller)
 	if !complete {
@@ -375,7 +383,7 @@ func (e Env) resume(ctx context.Context, caller agent, s Session, r SummonReques
 		_ = e.Store.DeleteSummon(res.Token)
 		return res, err
 	}
-	res.Action, res.Block, res.Label = "resume", block, p.label
+	res.Action, res.Block, res.Label, res.Cwd = "resume", block, p.label, p.cwd
 	e.summonLog(caller, r, res)
 	return res, nil
 }
@@ -497,8 +505,26 @@ func (e Env) start(ctx context.Context, caller agent, s Session, r SummonRequest
 		_ = e.Store.DeleteSummon(res.Token)
 		return res, err
 	}
-	res.Action, res.Block, res.Label = "start", block, p.label
+	res.Action, res.Block, res.Label, res.Cwd = "start", block, p.label, p.cwd
 	e.summonLog(caller, r, res)
+	return res, nil
+}
+
+// Adopted is res once the agent it launched was adopted as h: h is the
+// handle it reached, with the agent session and directory adoption recorded.
+func (e Env) Adopted(res SummonResult, h core.Handle) (SummonResult, error) {
+	a, ok, err := e.agentOf(h)
+	if err != nil {
+		return res, err
+	}
+	if !ok {
+		return res, fmt.Errorf("%s was adopted but has no identity", h)
+	}
+	res.Handles = []core.Handle{h}
+	res.AgentSessionID = a.Session()
+	if a.Cwd != "" {
+		res.Cwd = a.Cwd
+	}
 	return res, nil
 }
 

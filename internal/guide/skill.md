@@ -134,7 +134,7 @@ stdin.
 rex-amq-adapter who      # agents in this Rex session only, including yourself
 rex-amq-adapter send --to codex-01 --subject "<short subject>" --body "<request>"
 rex-amq-adapter who --all  # also this session's departed agents reserved for a resume, and its narrator
-rex-amq-adapter who --json # the same, as JSON: handle, kind, role, tab, lifecycle, delivery
+rex-amq-adapter who --json # the same, as JSON: handle, kind, role, tab, agent_session_id, cwd, lifecycle, delivery
 ```
 
 The Rex session is the awareness boundary: a session holds one task (an

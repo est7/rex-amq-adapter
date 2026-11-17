@@ -28,7 +28,8 @@ type AgentObservation struct {
 	Server, SessionID, WindowID, BlockID string
 	Tab, Role                            string
 	Model, Effort                        string
-	Placed                               bool // the block is in the observed layout
+	AgentSessionID, Cwd                  string // the identity's current agent session and directory
+	Placed                               bool   // the block is in the observed layout
 	Task                                 string
 	Adopting, Departing                  bool // a transition the record is in the middle of
 	AdoptedAt                            time.Time
@@ -96,6 +97,11 @@ type Agent struct {
 	Pane      string `json:"pane"` // "present" | "gone"
 	Task      string `json:"task"`
 	Role      string `json:"role"`
+	// AgentSessionID is the harness's conversation id the handle runs as now,
+	// or last ran as (the newest of its sessions; a /clear moves it); Cwd is
+	// the directory it runs in. Either is "" when it was never reported.
+	AgentSessionID string `json:"agent_session_id"`
+	Cwd            string `json:"cwd"`
 	// Model and Effort are what the adapter launched it on; empty for its
 	// CLI's defaults or an agent the user started.
 	Model     string    `json:"model,omitempty"`
@@ -187,6 +193,7 @@ func projectAgent(o AgentObservation) Agent {
 	a := Agent{
 		Handle: o.Handle, Kind: o.Kind, Server: o.Server, SessionID: o.SessionID, WindowID: o.WindowID,
 		Tab: o.Tab, BlockID: o.BlockID, Pane: "gone", Task: o.Task, Role: o.Role, Model: o.Model, Effort: o.Effort,
+		AgentSessionID: o.AgentSessionID, Cwd: o.Cwd,
 	}
 	if o.Placed {
 		a.Pane = "present"

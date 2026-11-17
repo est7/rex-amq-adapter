@@ -677,6 +677,12 @@ func summonOutput(res app.SummonResult) map[string]any {
 	if len(res.Passed) > 0 {
 		out["passed_over"] = res.Passed
 	}
+	if res.AgentSessionID != "" {
+		out["agent_session_id"] = res.AgentSessionID
+	}
+	if res.Cwd != "" {
+		out["cwd"] = res.Cwd
+	}
 	return out
 }
 
@@ -754,9 +760,9 @@ func runSummon(args []string) int {
 		if err != nil {
 			return fail(err)
 		}
-		out["startup"] = st.Status
 		if st.Handle != "" {
-			out["handles"] = []core.Handle{st.Handle}
+			// The brief first: reading the adopted identity back only adds
+			// its session and directory to the result.
 			if !res.Mailed {
 				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 				err = env.Deliver(ctx, loc, st.Handle, *kind, *subject, *body)
@@ -764,9 +770,14 @@ func runSummon(args []string) int {
 				if err != nil {
 					return fail(err)
 				}
-				out["mailed"] = true
+				res.Mailed = true
 			}
+			if res, err = env.Adopted(res, st.Handle); err != nil {
+				return fail(err)
+			}
+			out = summonOutput(res)
 		}
+		out["startup"] = st.Status
 	}
 	b, _ := json.Marshal(out)
 	fmt.Println(string(b))
