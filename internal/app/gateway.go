@@ -185,7 +185,7 @@ func (e Env) post(ctx context.Context, o Outgoing) (amq.Sent, []byte, error) {
 			return amq.Sent{}, nil, err
 		}
 		if !ok {
-			return amq.Sent{}, nil, fmt.Errorf("no message %s in the mailbox of %s", o.ReplyTo, o.From)
+			return amq.Sent{}, nil, fault.New(fault.NotFound, "no message %s in the mailbox of %s", o.ReplyTo, o.From).With("kind", "message")
 		}
 		if o.Check {
 			if err := e.exposed(o.From, orig); err != nil {

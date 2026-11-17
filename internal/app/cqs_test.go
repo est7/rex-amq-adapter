@@ -82,3 +82,17 @@ func TestManagedSendBodyIsLiteral(t *testing.T) {
 		}
 	}
 }
+
+// A reply to an id no message of the caller's mailbox has is not_found
+// (exit 4, kind message), not an internal failure; nothing is sent.
+func TestMailReplyToAMissingMessageIsNotFound(t *testing.T) {
+	e, ctx := managedWorld(t)
+	_, code, err := run(t, e, ctx, "claude-02", "reply", "--id", "2026-01-01T00-00-00.000Z_pid1_00000000", "--body", "b")
+	f := Classify(err)
+	if err == nil || code == 0 || f.Code != "not_found" || f.Exit() != 4 || f.Details["kind"] != "message" {
+		t.Fatalf("reply to a missing id: %d %v → %+v", code, err, f)
+	}
+	if ids := unread(t, e, "codex-01"); len(ids) != 0 {
+		t.Errorf("something was sent: %v", ids)
+	}
+}
