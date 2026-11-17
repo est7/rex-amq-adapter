@@ -1064,7 +1064,15 @@ failing look is logged and swallowed, so it never stops the watcher.
    another run in the pane starts its own. Once per episode it writes a line in
    `logs/blocked.log` with the time and the last screen lines, and tells the
    orchestrator; a permission prompt also reaches the desktop. The episode ends
-   when the prompt is gone.
+   when the prompt is gone. A Claude Code agent's permission dialog in an
+   unattended session blocks the request itself when its clock runs out, so
+   it is no episode (`screen.SelfDenyingCountdown`): the dialog's footer is
+   the last one near the bottom with only the pane's chrome below it, and
+   its countdown warning ("Claude Code will automatically block this request
+   in M:SS, to avoid holding up an unattended session") starts on a line of
+   its own right above the dialog's question and options. The phrase anywhere
+   else, the command or description the dialog asks about included, does not
+   count.
 
 A transcript or blocked finding about the orchestrator itself goes to a live,
 unflagged agent of another model family, since a blocked orchestrator cannot
@@ -1182,7 +1190,9 @@ content hash).
   or, in a session with none recorded, the claiming agent's directory; left
   out when it does not resolve there); `attention` (handle to
   `turn_error@<ts>`, `waiting_on_the_human@<ts>`, `stalled@<ts>` for every
-  live agent of the session, narrator or not, `[]` when nothing waits; the
+  live agent of the session, narrator or not, `[]` when nothing waits;
+  `waiting_on_the_human` appears only once the blocked look has told the
+  episode, after 30 s, and carries when it began; the
   narrator's `attention`, which needs no narrator); `view` (as
   `view --cockpit --session` reads it: view.json through `withStored`, or
   the lifecycle alone with a `no_view` gap; a session with a hand-back but

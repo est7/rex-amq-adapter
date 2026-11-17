@@ -294,3 +294,55 @@ func TestClaudeNarrowTitledBorder(t *testing.T) {
 		t.Errorf("clamped CUF inside empty box: got %v, want empty", got)
 	}
 }
+
+// Claude Code's unattended permission dialog counts down to deny the request
+// itself; the countdown counts only when it is the dialog at the bottom of
+// the screen, wrapped or styled as a pane draws it.
+func TestClaudeSelfDenyingCountdown(t *testing.T) {
+	dialog := func(warn string) string {
+		return "╌╌╌╌\n│ rm -rf /tmp/x\n╌╌╌╌\n" + warn + "\nDo you want to proceed?\n❯ 1. Yes\n  2. No\nEsc to cancel · Tab to amend\n────\n implementer(claude-07)\n"
+	}
+	one := "⚠ Claude Code will automatically block this request in 1:24, to avoid holding up an unattended session"
+	for name, tc := range map[string]struct {
+		screen string
+		want   bool
+	}{
+		"one line":    {dialog(one), true},
+		"wrapped":     {dialog("⚠ Claude Code will automatically block this request\nin 1:24, to avoid holding up an unattended session"), true},
+		"narrow":      {dialog("⚠ Claude Code will\nautomatically block this\nrequest in 0:05, to avoid\nholding up an unattended\nsession"), true},
+		"capture":     {dialog("⚠\x1b[1CClaude\x1b[1CCode\x1b[1Cwill\x1b[1C\x1b[1mautomatically\x1b[0m\x1b[1Cblock\x1b[1Cthis\x1b[1Crequest\x1b[1Cin\x1b[1C1:24,\x1b[1Cto\x1b[1Cavoid\x1b[1Cholding\x1b[1Cup\x1b[1Can\x1b[1Cunattended\x1b[1Csession"), true},
+		"tasks below": {dialog(one) + "5 tasks (4 done, 1 open)\n" + strings.Repeat("◼ task\n", 5), true},
+		// Attended: the same dialog, no countdown.
+		"attended": {dialog(""), false},
+		// The phrase without its clock is prose, not the dialog.
+		"no clock": {dialog("the hook said Claude Code will automatically block this request in unattended runs"), false},
+		// The command or description the dialog asks about quotes it.
+		"in the command":     {dialog("│ printf 'Claude Code will automatically block this request in 1:24'\n│ Print regression fixture"), false},
+		"in the description": {dialog(one + "\n│ Print regression fixture"), false},
+		// Quoted in the transcript, above a genuine dialog of its own.
+		"quoted above a prompt": {dialog(one) + "transcript\n" + dialog(""), false},
+		// Quoted in the transcript, above an idle input box.
+		"quoted above the box": {dialog(one) + fixture(t, "claude-empty"), false},
+		"empty":                {"", false},
+		// Narrow, with three options wrapped as Claude Code draws them.
+		"three options wrapped": {"╌╌╌╌\n│ rm -rf /tmp/x\n╌╌╌╌\n⚠ Claude Code will\nautomatically block this\nrequest in 0:45, to avoid\nholding up an unattended\nsession\nDo you want to proceed?\n❯ 1. Yes\n  2. Yes, and don't ask again for\n  rex-amq-adapter commands in\n  /Users/est9/projects/side\n  3. No, and tell Claude what to\n  do differently\nEsc to cancel · Tab to amend\n────\n implementer(claude-07)\n", true},
+		// The question wraps too.
+		"question wrapped": {"╌╌╌╌\n│ +x\n╌╌╌╌\n" + one + "\nDo you want to make this edit to\ncountdown.go?\n❯ 1. Yes\n  2. No\nEsc to cancel · Tab to amend\n", true},
+		// An empty input box earlier in the scrollback does not matter.
+		"box in the scrollback": {fixture(t, "claude-empty") + dialog(one), true},
+		// A transcript line quotes it right above an attended dialog.
+		"transcript above a prompt": {"⏺ Saw log: \"Claude Code will automatically block this request in 1:24\"\n" + dialog(""), false},
+		// The dialog's diff preview holds the whole warning.
+		"in the preview": {"╌╌╌╌\n│ +one := \"⚠ Claude Code will automatically block this request in 1:24, to avoid holding up an unattended session\"\n╌╌╌╌\nDo you want to make this edit to screen_test.go?\n❯ 1. Yes\n  2. No\nEsc to cancel · Tab to amend\n", false},
+		// Below a quoted countdown dialog: another harness's prompt, a Claude
+		// question whose footer wraps, a draft in the input box.
+		"codex prompt below":      {dialog(one) + "Would you like to run the following command?\n› 1. Yes, proceed\n  2. No (esc)\n", false},
+		"wrapped footer below":    {dialog(one) + "☐ Pick one\nWhich branch?\n❯ 1. main\n  2. dev\nEnter to select · ↑/↓ to navigate · Esc\nto cancel\n", false},
+		"optionless dialog below": {dialog(one) + "Press Enter to continue\nEsc to cancel\n", false},
+		"draft below":             {dialog(one) + "────\n❯ half-typed reply\n────\n", false},
+	} {
+		if got := SelfDenyingCountdown(tc.screen); got != tc.want {
+			t.Errorf("%s: got %v want %v", name, got, tc.want)
+		}
+	}
+}
