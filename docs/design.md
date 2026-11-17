@@ -1066,10 +1066,11 @@ failing look is logged and swallowed, so it never stops the watcher.
    orchestrator; a permission prompt also reaches the desktop. The episode ends
    when the prompt is gone. Claude Code's permission dialog in an unattended
    session, whose countdown line ("Claude Code will automatically block this
-   request in M:SS") sits right above the dialog's footer at the bottom of the
-   screen, blocks the request itself when the clock runs out, so it is no
-   episode (`screen.SelfDenyingCountdown`); the phrase quoted elsewhere on
-   the screen does not count.
+   request in M:SS, to avoid holding up an unattended session") starts on a
+   line of its own right above the question of the dialog at the bottom of
+   the screen, blocks the request itself when the clock runs out, so it is no
+   episode (`screen.SelfDenyingCountdown`); the phrase anywhere else, the
+   command or description the dialog asks about included, does not count.
 
 A transcript or blocked finding about the orchestrator itself goes to a live,
 unflagged agent of another model family, since a blocked orchestrator cannot

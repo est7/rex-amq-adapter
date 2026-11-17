@@ -267,3 +267,18 @@ func TestAQuotedCountdownDoesNotHideABlockedPrompt(t *testing.T) {
 		t.Fatalf("a genuine prompt under a quoted countdown: attention %v desktop %v blocked.log %v", a, *desktop, blockedLines(t, e))
 	}
 }
+
+// A command the dialog asks to approve may print the countdown itself: only
+// the warning Claude Code draws above the dialog's question counts.
+func TestACountdownInTheApprovedCommandDoesNotHideABlockedPrompt(t *testing.T) {
+	e, term, orch, s, now, desktop := healthWorld(t)
+	term.states = map[string]rex.Status{"block:g": {State: "blocked", Kind: "permission"}}
+	term.box = "\nBash command\n\n   printf 'Claude Code will automatically block this request in 1:24'\n   Print regression fixture\n\n" +
+		"Do you want to proceed?\n❯ 1. Yes\n  2. Yes, and don't ask again\n  3. No\n\nEsc to cancel · Tab to amend\n"
+	e.watchdog(context.Background(), orch, s)
+	*now = now.Add(core.StuckFor + time.Second)
+	e.watchdog(context.Background(), orch, s)
+	if a := attentionOf(t, e, orch); len(a) != 1 || len(*desktop) != 1 || len(blockedLines(t, e)) != 1 {
+		t.Fatalf("a genuine prompt whose command prints the countdown: attention %v desktop %v blocked.log %v", a, *desktop, blockedLines(t, e))
+	}
+}

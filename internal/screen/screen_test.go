@@ -310,12 +310,15 @@ func TestClaudeSelfDenyingCountdown(t *testing.T) {
 		"one line":    {dialog(one), true},
 		"wrapped":     {dialog("⚠ Claude Code will automatically block this request\nin 1:24, to avoid holding up an unattended session"), true},
 		"narrow":      {dialog("⚠ Claude Code will\nautomatically block this\nrequest in 0:05, to avoid\nholding up an unattended\nsession"), true},
-		"capture":     {dialog("⚠\x1b[1CClaude\x1b[1CCode\x1b[1Cwill\x1b[1C\x1b[1mautomatically\x1b[0m\x1b[1Cblock\x1b[1Cthis\x1b[1Crequest\x1b[1Cin\x1b[1C1:24,"), true},
+		"capture":     {dialog("⚠\x1b[1CClaude\x1b[1CCode\x1b[1Cwill\x1b[1C\x1b[1mautomatically\x1b[0m\x1b[1Cblock\x1b[1Cthis\x1b[1Crequest\x1b[1Cin\x1b[1C1:24,\x1b[1Cto\x1b[1Cavoid\x1b[1Cholding\x1b[1Cup\x1b[1Can\x1b[1Cunattended\x1b[1Csession"), true},
 		"tasks below": {dialog(one) + "5 tasks (4 done, 1 open)\n" + strings.Repeat("◼ task\n", 5), true},
 		// Attended: the same dialog, no countdown.
 		"attended": {dialog(""), false},
 		// The phrase without its clock is prose, not the dialog.
 		"no clock": {dialog("the hook said Claude Code will automatically block this request in unattended runs"), false},
+		// The command or description the dialog asks about quotes it.
+		"in the command":     {dialog("│ printf 'Claude Code will automatically block this request in 1:24'\n│ Print regression fixture"), false},
+		"in the description": {dialog(one + "\n│ Print regression fixture"), false},
 		// Quoted in the transcript, above a genuine dialog of its own.
 		"quoted above a prompt": {dialog(one) + "transcript\n" + dialog(""), false},
 		// Quoted in the transcript, above an idle input box.
