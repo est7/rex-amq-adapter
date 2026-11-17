@@ -7,9 +7,12 @@ import (
 
 // processAncestors is this process and its ancestors, nearest first, read
 // from /proc so a hook's fast path starts no subprocess.
-func processAncestors() ([]proc, error) {
+func processAncestors() ([]proc, error) { return processAncestorsOf(os.Getpid()) }
+
+// processAncestorsOf is pid and its ancestors, nearest first.
+func processAncestorsOf(pid int) ([]proc, error) {
 	var procs []proc
-	for pid := os.Getpid(); pid > 1 && len(procs) < maxAncestors; {
+	for pid > 1 && len(procs) < maxAncestors {
 		st, err := readProcStat(pid)
 		if err != nil {
 			return nil, err

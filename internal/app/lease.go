@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
+	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 // maxAncestors bounds the walk up the process tree.
@@ -22,9 +23,11 @@ const (
 	// own: the record is this agent's, held by its current process.
 	own fit = iota
 	// staleLease: this agent's session, but the record names a process the
-	// hook does not descend from. The conversation was resumed in a new
-	// process (agy fires no SessionStart for that), or the recorded pid now
-	// belongs to another program. Adopt again; the mailbox is still its own.
+	// hook does not descend from, or another of its sessions as current. The
+	// conversation was resumed in a new process (agy fires no SessionStart for
+	// that), the recorded pid now belongs to another program, or the process
+	// resumed an earlier conversation of its own. Adopt again; the mailbox is
+	// still its own.
 	staleLease
 	// foreign: the record belongs to another agent: another kind replaced it
 	// in the block, or another process does not name the record's session.
@@ -48,23 +51,68 @@ func (e Env) recordFit(kind core.Kind, rec agent, in HookInput) fit {
 	// Another session from the record's own process is not taken as a
 	// switch: agy runs each subagent as a conversation of its own in the same
 	// process, and its hooks carry the subagent's id from the parent's pane.
+	// A session the record knows, or another identity holds, is: the process
+	// switched to that conversation (an in-process resume). An earlier one of
+	// its own becomes its current session again; another identity's decides
+	// who speaks for it (Adopt). Not for agy: a subagent's SessionStart
+	// records the subagent's id among the parent's sessions, so its hooks and
+	// the parent's would take the pane in turns.
+	switch {
+	case in.SessionID == "" || in.SessionID == rec.Session():
+		return own
+	case slices.Contains(rec.Sessions, in.SessionID):
+		if kind == core.Agy {
+			return own
+		}
+		return staleLease
+	case e.heldByAnother(kind, rec.Handle, in.SessionID):
+		return foreign
+	}
 	return own
+}
+
+// heldByAnother reports whether an identity of kind other than h holds
+// session. Identities that cannot be read are reported and taken as none: the
+// record stays the hook's, as before the conversation switched.
+func (e Env) heldByAnother(kind core.Kind, h core.Handle, session string) bool {
+	ids, err := e.Store.Identities()
+	if err != nil {
+		fmt.Fprintf(Diagnostics, "identities holding %s: %v\n", session, err)
+		return false
+	}
+	return slices.ContainsFunc(ids, func(id store.Identity) bool {
+		return id.Handle != h && id.Kind == kind && slices.Contains(id.Sessions, session)
+	})
 }
 
 // sameProcess reports whether the hook comes from rec's agent process. A
 // harness that reports its own pid (Claude Code's CLAUDE_PID, Pi's
 // process.pid) is compared exactly: a session started inside the agent (a
 // `claude -p` it runs) descends from it but is not it. Others are known by
-// ancestry.
+// ancestry. Either way the pid must still be the process that started at the
+// lease's start time: a reused pid is another process.
 func (e Env) sameProcess(rec agent, in HookInput) bool {
 	if in.AgentPID > 0 && rec.pid() > 0 && localServer(rec.Server) {
-		return in.AgentPID == rec.pid()
+		return in.AgentPID == rec.pid() && sameStart(rec.lease.Incarnation)
 	}
 	return e.descendsFrom(rec)
 }
 
+// endsOwnLease reports whether a SessionEnd hook proves it comes from rec's
+// agent process: the authority to release its lease at once. A local lease's
+// process is known as sameProcess knows it, by the reported pid or else by
+// ancestry. A remote lease's ancestry cannot be read (descendsFrom takes it
+// as is), so only the agent's own reported pid proves it; without that
+// proof the release is collection's.
+func (e Env) endsOwnLease(rec agent, in HookInput) bool {
+	if !localServer(rec.Server) {
+		return in.AgentPID > 0 && in.AgentPID == rec.pid()
+	}
+	return e.sameProcess(rec, in)
+}
+
 // descendsFrom reports whether this process descends from rec's agent
-// process. Only a local server's pids are this machine's; a remote record
+// process, the incarnation its lease records. Only a local server's pids are this machine's; a remote record
 // cannot be checked and is taken as is. Unreadable ancestry is not taken as a
 // match: adopting again costs one hook's time, trusting a stale record costs
 // the agent its mail.
@@ -81,7 +129,7 @@ func (e Env) descendsFrom(rec agent) bool {
 	if errors.Is(err, ErrSharedHarness) {
 		fmt.Fprintf(Diagnostics, "%s: %v\n", rec.Handle, err)
 	}
-	return err == nil
+	return err == nil && sameStart(rec.lease.Incarnation)
 }
 
 // ErrSharedHarness: a Codex hook descends from the pane's agent through
@@ -160,8 +208,8 @@ var ErrStartedInPane = errors.New("this hook comes from a harness a command in t
 // agent's own hooks, a harness that does not run under the agent, and a hook
 // whose ancestry cannot be read are not: muting the pane's agent costs more
 // than a stray adoption, which the agent's next hook takes back.
-func (e Env) startedUnderOwner(kind core.Kind, block string) (agent, bool) {
-	rec, ok, err := e.agentAt(block)
+func (e Env) startedUnderOwner(kind core.Kind, loc Location) (agent, bool) {
+	rec, ok, err := e.agentIn(loc)
 	if err != nil || !ok || !rec.Live() || rec.pid() <= 0 || !localServer(rec.Server) {
 		return rec, false
 	}

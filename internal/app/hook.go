@@ -74,7 +74,7 @@ func (e Env) Hook(ctx context.Context, event string, kind core.Kind, loc Locatio
 	// A harness that a command started under the pane's live agent (its tool
 	// shell's `codex exec`, `claude -p`, `agy -p`, `pi -p`) inherited the
 	// pane's REX_BLOCK: none of its hooks speaks for the pane (F14).
-	if owner, nested := e.startedUnderOwner(kind, loc.Block); nested {
+	if owner, nested := e.startedUnderOwner(kind, loc); nested {
 		if event == EventSessionStart || event == EventSessionEnd {
 			fmt.Fprintf(Diagnostics, "ignored %s %s started under %s's agent (pid %d) in its pane (%s)\n", kind, in.SessionID, owner.Handle, owner.pid(), event)
 		}
@@ -83,7 +83,7 @@ func (e Env) Hook(ctx context.Context, event string, kind core.Kind, loc Locatio
 	switch event {
 	case EventSessionStart, EventPrompt, EventPreInvocation:
 		// A new turn or session: the agent can act again.
-		e.clearTurnError(kind, loc.Block, in)
+		e.clearTurnError(kind, loc, in)
 	}
 	switch event {
 	case EventSessionStart:
@@ -117,7 +117,7 @@ func (e Env) Hook(ctx context.Context, event string, kind core.Kind, loc Locatio
 			}
 			return Reply{}, nil
 		}
-		e.clearTurnError(kind, loc.Block, in)
+		e.clearTurnError(kind, loc, in)
 		r, err := e.announce(ctx, kind, loc, in, event, core.TurnEnding, onTurnEnd)
 		if err != nil {
 			return r, err
@@ -216,7 +216,7 @@ func (e Env) sessionStart(ctx context.Context, kind core.Kind, loc Location, in 
 // adoption that stopped after writing its record. An agent in that state has a
 // mailbox, so a failed retry does not silence its mail.
 func (e Env) announce(ctx context.Context, kind core.Kind, loc Location, in HookInput, hook string, event core.HookEvent, may announcing) (Reply, error) {
-	rec, ok, err := e.agentAt(loc.Block)
+	rec, ok, err := e.agentIn(loc)
 	if err != nil {
 		return Reply{}, err
 	}
@@ -515,7 +515,9 @@ func (e Env) adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	if err != nil {
 		// An agy that a command in the pane started was refused, not the
 		// pane's agent: its refusal must not make the pane's agent back off.
-		if !errors.Is(err, ErrStartedInPane) {
+		// Nor does a refused duplicate, which takes the handle over at its
+		// next hook once the incumbent is gone.
+		if !errors.Is(err, ErrStartedInPane) && !errors.As(err, new(*DuplicateSessionError)) {
 			_ = e.Store.SetAdoptFailed(loc.Block, e.Now())
 		}
 		return Adoption{}, err

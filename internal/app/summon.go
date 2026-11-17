@@ -87,7 +87,7 @@ type SummonResult struct {
 
 // Summon resolves r.Target in the caller's session and acts.
 func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonResult, error) {
-	caller, ok, err := e.agentAt(loc.Block)
+	caller, ok, err := e.agentIn(loc)
 	if err != nil {
 		return SummonResult{}, err
 	}
@@ -785,7 +785,7 @@ func resumeCommand(kind core.Kind, session, prompt string) ([]string, bool) {
 
 // Deliver mails body to h in the caller's name.
 func (e Env) Deliver(ctx context.Context, loc Location, h core.Handle, kind, subject, body string) error {
-	caller, ok, err := e.agentAt(loc.Block)
+	caller, ok, err := e.agentIn(loc)
 	if err != nil {
 		return err
 	}

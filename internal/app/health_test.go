@@ -704,12 +704,17 @@ func TestFirstAdoptedAtPreservedAcrossResumeWhileAdoptedAtUpdates(t *testing.T) 
 // pane agent's own next turn clears it.
 func TestTurnErrorHooksFromAnotherAgentInThePaneAreIgnored(t *testing.T) {
 	e, _, _, _, _, desktop := healthWorld(t)
-	rec := claude04(t, e)
+	// claude-04 runs as a live process, its block's foreground: a pid that
+	// exists nowhere is an agent gone, which collection parks.
+	live := sbAgent(t)
+	c4 := seedOf(claude04(t, e))
+	c4.AgentPID = live.Process.Pid
+	rec := plant(t, e, c4)
 	term := e.Rex.(*fakeTerm)
 	if term.fgs == nil {
 		term.fgs = map[string]rex.Process{}
 	}
-	term.fgs["block:c"] = rex.Process{PID: 42, Name: "claude"}
+	term.fgs["block:c"] = rex.Process{PID: live.Process.Pid, Name: "claude"}
 	if err := e.markTurnError(rec); err != nil {
 		t.Fatal(err)
 	}
@@ -728,7 +733,7 @@ func TestTurnErrorHooksFromAnotherAgentInThePaneAreIgnored(t *testing.T) {
 	if !e.flagged(rec) {
 		t.Fatal("a nested session's prompt cleared claude-04's error mark")
 	}
-	if _, err := e.Hook(context.Background(), EventPrompt, core.Claude, loc, HookInput{SessionID: "sid-c4", AgentPID: 42}); err != nil {
+	if _, err := e.Hook(context.Background(), EventPrompt, core.Claude, loc, HookInput{SessionID: "sid-c4", AgentPID: live.Process.Pid}); err != nil {
 		t.Fatal(err)
 	}
 	if e.flagged(rec) {
@@ -806,12 +811,17 @@ func TestTurnErrorRoutingThroughTheHook(t *testing.T) {
 // error mark, as a nested session naming its own session does.
 func TestTurnErrorHooksNamingNoSessionFromAnotherProcessAreIgnored(t *testing.T) {
 	e, _, _, _, _, desktop := healthWorld(t)
-	rec := claude04(t, e)
+	// claude-04 runs as a live process, its block's foreground: a pid that
+	// exists nowhere is an agent gone, which collection parks.
+	live := sbAgent(t)
+	c4 := seedOf(claude04(t, e))
+	c4.AgentPID = live.Process.Pid
+	rec := plant(t, e, c4)
 	term := e.Rex.(*fakeTerm)
 	if term.fgs == nil {
 		term.fgs = map[string]rex.Process{}
 	}
-	term.fgs["block:c"] = rex.Process{PID: 42, Name: "claude"}
+	term.fgs["block:c"] = rex.Process{PID: live.Process.Pid, Name: "claude"}
 	if err := e.markTurnError(rec); err != nil {
 		t.Fatal(err)
 	}

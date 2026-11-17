@@ -7,7 +7,9 @@ import (
 	"runtime"
 )
 
-func processAncestors() ([]proc, error) {
+func processAncestors() ([]proc, error) { return processAncestorsOf(0) }
+
+func processAncestorsOf(int) ([]proc, error) {
 	return nil, fmt.Errorf("reading process ancestry is not supported on %s", runtime.GOOS)
 }
 

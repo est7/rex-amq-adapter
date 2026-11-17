@@ -164,7 +164,7 @@ var ErrNoView = errors.New("no view yet: the session's narrator writes it with `
 // narratorOf is the live narrator in loc, which alone writes its session's
 // view and reads bodies for it.
 func (e Env) narratorOf(loc Location) (agent, core.SessionKey, error) {
-	rec, ok, err := e.agentAt(loc.Block)
+	rec, ok, err := e.agentIn(loc)
 	if err != nil {
 		return rec, core.SessionKey{}, err
 	}
@@ -180,7 +180,7 @@ func (e Env) narratorOf(loc Location) (agent, core.SessionKey, error) {
 // (session names it, or the one Epic it is linked to). Anyone else is
 // refused.
 func (e Env) viewReader(ctx context.Context, loc Location, session string) (string, error) {
-	rec, ok, err := e.agentAt(loc.Block)
+	rec, ok, err := e.agentIn(loc)
 	if err != nil {
 		return "", err
 	}

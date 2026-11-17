@@ -180,8 +180,8 @@ agent. Adoption, in order:
    It takes the handle over, at the lease's next epoch, at its first hook after
    the holder is provably gone: its process exited or its pid names another
    process, its Rex server restarted (another instance id), its block is gone,
-   or its block's foreground is no longer it (a job: its pane no longer shows
-   it). A server that cannot be reached proves nothing. The lineage is the agent's own session
+   or its block's foreground is no longer it nor a process it started (an
+   editor, a pager, a shell escape; a job: its pane no longer shows it). A server that cannot be reached proves nothing. The lineage is the agent's own session
    and, for a Claude session with no record, the other session ids in the
    entries its transcript copied from the conversation it continues. An
    official `--fork-session` leaves no such entries (executed 2026-11-01,

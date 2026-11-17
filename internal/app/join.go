@@ -36,7 +36,7 @@ var ErrCrewTaken = errors.New("this Rex session already works as another crew")
 // since their conventions would change under them. A narrator or personal
 // agent (core.Stealth) never joins a crew.
 func (e Env) Join(ctx context.Context, loc Location, crewName, role string) (Joined, error) {
-	rec, ok, err := e.agentAt(loc.Block)
+	rec, ok, err := e.agentIn(loc)
 	if err != nil {
 		return Joined{}, err
 	}
@@ -168,7 +168,7 @@ func (e Env) takeRole(ctx context.Context, loc Location, h core.Handle, role str
 		return agent{}, err
 	}
 	defer unlock()
-	rec, ok, err := e.agentAt(loc.Block)
+	rec, ok, err := e.agentIn(loc)
 	if err != nil {
 		return agent{}, err
 	}

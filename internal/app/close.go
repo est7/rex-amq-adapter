@@ -56,7 +56,7 @@ type CloseResult struct {
 // session already gone is not an error.
 func (e Env) CloseEpic(ctx context.Context, loc Location, r CloseRequest) (CloseResult, error) {
 	res := CloseResult{SessionID: r.Session, OpID: r.OpID}
-	caller, ok, err := e.agentAt(loc.Block)
+	caller, ok, err := e.agentIn(loc)
 	if err != nil {
 		return res, err
 	}

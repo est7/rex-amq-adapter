@@ -28,7 +28,7 @@ var ErrUsage = errors.New("usage")
 // ManagedMail runs amq verb with args as the agent in loc, on the adapter's
 // root, after the gateway allowed it. The exit status is amq's.
 func (e Env) ManagedMail(ctx context.Context, loc Location, verb string, args []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
-	rec, ok, err := e.agentAt(loc.Block)
+	rec, ok, err := e.agentIn(loc)
 	if err != nil {
 		return 1, err
 	}

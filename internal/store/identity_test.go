@@ -110,10 +110,10 @@ func TestLeaseIsOnePerHandle(t *testing.T) {
 	if err != nil || len(entries) != 1 || entries[0].Name() != "codex-01.json" {
 		t.Fatalf("lease files %v (%v), want codex-01.json alone", entries, err)
 	}
-	if _, ok, _ := s.LeaseAt("block:a"); ok {
+	if _, ok, _ := s.LeaseAt("", "block:a"); ok {
 		t.Fatal("the lease stayed on the block it left")
 	}
-	if l, ok, _ := s.LeaseAt("block:b"); !ok || l.Handle != "codex-01" {
+	if l, ok, _ := s.LeaseAt("", "block:b"); !ok || l.Handle != "codex-01" {
 		t.Fatalf("lease at block:b: %+v %v", l, ok)
 	}
 }
@@ -140,7 +140,7 @@ func TestLeaseOnABlockReplacesAnotherHandles(t *testing.T) {
 	if _, live, _ := s.LeaseOf("codex-01"); live {
 		t.Fatal("the replaced handle kept its lease")
 	}
-	if l, ok, _ := s.LeaseAt("block:a"); !ok || l.Handle != "claude-02" {
+	if l, ok, _ := s.LeaseAt("", "block:a"); !ok || l.Handle != "claude-02" {
 		t.Fatalf("lease at block:a: %+v", l)
 	}
 	id, _, _ := s.IdentityOf("codex-01")
@@ -148,7 +148,7 @@ func TestLeaseOnABlockReplacesAnotherHandles(t *testing.T) {
 	if p == nil || p.DepartReason != DepartReplaced || p.BlockID != "block:a" || p.Epoch != old.Epoch || !p.DepartedAt.Equal(at) || !p.Unfinished {
 		t.Fatalf("archived placement %+v, want block:a replaced at %v with notices owed", p, at)
 	}
-	if got, ok, _ := s.DepartedFrom("block:a"); !ok || got.Handle != "codex-01" {
+	if got, ok, _ := s.DepartedFrom("", "block:a"); !ok || got.Handle != "codex-01" {
 		t.Fatalf("departed from block:a: %+v %v", got, ok)
 	}
 	// Another server's block of the same id is another block.
@@ -309,14 +309,14 @@ func TestIdentityDepartedFromIsTheLastToLeaveTheBlock(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if got, ok, _ := s.DepartedFrom("block:a"); !ok || got.Handle != "codex-03" {
+	if got, ok, _ := s.DepartedFrom("", "block:a"); !ok || got.Handle != "codex-03" {
 		t.Fatalf("departed only: got %+v, want the last to depart", got)
 	}
 	mustLease(t, s, leaseIn("codex-03", "block:b", 9), t0.Add(5*time.Hour))
-	if got, ok, _ := s.DepartedFrom("block:a"); !ok || got.Handle != "codex-02" {
+	if got, ok, _ := s.DepartedFrom("", "block:a"); !ok || got.Handle != "codex-02" {
 		t.Fatalf("one resumed elsewhere: got %+v, want codex-02", got)
 	}
-	if _, ok, _ := s.DepartedFrom("block:none"); ok {
+	if _, ok, _ := s.DepartedFrom("", "block:none"); ok {
 		t.Fatal("a block nobody left has a departed identity")
 	}
 }

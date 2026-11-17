@@ -295,24 +295,26 @@ func (s Store) Leases() ([]Lease, error) {
 	return out, err
 }
 
-// LeaseAt returns the live lease on block; ok is false when none is (I3
-// leaves at most one).
-func (s Store) LeaseAt(block string) (Lease, bool, error) {
+// LeaseAt returns the live lease on block of server; ok is false when none
+// is (I3 leaves at most one). An empty server matches any: a caller that
+// knows only the block.
+func (s Store) LeaseAt(server, block string) (Lease, bool, error) {
 	leases, err := s.Leases()
 	if err != nil {
 		return Lease{}, false, err
 	}
 	for _, l := range leases {
-		if l.BlockID == block {
+		if l.BlockID == block && (server == "" || l.Server == server) {
 			return l, true, nil
 		}
 	}
 	return Lease{}, false, nil
 }
 
-// DepartedFrom returns the identity that last left block and is not running
-// anywhere now; ok is false when none did.
-func (s Store) DepartedFrom(block string) (Identity, bool, error) {
+// DepartedFrom returns the identity that last left block of server and is
+// not running anywhere now; ok is false when none did. An empty server
+// matches any.
+func (s Store) DepartedFrom(server, block string) (Identity, bool, error) {
 	ids, err := s.Identities()
 	if err != nil {
 		return Identity{}, false, err
@@ -329,7 +331,7 @@ func (s Store) DepartedFrom(block string) (Identity, bool, error) {
 	ok := false
 	for _, id := range ids {
 		p := id.LastPlacement
-		if p == nil || p.BlockID != block || live[id.Handle] {
+		if p == nil || p.BlockID != block || (server != "" && p.Server != server) || live[id.Handle] {
 			continue
 		}
 		if !ok || p.DepartedAt.After(last.LastPlacement.DepartedAt) {
@@ -342,7 +344,8 @@ func (s Store) DepartedFrom(block string) (Identity, bool, error) {
 // AcquireLease records that l.Handle's agent runs as l.Incarnation in
 // l.BlockID from at, and returns the lease written. The handle needs an
 // identity. A lease the same process already holds keeps its epoch; any
-// other starts the next one, continuing past the handle's last placement.
+// other, including a process of the same pid on another server, starts the
+// next one, continuing past the handle's last placement.
 // AcquiredAt is the caller's. The identity's fence
 // moves to the lease's session (a new generation when it is another). Any
 // other handle's lease on the block is released as DepartReplaced (I3).
@@ -367,7 +370,7 @@ func (s Store) AcquireLease(l Lease, at time.Time) (Lease, error) {
 	}
 	for _, o := range leases {
 		switch {
-		case o.Handle == l.Handle && o.Incarnation.Same(l.Incarnation):
+		case o.Handle == l.Handle && o.Server == l.Server && o.Incarnation.Same(l.Incarnation):
 			l.Epoch = o.Epoch
 		case o.Handle == l.Handle:
 			l.Epoch = max(l.Epoch, o.Epoch+1)
@@ -502,7 +505,10 @@ func (s Store) AgentsChanged() (time.Time, error) {
 	return newest, nil
 }
 
-// readDir calls f with each JSON file of dir; a missing dir has none.
+// readDir calls f with each JSON file of dir; a missing dir has none. A file
+// removed between the listing and its read (a lockless reader racing
+// ReleaseLease or ForgetIdentity) is skipped: it was gone by the time it was
+// read. Any other unreadable or undecodable file is an error.
 func readDir(dir string, f func(name string, b []byte) error) error {
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -516,6 +522,9 @@ func readDir(dir string, f func(name string, b []byte) error) error {
 			continue
 		}
 		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
 		if err != nil {
 			return err
 		}

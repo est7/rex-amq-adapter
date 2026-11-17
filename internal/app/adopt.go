@@ -102,7 +102,7 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	}
 	server := serverOf(srv, loc)
 	inc := incarnation(server, agentPID)
-	own, hasOwn := resolveIdentity(recs, loc.Block, inc, kind, lineage(recs, kind, in))
+	own, hasOwn := resolveIdentity(recs, server, loc.Block, inc, kind, lineage(recs, kind, in))
 	// Who speaks for the conversation is settled before anything changes: a
 	// refused pane parks no agent, names no handle, and makes no mailbox.
 	if hasOwn && heldElsewhere(own, server, loc.Block, inc) {
@@ -147,7 +147,7 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	// the session this process switched away from: it keeps its handle as a
 	// reservation for a resume.
 	for _, r := range recs {
-		if r.BlockID == loc.Block && r.Live() && r.Handle != handle {
+		if r.BlockID == loc.Block && r.Server == server && r.Live() && r.Handle != handle {
 			if err := e.park(ctx, r, store.DepartReplaced); err != nil {
 				return Adoption{}, fmt.Errorf("park %s, replaced in this block: %w", r.Handle, err)
 			}
@@ -169,9 +169,10 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	// repeated start hook or a compaction: nothing changes, unless the adoption
 	// that leased it never finished. Then the agent was not told, and nor was
 	// its window. One that departed was announced as gone, so taking its handle
-	// back is news again.
+	// back is news again. A handle never placed (its adoption died before its
+	// lease) was never told either.
 	again := hasOwn && own.Live() && own.BlockID == loc.Block
-	unfinished := hasOwn && own.Live() && !own.Adopted()
+	unfinished := hasOwn && !own.Adopted() && own.departure() == nil
 	arrived := !again || unfinished
 	if moved {
 		arrived = !together(own, shownAt) || unfinished // a move within the session is no news
@@ -423,7 +424,7 @@ func (e Env) SetTask(ctx context.Context, loc Location, task string) (string, er
 		return "", err
 	}
 	defer unlock()
-	rec, ok, err := e.agentAt(loc.Block)
+	rec, ok, err := e.agentIn(loc)
 	if err != nil {
 		return "", err
 	}
@@ -445,7 +446,7 @@ func (e Env) SetTask(ctx context.Context, loc Location, task string) (string, er
 
 // Exports is the shell text `rex-amq-adapter env` prints for the agent in loc.
 func (e Env) Exports(loc Location) (string, error) {
-	rec, ok, err := e.agentAt(loc.Block)
+	rec, ok, err := e.agentIn(loc)
 	if err != nil {
 		return "", err
 	}

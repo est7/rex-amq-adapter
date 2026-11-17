@@ -197,11 +197,10 @@ func TestRecordedProcessFurtherUpTheAncestryIsCurrent(t *testing.T) {
 // is in fact current, so only the failed read can cause the adoption, which
 // takes the block's foreground process.
 func TestUnreadableAncestryAdoptsAgain(t *testing.T) {
-	other := exec.Command("sleep", "30")
-	if err := other.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = other.Process.Kill(); _ = other.Wait() })
+	// Another program, not the old agent's child (this test stands in for the
+	// old agent): a child of it would be its own foreground, such as an editor
+	// it opened, which proves nothing of its departure (holderGone).
+	other := orphan(t)
 	term := &fakeTerm{state: "idle"}
 	e := realAmqEnv(t, term)
 	ctx := context.Background()
@@ -215,12 +214,12 @@ func TestUnreadableAncestryAdoptsAgain(t *testing.T) {
 	}
 	e.Ancestors = func() ([]proc, error) { return nil, errors.New("sysctl failed") }
 	term.mu.Lock()
-	term.fgPID = other.Process.Pid
+	term.fgPID = other
 	term.mu.Unlock()
 	if _, err := e.Hook(ctx, EventPreInvocation, core.Agy, loc, HookInput{ConversationID: "c1"}); err != nil {
 		t.Fatal(err)
 	}
-	if after, _, _ := e.agentAt(block); after.pid() != other.Process.Pid {
+	if after, _, _ := e.agentAt(block); after.pid() != other {
 		t.Errorf("a lease the hook could not check was trusted: %+v", after)
 	}
 }
