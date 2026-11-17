@@ -515,7 +515,9 @@ func (e Env) adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	if err != nil {
 		// An agy that a command in the pane started was refused, not the
 		// pane's agent: its refusal must not make the pane's agent back off.
-		if !errors.Is(err, ErrStartedInPane) {
+		// Nor does a refused duplicate, which takes the handle over at its
+		// next hook once the incumbent is gone.
+		if !errors.Is(err, ErrStartedInPane) && !errors.As(err, new(*DuplicateSessionError)) {
 			_ = e.Store.SetAdoptFailed(loc.Block, e.Now())
 		}
 		return Adoption{}, err

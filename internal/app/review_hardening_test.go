@@ -325,3 +325,23 @@ func TestInProcessResumeIntoAHeldConversationIsADuplicate(t *testing.T) {
 		t.Fatalf("the pane's previous agent %s still runs beside the conversation it switched to", prev.Handle)
 	}
 }
+
+// A refused duplicate is not a failed adoption: its pane does not back off.
+// Its next hook after the incumbent closed, a tool call within the backoff
+// window included, takes the handle over (AC3).
+func TestDuplicateNoBackoffTakesOverAtTheNextToolCall(t *testing.T) {
+	w := newSBWorld(t)
+	original := w.startIncumbent(t)
+	if r := w.resumeDuplicate(t); !strings.Contains(r.Notice, "this pane has no AMQ identity") {
+		t.Fatalf("setup: the duplicate was not refused: %q", r.Notice)
+	}
+	_ = w.incumbent.Process.Kill()
+	_ = w.incumbent.Wait()
+	w.hook(t, EventPostTool, sbDuplicateBlock, w.duplicate, "")
+	if l := leaseOf(t, w.e, original); l.BlockID != sbDuplicateBlock || l.Incarnation.PID != w.duplicate.Process.Pid {
+		t.Fatalf("AC3: the tool call after the incumbent closed left %s at %+v; want it in %s", original, l, sbDuplicateBlock)
+	}
+	if _, failed, err := w.e.Store.AdoptFailedAt(sbDuplicateBlock); err != nil || failed {
+		t.Fatalf("a refused duplicate was recorded as a failed adoption: failed=%v err=%v", failed, err)
+	}
+}
