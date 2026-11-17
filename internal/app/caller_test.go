@@ -33,6 +33,8 @@ func TestCallerIsTheSessionsRecord(t *testing.T) {
 	// The command runs in a shell of the Claude session that the Codex agent
 	// started (claude-01's process is the nearer ancestor), unless noted.
 	nested := []proc{{1, "rex-amq-adapter"}, {2, "zsh"}, {101, "claude"}, {3, "zsh"}, {102, "codex"}}
+	// A command in a harness's tool shell runs under the harness's process.
+	under := func(pid int, name string) []proc { return []proc{{1, "rex-amq-adapter"}, {2, "zsh"}, {pid, name}} }
 	for _, c := range []struct {
 		name      string
 		env       func(string) string
@@ -40,11 +42,11 @@ func TestCallerIsTheSessionsRecord(t *testing.T) {
 		want      string // block; "" wants an error
 		wantErr   string // in the error
 	}{
-		{"claude without REX_BLOCK", envOf("CLAUDE_CODE_SESSION_ID", "cl"), nil, "block:claude", ""},
-		{"codex without REX_BLOCK", envOf("CODEX_THREAD_ID", "cx"), nil, "block:codex", ""},
-		{"pi without REX_BLOCK", envOf("PI_SESSION_ID", "pi"), nil, "block:pi", ""},
-		{"agy without REX_BLOCK", envOf("ANTIGRAVITY_CONVERSATION_ID", "ag"), nil, "block:agy", ""},
-		{"a session over an inherited REX_BLOCK", envOf("CODEX_THREAD_ID", "cx", "REX_BLOCK", stale), nil, "block:codex", ""},
+		{"claude without REX_BLOCK", envOf("CLAUDE_CODE_SESSION_ID", "cl"), under(101, "claude"), "block:claude", ""},
+		{"codex without REX_BLOCK", envOf("CODEX_THREAD_ID", "cx"), under(102, "codex"), "block:codex", ""},
+		{"pi without REX_BLOCK", envOf("PI_SESSION_ID", "pi"), under(103, "pi"), "block:pi", ""},
+		{"agy without REX_BLOCK", envOf("ANTIGRAVITY_CONVERSATION_ID", "ag"), under(104, "agy"), "block:agy", ""},
+		{"a session over an inherited REX_BLOCK", envOf("CODEX_THREAD_ID", "cx", "REX_BLOCK", stale), under(102, "codex"), "block:codex", ""},
 		{"no session: REX_BLOCK", envOf("REX_BLOCK", stale, "REX_SERVER", server), nil, stale, ""},
 		{"no session, no REX_BLOCK", envOf(), nil, "", "REX_BLOCK is unset"},
 		{"an unadopted claude -p in an adopted codex's shell", envOf("CODEX_THREAD_ID", "cx", "CLAUDE_CODE_SESSION_ID", "nested", "REX_BLOCK", "block:codex"), nested, "", "claude session (nested) has no AMQ identity"},

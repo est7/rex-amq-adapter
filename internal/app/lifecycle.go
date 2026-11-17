@@ -97,8 +97,10 @@ func (e Env) ensureWaker(ctx context.Context, rec agent) error {
 }
 
 // Depart retires the waker of the agent that ended in loc and releases its
-// lease; its identity stays a reservation for its session. A SessionEnd from an agent session other than the
-// recorded one (a late hook from a replaced agent) changes nothing.
+// lease (by its epoch, I4); its identity stays a reservation for its session.
+// A SessionEnd from an agent session other than the recorded one (a late hook
+// from a replaced agent), or from another process than the lease's, changes
+// nothing.
 func (e Env) Depart(ctx context.Context, loc Location, in HookInput) error {
 	unlock, err := e.Store.LockLifecycle(ctx)
 	if err != nil {
@@ -110,6 +112,9 @@ func (e Env) Depart(ctx context.Context, loc Location, in HookInput) error {
 		return err
 	}
 	if in.SessionID != "" && rec.Session() != "" && in.SessionID != rec.Session() {
+		return nil
+	}
+	if in.AgentPID > 0 && !e.sameProcess(rec, in) {
 		return nil
 	}
 	return e.park(ctx, rec, store.DepartSessionEnd)

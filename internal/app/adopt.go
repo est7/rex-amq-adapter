@@ -34,8 +34,10 @@ type Adoption struct {
 
 // Adopt gives the agent running in loc a handle, a mailbox, and a live
 // waker, and records the binding. The handle follows the agent session (see
-// claim): a session resumed in a new pane gets its handle back, and adopting
-// an agent already adopted keeps everything as is.
+// resolveIdentity): a session resumed in a new pane gets its handle back, and
+// adopting an agent already adopted keeps everything as is. A session another
+// pane's live agent runs is refused with a *DuplicateSessionError, before
+// anything changes.
 func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInput) (Adoption, error) {
 	unlock, err := e.Store.LockLifecycle(ctx)
 	if err != nil {
@@ -68,7 +70,8 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 		// A Codex hook reports no pid, and the block is the one its harness
 		// inherited: a shared daemon runs other panes' threads under the first
 		// pane's location. Taking the foreground on trust would hand that
-		// pane's handle and mail to another thread (claim matches it by pid).
+		// pane's handle and mail to another thread (resolveIdentity matches
+		// it by process).
 		// An agy hook reports no pid either, and a headless `agy -p` that a
 		// command in the pane runs fires the user's hooks with the pane's
 		// location: its foreground is the agent that ran the command.
@@ -97,17 +100,25 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	if err != nil {
 		return Adoption{}, err
 	}
-	own, hasOwn := claim(recs, loc.Block, agentPID, kind, lineage(recs, kind, in))
-	// A background job shown in another pane than its record's moved there
-	// (jobLocation): it keeps its handle and is not departing anywhere.
-	moved := false
-	if !hasOwn && in.Job {
-		for _, r := range recs {
-			if r.Live() && r.Kind == kind && r.Session() == in.SessionID && r.BlockID != loc.Block {
-				own, hasOwn, moved = r, true, true
-			}
+	server := serverOf(srv, loc)
+	inc := incarnation(server, agentPID)
+	own, hasOwn := resolveIdentity(recs, loc.Block, inc, kind, lineage(recs, kind, in))
+	// Who speaks for the conversation is settled before anything changes: a
+	// refused pane parks no agent, names no handle, and makes no mailbox.
+	if hasOwn && heldElsewhere(own, server, loc.Block, inc) {
+		reason, gone := e.holderGone(ctx, own)
+		if !gone {
+			return Adoption{}, duplicateOf(in.SessionID, own)
 		}
+		// The lease is taken over below: AcquireLease gives this process the
+		// next epoch, so a late release by the old one is a no-op (I4).
+		fmt.Fprintf(Diagnostics, "%s takes over %s from pid %d in %s (%s)\n", loc.Block, own.Handle, own.pid(), own.BlockID, reason)
 	}
+	// The lease follows the agent to this block: a background job shown in
+	// another pane than its lease's (jobLocation), or a takeover from a
+	// process gone from another pane. It keeps its handle and is not
+	// departing anywhere.
+	moved := hasOwn && own.Live() && own.BlockID != loc.Block
 	// A background job is adopted only into a pane that shows it: a hook on
 	// every tool call trusts the block of the job's record, and that record
 	// may be stale or an older adapter's.
@@ -154,7 +165,6 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	if !hasOwn {
 		e.seedSentCursor(handle)
 	}
-	server := serverOf(srv, loc)
 	// What this adoption means. The live agent of this block coming back is a
 	// repeated start hook or a compaction: nothing changes, unless the adoption
 	// that leased it never finished. Then the agent was not told, and nor was
@@ -189,7 +199,7 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 		Handle:         handle,
 		Place:          store.Place{Server: server, SessionID: blk.SessionID, WindowID: blk.WindowID, BlockID: loc.Block},
 		ServerInstance: srv.InstanceID,
-		Incarnation:    incarnation(server, agentPID),
+		Incarnation:    inc,
 		AcquiredAt:     now,
 		// Unfinished until the waker and label follow: a move within the tab
 		// tells no one but is a transition all the same.
@@ -373,59 +383,6 @@ func (e Env) noteWindow(ctx context.Context, h core.Handle, note string) error {
 	}
 	defer unlock()
 	return e.Store.AddWindowNote(h, note)
-}
-
-// claim finds the handle this agent already holds, if any. sessions is the
-// agent's lineage: its session, then the sessions its conversation continues.
-//
-//  1. The record of a session in the lineage, nearest first, of the same kind:
-//     a resume, in this block or any other, takes its handle back, so peers'
-//     mail and the conversation's references to it still reach it. A session
-//     another block's agent is running ends the search: that agent is this
-//     conversation's continuation too, and owns what came before it.
-//  2. Otherwise this block's live record of the same process and kind: a
-//     repeated hook, a compaction, a new session in the same process
-//     (/clear).
-//
-// An agent that claims nothing is named afresh: a new session in a pane
-// does not inherit the handle of the pane's previous session.
-func claim(recs []agent, block string, pid int, kind core.Kind, sessions []string) (agent, bool) {
-	for _, session := range sessions {
-		r, ok, running := resumable(recs, block, kind, session)
-		if ok {
-			return r, true
-		}
-		if running {
-			break
-		}
-	}
-	for _, r := range recs {
-		if r.BlockID == block && r.Live() && r.pid() == pid && r.Kind == kind {
-			return r, true
-		}
-	}
-	return agent{}, false
-}
-
-// resumable is the newest handle that ran as session that the agent in
-// block may take: an identity keeps every session it ran as (/clear starts
-// another in the same process), and one session is in one identity (I1).
-// running reports that another block's agent holds the session: a handle is
-// never shared.
-func resumable(recs []agent, block string, kind core.Kind, session string) (resumed agent, found, running bool) {
-	for _, r := range recs {
-		if !slices.Contains(r.Sessions, session) || r.Kind != kind {
-			continue
-		}
-		if r.Live() && r.BlockID != block {
-			running = true
-			continue
-		}
-		if !found || r.adoptedAt().After(resumed.adoptedAt()) {
-			resumed, found = r, true
-		}
-	}
-	return resumed, found, running
 }
 
 // takenHandles are the handles a new name must avoid: every record's (live,

@@ -262,25 +262,31 @@ func TestCallerOfABackgroundJob(t *testing.T) {
 	here := func(session string) func(string) string {
 		return envOf("REX_BLOCK", tuiBlock, "CLAUDE_CODE_SESSION_ID", session)
 	}
-	if _, err := w.e.Caller(ctx, here(jobSess)); err == nil {
+	// The job's tool shell runs under the job's process (its CLAUDE_PID); the
+	// terminal session's under this test process.
+	shell := w.e
+	shell.Ancestors = func() ([]proc, error) {
+		return []proc{{os.Getpid(), "rex-amq-adapter"}, {999990, "zsh"}, {w.jobPID, "claude"}}, nil
+	}
+	if _, err := shell.Caller(ctx, here(jobSess)); err == nil {
 		t.Error("an unadopted job was given a location")
 	}
 	w.jobHook(t, EventSessionStart)
-	if loc, err := w.e.Caller(ctx, here(jobSess)); err != nil || loc.Block != viewBlock {
+	if loc, err := shell.Caller(ctx, here(jobSess)); err != nil || loc.Block != viewBlock {
 		t.Errorf("adopted job: %+v %v", loc, err)
 	}
 	w.term.titles[viewBlock] = "2 awaiting input · claude agents"
-	if _, err := w.e.Caller(ctx, here(jobSess)); err == nil {
+	if _, err := shell.Caller(ctx, here(jobSess)); err == nil {
 		t.Error("a job its pane no longer shows was given that pane")
 	}
-	if loc, err := w.e.Caller(ctx, here("tui-session")); err != nil || loc.Block != tuiBlock {
+	if loc, err := shell.Caller(ctx, here("tui-session")); err != nil || loc.Block != tuiBlock {
 		t.Errorf("terminal session: %+v %v", loc, err)
 	}
 	// A `claude -p` an agent runs in the pane has a session no hook adopted.
-	if _, err := w.e.Caller(ctx, here("nested")); err == nil {
+	if _, err := shell.Caller(ctx, here("nested")); err == nil {
 		t.Error("a nested session was given the pane's identity")
 	}
-	if loc, err := w.e.Caller(ctx, here("")); err != nil || loc.Block != tuiBlock {
+	if loc, err := shell.Caller(ctx, here("")); err != nil || loc.Block != tuiBlock {
 		t.Errorf("a shell with no Claude session: %+v %v", loc, err)
 	}
 }

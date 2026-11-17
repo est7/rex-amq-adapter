@@ -446,7 +446,12 @@ func TestCockpitViewReadsOnlyThePersonalAgentsLinkedEpics(t *testing.T) {
 		"outside Rex, by hub":    {nil, CockpitViewRequest{Hub: hub}},
 		"a plain Rex pane":       {map[string]string{"REX_BLOCK": "block:shell"}, CockpitViewRequest{Hub: hub}},
 	} {
-		b, err := e.ReadCockpitView(ctx, cockpitEnv(c.env), c.req)
+		on := e
+		if c.env["PI_SESSION_ID"] != "" {
+			// Its tool shell runs under its harness's process (pid 705).
+			on.Ancestors = func() ([]proc, error) { return []proc{{PID: 9001}, {PID: 705, Name: "pi"}, {PID: 9000}}, nil }
+		}
+		b, err := on.ReadCockpitView(ctx, cockpitEnv(c.env), c.req)
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
