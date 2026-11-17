@@ -10,6 +10,7 @@ import (
 	"github.com/est7/rex-amq-adapter/internal/core"
 	"github.com/est7/rex-amq-adapter/internal/rex"
 	"github.com/est7/rex-amq-adapter/internal/screen"
+	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 // InjectRequest is what amq wake passes the injector: the handle to wake and
@@ -153,8 +154,12 @@ func (e Env) checkBinding(ctx context.Context, rec agent) (core.Outcome, bool) {
 	return core.CheckBinding(b)
 }
 
-// observeBinding reads what CheckBinding decides on. Whether the agent
-// process exited can only be probed for a local server.
+// observeBinding reads what CheckBinding decides on. The agent is gone when
+// its lease's process is (a local server's pid exited, or names a process
+// that started at another time), or when the lease's Rex server restarted
+// since: a restored block keeps its id but runs none of the old processes.
+// The server is not asked when the block's foreground is the lease's own
+// live local process, which it shows whatever the server's instance.
 func (e Env) observeBinding(ctx context.Context, rec agent) (core.Binding, error) {
 	fg, ok, err := e.Rex.Foreground(ctx, rec.BlockID)
 	if errors.Is(err, rex.ErrNotFound) {
@@ -163,9 +168,20 @@ func (e Env) observeBinding(ctx context.Context, rec agent) (core.Binding, error
 	if err != nil {
 		return core.Binding{}, err
 	}
-	b := core.Binding{RecordPID: rec.pid(), AgentGone: localServer(rec.Server) && processGone(rec.pid())}
+	var inc store.Incarnation
+	if rec.lease != nil {
+		inc = rec.lease.Incarnation
+	}
+	_, gone := incarnationGone(rec.Server, inc)
+	b := core.Binding{RecordPID: rec.pid(), AgentGone: gone}
 	if ok {
 		b.ForegroundPID = fg.PID
+	}
+	shown := localServer(rec.Server) && b.RecordPID > 0 && b.ForegroundPID == b.RecordPID
+	if !b.AgentGone && !shown {
+		if b.AgentGone, err = e.serverRestarted(ctx, rec); err != nil {
+			return core.Binding{}, err
+		}
 	}
 	if rec.Kind == core.Claude && ok {
 		if err := e.claudeBinding(ctx, rec, &b); err != nil {
@@ -173,6 +189,19 @@ func (e Env) observeBinding(ctx context.Context, rec agent) (core.Binding, error
 		}
 	}
 	return b, nil
+}
+
+// serverRestarted reports whether rec's Rex server is another instance than
+// the one its lease was acquired on. A lease that recorded none cannot tell.
+func (e Env) serverRestarted(ctx context.Context, rec agent) (bool, error) {
+	if rec.lease == nil || rec.lease.ServerInstance == "" {
+		return false, nil
+	}
+	srv, err := e.Rex.Whoami(ctx)
+	if err != nil {
+		return false, err
+	}
+	return srv.InstanceID != "" && srv.InstanceID != rec.lease.ServerInstance, nil
 }
 
 // clearLeftover erases a doorbell an earlier attempt left in the box. Text in

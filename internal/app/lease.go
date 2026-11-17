@@ -55,16 +55,17 @@ func (e Env) recordFit(kind core.Kind, rec agent, in HookInput) fit {
 // harness that reports its own pid (Claude Code's CLAUDE_PID, Pi's
 // process.pid) is compared exactly: a session started inside the agent (a
 // `claude -p` it runs) descends from it but is not it. Others are known by
-// ancestry.
+// ancestry. Either way the pid must still be the process that started at the
+// lease's start time: a reused pid is another process.
 func (e Env) sameProcess(rec agent, in HookInput) bool {
 	if in.AgentPID > 0 && rec.pid() > 0 && localServer(rec.Server) {
-		return in.AgentPID == rec.pid()
+		return in.AgentPID == rec.pid() && sameStart(rec.lease.Incarnation)
 	}
 	return e.descendsFrom(rec)
 }
 
 // descendsFrom reports whether this process descends from rec's agent
-// process. Only a local server's pids are this machine's; a remote record
+// process, the incarnation its lease records. Only a local server's pids are this machine's; a remote record
 // cannot be checked and is taken as is. Unreadable ancestry is not taken as a
 // match: adopting again costs one hook's time, trusting a stale record costs
 // the agent its mail.
@@ -81,7 +82,7 @@ func (e Env) descendsFrom(rec agent) bool {
 	if errors.Is(err, ErrSharedHarness) {
 		fmt.Fprintf(Diagnostics, "%s: %v\n", rec.Handle, err)
 	}
-	return err == nil
+	return err == nil && sameStart(rec.lease.Incarnation)
 }
 
 // ErrSharedHarness: a Codex hook descends from the pane's agent through

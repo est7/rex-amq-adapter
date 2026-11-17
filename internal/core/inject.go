@@ -87,16 +87,18 @@ type Binding struct {
 // longer exists or its process exited. A different foreground process with
 // the agent still alive (an editor or pager it opened) is transient and
 // deferred, because a failed cohort is not retried until new mail arrives.
+// A gone agent is gone before its pid is compared: the foreground may be
+// another program that reuses it.
 func CheckBinding(b Binding) (Outcome, bool) {
 	switch {
 	case b.BlockGone:
 		return Outcome{Progress: Failed, Code: CodeBlockGone, Note: "the agent's Rex block no longer exists"}, false
 	case b.LeftPane:
 		return Outcome{Progress: Failed, Code: "agent_left_pane", Note: "the agent's conversation was moved to the background; its pane shows something else"}, false
-	case b.ForegroundPID == b.RecordPID, b.JobShown:
-		return Outcome{}, true
 	case b.AgentGone:
 		return Outcome{Progress: Failed, Code: "agent_gone", Note: "the adopted agent process exited"}, false
+	case b.RecordPID > 0 && b.ForegroundPID == b.RecordPID, b.JobShown:
+		return Outcome{}, true
 	}
 	return Outcome{Progress: Deferred, Code: "agent_not_foreground", Note: "another process holds the agent's terminal"}, false
 }
