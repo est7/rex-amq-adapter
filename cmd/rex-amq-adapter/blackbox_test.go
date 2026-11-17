@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -137,5 +138,58 @@ func TestBlackBoxContract(t *testing.T) {
 	if _, err := os.Stat(state); err == nil {
 		entries, _ := os.ReadDir(state)
 		t.Errorf("the state directory was created: %v", entries)
+	}
+}
+
+// A finite command a signal ends answers, after cleanup, with one
+// envelope naming the signal: terminated (143) for SIGTERM, interrupted
+// (130) for SIGINT, never the failure its cleanup produced.
+func TestSignalEndsAFiniteCommandWithItsCode(t *testing.T) {
+	work := t.TempDir()
+	bin := filepath.Join(work, "rex-amq-adapter")
+	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatalf("build: %v\n%s", err, out)
+	}
+	// The stub marks that the adapter is waiting on it (past its signal
+	// setup), then becomes the sleep, so a kill ends it.
+	slow, marker := filepath.Join(work, "rex"), filepath.Join(work, "asked")
+	if err := os.WriteFile(slow, []byte("#!/bin/sh\ntouch "+marker+"\nexec sleep 30\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		sig  syscall.Signal
+		code string
+		exit int
+	}{{syscall.SIGTERM, "terminated", 143}, {syscall.SIGINT, "interrupted", 130}} {
+		cmd := exec.Command(bin, "agent", "await", "block:01a1eac4-f234-7985-8bef-2ea92c753265", "--timeout", "60s")
+		cmd.Env = []string{"HOME=" + work, "PATH=/usr/bin:/bin", "REX_AMQ_ADAPTER_HOME=" + filepath.Join(work, "state"), "REX_AMQ_REX=" + slow, "REX_SERVER=unix:///nonexistent/rex.sock"}
+		var o, e bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &o, &e
+		_ = os.Remove(marker)
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		for end := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+			if _, err := os.Stat(marker); err == nil {
+				break
+			}
+			if time.Now().After(end) {
+				_ = cmd.Process.Kill()
+				t.Fatalf("%s: the adapter never asked rex", c.sig)
+			}
+		}
+		if err := cmd.Process.Signal(c.sig); err != nil {
+			t.Fatal(err)
+		}
+		_ = cmd.Wait()
+		var env struct {
+			OK    bool `json:"ok"`
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		if json.Unmarshal(o.Bytes(), &env) != nil || cmd.ProcessState.ExitCode() != c.exit || env.Error.Code != c.code || strings.Count(o.String(), "\n") != 1 || e.Len() != 0 {
+			t.Errorf("%s: exit %d stdout %q stderr %q", c.sig, cmd.ProcessState.ExitCode(), o.String(), e.String())
+		}
 	}
 }

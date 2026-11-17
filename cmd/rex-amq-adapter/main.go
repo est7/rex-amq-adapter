@@ -67,22 +67,22 @@ func protect(c *cli.Ctx, f func() int) (code int) {
 }
 
 // execute runs a public command with signal handling: SIGINT or SIGTERM
-// cancels its context, and once it has cleaned up the exit status is the
-// signal's (130 or 143).
+// cancels its context with the signal's error (signalError), and once the
+// command has cleaned up the registry answers with it: interrupted (130)
+// or terminated (143).
 func execute(c *cli.Ctx, args []string) int {
 	p := c.Out
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sig)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	var got os.Signal
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
 		select {
-		case got = <-sig:
-			cancel()
+		case s := <-sig:
+			cancel(signalError(s))
 		case <-done:
 		}
 	}()
@@ -90,20 +90,16 @@ func execute(c *cli.Ctx, args []string) int {
 	c.Warn = out.NewWarnings(p)
 	restore := divertDiagnostics(c.Warn)
 	defer restore()
-	code := registry().Execute(c, args)
-	if ctx.Err() != nil && got != nil {
-		return signalExit(got)
-	}
-	return code
+	return registry().Execute(c, args)
 }
 
-// signalExit is the exit status after a signal and cleanup: 130 for SIGINT,
-// 143 for SIGTERM.
-func signalExit(sig os.Signal) int {
+// signalError is the closed map's error for a signal: terminated for
+// SIGTERM, interrupted for SIGINT.
+func signalError(sig os.Signal) *fault.Error {
 	if sig == syscall.SIGTERM {
-		return fault.ExitCode(fault.Terminated)
+		return fault.New(fault.Terminated, "terminated by SIGTERM, after cleanup")
 	}
-	return fault.ExitCode(fault.Interrupted)
+	return fault.New(fault.Interrupted, "interrupted by SIGINT, after cleanup")
 }
 
 // divertDiagnostics sends the app's housekeeping lines to the run's

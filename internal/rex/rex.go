@@ -77,6 +77,8 @@ func (c Client) run(ctx context.Context, stdin []byte, args ...string) ([]byte, 
 	}
 	full = append(full, args...)
 	cmd := exec.CommandContext(ctx, c.Bin, full...)
+	// A cancelled call waits at most this long for rex's output to close.
+	cmd.WaitDelay = 2 * time.Second
 	// rex resolves a block within $REX_SESSION when it is set, and the hook
 	// inherits the calling agent's session. Every call here names its target
 	// by id, which is unique on the server, so look it up server-wide.

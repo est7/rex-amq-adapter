@@ -321,6 +321,8 @@ func runAmqIn(ctx context.Context, amqBin string, stdin io.Reader, args ...strin
 	cmd := exec.CommandContext(ctx, amqBin, append([]string{"--no-update-check"}, args...)...)
 	cmd.Env = amqEnv()
 	cmd.Stdin = stdin
+	// A cancelled call waits at most this long for amq's output to close.
+	cmd.WaitDelay = 2 * time.Second
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	err := cmd.Run()

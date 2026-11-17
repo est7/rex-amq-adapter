@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -257,6 +258,14 @@ func asFault(err error) *fault.Error {
 func (r *Registry) emit(ctx *Ctx, cmd *Command, in Input, res Result, err error) int {
 	p := ctx.Out
 	warnings := append(res.Warnings, ctx.Warn.Lines()...)
+	if sig, ok := Signalled(ctx); ok {
+		// A signal ended the command, whatever it returned while it
+		// cleaned up: its answer is interrupted or terminated.
+		if res.Streamed {
+			return sig.Exit()
+		}
+		return p.Emit(out.Response{Err: sig, Warnings: warnings})
+	}
 	if res.Streamed {
 		// The command already answered on its own protocol (stream frames,
 		// export lines): print nothing more, exit with its status.
@@ -694,4 +703,17 @@ func Visible(s string) string { return out.Visible(s) }
 func groupUsage(group []string, format string, a ...any) *fault.Error {
 	help := strings.Join(append(append([]string{"rex-amq-adapter"}, group...), "--help"), " ")
 	return fault.New(fault.Usage, format, a...).WithHint("run `" + help + "`; `rex-amq-adapter schema` describes every command").WithNext(help)
+}
+
+// Signalled is the interrupted or terminated error ctx was cancelled with,
+// when a signal cancelled it.
+func Signalled(ctx context.Context) (*fault.Error, bool) {
+	if ctx == nil || ctx.Err() == nil {
+		return nil, false
+	}
+	f, ok := fault.As(context.Cause(ctx))
+	if !ok || f.Code != fault.Interrupted && f.Code != fault.Terminated {
+		return nil, false
+	}
+	return f, true
 }

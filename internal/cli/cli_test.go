@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/fault"
+	"github.com/est7/rex-amq-adapter/internal/out"
 )
 
 func file(t *testing.T, text string) string {
@@ -204,4 +206,40 @@ func sprint(b *bytes.Buffer, v any) string {
 func marshalCompact(v any) (string, error) {
 	b, err := json.Marshal(v)
 	return string(b), err
+}
+
+// A command a signal cancelled answers with the signal's code, whatever it
+// returned while it cleaned up; a stream that already wrote frames prints
+// nothing more and exits with the signal's status.
+func TestSignalledCommandAnswersWithTheSignal(t *testing.T) {
+	for _, c := range []struct {
+		code   fault.Code
+		exit   int
+		stream bool
+	}{{fault.Terminated, 143, false}, {fault.Interrupted, 130, false}, {fault.Terminated, 143, true}} {
+		cmd := &Command{Path: []string{"wait"}, Tier: TierRead, Examples: []string{"a", "b"}, Stream: c.stream,
+			Run: func(ctx *Ctx, in Input) (Result, error) {
+				<-ctx.Done()
+				// What a command returns as it cleans up: here a finite failure.
+				return Result{Streamed: c.stream}, fault.New(fault.NotAdopted, "gave up")
+			}}
+		r := &Registry{Commands: []*Command{cmd}}
+		if err := r.Finish(); err != nil {
+			t.Fatal(err)
+		}
+		var o, e bytes.Buffer
+		ctx, cancel := context.WithCancelCause(context.Background())
+		cancel(fault.New(c.code, "signal"))
+		p := out.Printer{Streams: out.Streams{Stdout: &o, Stderr: &e}, Mode: out.Machine}
+		code := r.Execute(&Ctx{Context: ctx, Getenv: func(string) string { return "" }, Out: p}, []string{"wait"})
+		if code != c.exit || e.Len() != 0 {
+			t.Errorf("%s stream=%v: exit %d stderr %q", c.code, c.stream, code, e.String())
+		}
+		switch {
+		case c.stream && o.Len() != 0:
+			t.Errorf("a stream printed after its signal: %q", o.String())
+		case !c.stream && !strings.Contains(o.String(), `"code":"`+string(c.code)+`"`):
+			t.Errorf("%s: envelope %q", c.code, o.String())
+		}
+	}
 }
