@@ -143,6 +143,35 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 		}
 		handle = core.NameHandle(kind, taken)
 	}
+	// Where it runs, for admission and a later resume; and who summoned it,
+	// for admission and the guards.
+	cwd := ""
+	if fg, ok, err := e.Rex.Foreground(ctx, loc.Block); err == nil && ok {
+		cwd = fg.Cwd
+	}
+	if cwd == "" && hasOwn {
+		cwd = own.Cwd
+	}
+	sm, summoned, err := e.Store.Summon(in.SummonToken)
+	if err != nil {
+		fmt.Fprintf(Diagnostics, "read the summon of %s: %v\n", in.SummonToken, err)
+		summoned = false
+	}
+	// Admission (C25) before anything changes: a refused agent parks no
+	// agent, and gets no mailbox, identity, or lease.
+	role := core.Role(blk.Label)
+	if hasOwn {
+		if role = own.Role; role == "" && core.LauncherLabel(blk.Label) {
+			role = core.Role(blk.Label)
+		}
+	}
+	stays := hasOwn && own.Live() && own.SessionID == blk.SessionID
+	hubKey := core.HubKey("")
+	if !stays {
+		if role, hubKey, err = e.admitAdoption(recs, server, blk.SessionID, handle, own, hasOwn, role, cwd, summoned || in.SummonToken != "", in.Unattended); err != nil {
+			return Adoption{}, err
+		}
+	}
 	// Any other live record of this block is an agent this one replaced, or
 	// the session this process switched away from: it keeps its handle as a
 	// reservation for a resume.
@@ -189,12 +218,10 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	if hasOwn {
 		id = own.Identity
 		id.FirstAdoptedAt = own.InitialAdoptedAt()
-		if id.Role == "" && core.LauncherLabel(blk.Label) {
-			id.Role = core.Role(blk.Label)
-		}
 	} else {
-		id.Task, id.Role = core.InitialTask(blk.Label), core.Role(blk.Label)
+		id.Task = core.InitialTask(blk.Label)
 	}
+	id.Role = role
 	id = id.WithSession(in.SessionID)
 	lease := store.Lease{
 		Handle:         handle,
@@ -209,12 +236,8 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	if again && own.pid() == agentPID {
 		lease.AcquiredAt = own.adoptedAt()
 	}
-	// Where it runs, for a later resume; and who summoned it, for the guards.
-	if fg, ok, err := e.Rex.Foreground(ctx, loc.Block); err == nil && ok && fg.Cwd != "" {
-		id.Cwd = fg.Cwd
-	}
-	if id.Cwd == "" && hasOwn {
-		id.Cwd = own.Cwd
+	if cwd != "" {
+		id.Cwd = cwd
 	}
 	// What the adapter launched it on; an agent started by hand, or a
 	// repeated hook of one launched before this version, keeps its own.
@@ -224,11 +247,15 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	if id.Unattended, err = e.adoptUnattended(id.Role, blk.SessionID, in, hasOwn && own.Unattended); err != nil {
 		return Adoption{}, err
 	}
-	sm, summoned, err := e.Store.Summon(in.SummonToken)
-	if err != nil {
-		fmt.Fprintf(Diagnostics, "read the summon of %s: %v\n", in.SummonToken, err)
-	} else if summoned && !again {
+	if summoned && !again {
 		id.Parent, id.Depth, id.SummonedFor = sm.Parent, sm.Depth, sm.For
+	}
+	// A personal agent makes its session a Hub's before it is published, so
+	// no admission ever sees it in a session of no policy.
+	if id.Role == core.PersonalRole && !stays {
+		if err := e.ensureHubPolicy(blk.SessionID, server, hubKey, handle); err != nil {
+			return Adoption{}, err
+		}
 	}
 	// Leased before the waker starts: whatever happens next, departure and
 	// collection find this lease and retire the handle's waker, which amq
@@ -298,6 +325,46 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	}
 	out.Agent = rec
 	return out, nil
+}
+
+// admitAdoption decides, under the lifecycle lock, the role of an agent
+// arriving in session (a new one, or one resumed or moved there): role is
+// what its record or its pane label says, which an unlabelled launch in a
+// Hub directory (or a Hub session) turns into personal (core.AutoPersonal).
+// A summoned agent never enters a Hub session. A refusal is a *HubRefusal;
+// hubKey is the Hub a personal agent joins.
+func (e Env) admitAdoption(recs []agent, server, session string, h core.Handle, own agent, hasOwn bool, role, cwd string, summoned, unattended bool) (string, core.HubKey, error) {
+	f, p, err := e.sessionFacts(session, recs, h)
+	if err != nil {
+		return "", "", err
+	}
+	key, inHub, err := e.hubOf(server, cwd)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve the Hub directories: %w", err)
+	}
+	if role == "" && core.AutoPersonal(f, false, summoned, unattended, inHub) {
+		role = core.PersonalRole
+	}
+	from := ""
+	if hasOwn {
+		from = own.Role
+	}
+	reason := core.AdmitRole(f, from, role)
+	if reason == "" && summoned && f.Hub() {
+		reason = core.ReasonSessionPure
+	}
+	warnConflict(session, f)
+	if reason != "" {
+		notice := core.HubRefusalNotice
+		if reason == core.ReasonNoPersonal {
+			notice = "AMQ: this Rex session is an Epic's, and a personal agent lives only in a Hub session, so this agent got no AMQ identity, mailbox, or lease. Start the personal agent in a Rex session of its own, in the Hub directory."
+		}
+		return "", "", &HubRefusal{Reason: reason, Notice: notice}
+	}
+	if p.Hub() && p.HubKey != "" {
+		key = p.HubKey
+	}
+	return role, key, nil
 }
 
 // peerOf is r's agent as the session policy sees it.

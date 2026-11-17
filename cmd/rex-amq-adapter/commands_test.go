@@ -501,8 +501,9 @@ func TestStreamFailsBeforeConnectingWithAnEnvelope(t *testing.T) {
 }
 
 // From outside Rex, epic list and epic show are the human's cockpit: they
-// name the personal agent, refuse one that is not live, and refuse an
-// unattended or agent shell.
+// name the Hub (or a personal agent of it), refuse a personal agent that is
+// not live, read a Hub with no live personal agent as it is (C26), and
+// refuse an unattended or agent shell.
 func TestEpicListAndShowOutsideRex(t *testing.T) {
 	isolate(t)
 	stubTools(t)
@@ -510,7 +511,7 @@ func TestEpicListAndShowOutsideRex(t *testing.T) {
 	check(t, []want{
 		{[]string{"epic", "list"}, 2, "usage"},
 		{[]string{"epic", "list", "--personal", "pi-01"}, 3, "permission_denied"},
-		{[]string{"epic", "list", "--hub", t.TempDir()}, 3, "permission_denied"},
+		{[]string{"epic", "list", "--hub", t.TempDir()}, 0, ""},
 		{[]string{"epic", "show"}, 2, "usage"},
 		{[]string{"epic", "show", s}, 2, "usage"},
 	})

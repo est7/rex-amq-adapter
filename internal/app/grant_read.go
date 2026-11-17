@@ -74,14 +74,8 @@ func (e Env) mayReadGrant(rec agent, session string) error {
 	if rec.Role != core.PersonalRole {
 		return fmt.Errorf("%w: only a personal agent reads the grant of another session, and %s is %q", ErrRefused, rec.Handle, rec.Role)
 	}
-	links, err := e.Store.Links()
-	if err != nil {
+	if ok, err := e.personalLinked(rec, session); err != nil || ok {
 		return err
-	}
-	for _, l := range links {
-		if l.Personal == rec.Endpoint().Session() && l.Epic.SessionID == session {
-			return nil
-		}
 	}
 	return refused(fmt.Sprintf("%s reading the grant of %s", rec.Handle, session), core.Decision{Reason: core.ReasonNotLinked})
 }

@@ -184,6 +184,11 @@ func (e Env) sessionStart(ctx context.Context, kind core.Kind, loc Location, in 
 		// identity, and why.
 		return Reply{Notice: dup.Error()}, nil
 	}
+	var hr *HubRefusal
+	if errors.As(err, &hr) {
+		// Refused admission (C25): no identity, and the agent hears why.
+		return Reply{Notice: hr.Notice}, nil
+	}
 	if err != nil {
 		return Reply{}, err
 	}
@@ -237,6 +242,13 @@ func (e Env) announce(ctx context.Context, kind core.Kind, loc Location, in Hook
 				identity = e.identityNotice(ctx, a, 0)
 			}
 		case !hasMailbox && errors.Is(err, ErrStartedInPane):
+			return Reply{}, nil
+		case !hasMailbox && errors.Is(err, ErrHubRefused):
+			// Refused admission (C25): told why at each prompt it submits.
+			var hr *HubRefusal
+			if hook == EventPrompt && errors.As(err, &hr) {
+				return Reply{Notice: hr.Notice}, nil
+			}
 			return Reply{}, nil
 		case errors.As(err, new(*DuplicateSessionError)):
 			// A refused process is not the record's agent, whatever the

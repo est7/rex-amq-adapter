@@ -289,7 +289,7 @@ func TestPairEpicOpIDReconcilesItsSessionWithItsLeadAndPolicy(t *testing.T) {
 	if !again.Replayed || !again.Ready() || again.Lead != implementerRole || again.Orchestrator.Block != "block:epic-1-2" || again.LifecycleState != store.EpicOpened {
 		t.Fatalf("retry %+v", again)
 	}
-	p, ok, err := e.Store.EpicPolicy("session:epic-1")
+	p, ok, err := e.Store.SessionPolicy("session:epic-1")
 	if err != nil || !ok || !p.Unattended || p.CreatedBy != "claude-01" || p.Server != fakeServer {
 		t.Fatalf("policy after the retry %+v %v %v", p, ok, err)
 	}

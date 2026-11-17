@@ -42,13 +42,8 @@ func (e Env) Join(ctx context.Context, loc Location, crewName, role string) (Joi
 		return Joined{}, err
 	}
 	rec, blk, c, role := plan.rec, plan.blk, plan.crew, plan.role
-	if c.Name != "" {
-		if err := e.claimSessionCrew(ctx, rec.Handle, blk.SessionID, c.Name); err != nil {
-			return Joined{}, err
-		}
-	}
 	was := rec.Role
-	if rec, err = e.takeRole(ctx, loc, rec.Handle, role); err != nil {
+	if rec, err = e.takeRole(ctx, loc, rec.Handle, blk.SessionID, role, c.Name, false); err != nil {
 		return Joined{}, err
 	}
 	var mates []core.Peer
@@ -78,25 +73,15 @@ func (e Env) Join(ctx context.Context, loc Location, crewName, role string) (Joi
 	return out, nil
 }
 
-// claimSessionCrew records name as session's crew, claimed by h. A session
-// that already works as name is joined as it stands; one that works as
-// another crew is claimed only while no other live agent outside the Stealth
-// ones is in it.
-func (e Env) claimSessionCrew(ctx context.Context, h core.Handle, session, name string) error {
-	return e.sessionCrewClaim(ctx, h, session, name, false)
-}
-
-// sessionCrewClaim decides, under the lifecycle lock, whether h may claim
-// crew name for session, and records the claim unless preview.
-func (e Env) sessionCrewClaim(ctx context.Context, h core.Handle, session, name string, preview bool) error {
+// sessionCrewClaim decides whether h may claim crew name for session, the
+// caller holding the lifecycle lock, and records the claim unless preview. A
+// session that already works as name is joined as it stands; one that works
+// as another crew is claimed only while no other live agent outside the
+// Stealth ones is in it.
+func (e Env) sessionCrewClaim(h core.Handle, session, name string, recs []agent, preview bool) error {
 	if session == "" {
 		return errors.New("cannot determine this Rex session")
 	}
-	unlock, err := e.Store.LockLifecycle(ctx)
-	if err != nil {
-		return err
-	}
-	defer unlock()
 	cur, ok, err := e.Store.SessionCrew(session)
 	if err != nil {
 		return err
@@ -105,10 +90,6 @@ func (e Env) sessionCrewClaim(ctx context.Context, h core.Handle, session, name 
 		return nil
 	}
 	if ok {
-		recs, err := e.agents()
-		if err != nil {
-			return err
-		}
 		var others []string
 		for _, r := range recs {
 			if r.Live() && r.Handle != h && r.SessionID == session && !core.Stealth(r.Role) {
@@ -140,9 +121,13 @@ func (e Env) sessionCrew(session, role string) string {
 	return c.Crew
 }
 
-// takeRole records role for the agent h in loc and shows it in the pane and
-// in a tab that follows it.
-func (e Env) takeRole(ctx context.Context, loc Location, h core.Handle, role string) (agent, error) {
+// takeRole decides, under the lifecycle lock, whether the agent h in loc
+// may take role (and with crewName claim that crew for session): admission
+// (core.AdmitRole) first, with or without a crew, so a refusal leaves its
+// role, the session's crew, and its lease as they were. Unless preview, it
+// records the claim and the role (a personal agent's makes the session a
+// Hub's) and shows the role in the pane and in a tab that follows it.
+func (e Env) takeRole(ctx context.Context, loc Location, h core.Handle, session, role, crewName string, preview bool) (agent, error) {
 	unlock, err := e.Store.LockLifecycle(ctx)
 	if err != nil {
 		return agent{}, err
@@ -154,6 +139,41 @@ func (e Env) takeRole(ctx context.Context, loc Location, h core.Handle, role str
 	}
 	if !ok || !rec.Live() || rec.Handle != h {
 		return agent{}, fmt.Errorf("the agent in %s changed while joining", loc.Block)
+	}
+	recs, err := e.agents()
+	if err != nil {
+		return agent{}, err
+	}
+	f, p, err := e.sessionFacts(rec.SessionID, recs, rec.Handle)
+	if err != nil {
+		return agent{}, err
+	}
+	reason := core.AdmitRole(f, rec.Role, role)
+	if reason == "" && crewName != "" && f.Hub() {
+		reason = core.ReasonSessionPure
+	}
+	warnConflict(rec.SessionID, withSelf(f, rec.Role))
+	if reason != "" {
+		return agent{}, admissionRefused(withSelf(f, rec.Role), rec.Handle, rec.Role, role, reason)
+	}
+	if crewName != "" {
+		if err := e.sessionCrewClaim(rec.Handle, session, crewName, recs, preview); err != nil {
+			return agent{}, err
+		}
+	}
+	if preview {
+		return rec, nil
+	}
+	if role == core.PersonalRole && rec.Role != core.PersonalRole {
+		key := p.HubKey
+		if key == "" {
+			if key, _, err = e.hubOf(rec.Server, rec.Cwd); err != nil {
+				return agent{}, err
+			}
+		}
+		if err := e.ensureHubPolicy(rec.SessionID, rec.Server, key, rec.Handle); err != nil {
+			return agent{}, err
+		}
 	}
 	rec.Role = role
 	if err := e.Store.PutIdentity(rec.Identity); err != nil {
@@ -217,7 +237,7 @@ func (e Env) joinPlan(ctx context.Context, loc Location, crewName, role string) 
 		if role == "" {
 			return joinPlan{}, fmt.Errorf("crew %s names no lead: pass --role", name)
 		}
-		if core.Stealth(role) || core.Stealth(rec.Role) {
+		if core.Stealth(role) {
 			return joinPlan{}, fmt.Errorf("%w: a %s or %s agent never joins a crew", ErrRefused, core.NarratorRole, core.PersonalRole)
 		}
 	}
@@ -243,10 +263,8 @@ func (e Env) PreviewJoin(ctx context.Context, loc Location, crewName, role strin
 	if err != nil {
 		return JoinPreview{}, err
 	}
-	if p.crew.Name != "" {
-		if err := e.sessionCrewClaim(ctx, p.rec.Handle, p.blk.SessionID, p.crew.Name, true); err != nil {
-			return JoinPreview{}, err
-		}
+	if _, err := e.takeRole(ctx, loc, p.rec.Handle, p.blk.SessionID, p.role, p.crew.Name, true); err != nil {
+		return JoinPreview{}, err
 	}
 	return JoinPreview{Handle: p.rec.Handle, Crew: p.crew.Name, Role: p.role, Label: core.PaneLabel(p.rec.Handle, p.role, p.rec.Task), DryRun: true}, nil
 }

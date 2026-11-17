@@ -72,8 +72,10 @@ type openIdentity struct {
 
 // closeIdentity is what makes two `epic close` requests the same one.
 type closeIdentity struct {
+	Hub      string          `json:"hub,omitempty"`
 	Personal core.SessionKey `json:"personal"`
 	Session  string          `json:"session"`
+	Force    bool            `json:"force,omitempty"`
 }
 
 // errOpConflict refuses an op id already used for another request.
@@ -94,6 +96,7 @@ func (e Env) advanceEpic(seed store.EpicLifecycle, state string, op *store.EpicO
 		lc = store.EpicLifecycle{SessionID: seed.SessionID, UpdatedAt: now}
 	}
 	fill(&lc.Server, seed.Server)
+	fill(&lc.Hub, seed.Hub)
 	fill(&lc.Name, seed.Name)
 	fill(&lc.Dir, seed.Dir)
 	fill(&lc.PersonalHandle, seed.PersonalHandle)
@@ -155,7 +158,7 @@ func (e Env) reconcileOpen(ctx context.Context, loc Location, op store.EpicOpRec
 		return res, fmt.Errorf("inspect the Epic session %s that --op-id %q opened: %w", op.SessionID, op.OpID, err)
 	}
 	var errs []error
-	if err := e.ensureEpicPolicy(op); err != nil {
+	if err := e.ensureEpicPolicy(op, seed.Crew); err != nil {
 		errs = append(errs, fmt.Errorf("record the Epic policy: %w", err))
 	}
 	if seed.Crew != "" {
@@ -294,11 +297,11 @@ func (e Env) adoptCreated(ctx context.Context, op *store.EpicOpRecord, seed stor
 // ensureEpicPolicy records the unattended policy of op's Epic unless one is:
 // a first run that died between creating the session and writing it
 // (newEpicSession) leaves its agents' later summons without it.
-func (e Env) ensureEpicPolicy(op store.EpicOpRecord) error {
-	if _, ok, err := e.Store.EpicPolicy(op.SessionID); err != nil || ok {
+func (e Env) ensureEpicPolicy(op store.EpicOpRecord, crewName string) error {
+	if _, ok, err := e.Store.SessionPolicy(op.SessionID); err != nil || ok {
 		return err
 	}
-	return e.Store.PutEpicPolicy(store.EpicPolicy{SessionID: op.SessionID, Server: op.Server, Unattended: true, CreatedBy: op.PersonalHandle, CreatedAt: e.Now().UTC()})
+	return e.Store.PutSessionPolicy(epicPolicy(op.SessionID, op.Server, crewName, op.PersonalHandle, e.Now().UTC()))
 }
 
 // ensureSessionCrew records crew as session's crew unless one is.
@@ -330,28 +333,36 @@ func (e Env) awaitEpicAgents(ctx context.Context, res *EpicResult) []error {
 }
 
 // finishClose kills the Epic's session (one already gone is not an error),
-// parks its agents, removes link, and records the Epic closed, with op when
-// there is one. The caller holds LockEpicLifecycle and then LockLifecycle.
-func (e Env) finishClose(ctx context.Context, on Terminal, link core.Link, caller agent, op *store.EpicOpRecord) (CloseResult, error) {
-	res := CloseResult{SessionID: link.Epic.SessionID}
+// parks its agents, removes every link to it that grants caller (me), and
+// records the Epic closed, with op when there is one; the closed lifecycle
+// stays as the close's tombstone. The caller holds LockEpicLifecycle and
+// then LockLifecycle.
+func (e Env) finishClose(ctx context.Context, on Terminal, epic core.SessionKey, caller agent, me core.Endpoint, op *store.EpicOpRecord) (CloseResult, error) {
+	res := CloseResult{SessionID: epic.SessionID, Changed: true}
 	if op != nil {
 		res.OpID = op.OpID
 	}
 	// Killed first: parking first would retire the wakers of agents that
 	// stay alive if the kill fails. The lock keeps the session's watcher
 	// and the dying agents' SessionEnd hooks from parking them meanwhile.
-	if err := on.KillSession(ctx, link.Epic.SessionID); err != nil && !errors.Is(err, rex.ErrNotFound) {
+	if err := on.KillSession(ctx, epic.SessionID); err != nil && !errors.Is(err, rex.ErrNotFound) {
 		return res, fmt.Errorf("kill the Epic's session: %w", err)
 	}
 	var err error
-	if res.Parked, err = e.parkClosed(ctx, link.Epic); err != nil {
+	if res.Parked, err = e.parkClosed(ctx, epic); err != nil {
 		return res, err
 	}
-	if _, err := e.Store.DeleteLink(link); err != nil {
-		return res, fmt.Errorf("unlink the Epic: %w", err)
+	links, err := e.linksFor(me, epic)
+	if err != nil {
+		return res, err
+	}
+	for _, l := range links {
+		if _, err := e.Store.DeleteLink(l); err != nil {
+			return res, fmt.Errorf("unlink the Epic: %w", err)
+		}
 	}
 	res.Unlinked = true
-	seed := store.EpicLifecycle{SessionID: link.Epic.SessionID, Server: link.Epic.Server, PersonalHandle: caller.Handle, PersonalSessionID: caller.SessionID}
+	seed := store.EpicLifecycle{SessionID: epic.SessionID, Server: epic.Server, Hub: me.Hub, PersonalHandle: caller.Handle, PersonalSessionID: caller.SessionID}
 	if op != nil {
 		seed.CloseOpID = op.OpID
 	}

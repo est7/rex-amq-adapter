@@ -115,7 +115,8 @@ func TestNarratorSummonCapacityAndTab(t *testing.T) {
 		add(t, e, seed{Handle: h, Kind: core.Codex, Server: fakeServer, BlockID: "block:w" + string(rune('0'+i)), SessionID: "session:s", Role: "worker", AgentPID: 2, AdoptedAt: e.Now()})
 	}
 	add(t, e, seed{Handle: "pi-06", Kind: core.Pi, Server: fakeServer, BlockID: "block:n", SessionID: "session:s", Role: core.NarratorRole, AgentPID: 3, AdoptedAt: e.Now()})
-	add(t, e, seed{Handle: "pi-07", Kind: core.Pi, Server: fakeServer, BlockID: "block:p", SessionID: "session:s", Role: core.PersonalRole, AgentPID: 4, AdoptedAt: e.Now()})
+	// A personal agent lives in a Hub session of its own (C25).
+	add(t, e, seed{Handle: "pi-07", Kind: core.Pi, Server: fakeServer, BlockID: "block:p", SessionID: "session:me", Role: core.PersonalRole, AgentPID: 4, AdoptedAt: e.Now()})
 	asked := func(r *SummonRequest) { r.Asked = "start a qa" }
 	if res := summon(t, e, loc, "qa", asked); res.Action != "start" {
 		t.Fatalf("the narrator and personal agent took a worker's place: %+v", res)

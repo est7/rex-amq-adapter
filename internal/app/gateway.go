@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
-	"slices"
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/core"
@@ -37,8 +36,20 @@ func (e Env) endpointOf(h core.Handle) (core.Endpoint, error) {
 // gatewayEndpoint is rec as the gateway sees it now: its endpoint, marked
 // Lead when rec runs its Epic's goal (an orchestrator, or a pair Epic's lead:
 // pairLead), which is whom a narrator's control mail may reach.
+//
+// A personal agent with a valid lease in a Hub session is a member of that
+// Hub (Endpoint.Hub), from the session's recorded policy alone: never from
+// an environment variable or a mail header.
 func (e Env) gatewayEndpoint(rec agent) (core.Endpoint, error) {
 	ep := rec.Endpoint()
+	if rec.Role == core.PersonalRole {
+		if rec.Live() && placed(rec) {
+			hub, err := e.hubOfSession(rec.SessionID)
+			ep.Hub = hub
+			return ep, err
+		}
+		return ep, nil
+	}
 	if rec.Role == core.OrchestratorRole {
 		ep.Lead = true
 		return ep, nil
@@ -387,6 +398,11 @@ func (e Env) PreviewLink(ctx context.Context, loc Location, epic string, link bo
 	return e.link(ctx, loc, epic, link, true)
 }
 
+// A personal agent of a Hub links the Epic to its Hub, so every personal
+// agent of the Hub shares it (core.LinkMatchesPersonal), naming itself the
+// narrator's preferred recipient; one of no Hub links its own session.
+// Linking an Epic its Hub already has changes nothing. Unlinking removes
+// every link that grants the caller the Epic: its Hub's and its session's.
 func (e Env) link(ctx context.Context, loc Location, epic string, link, dryRun bool) (l core.Link, changed bool, err error) {
 	rec, ok, err := e.agentIn(loc)
 	if err != nil {
@@ -401,27 +417,96 @@ func (e Env) link(ctx context.Context, loc Location, epic string, link, dryRun b
 	if epic == "" || epic == rec.SessionID {
 		return l, false, fmt.Errorf("%w: name an Epic session other than your own", ErrUsage)
 	}
-	l = core.Link{Personal: rec.Endpoint().Session(), Epic: core.SessionKey{Server: rec.Server, SessionID: epic}}
+	me, err := e.gatewayEndpoint(rec)
+	if err != nil {
+		return l, false, err
+	}
+	l = core.Link{Hub: me.Hub, Personal: me.Session(), PreferredPersonal: rec.Handle, Epic: core.SessionKey{Server: rec.Server, SessionID: epic}, CreatedBy: rec.Handle, CreatedAt: e.Now().UTC()}
+	held, err := e.linksFor(me, l.Epic)
+	if err != nil {
+		return l, false, err
+	}
 	if !link {
-		if dryRun {
-			return l, e.hasLink(l), nil
+		if dryRun || len(held) == 0 {
+			return l, len(held) > 0, nil
 		}
-		changed, err = e.Store.DeleteLink(l)
-		return l, changed, err
+		for _, h := range held {
+			if _, err := e.Store.DeleteLink(h); err != nil {
+				return l, true, err
+			}
+		}
+		return held[0], true, nil
+	}
+	if len(held) > 0 {
+		return held[0], false, nil
 	}
 	if _, err := e.Rex.InspectSession(ctx, epic); err != nil {
 		return l, false, fmt.Errorf("Epic session %s: %w", epic, err)
 	}
 	if dryRun {
-		return l, !e.hasLink(l), nil
+		return l, true, nil
 	}
 	return l, true, e.Store.PutLink(l)
 }
 
-// hasLink reports whether l is recorded; an unreadable store counts as no.
-func (e Env) hasLink(l core.Link) bool {
+// linksFor is every recorded link that grants personal agent p the Epic
+// epic (core.LinkMatchesPersonal).
+func (e Env) linksFor(p core.Endpoint, epic core.SessionKey) ([]core.Link, error) {
 	all, err := e.Store.Links()
-	return err == nil && slices.Contains(all, l)
+	if err != nil {
+		return nil, err
+	}
+	var out []core.Link
+	for _, l := range all {
+		if l.Epic == epic && core.LinkMatchesPersonal(l, p) {
+			out = append(out, l)
+		}
+	}
+	return out, nil
+}
+
+// linkedEpics is every Epic linked to personal agent p, once each, with the
+// link that grants it (a Hub's before a session's).
+func (e Env) linkedEpics(p core.Endpoint) ([]core.Link, error) {
+	all, err := e.Store.Links()
+	if err != nil {
+		return nil, err
+	}
+	var out []core.Link
+	seen := map[core.SessionKey]int{}
+	for _, l := range all {
+		if !core.LinkMatchesPersonal(l, p) {
+			continue
+		}
+		if i, ok := seen[l.Epic]; ok {
+			if out[i].Hub == "" && l.Hub != "" {
+				out[i] = l
+			}
+			continue
+		}
+		seen[l.Epic] = len(out)
+		out = append(out, l)
+	}
+	return out, nil
+}
+
+// personalLinked reports whether personal agent rec may reach the Epic
+// session (core.LinkMatchesPersonal), on any server.
+func (e Env) personalLinked(rec agent, session string) (bool, error) {
+	me, err := e.gatewayEndpoint(rec)
+	if err != nil {
+		return false, err
+	}
+	links, err := e.linkedEpics(me)
+	if err != nil {
+		return false, err
+	}
+	for _, l := range links {
+		if l.Epic.SessionID == session {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // LinksOf lists the links of the Personal agent in loc.
@@ -430,14 +515,11 @@ func (e Env) LinksOf(loc Location) ([]core.Link, error) {
 	if err != nil || !ok {
 		return nil, err
 	}
-	all, err := e.Store.Links()
-	var out []core.Link
-	for _, l := range all {
-		if l.Personal == rec.Endpoint().Session() {
-			out = append(out, l)
-		}
+	me, err := e.gatewayEndpoint(rec)
+	if err != nil {
+		return nil, err
 	}
-	return out, err
+	return e.linkedEpics(me)
 }
 
 // sentHere reports whether rec sent h from where it is now: its provenance

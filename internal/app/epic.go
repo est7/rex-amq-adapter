@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
@@ -346,11 +347,17 @@ func (e Env) newEpicSession(ctx context.Context, name string, panes []rex.Pane, 
 		return session, blocks, nil, nil, nil, err
 	}
 	now := e.Now().UTC()
-	policyErr = e.Store.PutEpicPolicy(store.EpicPolicy{SessionID: session, Server: by.Server, Unattended: true, CreatedBy: by.Handle, CreatedAt: now})
+	policyErr = e.Store.PutSessionPolicy(epicPolicy(session, by.Server, crewName, by.Handle, now))
 	if crewName != "" {
 		crewErr = e.Store.PutSessionCrew(session, store.SessionCrew{Crew: crewName, ClaimedBy: by.Handle, ClaimedAt: now})
 	}
 	return session, blocks, policyErr, crewErr, e.notarize(session, by.Handle, grant), nil
+}
+
+// epicPolicy is the policy of an Epic's session: unattended, led by its
+// crew's lead role (epicLead).
+func epicPolicy(session, server, crewName string, by core.Handle, at time.Time) store.SessionPolicy {
+	return store.SessionPolicy{Kind: store.PolicyEpic, SessionID: session, Server: server, LeadRole: epicLead(crewName), Crew: crewName, Unattended: true, CreatedBy: by, CreatedAt: at}
 }
 
 // maxSessionLabel is the longest session label Rex takes (session.create).

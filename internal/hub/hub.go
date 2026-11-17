@@ -139,8 +139,13 @@ type Change struct {
 }
 
 // Add lists dir (canonical) in hub_dirs; listing it again changes nothing.
+// dir must exist.
 func Add(getenv func(string) string, dir string, dryRun bool) (Change, error) {
-	return update(getenv, dir, dryRun, func(dirs []string, p string) []string {
+	p, err := Canonical(dir)
+	if err != nil {
+		return Change{}, err
+	}
+	return update(getenv, p, dryRun, func(dirs []string) []string {
 		if slices.Contains(dirs, p) {
 			return dirs
 		}
@@ -148,19 +153,25 @@ func Add(getenv func(string) string, dir string, dryRun bool) (Change, error) {
 	})
 }
 
-// Remove drops dir (canonical) from hub_dirs; dropping one not listed
-// changes nothing.
+// Remove drops dir from hub_dirs; dropping one not listed changes nothing.
+// A directory deleted since it was added is still removed: it is matched by
+// its absolute path as listed, so a configured Hub that is gone can be taken
+// out of the list.
 func Remove(getenv func(string) string, dir string, dryRun bool) (Change, error) {
-	return update(getenv, dir, dryRun, func(dirs []string, p string) []string {
-		return slices.DeleteFunc(slices.Clone(dirs), func(d string) bool { return d == p })
-	})
-}
-
-func update(getenv func(string) string, dir string, dryRun bool, f func([]string, string) []string) (Change, error) {
-	p, err := Canonical(dir)
+	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return Change{}, err
 	}
+	p := abs
+	if c, err := Canonical(dir); err == nil {
+		p = c
+	}
+	return update(getenv, p, dryRun, func(dirs []string) []string {
+		return slices.DeleteFunc(slices.Clone(dirs), func(d string) bool { return d == p || d == abs })
+	})
+}
+
+func update(getenv func(string) string, p string, dryRun bool, f func([]string) []string) (Change, error) {
 	path, err := ConfigPath(getenv)
 	if err != nil {
 		return Change{}, err
@@ -170,7 +181,7 @@ func update(getenv func(string) string, dir string, dryRun bool, f func([]string
 		return Change{}, err
 	}
 	before := c.hubDirs()
-	after := f(before, p)
+	after := f(before)
 	ch := Change{Path: p, Config: path, Changed: !slices.Equal(before, after), HubDirs: after, DryRun: dryRun}
 	if ch.HubDirs == nil {
 		ch.HubDirs = []string{}

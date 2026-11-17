@@ -304,7 +304,7 @@ func commands() []*cli.Command {
 		},
 		{
 			Path: path("epic", "list"), Summary: "the Epics linked to a personal agent: lifecycle, hand-back, whether a view exists",
-			Flags: []cli.Flag{f("hub", cli.KindDir, "outside its pane: the personal agent working in DIR"), f("personal", cli.KindHandle, "outside its pane: the personal agent")},
+			Flags: []cli.Flag{f("hub", cli.KindDir, "outside a personal agent's pane: the Hub directory (default: the default Hub)"), f("personal", cli.KindHandle, "only Epics this personal agent opened or prefers (outside its pane: names its Hub)")},
 			Tier:  cli.TierRead, Audience: cli.AudienceAgent, Roles: []string{"personal", "human"}, Guard: cli.GuardHumanOutsideRex, List: true,
 			Result:   "a list of Epics {session_id, name, dir, lifecycle, hand_back, has_view}",
 			Examples: []string{"rex-amq-adapter epic list", "rex-amq-adapter epic list --personal claude-01 --fields session_id,lifecycle,hand_back"},
@@ -312,8 +312,9 @@ func commands() []*cli.Command {
 		},
 		{
 			Path: path("epic", "show"), Summary: "a session's view: members, obligations, recent mail, coverage gaps, hand-back, lifecycle",
-			Args: []cli.Arg{a("session", cli.KindSessionID, false, "the Epic session (a personal agent's linked Epic); default yours")},
-			Tier: cli.TierRead, Audience: cli.AudienceAgent, Roles: []string{"orchestrator", "narrator", "personal"}, Guard: cli.GuardHumanOutsideRex, Fields: true,
+			Args:  []cli.Arg{a("session", cli.KindSessionID, false, "the Epic session (a personal agent's linked Epic); default yours")},
+			Flags: []cli.Flag{f("hub", cli.KindDir, "outside Rex: the Hub the Epic is linked to (default: the default Hub)"), f("personal", cli.KindHandle, "outside Rex: a live personal agent of that Hub")},
+			Tier:  cli.TierRead, Audience: cli.AudienceAgent, Roles: []string{"orchestrator", "narrator", "personal"}, Guard: cli.GuardHumanOutsideRex, Fields: true,
 			Result:   "the view; narrow it with --fields lifecycle,obligations,hand_back",
 			Examples: []string{"rex-amq-adapter epic show --fields lifecycle,obligations,hand_back", "rex-amq-adapter epic show session:01a1eac4-f222-7d79-9291-9a8a86d39ec3"},
 			Run:      epicShow,
@@ -405,7 +406,7 @@ func commands() []*cli.Command {
 		},
 		{
 			Path: path("hub", "remove"), Summary: "drop DIR from config.toml hub_dirs",
-			Args: []cli.Arg{a("dir", cli.KindDir, true, "the Hub directory")},
+			Args: []cli.Arg{a("dir", cli.KindPath, true, "the Hub directory, which may be deleted already")},
 			Tier: cli.TierUser, Mutating: true, Idempotent: true, DryRun: true, Audience: cli.AudienceHuman, Guard: cli.GuardHuman,
 			Result:   "{path, config, changed, hub_dirs}",
 			Examples: []string{"rex-amq-adapter hub remove ~/old-hub", "rex-amq-adapter hub remove ~/old-hub --dry-run"},

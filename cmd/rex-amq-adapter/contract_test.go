@@ -133,7 +133,7 @@ func sample(t *testing.T, v cli.Value) string {
 		return "p2p/a__b"
 	case cli.KindOpID, cli.KindSingleLine, cli.KindBody:
 		return "x"
-	case cli.KindDir, cli.KindOutDir:
+	case cli.KindDir, cli.KindOutDir, cli.KindPath:
 		return t.TempDir()
 	case cli.KindFile, cli.KindFileOrDash:
 		return sampleFile(t)

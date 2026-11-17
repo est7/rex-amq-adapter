@@ -205,13 +205,17 @@ func (e Env) viewReader(ctx context.Context, loc Location, session string) (stri
 		}
 		return rec.SessionID, nil
 	case rec.Role == core.PersonalRole:
-		links, err := e.Store.Links()
+		me, err := e.gatewayEndpoint(rec)
+		if err != nil {
+			return "", err
+		}
+		links, err := e.linkedEpics(me)
 		if err != nil {
 			return "", err
 		}
 		var linked []string
 		for _, l := range links {
-			if l.Personal == rec.Endpoint().Session() && l.Epic.Server == rec.Server {
+			if l.Epic.Server == rec.Server {
 				linked = append(linked, l.Epic.SessionID)
 			}
 		}

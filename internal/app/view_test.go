@@ -380,7 +380,7 @@ func TestCockpitViewRefusesEveryoneButThePersonalScope(t *testing.T) {
 		{"env -i under an implementer", nil, []proc{{PID: 9001}, {PID: 702}, {PID: 1}}, scoped[3:], ErrRefused},
 		{"env -i under a roleless agent", nil, []proc{{PID: 707}}, scoped[3:], ErrRefused},
 		{"a shell naming nobody", nil, nil, scoped[:3], ErrUsage},
-		{"a shell naming an unknown agent", nil, nil, []CockpitViewRequest{{Personal: "pi-99"}, {Hub: t.TempDir()}}, ErrRefused},
+		{"a shell naming an unknown agent", nil, nil, []CockpitViewRequest{{Personal: "pi-99"}}, ErrRefused},
 	} {
 		e := e
 		if c.ancestors != nil {
@@ -418,12 +418,21 @@ func TestCockpitViewRefusesEveryoneButThePersonalScope(t *testing.T) {
 	}
 	r8 := recordOf(t, e, "claude-08")
 	put(t, e, departed(seedOf(r8), time.Now()))
-	// Two personal agents in one hub are not told apart by it.
+	// A Hub is read whole however many of its personal agents are live
+	// (C26): none, and two, are no refusal.
+	if b, err := e.ReadCockpitView(ctx, cockpitEnv(nil), CockpitViewRequest{Hub: t.TempDir()}); err != nil || !strings.Contains(string(b), `"epics": []`) {
+		t.Errorf("a Hub with no live personal agent: %s %v", b, err)
+	}
 	r := recordOf(t, e, "pi-06")
 	r.Cwd = hub
 	put(t, e, seedOf(r))
-	if _, err := e.ReadCockpitView(ctx, cockpitEnv(nil), CockpitViewRequest{Hub: hub}); !errors.Is(err, ErrUsage) {
-		t.Errorf("an ambiguous hub: %v", err)
+	b, err := e.ReadCockpitView(ctx, cockpitEnv(nil), CockpitViewRequest{Hub: hub})
+	var v CockpitView
+	if err == nil {
+		err = json.Unmarshal(b, &v)
+	}
+	if err != nil || len(v.Epics) != 3 || v.Personal != "" {
+		t.Errorf("a Hub with two live personal agents: %+v %v", v, err)
 	}
 }
 

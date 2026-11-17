@@ -56,10 +56,14 @@ type HandBackRef struct {
 	At     time.Time   `json:"at"`
 }
 
-// EpicLifecycle is lifecycle.json.
+// EpicLifecycle is lifecycle.json. Hub is the Hub that opened (and may
+// close) the Epic; PersonalHandle is the personal agent that opened it, a
+// preference for where its narrator's mail goes first (preferred_personal),
+// never who may act on it.
 type EpicLifecycle struct {
 	SessionID         string        `json:"session_id"`
 	Server            string        `json:"server,omitempty"`
+	Hub               core.HubKey   `json:"hub,omitempty"`
 	Name              string        `json:"name,omitempty"`
 	Dir               string        `json:"dir,omitempty"`
 	PersonalHandle    core.Handle   `json:"personal_handle,omitempty"`
