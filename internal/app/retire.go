@@ -164,7 +164,7 @@ func (e Env) retireLocked(ctx context.Context, loc Location, r RetireRequest, re
 		res.Pane, res.PaneNote = PaneLeftOpen, fmt.Sprintf("the close failed: %v", err)
 		// The agent still runs, and its next turn takes its handle back
 		// (a resume): then a raw close would read as a crash again.
-		return target, on, fmt.Errorf("%s is retired, but its pane did not close (%w); close it with `rex block close %s`, or, once `rex-amq-adapter who` lists it again, retire it again", r.Handle, err, target.BlockID)
+		return target, on, fmt.Errorf("%s is retired, but its pane did not close (%w); close it with `rex block close %s`, or, once `rex-amq-adapter agent list` lists it again, retire it again", r.Handle, err, target.BlockID)
 	default:
 		res.Pane = PaneClosed
 	}
@@ -213,7 +213,7 @@ func (e Env) retireTarget(caller agent, h core.Handle) (agent, error) {
 		return agent{}, err
 	}
 	if !ok || target.Server != caller.Server || !placed(caller) || !together(target, caller) {
-		return agent{}, fmt.Errorf("%w: no agent %s in your Rex session (`rex-amq-adapter who --all` lists them)", ErrRefused, h)
+		return agent{}, fmt.Errorf("%w: no agent %s in your Rex session (`rex-amq-adapter agent list --all` lists them)", ErrRefused, h)
 	}
 	switch target.Role {
 	case core.NarratorRole, core.PersonalRole, core.OrchestratorRole:

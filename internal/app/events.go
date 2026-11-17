@@ -13,7 +13,7 @@ import (
 	"github.com/est7/rex-amq-adapter/internal/core"
 )
 
-// `rex-amq-adapter events --json` streams the projection of a scope as NDJSON
+// `rex-amq-adapter stream events` streams the projection of a scope as NDJSON
 // (docs/design.md, "Observing"): a snapshot, then upsert and remove frames for
 // what changed, event frames for what happened (a doorbell's outcome, a
 // message drained or dead-lettered), and a heartbeat. Every frame carries the

@@ -508,7 +508,7 @@ func TestNarratorWakeEndsInTheViewNotInMail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"view refresh`, then say what changed in `--summary`", "a hand-back or orchestrator departure", "otherwise end your turn without mailing anyone"} {
+	for _, want := range []string{"epic refresh`, then say what changed in `--summary`", "a hand-back or orchestrator departure", "otherwise end your turn without mailing anyone"} {
 		if !strings.Contains(string(b), want) {
 			t.Errorf("the wake notice lacks %q:\n%s", want, b)
 		}

@@ -11,7 +11,7 @@ import (
 )
 
 // An orchestrator ends its run by recording its final report with
-// `rex-amq-adapter hand-back`: the whole text (review queue, PR links,
+// `rex-amq-adapter epic handback`: the whole text (review queue, PR links,
 // Blocked on me, Decided for you, Changed, Found) goes into
 // sessions/<id>/hand-back.json, the view carries it whole (hand_back), and
 // the session's pulse marks the orchestrator with the hand-back's time and

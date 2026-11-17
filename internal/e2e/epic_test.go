@@ -1,7 +1,6 @@
 package e2e
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,7 +19,7 @@ func TestPersonalAgentOpensAnEpic(t *testing.T) {
 	w.ready("me")
 	goal := filepath.Join(w.dir, "goal.md")
 	w.write(goal, "GOAL: ship it\n")
-	open := "epic e2e-login -c " + w.project("app") + " --goal " + goal + " --timeout 40 --op-id e2e-open-1"
+	open := "epic open e2e-login --cwd " + w.project("app") + " --goal " + goal + " --timeout 40 --op-id e2e-open-1"
 	w.typeInto(tb.first, open)
 	w.until("the epic command to finish", 50*time.Second, func() bool { return strings.Contains(w.joined("me"), "exit=") })
 	out := w.joined("me")
@@ -49,7 +48,7 @@ func TestPersonalAgentOpensAnEpic(t *testing.T) {
 		} `json:"narrator"`
 	}
 	line, _, _ := strings.Cut(out, "\n")
-	if err := json.Unmarshal([]byte(line), &res); err != nil {
+	if err := envelopeData(line, &res); err != nil {
 		t.Fatalf("output %q: %v", out, err)
 	}
 	if !res.Linked || res.Orchestrator.Status != "adopted" || res.Narrator.Status != "adopted" ||
@@ -64,9 +63,9 @@ func TestPersonalAgentOpensAnEpic(t *testing.T) {
 	if err != nil || !strings.Contains(string(b), res.Session) {
 		t.Errorf("link %s: %v", b, err)
 	}
-	who, code := w.who(res.Orchestrator.Block, "--all", "--json")
-	if code != 0 || !strings.Contains(who, `"role": "orchestrator"`) || !strings.Contains(who, `"role": "narrator"`) || !strings.Contains(who, `"tab": "narrator(`+res.Narrator.Handle+`) | e2e-login"`) {
-		t.Errorf("who in the Epic: %d\n%s", code, who)
+	who, code := w.adapterIn(res.Orchestrator.Block, "agent", "list", "--all")
+	if code != 0 || !strings.Contains(who, `"role":"orchestrator"`) || !strings.Contains(who, `"role":"narrator"`) || !strings.Contains(who, `"tab":"narrator(`+res.Narrator.Handle+`) | e2e-login"`) {
+		t.Errorf("agent list in the Epic: %d\n%s", code, who)
 	}
 
 	sessions := w.rex("session", "list")
@@ -78,7 +77,7 @@ func TestPersonalAgentOpensAnEpic(t *testing.T) {
 		Replayed bool   `json:"replayed"`
 		State    string `json:"lifecycle_state"`
 	}
-	if len(lines) != 4 || lines[3] != "exit=0" || json.Unmarshal([]byte(lines[2]), &again) != nil || again.Session != res.Session || !again.Replayed || again.State != "opened" {
+	if len(lines) != 4 || lines[3] != "exit=0" || envelopeData(lines[2], &again) != nil || again.Session != res.Session || !again.Replayed || again.State != "opened" {
 		t.Fatalf("the retry:\n%s\n%s", w.joined("me"), w.dump())
 	}
 	if after := w.rex("session", "list"); after != sessions {
@@ -88,7 +87,7 @@ func TestPersonalAgentOpensAnEpic(t *testing.T) {
 	// reads its linked Epic; run from the orchestrator's pane it is refused.
 	// ME_UNATTENDED is cleared: the agent running the tests may carry it.
 	quiet := []string{"ME_UNATTENDED="}
-	out, code = w.adapterRunEnv(quiet, "view", "--cockpit", "--personal", w.handleOf("me"))
+	out, code = w.adapterRunEnv(quiet, "epic", "list", "--personal", w.handleOf("me"))
 	var cockpit struct {
 		Epics []struct {
 			Session   string `json:"session_id"`
@@ -96,13 +95,13 @@ func TestPersonalAgentOpensAnEpic(t *testing.T) {
 				State string `json:"state"`
 				OpID  string `json:"open_op_id"`
 			} `json:"lifecycle"`
-		} `json:"epics"`
+		} `json:"items"`
 	}
-	if code != 0 || json.Unmarshal([]byte(out), &cockpit) != nil || len(cockpit.Epics) != 1 || cockpit.Epics[0].Session != res.Session ||
+	if code != 0 || envelopeData(out, &cockpit) != nil || len(cockpit.Epics) != 1 || cockpit.Epics[0].Session != res.Session ||
 		cockpit.Epics[0].Lifecycle.State != "opened" || cockpit.Epics[0].Lifecycle.OpID != "e2e-open-1" {
 		t.Errorf("the cockpit outside Rex: exit %d\n%s", code, out)
 	}
-	if out, code := w.adapterRunEnv(append(quiet, "REX_BLOCK="+res.Orchestrator.Block), "view", "--cockpit", "--personal", w.handleOf("me")); code != 1 || out != "" {
+	if out, code := w.adapterRunEnv(append(quiet, "REX_BLOCK="+res.Orchestrator.Block), "epic", "list", "--personal", w.handleOf("me")); code != 3 || !strings.Contains(out, `"code":"permission_denied"`) {
 		t.Errorf("the cockpit from the orchestrator's pane: exit %d\n%s", code, out)
 	}
 }
@@ -116,7 +115,7 @@ func TestPersonalAgentClosesAnEpic(t *testing.T) {
 	tb := w.newTab("me", "personal")
 	w.ready("me")
 	exits := func() int { return strings.Count(w.joined("me"), "exit=") }
-	w.typeInto(tb.first, "epic e2e-close -c "+w.project("app")+" --asked open-it --timeout 40")
+	w.typeInto(tb.first, "epic open e2e-close --cwd "+w.project("app")+" --asked open-it --timeout 40")
 	w.until("the epic command to finish", 50*time.Second, func() bool { return exits() == 1 })
 	out := w.joined("me")
 	if !strings.Contains(out, "exit=0") {
@@ -126,7 +125,7 @@ func TestPersonalAgentClosesAnEpic(t *testing.T) {
 		Session string `json:"session_id"`
 	}
 	line, _, _ := strings.Cut(out, "\n")
-	if err := json.Unmarshal([]byte(line), &res); err != nil || res.Session == "" {
+	if err := envelopeData(line, &res); err != nil || res.Session == "" {
 		t.Fatalf("output %q: %v", out, err)
 	}
 	orch := w.handleOf("orchestrator")

@@ -139,7 +139,7 @@ func refused(what string, d core.Decision) error {
 func refusedSend(from, to core.Endpoint, d core.Decision) error {
 	err := refused(fmt.Sprintf("%s to %s", from.Handle, to.Handle), d)
 	if d.Reason == core.ReasonPersonalOnly && to.Role == core.PersonalRole && from.Role != core.PersonalRole {
-		return fmt.Errorf(`%w: report with "rex-amq-adapter hand-back @<file>" (an Epic lead's path; the Epic's narrator relays it to the personal agent)`, err)
+		return fmt.Errorf(`%w: report with "rex-amq-adapter epic handback @<file>" (an Epic lead's path; the Epic's narrator relays it to the personal agent)`, err)
 	}
 	return err
 }

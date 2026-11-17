@@ -203,7 +203,7 @@ const (
 	DepartSessionEnd = "session_end" // the harness ended the session
 	DepartReplaced   = "replaced"    // another agent or session took the block
 	DepartEpicClosed = "epic_closed" // the personal agent closed its Epic's session
-	DepartRetired    = "retired"     // a session-mate retired it as finished (rex-amq-adapter retire)
+	DepartRetired    = "retired"     // a session-mate retired it as finished (rex-amq-adapter agent retire)
 )
 
 // Departure is how a lease ends.

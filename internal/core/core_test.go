@@ -139,7 +139,7 @@ func TestOutcomeExitCode(t *testing.T) {
 
 func TestDoorbellCarriesNoMessageContent(t *testing.T) {
 	d := Doorbell(2, "claude-2", "/x/rex-amq-adapter")
-	want := `AMQ doorbell: 2 unread message(s) for claude-2 (you are claude-2 in Rex; skill: rex-amq-adapter). Run /x/rex-amq-adapter drain --include-body, then act on each message.`
+	want := `AMQ doorbell: 2 unread message(s) for claude-2 (you are claude-2 in Rex; skill: rex-amq-adapter). Run /x/rex-amq-adapter mail drain --include-body, then act on each message.`
 	if d != want {
 		t.Fatalf("got %q\nwant %q", d, want)
 	}
@@ -189,7 +189,7 @@ func TestHookNoticeCarriesNoMessageContent(t *testing.T) {
 	if bareAmq.MatchString(n) {
 		t.Errorf("notice teaches bare amq mail, which skips the gateway: %q", n)
 	}
-	for _, want := range []string{"3 unread", "(1 new)", "codex", "/x/rex-amq-adapter drain --include-body", "before ending your turn", "skill: rex-amq-adapter"} {
+	for _, want := range []string{"3 unread", "(1 new)", "codex", "/x/rex-amq-adapter mail drain --include-body", "before ending your turn", "skill: rex-amq-adapter"} {
 		if !strings.Contains(n, want) {
 			t.Errorf("notice %q lacks %q", n, want)
 		}
@@ -274,25 +274,25 @@ func TestSessionMatesAreTheOtherAgentsInTheSameSession(t *testing.T) {
 		t.Fatalf("an unknown session has no mates, got %+v", got)
 	}
 	got = []Peer{got[0], got[2]}
-	if s := MatesNotice(got); !strings.Contains(s, "codex-01 (codex), agy-01 (agy)") || !strings.Contains(s, "rex-amq-adapter send --to <handle>") {
+	if s := MatesNotice(got); !strings.Contains(s, "codex-01 (codex), agy-01 (agy)") || !strings.Contains(s, "rex-amq-adapter mail send --to <handle>") {
 		t.Fatalf("mates notice %q", s)
 	}
 	if MatesNotice(nil) != "" {
 		t.Fatal("no mates must say nothing")
 	}
-	if s := JoinedNotice(got[0]); !strings.Contains(s, "codex-01 (codex) joined") || !strings.Contains(s, "rex-amq-adapter send --to codex-01") {
+	if s := JoinedNotice(got[0]); !strings.Contains(s, "codex-01 (codex) joined") || !strings.Contains(s, "rex-amq-adapter mail send --to codex-01") {
 		t.Fatalf("joined notice %q", s)
 	}
 }
 
 func TestUndeliveredNoticeSaysOnlyWhatIsKnown(t *testing.T) {
 	alone := UndeliveredNotice("claude-26", nil, nil)
-	if !strings.Contains(alone, "mail to claude-26") || !strings.Contains(alone, "rex-amq-adapter who") || strings.Contains(alone, "pane") {
+	if !strings.Contains(alone, "mail to claude-26") || !strings.Contains(alone, "rex-amq-adapter agent list") || strings.Contains(alone, "pane") {
 		t.Errorf("alone: %q", alone)
 	}
 	next := Peer{Handle: "claude-33", Kind: Claude}
 	full := UndeliveredNotice("claude-26", &next, []Peer{next})
-	if !strings.Contains(full, "claude-33 (claude) now runs in its pane") || !strings.Contains(full, "Agents beside you") || strings.Contains(full, "rex-amq-adapter who") {
+	if !strings.Contains(full, "claude-33 (claude) now runs in its pane") || !strings.Contains(full, "Agents beside you") || strings.Contains(full, "rex-amq-adapter agent list") {
 		t.Errorf("replaced: %q", full)
 	}
 }
@@ -555,7 +555,7 @@ func TestOrchestratorNoticeNamesEveryOrchestratorAndAFallback(t *testing.T) {
 func startParts(role string) (head, tail string) {
 	mates := []Peer{{Handle: "claude-01", Kind: Claude, Role: OrchestratorRole}, {Handle: "codex-03", Kind: Codex, Role: "implementer"}, {Handle: "codex-04", Kind: Codex, Role: "qa"}, {Handle: "claude-05", Kind: Claude, Role: "writer"}, {Handle: "claude-06", Kind: Claude, Role: "architect"}}
 	bin := "/opt/homebrew/opt/rex-amq-adapter/bin/rex-amq-adapter"
-	head = SessionNotice("codex-02", role, bin, 1) + " " + MatesNotice(mates) + "\n" + TaskNotice("codex-02", role, bin+" title", "review guidance")
+	head = SessionNotice("codex-02", role, bin, 1) + " " + MatesNotice(mates) + "\n" + TaskNotice("codex-02", role, bin+" agent title", "review guidance")
 	return head, OrchestratorNotice(mates)
 }
 

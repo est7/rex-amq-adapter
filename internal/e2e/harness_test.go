@@ -25,13 +25,13 @@ import (
 // claude (the default) or agy, whose hooks it fires and whose input box it
 // draws. It adopts itself with a real hook, reports idle, draws an empty box, and for each line typed reports working, appends
 // the line to <name>.got, and reports idle again. Sending it `quit` runs
-// SessionEnd; `crash` exits without running any hook; `join ARGS` (or
-// `epic ARGS`, `summon ARGS`) runs rex-amq-adapter join ARGS from its shell,
-// its output to <name>.join. With <name>.obey present, a typed AMQ doorbell is obeyed:
+// SessionEnd; `crash` exits without running any hook; a line that starts
+// with a noun (`agent ARGS`, `epic ARGS`, `mail ARGS`) runs rex-amq-adapter
+// with those words from its shell, its output and exit to <name>.join. With <name>.obey present, a typed AMQ doorbell is obeyed:
 // the command after its "Run " runs from the agent's shell, its output to
 // <name>.drained. Before it reports ready, its tool shell's ME_UNATTENDED
 // ("unset" when it has none) goes to <name>.unattended, the output of
-// rex-amq-adapter env to <name>.env, and ME_UNATTENDED after evaluating that
+// rex-amq-adapter agent env --sh to <name>.env, and ME_UNATTENDED after evaluating that
 // output to <name>.unattended-env.
 const agentScript = `name=$1
 harness=${2:-claude}
@@ -51,7 +51,7 @@ stty -echo
 hook session-start
 probe() { /bin/sh -c 'printf "%s" "${ME_UNATTENDED:-unset}"'; }
 probe >"$DIR/$name.unattended"
-"$ADAPTER" env >"$DIR/$name.env" 2>&1
+"$ADAPTER" agent env --sh >"$DIR/$name.env" 2>&1
 ( eval "$(cat "$DIR/$name.env")" 2>/dev/null; probe ) >"$DIR/$name.unattended-env"
 status idle
 draw
@@ -62,7 +62,7 @@ while read -r line; do
 	case "$line" in
 	*quit*) hook session-end; exit 0 ;;
 	*crash*) exit 1 ;;
-	join*|epic*|summon*) "$ADAPTER" $line >>"$DIR/$name.join" 2>&1; echo "exit=$?" >>"$DIR/$name.join" ;;
+	"agent "*|"epic "*|"mail "*) "$ADAPTER" $line >>"$DIR/$name.join" 2>&1; echo "exit=$?" >>"$DIR/$name.join" ;;
 	*"AMQ doorbell"*)
 		if [ -e "$DIR/$name.obey" ]; then
 			run=${line#*Run }
@@ -332,10 +332,10 @@ func (w *world) killWaker(handle string) {
 	w.until("the waker to die", 5*time.Second, func() bool { return syscall.Kill(pid, 0) != nil })
 }
 
-// who runs the adapter's who as the agent in block would.
-func (w *world) who(block string, args ...string) (string, int) {
+// adapterIn runs the adapter as the agent in block would.
+func (w *world) adapterIn(block string, args ...string) (string, int) {
 	w.t.Helper()
-	cmd := exec.Command(w.adapter, append([]string{"who"}, args...)...)
+	cmd := exec.Command(w.adapter, args...)
 	cmd.Env = append(w.env[:len(w.env):len(w.env)], "REX_SERVER="+w.server, "REX_BLOCK="+block)
 	out, err := cmd.CombinedOutput()
 	var exit *exec.ExitError
@@ -476,6 +476,17 @@ func (w *world) send(from, to, body string) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		w.t.Fatalf("amq send: %v\n%s\n%s", err, out, w.dump())
 	}
+}
+
+// envelopeData decodes the data of the v:2 envelope on line into v.
+func envelopeData(line string, v any) error {
+	var env struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(line), &env); err != nil {
+		return err
+	}
+	return json.Unmarshal(env.Data, v)
 }
 
 // adapterRun runs the adapter from outside any block.

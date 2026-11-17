@@ -11,7 +11,7 @@ import (
 
 // The projection turns what the adapter observes of its agents and their mail
 // into entities a reader can keep: agents keyed by handle, messages by id.
-// `who` renders it once; `events --json` renders it, then the differences
+// `agent list` renders it once; `stream events` renders it, then the differences
 // between successive projections. Both are read-only views: nothing here
 // decides delivery or lifecycle.
 

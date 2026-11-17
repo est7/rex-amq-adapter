@@ -129,7 +129,7 @@ func (e Env) askTask(ctx context.Context, kind core.Kind, event string, rec agen
 	asked, err := e.Store.TaskAsked(rec.Handle)
 	if err == nil && asked != session {
 		if err = e.Store.SetTaskAsked(rec.Handle, session); err == nil && rec.Task == "" {
-			return core.TaskNotice(rec.Handle, rec.Role, e.SelfBin+" title", "")
+			return core.TaskNotice(rec.Handle, rec.Role, e.SelfBin+" agent title", "")
 		}
 	}
 	if err != nil {

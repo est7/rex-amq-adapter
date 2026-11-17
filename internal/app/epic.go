@@ -185,7 +185,7 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 		if _, found, err := e.Crews(dir).Crew(crewName); err != nil {
 			return EpicResult{}, err
 		} else if !found {
-			return EpicResult{}, fmt.Errorf("%w: no crew %q in %s: `rex-amq-adapter crews` lists them", ErrUsage, crewName, dir)
+			return EpicResult{}, fmt.Errorf("%w: no crew %q in %s: `rex-amq-adapter crew list` lists them", ErrUsage, crewName, dir)
 		}
 	}
 	physical, err := filepath.EvalSymlinks(dir)

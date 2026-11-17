@@ -199,7 +199,7 @@ func TestPairEpicNarratorControlReachesTheLead(t *testing.T) {
 		t.Fatalf("the pair lead's gate kept %v (%v), want %s", kept, err, sent.ID)
 	}
 	_, _, err = run(t, e, ctx, "claude-10", "send", "--to", "claude-01", "--subject", "done", "--body", "b")
-	if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), core.ReasonPersonalOnly) || !strings.Contains(err.Error(), `report with "rex-amq-adapter hand-back @<file>"`) {
+	if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), core.ReasonPersonalOnly) || !strings.Contains(err.Error(), `report with "rex-amq-adapter epic handback @<file>"`) {
 		t.Errorf("the pair lead mailing the personal agent: %v", err)
 	}
 	if _, _, err := run(t, e, ctx, "claude-01", "send", "--to", "claude-10", "--subject", "s", "--body", "b"); err == nil || strings.Contains(err.Error(), "hand-back") {

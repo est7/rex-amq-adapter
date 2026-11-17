@@ -175,7 +175,7 @@ func TestJoiningAsTheOrchestratorStartsItsWatcher(t *testing.T) {
 func TestJoiningNeedsACrewOrARoleThatExists(t *testing.T) {
 	e, _ := joinWorld(t, "Window 1a2b")
 	ctx := context.Background()
-	if _, err := e.Join(ctx, Location{Block: "block:a"}, "nosuch", ""); err == nil || !strings.Contains(err.Error(), "crews") {
+	if _, err := e.Join(ctx, Location{Block: "block:a"}, "nosuch", ""); err == nil || !strings.Contains(err.Error(), "crew list") {
 		t.Errorf("unknown crew: %v", err)
 	}
 	if _, err := e.Join(ctx, Location{Block: "block:a"}, "", ""); err == nil {

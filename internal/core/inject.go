@@ -190,5 +190,5 @@ func DecideConfirm(c Confirmation) (Outcome, Cleanup) {
 // bin is the adapter's absolute path: its drain finds the agent's identity
 // itself and reads only mail the gateway admitted.
 func Doorbell(unread int, h Handle, bin string) string {
-	return fmt.Sprintf("AMQ doorbell: %d unread message(s) for %s (you are %s in Rex; skill: rex-amq-adapter). Run %s drain --include-body, then act on each message.", unread, h, h, bin)
+	return fmt.Sprintf("AMQ doorbell: %d unread message(s) for %s (you are %s in Rex; skill: rex-amq-adapter). Run %s mail drain --include-body, then act on each message.", unread, h, h, bin)
 }

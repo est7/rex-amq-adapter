@@ -330,7 +330,7 @@ func runAmq(ctx context.Context, amqBin string, args ...string) ([]byte, error) 
 }
 
 // amqEnv is the environment amq runs in: this process's, without the
-// identity an agent loaded with `rex-amq-adapter env`. Every call names its
+// identity an agent loaded with `rex-amq-adapter agent env --sh`. Every call names its
 // root and agent on the command line, and amq refuses a send to a root other
 // than $AM_ROOT, so an inherited identity (an agent running the tests, a hook
 // of an agent whose shell exported it) must not stand for the adapter's.

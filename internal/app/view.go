@@ -159,7 +159,7 @@ type ViewLimits struct {
 }
 
 // ErrNoView is a read of a session whose narrator has not written its view.
-var ErrNoView = errors.New("no view yet: the session's narrator writes it with `rex-amq-adapter view refresh`")
+var ErrNoView = errors.New("no view yet: the session's narrator writes it with `rex-amq-adapter epic refresh`")
 
 // narratorOf is the live narrator in loc, which alone writes its session's
 // view and reads bodies for it.
@@ -498,7 +498,7 @@ func (e Env) buildView(ctx context.Context, narr agent, key core.SessionKey) (Se
 		case controlPlane(p):
 			control = append(control, h)
 		default:
-			g.add(GapPeerBody, "peer mail that bypassed the orchestrator; read it with `rex-amq-adapter view read --ids`", m.ID)
+			g.add(GapPeerBody, "peer mail that bypassed the orchestrator; read it with `rex-amq-adapter epic messages --ids`", m.ID)
 		}
 		v.Activity = append(v.Activity, ViewMessage{Ref: m.ID, From: m.From, To: m.To, Thread: m.Thread, Subject: m.Subject, Created: m.Created, Kind: h.Kind, Priority: h.Priority})
 	}

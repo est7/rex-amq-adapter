@@ -56,9 +56,9 @@ func TestSessionNoticeCarriesTheMailCommands(t *testing.T) {
 		t.Errorf("notice teaches bare amq mail, which skips the gateway:\n%s", n)
 	}
 	for _, want := range []string{
-		"/x/rex-amq-adapter drain --include-body",
-		"/x/rex-amq-adapter reply --id <id>",
-		"/x/rex-amq-adapter send --to <handle>",
+		"/x/rex-amq-adapter mail drain --include-body",
+		"/x/rex-amq-adapter mail reply --id <id>",
+		"/x/rex-amq-adapter mail send --to <handle>",
 		"end your turn",
 		"the agent that briefed you",
 		"skill before you start or summon a peer",

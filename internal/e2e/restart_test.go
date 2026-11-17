@@ -116,7 +116,7 @@ func TestRexRestartKeepsTheHandleMailAndEpic(t *testing.T) {
 	w := newRestartableWorld(t)
 	tb := w.newTab("me", "personal")
 	w.ready("me")
-	w.typeInto(tb.first, "epic e2e-restart -c "+w.project("app")+" --asked open-it --timeout 40")
+	w.typeInto(tb.first, "epic open e2e-restart --cwd "+w.project("app")+" --asked open-it --timeout 40")
 	w.until("the epic command to finish", 50*time.Second, func() bool { return strings.Contains(w.joined("me"), "exit=") })
 	if out := w.joined("me"); !strings.Contains(out, "exit=0") {
 		t.Fatalf("epic:\n%s\n%s", out, w.dump())

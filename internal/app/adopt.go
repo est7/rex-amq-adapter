@@ -444,7 +444,7 @@ func (e Env) SetTask(ctx context.Context, loc Location, task string) (string, er
 	return label, nil
 }
 
-// Exports is the shell text `rex-amq-adapter env` prints for the agent in loc.
+// Exports is the shell text `rex-amq-adapter agent env --sh` prints for the agent in loc.
 func (e Env) Exports(loc Location) (string, error) {
 	se, err := e.ShellEnvOf(loc)
 	if err != nil {

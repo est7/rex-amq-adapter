@@ -15,7 +15,7 @@ import (
 	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
-// `rex-amq-adapter panel --json` is the human's panel on a Rex session: the
+// `rex-amq-adapter stream panel` is the human's panel on a Rex session: the
 // events stream of the session (Stream) with the session's panel added, its
 // label, crew, what waits on each agent, its stored view, and, in a personal
 // agent's session, the Epics linked to it. It reads as events does: no lock,
@@ -192,7 +192,7 @@ func (e Env) panelCrew(id string, all []agent) (*PanelCrew, error) {
 	return out, nil
 }
 
-// panelView is key's view as `view --cockpit --session` reads it
+// panelView is key's view as `epic show <session>` reads it
 // (cockpitSession), or, for a session with a hand-back but neither a view
 // nor a lifecycle, that hand-back alone; nil when it has none of the three.
 func (e Env) panelView(key core.SessionKey) (*SessionView, error) {

@@ -186,7 +186,7 @@ func (e Env) linkTo(caller agent, session string) (core.Link, error) {
 			return l, nil
 		}
 	}
-	return core.Link{}, fmt.Errorf("%w: %s is not an Epic linked to %s (`rex-amq-adapter link` lists yours); a session you did not open is the user's to close", ErrRefused, session, caller.Handle)
+	return core.Link{}, fmt.Errorf("%w: %s is not an Epic linked to %s (`rex-amq-adapter epic list` lists yours); a session you did not open is the user's to close", ErrRefused, session, caller.Handle)
 }
 
 // unsettled names each live agent of epic, Stealth ones aside, that is not

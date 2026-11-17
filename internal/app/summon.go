@@ -477,7 +477,7 @@ func (e Env) planResume(ctx context.Context, caller agent, departed agent) (p la
 	if cwd == "" {
 		return p, fmt.Sprintf("%s cannot be resumed: its working directory is not recorded and its transcript does not name one", departed.Handle), nil
 	}
-	bootstrap := fmt.Sprintf("Resumed by %s (summon on send): mail waits for you. Run %s drain --include-body and act on it.", caller.Handle, e.SelfBin)
+	bootstrap := fmt.Sprintf("Resumed by %s (summon on send): mail waits for you. Run %s mail drain --include-body and act on it.", caller.Handle, e.SelfBin)
 	cmd, ok := resumeCommand(departed.Kind, departed.Session(), bootstrap)
 	if !ok {
 		return p, fmt.Sprintf("%s (%s) cannot be resumed from outside", departed.Handle, departed.Kind), nil
@@ -616,7 +616,7 @@ func startAuthorized(r SummonRequest) string {
 // planStart is the launch of a new agent for role on kind in cwd, with body
 // as its brief; false for a harness the adapter cannot start.
 func (e Env) planStart(caller agent, route crew.Route, kind core.Kind, role, subject, body, cwd string) (launchPlan, bool) {
-	brief := body + "\n\nYou were started by " + string(caller.Handle) + " (summon on send). Report back with `" + e.SelfBin + " send --to " + string(caller.Handle) + " --subject \"…\" --body \"…\"`; the same request waits in your mailbox once you are adopted, so you can `" + e.SelfBin + " reply` to it."
+	brief := body + "\n\nYou were started by " + string(caller.Handle) + " (summon on send). Report back with `" + e.SelfBin + " mail send --to " + string(caller.Handle) + " --subject \"…\" --body \"…\"`; the same request waits in your mailbox once you are adopted, so you can `" + e.SelfBin + " mail reply` to it."
 	cmd := startCommand(kind, brief)
 	if len(cmd) == 0 {
 		return launchPlan{}, false

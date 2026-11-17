@@ -12,7 +12,7 @@ import (
 )
 
 // The cockpit is the human's read of a personal agent's Epics, from the
-// personal agent's own pane or from outside Rex (`view --cockpit`). It reads
+// personal agent's own pane or from outside Rex (`epic list`, `epic show`). It reads
 // only: no mail moves, no receipt is written, nothing is started. Its scope
 // is one live personal agent and the Epics linked to it, never another
 // Epic; and it is not a way around the view's own access rule, so anything
@@ -21,7 +21,7 @@ import (
 // no agent in it is not trusted for being one: it names the personal agent
 // (--personal) or the hub it works in (--hub).
 
-// CockpitViewRequest is what `view --cockpit` asks: Session, one linked Epic's
+// CockpitViewRequest is what `epic list` and `epic show` from outside Rex ask: Session, one linked Epic's
 // view; without it, a summary of every linked Epic. Personal and Hub name
 // the personal agent for a caller that is not one.
 type CockpitViewRequest struct {

@@ -58,7 +58,7 @@ func (e Env) Join(ctx context.Context, loc Location, crewName, role string) (Joi
 			return Joined{}, err
 		}
 		if !found {
-			return Joined{}, fmt.Errorf("no crew %q: `rex-amq-adapter crews` lists them", name)
+			return Joined{}, fmt.Errorf("no crew %q: `rex-amq-adapter crew list` lists them", name)
 		}
 		if role == "" {
 			role = c.Lead
@@ -101,7 +101,7 @@ func (e Env) Join(ctx context.Context, loc Location, crewName, role string) (Joi
 		}
 	}
 	if rest := othersNeeded(c.Members, rec.Role); len(rest) > 0 {
-		out.Briefing += fmt.Sprintf("\n\nCrew %s is %s; it still needs %s. Start each in a new tab of this session: `rex-amq-adapter summon <role> --subject \"<task>\" --body \"<brief>\" --kind todo --asked \"<the user's words>\"` (or `--grant <file>`), or `rex run -s \"$REX_SESSION\" --label \"<role> | <task>\" --focus=false -c \"$PWD\" -- <agent> \"<brief>\"` then `rex-amq-adapter await <block>`.",
+		out.Briefing += fmt.Sprintf("\n\nCrew %s is %s; it still needs %s. Start each in a new tab of this session: `rex-amq-adapter agent summon <role> --subject \"<task>\" --body \"<brief>\" --kind todo --asked \"<the user's words>\"` (or `--grant <file>`), or `rex run -s \"$REX_SESSION\" --label \"<role> | <task>\" --focus=false -c \"$PWD\" -- <agent> \"<brief>\"` then `rex-amq-adapter await <block>`.",
 			c.Name, strings.Join(c.Members, ", "), strings.Join(rest, ", "))
 	}
 	return out, nil

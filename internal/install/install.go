@@ -334,11 +334,11 @@ const skillDescription = `Talk to other coding agents in Rex terminals over AMQ.
 
 func stub(self string) string {
 	return "---\nname: " + skillName + "\ndescription: " + yamlQuote(skillDescription) + "\nmetadata:\n  " + stubMarker + ": \"1\"\n---\n" +
-		"<!-- Installed by \"rex-amq-adapter setup\". Remove it with \"rex-amq-adapter remove\". -->\n\n" +
-		"Run `" + self + " __internal skill` and follow the guide it prints. The guide ships\n" +
+		"<!-- Installed by \"rex-amq-adapter install setup\". Remove it with \"rex-amq-adapter install remove\". -->\n\n" +
+		"Run `" + self + " skill show --text` and follow the guide it prints. The guide ships\n" +
 		"inside the installed adapter, so it matches the version that delivers your mail.\n\n" +
 		"If the command fails, the adapter is not installed at that path: tell the user to\n" +
-		"run `rex-amq-adapter setup` again, and stop.\n"
+		"run `rex-amq-adapter install setup` again, and stop.\n"
 }
 
 func yamlQuote(s string) string {

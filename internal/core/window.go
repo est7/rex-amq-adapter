@@ -54,12 +54,12 @@ func MatesNotice(mates []Peer) string {
 		names[i] = m.named()
 	}
 	return "Agents beside you in this Rex session: " + strings.Join(names, ", ") +
-		". Reach them with `rex-amq-adapter send --to <handle>`."
+		". Reach them with `rex-amq-adapter mail send --to <handle>`."
 }
 
 // JoinedNotice tells a session-mate that p started beside it.
 func JoinedNotice(p Peer) string {
-	return fmt.Sprintf("AMQ: %s joined your Rex session. Reach it with `rex-amq-adapter send --to %s`.", p.named(), p.Handle)
+	return fmt.Sprintf("AMQ: %s joined your Rex session. Reach it with `rex-amq-adapter mail send --to %s`.", p.named(), p.Handle)
 }
 
 // OrchestratorNotice tells an agent that an orchestrator among mates
@@ -114,7 +114,7 @@ func UndeliveredNotice(to Handle, occupant *Peer, mates []Peer) string {
 	if beside := MatesNotice(mates); beside != "" {
 		return notice + " " + beside
 	}
-	return notice + " Run `rex-amq-adapter who` for the agents in your Rex session."
+	return notice + " Run `rex-amq-adapter agent list` for the agents in your Rex session."
 }
 
 // OrchestratorRole is the pane label of the agent that owns a goal. A session holding

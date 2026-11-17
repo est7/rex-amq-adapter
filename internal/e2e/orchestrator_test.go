@@ -231,16 +231,19 @@ func TestAnOrchestratorHearsAPeerMovedToAnotherTabOfItsSession(t *testing.T) {
 	w.until("the orchestrator to be woken", goalHears, func() bool { return w.doorbell("lead") })
 }
 
-// Without a watcher, the agent who looks brings the records up to date.
-func TestWhoFollowsAPeerMovedIntoItsTab(t *testing.T) {
+// Without a watcher, an explicit collection brings the records up to date.
+func TestCollectFollowsAPeerMovedIntoItsTab(t *testing.T) {
 	w := newWorld(t)
 	tb := w.newTab("lead", "implementer")
 	w.ready("lead")
 	peer := tb.otherTab("rev", "reviewer")
 	w.ready("rev")
 	tb.move(peer, tb.first)
-	if out, code := w.who(tb.first); code != 0 || !strings.Contains(out, w.handleOf("rev")) {
-		t.Fatalf("who: %d\n%s", code, out)
+	if out, code := w.adapterIn(tb.first, "agent", "collect"); code != 0 {
+		t.Fatalf("agent collect: %d\n%s", code, out)
+	}
+	if out, code := w.adapterIn(tb.first, "agent", "list"); code != 0 || !strings.Contains(out, w.handleOf("rev")) {
+		t.Fatalf("agent list: %d\n%s", code, out)
 	}
 	if got, want := w.recordedWindow(w.handleOf("rev")), w.recordedWindow(w.handleOf("lead")); got != want {
 		t.Fatalf("the record stayed in %s, the agent is in %s", got, want)
