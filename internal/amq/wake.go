@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -312,8 +313,14 @@ func AwaitLive(ctx context.Context, amqBin, root, handle string, want WakeTarget
 }
 
 func runAmq(ctx context.Context, amqBin string, args ...string) ([]byte, error) {
+	return runAmqIn(ctx, amqBin, nil, args...)
+}
+
+// runAmqIn is runAmq with stdin (nil for none).
+func runAmqIn(ctx context.Context, amqBin string, stdin io.Reader, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, amqBin, append([]string{"--no-update-check"}, args...)...)
 	cmd.Env = amqEnv()
+	cmd.Stdin = stdin
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	err := cmd.Run()

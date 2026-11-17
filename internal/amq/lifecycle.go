@@ -332,7 +332,8 @@ type Sent struct {
 // that failed after delivering (a --wait-for that timed out) returns its id
 // with the error.
 func Post(ctx context.Context, amqBin, root, verb string, args ...string) (Sent, []byte, error) {
-	out, err := runAmq(ctx, amqBin, append([]string{verb, "--root", root, "--json"}, args...)...)
+	args, body := literalBody(args)
+	out, err := runAmqIn(ctx, amqBin, body, append([]string{verb, "--root", root, "--json"}, args...)...)
 	var s Sent
 	_ = json.Unmarshal(out, &s)
 	if err != nil {
@@ -363,4 +364,28 @@ func Run(ctx context.Context, amqBin string, stdin io.Reader, stdout, stderr io.
 		return 1, err
 	}
 	return 0, nil
+}
+
+// literalBody moves the --body value out of args, to go on stdin under
+// --body -: amq reads its value as @FILE or - for stdin, and a body here is
+// already the text to send, so a body starting with "@" must never make
+// amq read that file. The body's bytes travel as they are.
+func literalBody(args []string) ([]string, io.Reader) {
+	out := make([]string, 0, len(args))
+	var body io.Reader
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--body" && i+1 < len(args):
+			body = strings.NewReader(args[i+1])
+			i++
+		case strings.HasPrefix(a, "--body="):
+			body = strings.NewReader(strings.TrimPrefix(a, "--body="))
+		default:
+			out = append(out, a)
+			continue
+		}
+		out = append(out, "--body=-")
+	}
+	return out, body
 }

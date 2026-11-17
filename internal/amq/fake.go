@@ -169,14 +169,9 @@ func (f *Fake) Post(ctx context.Context, root, verb string, args ...string) (Sen
 			return Sent{}, nil, fmt.Errorf("--context must be a JSON object: %w", err)
 		}
 	}
+	// A Poster's body is the text to send (CLI.Post passes it on stdin),
+	// never amq's @FILE syntax.
 	body := fl["body"]
-	if strings.HasPrefix(body, "@") {
-		b, err := os.ReadFile(body[1:])
-		if err != nil {
-			return Sent{}, nil, err
-		}
-		body = string(b)
-	}
 	now := time.Now().UTC()
 	fs.seq++
 	h.ID = fmt.Sprintf("%s.%03dZ_pid%d_%08x", now.Format("2006-01-02T15-04-05"), now.Nanosecond()/1e6, os.Getpid(), fs.seq)

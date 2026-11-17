@@ -1,7 +1,11 @@
 package app
 
 import (
+	"bytes"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -50,5 +54,31 @@ func TestMailThreadEmptyIsNotFound(t *testing.T) {
 	f := Classify(err)
 	if err == nil || f.Code != "not_found" || f.Exit() != 4 || f.Details["kind"] != "thread" {
 		t.Fatalf("empty thread: %v → %+v", err, f)
+	}
+}
+
+// A managed send's body arrives on stdin under --body -, as the CLI passes
+// it: a body that is "-" or starts with "@<path>" is delivered as that
+// text, and the file is never read.
+func TestManagedSendBodyIsLiteral(t *testing.T) {
+	e, ctx := managedWorld(t)
+	secret := filepath.Join(t.TempDir(), "secret.txt")
+	if err := os.WriteFile(secret, []byte("TOP SECRET"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, body := range []string{"@" + secret, "-"} {
+		var out bytes.Buffer
+		if code, err := e.ManagedMail(ctx, Location{Block: "block:claude-02"}, "send", []string{"--to", "codex-01", "--subject", "s", "--body=-", "--json"}, strings.NewReader(body), &out, &out); code != 0 || err != nil {
+			t.Fatalf("%q: %d %v %s", body, code, err, out.String())
+		}
+	}
+	bodies := unreadBodies(t, e, "codex-01")
+	if len(bodies) != 2 {
+		t.Fatalf("%d delivered", len(bodies))
+	}
+	for i, want := range []string{"@" + secret, "-"} {
+		if strings.Contains(bodies[i], "TOP SECRET") || !strings.Contains(bodies[i], "\n"+want) {
+			t.Errorf("body %d:\n%s", i, bodies[i])
+		}
 	}
 }

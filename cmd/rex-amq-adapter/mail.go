@@ -39,10 +39,16 @@ func openMailbox(c *cli.Ctx) (mailbox, error) {
 
 // run runs managed verb with args and decodes amq's JSON output into v.
 func (m mailbox) run(verb string, args []string, v any) error {
+	return m.runIn(verb, args, "", v)
+}
+
+// runIn is run with stdin: a resolved body travels there, under --body -,
+// so no layer below reads its text as @FILE or - again.
+func (m mailbox) runIn(verb string, args []string, stdin string, v any) error {
 	ctx, cancel := within(m.c, 2*time.Minute)
 	defer cancel()
 	var stdout, stderr bytes.Buffer
-	code, err := m.env.ManagedMail(ctx, m.loc, verb, args, strings.NewReader(""), &stdout, &stderr)
+	code, err := m.env.ManagedMail(ctx, m.loc, verb, args, strings.NewReader(stdin), &stdout, &stderr)
 	if err != nil {
 		return err
 	}
@@ -87,14 +93,15 @@ func (m mailbox) capBody(obj map[string]any, key string, max int) error {
 	return nil
 }
 
-func postArgs(in cli.Input, body string) []string {
+// postArgs are a send's or reply's flags; the body goes on stdin (runIn).
+func postArgs(in cli.Input) []string {
 	var args []string
 	for _, k := range []string{"subject", "kind", "priority", "thread", "refs", "control"} {
 		if v := in.Str(k); v != "" {
 			args = append(args, "--"+k, v)
 		}
 	}
-	return append(args, "--body="+body, "--json")
+	return append(args, "--body=-", "--json")
 }
 
 func mailSend(c *cli.Ctx, in cli.Input) (cli.Result, error) {
@@ -115,7 +122,7 @@ func mailSend(c *cli.Ctx, in cli.Input) (cli.Result, error) {
 		return cli.Result{Data: map[string]any{"dry_run": true, "would": p, "subject": in.Str("subject"), "body_bytes": len(body)}}, err
 	}
 	var sent map[string]any
-	if err := m.run("send", append([]string{"--to", in.Str("to")}, postArgs(in, body)...), &sent); err != nil {
+	if err := m.runIn("send", append([]string{"--to", in.Str("to")}, postArgs(in)...), body, &sent); err != nil {
 		return cli.Result{}, err
 	}
 	return cli.Result{Data: sent, Human: line(fmt.Sprintf("Sent %v to %v", sent["id"], sent["to"]))}, nil
@@ -135,7 +142,7 @@ func mailReply(c *cli.Ctx, in cli.Input) (cli.Result, error) {
 		return cli.Result{Data: map[string]any{"dry_run": true, "would": p, "body_bytes": len(body)}}, err
 	}
 	var sent map[string]any
-	if err := m.run("reply", append([]string{"--id", in.Str("id")}, postArgs(in, body)...), &sent); err != nil {
+	if err := m.runIn("reply", append([]string{"--id", in.Str("id")}, postArgs(in)...), body, &sent); err != nil {
 		return cli.Result{}, err
 	}
 	return cli.Result{Data: sent, Human: line(fmt.Sprintf("Replied %v to %v", sent["id"], sent["to"]))}, nil
