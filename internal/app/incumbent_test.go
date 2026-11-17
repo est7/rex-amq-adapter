@@ -327,3 +327,51 @@ func TestCallerRunsUnderTheLeasesIncarnation(t *testing.T) {
 		t.Fatal("a command whose ancestry cannot be read was given the identity")
 	}
 }
+
+// A terminal that resumed a background job's conversation while the job
+// runs is a duplicate too: its hooks carry the job's session, but none of
+// them may adopt in the job's pane or hear of the job's mail.
+func TestDuplicateOfABackgroundJobReadsNoneOfItsMail(t *testing.T) {
+	w := newJobWorld(t)
+	ctx := context.Background()
+	w.jobHook(t, EventSessionStart)
+	job, ok, err := w.e.liveRecordOf(core.Claude, jobSess)
+	if err != nil || !ok {
+		t.Fatalf("setup: the job was not adopted: %v", err)
+	}
+	var sent bytes.Buffer
+	if code, err := w.e.ManagedMail(ctx, Location{Block: tuiBlock}, "send", []string{"--to", string(job.Handle), "--subject", "for the job", "--body", "b"}, strings.NewReader(""), &sent, &sent); err != nil || code != 0 {
+		t.Fatalf("setup: send to the job: %d %v %s", code, err, sent.String())
+	}
+	before := leaseOf(t, w.e, job.Handle)
+
+	const dupBlock = "block:dup"
+	dup := sbAgent(t)
+	w.term.mu.Lock()
+	w.term.windows[dupBlock] = "window:3"
+	w.term.fgs[dupBlock] = rex.Process{PID: dup.Process.Pid, Name: "claude"}
+	w.term.mu.Unlock()
+	want := "conversation " + jobSess + " is live as " + string(job.Handle) + " in " + viewBlock + "; this pane has no AMQ identity until that pane closes"
+	for _, event := range []string{EventPrompt, EventPostTool, EventStop} {
+		r, err := w.e.Hook(ctx, event, core.Claude, Location{Block: dupBlock}, HookInput{SessionID: jobSess, AgentPID: dup.Process.Pid})
+		if err != nil {
+			t.Fatalf("%s: %v", event, err)
+		}
+		if event == EventPrompt && r.Notice != want {
+			t.Errorf("%s: notice %q, want %q", event, r.Notice, want)
+		}
+		if event != EventPrompt && r.Notice != "" {
+			t.Errorf("%s: the duplicate was told %q", event, r.Notice)
+		}
+	}
+	ledger, err := w.e.Store.Announced(job.Handle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ledger.IDs) != 0 {
+		t.Errorf("the duplicate's hooks marked the job's mail announced: %v", ledger.IDs)
+	}
+	if after := leaseOf(t, w.e, job.Handle); after != before {
+		t.Errorf("the job's lease changed: %+v -> %+v", before, after)
+	}
+}

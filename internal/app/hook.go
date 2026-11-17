@@ -238,9 +238,11 @@ func (e Env) announce(ctx context.Context, kind core.Kind, loc Location, in Hook
 			}
 		case !hasMailbox && errors.Is(err, ErrStartedInPane):
 			return Reply{}, nil
-		case !hasMailbox && errors.As(err, new(*DuplicateSessionError)):
-			// The refused pane hears why at each prompt it submits; any other
-			// hook says nothing (a Stop that spoke would keep the turn going).
+		case errors.As(err, new(*DuplicateSessionError)):
+			// A refused process is not the record's agent, whatever the
+			// record's fit: it reads none of its mail. It hears why at each
+			// prompt it submits; any other hook says nothing (a Stop that
+			// spoke would keep the turn going).
 			dup, _ := refusedDuplicate(err)
 			if hook == EventPrompt {
 				return Reply{Notice: dup.Error()}, nil

@@ -269,6 +269,13 @@ func (e Env) jobLocation(ctx context.Context, event string, loc Location, in Hoo
 	if !isJob {
 		return loc, in, event != EventSessionEnd || !hasRec
 	}
+	// Another live process that runs the job's conversation is a terminal
+	// that resumed it: no job, so its hooks are its own pane's, where it is
+	// refused as a duplicate (Adopt). A job whose process exited and came back
+	// under another pid is still placed by its record.
+	if hasRec && in.AgentPID > 0 && !e.sameProcess(rec, in) && !processGone(rec.pid()) {
+		return loc, in, true
+	}
 	in.Job = true
 	// A tool call trusts the record of its own adopted process: looking
 	// through every pane on each call would cost too much. A record that is
