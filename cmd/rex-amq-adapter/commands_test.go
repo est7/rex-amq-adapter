@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -428,6 +429,17 @@ func TestManagedMailCodes(t *testing.T) {
 	}
 	paths := store.Paths{Home: t.TempDir()}
 	env := app.Env{Paths: paths, Store: store.Store{P: paths}, AMQ: amq.CLI{Bin: bin}, Now: time.Now}
+	// A delivered send starts its recipient's waker: stop every one this
+	// test's root started, so no amq wake outlives it.
+	t.Cleanup(func() {
+		entries, _ := os.ReadDir(filepath.Join(paths.Root(), "agents"))
+		for _, en := range entries {
+			_, _ = env.AMQ.RetireHandle(context.Background(), paths.Root(), en.Name())
+			if st, err := amq.WakeCheck(context.Background(), bin, paths.Root(), en.Name()); err == nil && st.PID > 0 {
+				_ = syscall.Kill(st.PID, syscall.SIGKILL)
+			}
+		}
+	})
 	for _, r := range []testAgent{
 		{Handle: "codex-01", Server: "unix:///t.sock", BlockID: "block:a", SessionID: "session:a"},
 		{Handle: "claude-02", Server: "unix:///t.sock", BlockID: "block:b", SessionID: "session:a"},
