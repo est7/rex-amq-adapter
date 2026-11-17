@@ -46,19 +46,20 @@ func duplicateOf(session string, held agent) *DuplicateSessionError {
 //     at most one identity per session), so a resume takes its handle back,
 //     and one still running elsewhere is the same agent, whose lease decides
 //     who speaks for it (heldElsewhere, holderGone in Adopt).
-//  2. Otherwise this block's live lease of the same process and kind: a new
-//     session in the same process (/clear) stays the same agent.
+//  2. Otherwise the live lease of the same process and kind in this block
+//     of server: a new session in the same process (/clear) stays the same
+//     agent. A block id and a pid are one server's.
 //
 // An agent that resolves to nothing is named afresh: a new session in a pane
 // does not inherit the handle of the pane's previous session.
-func resolveIdentity(recs []agent, block string, inc store.Incarnation, kind core.Kind, sessions []string) (agent, bool) {
+func resolveIdentity(recs []agent, server, block string, inc store.Incarnation, kind core.Kind, sessions []string) (agent, bool) {
 	for _, session := range sessions {
 		if i := slices.IndexFunc(recs, func(r agent) bool { return r.Kind == kind && slices.Contains(r.Sessions, session) }); i >= 0 {
 			return recs[i], true
 		}
 	}
 	for _, r := range recs {
-		if r.BlockID == block && r.Live() && r.lease.Incarnation.Same(inc) && r.Kind == kind {
+		if r.Server == server && r.BlockID == block && r.Live() && r.lease.Incarnation.Same(inc) && r.Kind == kind {
 			return r, true
 		}
 	}

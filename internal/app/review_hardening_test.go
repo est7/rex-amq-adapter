@@ -373,3 +373,36 @@ func TestServerScopeOfABlockIsItsServer(t *testing.T) {
 		t.Fatalf("exports of block:a on %s: %q %v; want agy-01", elsewhere, out, err)
 	}
 }
+
+// The fallback that keeps a pane's agent its handle across a new session in
+// the same process (/clear) matches its block and process on its own server
+// only: a remote lease whose block id and pid happen to equal a new local
+// conversation's is another agent, and the local one is named afresh. The
+// lookup by session stays global, so a resume on another server still finds
+// its identity.
+func TestServerScopeOfTheIdentityFallback(t *testing.T) {
+	const remote = "tcp://remote.example:7070"
+	term := &fakeTerm{state: "idle"}
+	e := realAmqEnv(t, term)
+	plant(t, e, seed{Handle: "codex-01", Kind: core.Codex, Server: remote, BlockID: block, AgentPID: os.Getpid(), AgentSessionID: "unrelated-remote-thread"})
+	e.RexOn = func(server string) Terminal {
+		if server == remote {
+			return unreachableTerm{term}
+		}
+		return term
+	}
+	r, err := e.Hook(context.Background(), EventSessionStart, core.Codex, Location{Server: fakeServer, Block: block}, HookInput{SessionID: "new-local-thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, live, err := e.Store.LeaseAt(fakeServer, block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !live || l.Handle == "codex-01" {
+		t.Fatalf("a new local conversation was taken for the remote codex-01 of the same block id and pid: live=%v lease=%+v notice=%q", live, l, r.Notice)
+	}
+	if far := leaseOf(t, e, "codex-01"); far.Server != remote || far.BlockID != block {
+		t.Fatalf("the remote codex-01 moved: %+v", far)
+	}
+}
