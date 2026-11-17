@@ -294,3 +294,36 @@ func TestClaudeNarrowTitledBorder(t *testing.T) {
 		t.Errorf("clamped CUF inside empty box: got %v, want empty", got)
 	}
 }
+
+// Claude Code's unattended permission dialog counts down to deny the request
+// itself; the countdown counts only when it is the dialog at the bottom of
+// the screen, wrapped or styled as a pane draws it.
+func TestClaudeSelfDenyingCountdown(t *testing.T) {
+	dialog := func(warn string) string {
+		return "╌╌╌╌\n│ rm -rf /tmp/x\n╌╌╌╌\n" + warn + "\nDo you want to proceed?\n❯ 1. Yes\n  2. No\nEsc to cancel · Tab to amend\n────\n implementer(claude-07)\n"
+	}
+	one := "⚠ Claude Code will automatically block this request in 1:24, to avoid holding up an unattended session"
+	for name, tc := range map[string]struct {
+		screen string
+		want   bool
+	}{
+		"one line":    {dialog(one), true},
+		"wrapped":     {dialog("⚠ Claude Code will automatically block this request\nin 1:24, to avoid holding up an unattended session"), true},
+		"narrow":      {dialog("⚠ Claude Code will\nautomatically block this\nrequest in 0:05, to avoid\nholding up an unattended\nsession"), true},
+		"capture":     {dialog("⚠\x1b[1CClaude\x1b[1CCode\x1b[1Cwill\x1b[1C\x1b[1mautomatically\x1b[0m\x1b[1Cblock\x1b[1Cthis\x1b[1Crequest\x1b[1Cin\x1b[1C1:24,"), true},
+		"tasks below": {dialog(one) + "5 tasks (4 done, 1 open)\n" + strings.Repeat("◼ task\n", 5), true},
+		// Attended: the same dialog, no countdown.
+		"attended": {dialog(""), false},
+		// The phrase without its clock is prose, not the dialog.
+		"no clock": {dialog("the hook said Claude Code will automatically block this request in unattended runs"), false},
+		// Quoted in the transcript, above a genuine dialog of its own.
+		"quoted above a prompt": {dialog(one) + "transcript\n" + dialog(""), false},
+		// Quoted in the transcript, above an idle input box.
+		"quoted above the box": {dialog(one) + fixture(t, "claude-empty"), false},
+		"empty":                {"", false},
+	} {
+		if got := SelfDenyingCountdown(tc.screen); got != tc.want {
+			t.Errorf("%s: got %v want %v", name, got, tc.want)
+		}
+	}
+}

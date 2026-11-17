@@ -17,7 +17,9 @@ import (
 // pending or not. It is the one owner of these two shapes (blocked status,
 // trust screen); the undelivered-mail path leaves them to it, so each is
 // reported once and the orchestrator's own is never mailed to itself. The signal is structural (program status blocked, or a trust
-// screen while the agent reports nothing else), held for StuckFor; the
+// screen while the agent reports nothing else), held for StuckFor; Claude
+// Code's unattended permission dialog, which blocks the request itself when
+// its countdown ends, is not one. The
 // notice says so once per episode, and a line lands in logs/blocked.log
 // with the time, so the user finds when the run stopped. A blocked
 // orchestrator cannot read mail: another family in the session is told, else the
@@ -33,8 +35,12 @@ func (e Env) blocked(ctx context.Context, orch agent, s Session, rec agent) erro
 		return err
 	}
 	what := ""
+	blocked := reports && core.AgentState(st.State) == core.StateBlocked
 	switch {
-	case reports && core.AgentState(st.State) == core.StateBlocked:
+	case blocked && screen.SelfDenyingCountdown(vt):
+		// Claude Code's unattended permission dialog blocks the request
+		// itself when its clock runs out: nobody needs to answer it.
+	case blocked:
 		what = "its status reports blocked"
 		if st.Kind != "" {
 			what += " (" + st.Kind + ")"

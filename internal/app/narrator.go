@@ -95,7 +95,9 @@ func (e Env) attention(r agent) ([]string, error) {
 	if hasErr && te.By == turnKey(r) {
 		at("turn_error", te.At)
 	}
-	if !mark.BlockedSince.IsZero() && mark.BlockedBy == turnKey(r) {
+	// Only a block held for core.StuckFor waits on the human; a shorter one is
+	// a blip the blocked look never tells.
+	if mark.BlockedTold && mark.BlockedBy == turnKey(r) {
 		at("waiting_on_the_human", mark.BlockedSince)
 	}
 	if !mark.LastStallAt.IsZero() && (mark.HealthBy == "" || mark.HealthBy == turnKey(r)) {

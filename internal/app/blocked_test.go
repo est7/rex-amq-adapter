@@ -178,3 +178,92 @@ func TestANewAgentInABlockedPaneIsReported(t *testing.T) {
 		t.Fatalf("told again: orchestrator inbox %v blocked.log %v", inboxOf(t, e, "orch-01"), blockedLines(t, e))
 	}
 }
+
+// attentionOf is r's attention as the narrator and the panel read it.
+func attentionOf(t *testing.T, e Env, r agent) []string {
+	t.Helper()
+	a, err := e.attention(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
+}
+
+// A blocked status that clears before StuckFor is a blip: no notice, and no
+// waiting_on_the_human for the narrator or the panel at any look.
+func TestABlockedBlipIsNoAttention(t *testing.T) {
+	e, term, orch, s, now, desktop := healthWorld(t)
+	term.states = map[string]rex.Status{"block:g": {State: "blocked", Kind: "permission"}}
+	e.watchdog(context.Background(), orch, s)
+	if a := attentionOf(t, e, orch); len(a) != 0 {
+		t.Fatalf("a blip just seen is attention: %v", a)
+	}
+	*now = now.Add(core.StuckFor / 2)
+	term.states["block:g"] = rex.Status{State: "working"}
+	e.watchdog(context.Background(), orch, s)
+	if a := attentionOf(t, e, orch); len(a) != 0 || len(*desktop) != 0 || len(blockedLines(t, e)) != 0 {
+		t.Fatalf("a cleared blip: attention %v desktop %v blocked.log %v", a, *desktop, blockedLines(t, e))
+	}
+}
+
+// A block held past StuckFor is waiting_on_the_human from the look that tells
+// it, stamped with when it began, until it clears.
+func TestAHeldBlockedPromptIsAttentionOnceTold(t *testing.T) {
+	e, term, orch, s, now, desktop := healthWorld(t)
+	term.states = map[string]rex.Status{"block:g": {State: "blocked", Kind: "permission"}}
+	began := *now
+	e.watchdog(context.Background(), orch, s)
+	*now = now.Add(core.StuckFor - time.Second)
+	e.watchdog(context.Background(), orch, s)
+	if a := attentionOf(t, e, orch); len(a) != 0 {
+		t.Fatalf("attention before StuckFor: %v", a)
+	}
+	*now = now.Add(2 * time.Second)
+	e.watchdog(context.Background(), orch, s)
+	want := "waiting_on_the_human@" + began.UTC().Format(time.RFC3339)
+	if a := attentionOf(t, e, orch); len(a) != 1 || a[0] != want || len(*desktop) != 1 {
+		t.Fatalf("attention %v desktop %v, want [%s] and one notice", a, *desktop, want)
+	}
+	term.states["block:g"] = rex.Status{State: "idle"}
+	e.watchdog(context.Background(), orch, s)
+	if a := attentionOf(t, e, orch); len(a) != 0 {
+		t.Fatalf("attention after the prompt cleared: %v", a)
+	}
+}
+
+// claudeAutoBlockDialog is Claude Code's permission dialog in an unattended
+// session, its countdown line wrapped as a pane narrower than it draws it.
+const claudeAutoBlockDialog = "\n╌╌╌╌╌╌╌╌\n│ rm -rf /tmp/x\n╌╌╌╌╌╌╌╌\n" +
+	"⚠ Claude Code will automatically block this request\nin 1:24, to avoid holding up an unattended session\n" +
+	"Do you want to proceed?\n❯ 1. Yes\n  2. No\nEsc to cancel · Tab to amend\n────────\n implementer(claude-07)"
+
+// Claude Code's unattended permission dialog denies itself when its clock
+// runs out: nobody needs to answer it, so held past StuckFor it is no notice,
+// no blocked.log line, and no attention.
+func TestClaudesSelfDenyingCountdownIsNotBlockedOnTheHuman(t *testing.T) {
+	e, term, orch, s, now, desktop := healthWorld(t)
+	term.states = map[string]rex.Status{"block:g": {State: "blocked", Kind: "permission"}}
+	term.box = claudeAutoBlockDialog
+	for range 3 {
+		e.watchdog(context.Background(), orch, s)
+		*now = now.Add(core.StuckFor + time.Second)
+	}
+	if a := attentionOf(t, e, orch); len(a) != 0 || len(*desktop) != 0 || len(blockedLines(t, e)) != 0 {
+		t.Fatalf("a self-denying countdown: attention %v desktop %v blocked.log %v", a, *desktop, blockedLines(t, e))
+	}
+}
+
+// The countdown quoted in the transcript (a diff or a log of it) does not hide
+// a genuine prompt drawn below it.
+func TestAQuotedCountdownDoesNotHideABlockedPrompt(t *testing.T) {
+	e, term, orch, s, now, desktop := healthWorld(t)
+	term.states = map[string]rex.Status{"block:g": {State: "blocked", Kind: "permission"}}
+	term.box = claudeAutoBlockDialog + "\n" + strings.Repeat("transcript\n", 3) +
+		"Bash command\n│ go test ./...\nDo you want to proceed?\n❯ 1. Yes\n  2. Yes, and don't ask again\n  3. No\nEsc to cancel · Tab to amend\n"
+	e.watchdog(context.Background(), orch, s)
+	*now = now.Add(core.StuckFor + time.Second)
+	e.watchdog(context.Background(), orch, s)
+	if a := attentionOf(t, e, orch); len(a) != 1 || len(*desktop) != 1 || len(blockedLines(t, e)) != 1 {
+		t.Fatalf("a genuine prompt under a quoted countdown: attention %v desktop %v blocked.log %v", a, *desktop, blockedLines(t, e))
+	}
+}
