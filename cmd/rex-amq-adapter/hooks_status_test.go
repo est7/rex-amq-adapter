@@ -66,3 +66,19 @@ func TestStatusCodexHookApprovalsReadTheAgentsHooks(t *testing.T) {
 		t.Fatalf("%+v %v", got, err)
 	}
 }
+
+// summon's JSON line names the agent session and directory of the agent it
+// reached, once known, and leaves both out before.
+func TestSummonOutputNamesTheAgentSessionAndCwd(t *testing.T) {
+	out := summonOutput(app.SummonResult{Action: "deliver", Handles: []core.Handle{"codex-02"}, AgentSessionID: "thread-2", Cwd: "/work/review"})
+	if out["agent_session_id"] != "thread-2" || out["cwd"] != "/work/review" {
+		t.Fatalf("deliver: %v", out)
+	}
+	out = summonOutput(app.SummonResult{Action: "refused"})
+	if _, ok := out["agent_session_id"]; ok {
+		t.Fatalf("refusal: %v", out)
+	}
+	if _, ok := out["cwd"]; ok {
+		t.Fatalf("refusal: %v", out)
+	}
+}
