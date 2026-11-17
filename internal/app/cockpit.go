@@ -131,7 +131,7 @@ func (e Env) cockpitScope(ctx context.Context, getenv func(string) string, req C
 	case err != nil:
 		return agent{}, fmt.Errorf("%w: the cockpit's caller: %v", ErrRefused, err)
 	default:
-		rec, ok, err := e.agentAt(loc.Block)
+		rec, ok, err := e.agentIn(loc)
 		if err != nil {
 			return agent{}, err
 		}

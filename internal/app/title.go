@@ -148,7 +148,7 @@ func (e Env) askTask(ctx context.Context, kind core.Kind, event string, rec agen
 // or a record that cannot be read, gives the name of the directory it works
 // in, so the title never names another agent.
 func (e Env) PaneTitle(loc Location, kind core.Kind, cwd string) string {
-	if rec, ok, err := e.agentAt(loc.Block); err == nil && ok && rec.Live() && rec.Kind == kind && e.descendsFrom(rec) {
+	if rec, ok, err := e.agentIn(loc); err == nil && ok && rec.Live() && rec.Kind == kind && e.descendsFrom(rec) {
 		return core.PaneLabel(rec.Handle, rec.Role, rec.Task)
 	}
 	return DirTitle(cwd)

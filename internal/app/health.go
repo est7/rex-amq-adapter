@@ -150,7 +150,7 @@ func (e Env) readHookTail(ctx context.Context, kind core.Kind, in HookInput, rec
 // the turn is followed by more rows, so only a last row that is the turn's
 // own error counts.
 func (e Env) codexTurnError(ctx context.Context, loc Location, in HookInput) (detail string, ok bool) {
-	rec, has, _ := e.agentAt(loc.Block)
+	rec, has, _ := e.agentIn(loc)
 	if has && e.recordFit(core.Codex, rec, in) == foreign {
 		rec = agent{} // another agent's rollout is not this hook's
 	}
@@ -172,8 +172,8 @@ func (e Env) codexTurnError(ctx context.Context, loc Location, in HookInput) (de
 // starts or ends normally, touching disk only when one is set. A hook from
 // another agent (a `claude -p` the pane's agent runs, a Codex thread of a
 // shared daemon) leaves it alone.
-func (e Env) clearTurnError(kind core.Kind, block string, in HookInput) {
-	rec, ok, err := e.agentAt(block)
+func (e Env) clearTurnError(kind core.Kind, loc Location, in HookInput) {
+	rec, ok, err := e.agentIn(loc)
 	if err != nil || !ok || e.recordFit(kind, rec, in) == foreign {
 		return
 	}
@@ -188,7 +188,7 @@ func (e Env) clearTurnError(kind core.Kind, block string, in HookInput) {
 // and the last transcript rows. A stop hook runs once per turn, so it is
 // reported once; when the mail cannot be sent, the user's desktop hears.
 func (e Env) reportTurnError(ctx context.Context, kind core.Kind, loc Location, in HookInput, code, detail string) error {
-	rec, ok, err := e.agentAt(loc.Block)
+	rec, ok, err := e.agentIn(loc)
 	if err != nil {
 		return err
 	}

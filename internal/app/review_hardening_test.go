@@ -345,3 +345,31 @@ func TestDuplicateNoBackoffTakesOverAtTheNextToolCall(t *testing.T) {
 		t.Fatalf("a refused duplicate was recorded as a failed adoption: failed=%v err=%v", failed, err)
 	}
 }
+
+// A block id is one server's (I3 is per server and block): two servers'
+// blocks of the same id are two panes. What runs in one is not the other's
+// agent, and an adoption in one parks nothing in the other.
+func TestServerScopeOfABlockIsItsServer(t *testing.T) {
+	const elsewhere = "unix:///elsewhere.sock"
+	e := realAmqEnv(t, &fakeTerm{state: "idle"})
+	far := sbAgent(t)
+	plant(t, e, seed{Handle: "agy-01", Kind: core.Agy, Server: elsewhere, BlockID: "block:a", AgentPID: far.Process.Pid, AgentSessionID: "conv-far", AdoptedAt: e.Now(), FirstAdoptedAt: e.Now()})
+	here := Location{Server: fakeServer, Block: "block:a"}
+	if out, err := e.Exports(here); err == nil {
+		t.Fatalf("this server's block:a runs nothing, yet it exports %q", out)
+	}
+	a, err := e.Adopt(context.Background(), here, core.Codex, HookInput{SessionID: "thread-here"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := recordNamed(t, e, "agy-01"); !r.Live() || r.Server != elsewhere {
+		t.Fatalf("adopting %s on %s parked agy-01 on %s: live=%v reason=%q", a.Agent.Handle, fakeServer, elsewhere, r.Live(), r.departReason())
+	}
+	out, err := e.Exports(here)
+	if err != nil || !strings.Contains(out, "AM_ME='"+string(a.Agent.Handle)+"'") {
+		t.Fatalf("exports of %s on %s: %q %v; want %s", here.Block, here.Server, out, err, a.Agent.Handle)
+	}
+	if out, err := e.Exports(Location{Server: elsewhere, Block: "block:a"}); err != nil || !strings.Contains(out, "AM_ME='agy-01'") {
+		t.Fatalf("exports of block:a on %s: %q %v; want agy-01", elsewhere, out, err)
+	}
+}

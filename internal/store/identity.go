@@ -295,24 +295,26 @@ func (s Store) Leases() ([]Lease, error) {
 	return out, err
 }
 
-// LeaseAt returns the live lease on block; ok is false when none is (I3
-// leaves at most one).
-func (s Store) LeaseAt(block string) (Lease, bool, error) {
+// LeaseAt returns the live lease on block of server; ok is false when none
+// is (I3 leaves at most one). An empty server matches any: a caller that
+// knows only the block.
+func (s Store) LeaseAt(server, block string) (Lease, bool, error) {
 	leases, err := s.Leases()
 	if err != nil {
 		return Lease{}, false, err
 	}
 	for _, l := range leases {
-		if l.BlockID == block {
+		if l.BlockID == block && (server == "" || l.Server == server) {
 			return l, true, nil
 		}
 	}
 	return Lease{}, false, nil
 }
 
-// DepartedFrom returns the identity that last left block and is not running
-// anywhere now; ok is false when none did.
-func (s Store) DepartedFrom(block string) (Identity, bool, error) {
+// DepartedFrom returns the identity that last left block of server and is
+// not running anywhere now; ok is false when none did. An empty server
+// matches any.
+func (s Store) DepartedFrom(server, block string) (Identity, bool, error) {
 	ids, err := s.Identities()
 	if err != nil {
 		return Identity{}, false, err
@@ -329,7 +331,7 @@ func (s Store) DepartedFrom(block string) (Identity, bool, error) {
 	ok := false
 	for _, id := range ids {
 		p := id.LastPlacement
-		if p == nil || p.BlockID != block || live[id.Handle] {
+		if p == nil || p.BlockID != block || (server != "" && p.Server != server) || live[id.Handle] {
 			continue
 		}
 		if !ok || p.DepartedAt.After(last.LastPlacement.DepartedAt) {

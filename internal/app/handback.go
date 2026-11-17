@@ -35,7 +35,7 @@ const handBackMax = 256 << 10
 // lists.
 func (e Env) RecordHandBack(ctx context.Context, loc Location, body string) (store.HandBack, error) {
 	var h store.HandBack
-	rec, ok, err := e.agentAt(loc.Block)
+	rec, ok, err := e.agentIn(loc)
 	if err != nil {
 		return h, err
 	}

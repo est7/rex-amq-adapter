@@ -107,7 +107,7 @@ func (r EpicResult) Ready() bool {
 // (adoptCreated, reconcileOpen) and never creates another; the op id reused
 // for another request is refused.
 func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicResult, error) {
-	caller, ok, err := e.agentAt(loc.Block)
+	caller, ok, err := e.agentIn(loc)
 	if err != nil {
 		return EpicResult{}, err
 	}

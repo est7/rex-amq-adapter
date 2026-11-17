@@ -283,7 +283,7 @@ func (e Env) recover(ctx context.Context, orch agent, rec agent, ep *core.Episod
 	}
 	defer unlock()
 	// Precondition, re-read under the lock.
-	cur, ok, err := e.agentAt(rec.BlockID)
+	cur, ok, err := e.agentIn(Location{Server: rec.Server, Block: rec.BlockID})
 	if err != nil {
 		return notReady, err
 	}

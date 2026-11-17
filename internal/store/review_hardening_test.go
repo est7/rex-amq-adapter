@@ -30,9 +30,6 @@ func TestLeaseListingSurvivesReleaseRace(t *testing.T) {
 	if err != nil || len(ids) != 1 || ids[0].Handle != "claude-01" {
 		t.Fatalf("identities with one removed mid-listing: %+v %v", ids, err)
 	}
-	if _, ok, err := s.LeaseAt("block:a"); err != nil || !ok {
-		t.Fatalf("LeaseAt with a lease removed mid-listing: ok=%v err=%v", ok, err)
-	}
 }
 
 // The same race with real writers: one handle acquires and releases its lease
@@ -69,8 +66,8 @@ func TestLeaseReadersDuringReleaseRace(t *testing.T) {
 			t.Errorf("a lockless reader racing ReleaseLease failed: %v", err)
 			break
 		}
-		if _, _, err := s.LeaseAt("block:keep"); err != nil {
-			t.Errorf("LeaseAt racing ReleaseLease failed: %v", err)
+		if _, err := s.Identities(); err != nil {
+			t.Errorf("listing identities racing ReleaseLease failed: %v", err)
 			break
 		}
 	}

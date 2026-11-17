@@ -369,7 +369,7 @@ func joinHandles(hs []core.Handle) string {
 // (link false) revokes it. Either takes effect on the next decision, for
 // running wakers and hooks too. changed is false when nothing changed.
 func (e Env) Link(ctx context.Context, loc Location, epic string, link bool) (l core.Link, changed bool, err error) {
-	rec, ok, err := e.agentAt(loc.Block)
+	rec, ok, err := e.agentIn(loc)
 	if err != nil {
 		return l, false, err
 	}
@@ -395,7 +395,7 @@ func (e Env) Link(ctx context.Context, loc Location, epic string, link bool) (l 
 
 // LinksOf lists the links of the Personal agent in loc.
 func (e Env) LinksOf(loc Location) ([]core.Link, error) {
-	rec, ok, err := e.agentAt(loc.Block)
+	rec, ok, err := e.agentIn(loc)
 	if err != nil || !ok {
 		return nil, err
 	}

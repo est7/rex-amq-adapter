@@ -136,10 +136,18 @@ func (e Env) agentOf(h core.Handle) (agent, bool, error) {
 	return newAgent(id, &l), true, nil
 }
 
-// agentAt returns the agent of block: the one that runs there, else the one
-// that left it last and runs nowhere now. ok is false when there is none.
+// agentAt returns the agent of block on any server: for a caller that knows
+// only the block (agentIn).
 func (e Env) agentAt(block string) (agent, bool, error) {
-	l, live, err := e.Store.LeaseAt(block)
+	return e.agentIn(Location{Block: block})
+}
+
+// agentIn returns the agent of loc's block on loc's server: the one that runs
+// there, else the one that left it last and runs nowhere now. ok is false
+// when there is none. A block id is one server's (I3); an empty server
+// matches any.
+func (e Env) agentIn(loc Location) (agent, bool, error) {
+	l, live, err := e.Store.LeaseAt(loc.Server, loc.Block)
 	if err != nil {
 		return agent{}, false, err
 	}
@@ -153,7 +161,7 @@ func (e Env) agentAt(block string) (agent, bool, error) {
 		}
 		return newAgent(id, &l), true, nil
 	}
-	id, ok, err := e.Store.DepartedFrom(block)
+	id, ok, err := e.Store.DepartedFrom(loc.Server, loc.Block)
 	if err != nil || !ok {
 		return agent{}, false, err
 	}

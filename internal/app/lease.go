@@ -195,8 +195,8 @@ var ErrStartedInPane = errors.New("this hook comes from a harness a command in t
 // agent's own hooks, a harness that does not run under the agent, and a hook
 // whose ancestry cannot be read are not: muting the pane's agent costs more
 // than a stray adoption, which the agent's next hook takes back.
-func (e Env) startedUnderOwner(kind core.Kind, block string) (agent, bool) {
-	rec, ok, err := e.agentAt(block)
+func (e Env) startedUnderOwner(kind core.Kind, loc Location) (agent, bool) {
+	rec, ok, err := e.agentIn(loc)
 	if err != nil || !ok || !rec.Live() || rec.pid() <= 0 || !localServer(rec.Server) {
 		return rec, false
 	}

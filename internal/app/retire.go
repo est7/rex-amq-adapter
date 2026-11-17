@@ -97,7 +97,7 @@ func (e Env) retireLocked(ctx context.Context, loc Location, r RetireRequest, re
 		return agent{}, nil, err
 	}
 	defer unlock()
-	caller, ok, err := e.agentAt(loc.Block)
+	caller, ok, err := e.agentIn(loc)
 	if err != nil {
 		return agent{}, nil, err
 	}

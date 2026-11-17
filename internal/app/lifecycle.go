@@ -76,7 +76,7 @@ func (e Env) SuperviseWaker(ctx context.Context, loc Location) error {
 		return err
 	}
 	defer unlock()
-	rec, ok, err := e.agentAt(loc.Block)
+	rec, ok, err := e.agentIn(loc)
 	if err != nil || !ok || !rec.Live() {
 		return err
 	}
@@ -110,7 +110,7 @@ func (e Env) Depart(ctx context.Context, loc Location, in HookInput) error {
 		return err
 	}
 	defer unlock()
-	rec, ok, err := e.agentAt(loc.Block)
+	rec, ok, err := e.agentIn(loc)
 	if err != nil || !ok || !rec.Live() {
 		return err
 	}

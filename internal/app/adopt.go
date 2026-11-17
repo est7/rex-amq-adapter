@@ -147,7 +147,7 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	// the session this process switched away from: it keeps its handle as a
 	// reservation for a resume.
 	for _, r := range recs {
-		if r.BlockID == loc.Block && r.Live() && r.Handle != handle {
+		if r.BlockID == loc.Block && r.Server == server && r.Live() && r.Handle != handle {
 			if err := e.park(ctx, r, store.DepartReplaced); err != nil {
 				return Adoption{}, fmt.Errorf("park %s, replaced in this block: %w", r.Handle, err)
 			}
@@ -424,7 +424,7 @@ func (e Env) SetTask(ctx context.Context, loc Location, task string) (string, er
 		return "", err
 	}
 	defer unlock()
-	rec, ok, err := e.agentAt(loc.Block)
+	rec, ok, err := e.agentIn(loc)
 	if err != nil {
 		return "", err
 	}
@@ -446,7 +446,7 @@ func (e Env) SetTask(ctx context.Context, loc Location, task string) (string, er
 
 // Exports is the shell text `rex-amq-adapter env` prints for the agent in loc.
 func (e Env) Exports(loc Location) (string, error) {
-	rec, ok, err := e.agentAt(loc.Block)
+	rec, ok, err := e.agentIn(loc)
 	if err != nil {
 		return "", err
 	}
