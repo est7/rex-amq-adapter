@@ -34,7 +34,8 @@ func newAgent(id store.Identity, l *store.Lease) agent {
 func (a agent) Live() bool { return a.lease != nil }
 
 // Adopted reports whether the agent finished adoption: it has its waker and
-// was told who it is. A live agent that has not has a mailbox, and no more.
+// was told who it is. A live agent that has not has a mailbox, and no more;
+// a handle never placed (its adoption died before its lease) has not either.
 func (a agent) Adopted() bool { return a.lease != nil && !a.lease.Adopting }
 
 // pid is the process the agent runs as; 0 when it is not running.
@@ -92,12 +93,15 @@ func (a agent) InitialAdoptedAt() time.Time {
 
 // agents lists every handle, sorted by handle, with its lease. A lease
 // without an identity is an error: nothing could say whose agent it is.
+// Leases are read first: every writer creates an identity before its lease
+// and removes a lease before its identity, so a reader that holds no lock
+// and races an adoption or a collection never sees a lease alone.
 func (e Env) agents() ([]agent, error) {
-	ids, err := e.Store.Identities()
+	leases, err := e.Store.Leases()
 	if err != nil {
 		return nil, err
 	}
-	leases, err := e.Store.Leases()
+	ids, err := e.Store.Identities()
 	if err != nil {
 		return nil, err
 	}

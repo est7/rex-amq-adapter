@@ -11,8 +11,9 @@ import (
 // seed is an agent a test starts from, described the way the scenario reads:
 // who it is, where it runs or ran, and how it left. putSeed writes it through
 // the store's own operations (PutIdentity, AcquireLease, ReleaseLease), so a
-// fixture that breaks an invariant (two handles of one session, two live
-// agents in one block) fails the test that planted it.
+// fixture gets what the invariants make of it: a second handle of one agent
+// session fails the test that planted it (I1), and a second live agent in a
+// block departs the first as replaced (I3).
 type seed struct {
 	Handle         core.Handle
 	Kind           core.Kind
