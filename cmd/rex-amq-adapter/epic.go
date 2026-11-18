@@ -312,8 +312,7 @@ func epicArtifacts(c *cli.Ctx, in cli.Input) (cli.Result, error) {
 }
 
 // epicMaterialize writes an Epic's artifacts into --into, byte for byte
-// (app.Materialize). A batch into an existing directory that stopped part
-// way is meta.complete=false, with each file's status in data.
+// (app.Materialize), reported by materializeResult.
 func epicMaterialize(c *cli.Ctx, in cli.Input) (cli.Result, error) {
 	env, err := app.NewEnv(c.Getenv("REX_SERVER"))
 	if err != nil {
@@ -323,13 +322,23 @@ func epicMaterialize(c *cli.Ctx, in cli.Input) (cli.Result, error) {
 	defer cancel()
 	res, err := env.Materialize(ctx, c.Getenv, app.MaterializeRequest{Session: in.Arg("session"), Into: in.Str("into"), Seq: in.Int("seq"),
 		Replace: in.Bool("replace"), DryRun: in.DryRun()})
+	return materializeResult(res, err)
+}
+
+// materializeResult is the envelope of a materialization. Writing into an
+// existing directory is a non-atomic batch, file by file (spec 4.3(8)): it
+// is meta.complete=false whenever it wrote, with each file's status in
+// data, and so is one that stopped part way. A new directory, created whole,
+// a dry run, and a run that found every file as it should be wrote no such
+// batch.
+func materializeResult(res app.MaterializeResult, err error) (cli.Result, error) {
 	if err != nil {
 		if len(res.Items) > 0 {
 			return cli.Result{Data: res, Incomplete: !res.Complete}, err
 		}
 		return cli.Result{}, err
 	}
-	return cli.Result{Data: res}, nil
+	return cli.Result{Data: res, Incomplete: !res.Atomic && res.Changed && !res.DryRun}, nil
 }
 
 func epicLink(c *cli.Ctx, in cli.Input) (cli.Result, error) { return linkEpic(c, in, true) }

@@ -393,12 +393,17 @@ func TestCockpitViewRefusesEveryoneButThePersonalScope(t *testing.T) {
 			}
 		}
 	}
-	// The personal agent's own scope is its own: another's handle, another
-	// hub, and an Epic linked to another personal agent are refused.
-	for _, r := range []CockpitViewRequest{{Personal: "pi-06"}, {Hub: t.TempDir()}, {Session: "session:c"}, {Session: "session:q"}} {
+	// The personal agent's own scope is its own: another hub, and an Epic
+	// linked to another personal agent, are refused; --personal is only a
+	// filter inside that scope (§4.2(8)), so another's handle reads the
+	// empty subset, never that agent's Epics.
+	for _, r := range []CockpitViewRequest{{Hub: t.TempDir()}, {Session: "session:c"}, {Session: "session:q"}, {Personal: "pi-06", Session: "session:c"}} {
 		if _, err := e.ReadCockpitView(ctx, cockpitEnv(map[string]string{"REX_BLOCK": "block:pi-05"}), r); !errors.Is(err, ErrRefused) {
 			t.Errorf("pi-05 reading %+v: %v", r, err)
 		}
+	}
+	if b, err := e.ReadCockpitView(ctx, cockpitEnv(map[string]string{"REX_BLOCK": "block:pi-05"}), CockpitViewRequest{Personal: "pi-06"}); err != nil || !strings.Contains(string(b), `"epics": []`) {
+		t.Errorf("pi-05 --personal pi-06: %s %v; want the empty subset", b, err)
 	}
 	// A shell with no agent names one even when only one personal agent is
 	// live: being outside every agent is no grant by itself.

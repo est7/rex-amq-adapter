@@ -78,8 +78,9 @@ type Response struct {
 	Data     any
 	Err      *fault.Error
 	Warnings []string
-	// Incomplete marks a non-atomic batch some of whose items failed
-	// (meta.complete=false).
+	// Incomplete marks a non-atomic batch (meta.complete=false): one some
+	// of whose items failed, or one whose items each landed on their own,
+	// so data reports each.
 	Incomplete bool
 	// Human renders Data for a person; nil prints it as indented JSON.
 	Human func(w io.Writer) error

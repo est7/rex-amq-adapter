@@ -5,12 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
 	"github.com/est7/rex-amq-adapter/internal/fault"
@@ -241,7 +242,9 @@ type MaterializeResult struct {
 // failed_precondition, and nothing is written). r.Into, and every directory
 // above it, may not be a symbolic link an agent could have planted (only a
 // root-owned system link such as /var or /tmp passes), and nothing at or
-// under it is followed.
+// under it is followed: it is opened once, after the lock, and every file
+// is read, written, renamed, and removed through that descriptor (pinDir),
+// so swapping a directory on the path afterwards sends nothing elsewhere.
 //
 // A directory that does not exist is written whole: every file goes into a
 // temporary directory beside it on the same filesystem, is checked again,
@@ -251,7 +254,9 @@ type MaterializeResult struct {
 // (sessions/<id>/materialized.json) is replaced; anything else is a
 // conflict, and with any conflict nothing is written, unless r.Replace.
 // Then each file is written atomically and checked again; this batch is not
-// atomic as a whole, so one that stops part way reports Complete false.
+// atomic as a whole, so one that stops part way reports Complete false, and
+// the receipt records only the files it wrote and checked (a file it failed
+// to write keeps the sha256 recorded before, so a retry replaces it).
 // Files are written 0644, never the store's 0444.
 func (e Env) Materialize(ctx context.Context, getenv func(string) string, r MaterializeRequest) (MaterializeResult, error) {
 	res := MaterializeResult{SessionID: r.Session, DryRun: r.DryRun, Items: []MaterializedItem{}}
@@ -278,9 +283,6 @@ func (e Env) Materialize(ctx context.Context, getenv func(string) string, r Mate
 			return res, fault.New(fault.FailedPrecondition, "%v; nothing was written", err).With("reason", "artifact_missing")
 		}
 	}
-	if err := noPlantedLink(res.Into); err != nil {
-		return res, err
-	}
 	unlock, err := e.Store.LockEpicLifecycle(ctx)
 	if err != nil {
 		return res, err
@@ -290,18 +292,17 @@ func (e Env) Materialize(ctx context.Context, getenv func(string) string, r Mate
 	if err != nil {
 		return res, err
 	}
-	st, err := os.Lstat(res.Into)
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		res.Atomic = true
-		err = e.materializeNew(&res, m, blobs, receipt)
+	pin, err := pinDir(res.Into)
+	if err != nil {
 		return res, err
-	case err != nil:
-		return res, err
-	case !st.IsDir():
-		return res, fault.New(fault.InvalidInput, "--into %s is not a directory", res.Into)
 	}
-	err = e.materializeInto(&res, m, blobs, receipt, r.Replace)
+	defer pin.Close()
+	if pin.dir == nil {
+		res.Atomic = true
+		err = e.materializeNew(&res, pin, m, blobs, receipt)
+		return res, err
+	}
+	err = e.materializeInto(&res, pin.dir, m, blobs, receipt, r.Replace)
 	return res, err
 }
 
@@ -327,27 +328,9 @@ func (e Env) manifestFor(session string, seq int) (store.Manifest, error) {
 	return ms[len(ms)-1], nil
 }
 
-// noPlantedLink refuses dir when it, or a directory above it, is a symbolic
-// link not owned by root: one an agent could have planted to send the
-// files elsewhere. Root-owned links are the system's (/var, /tmp, /etc on
-// macOS).
-func noPlantedLink(dir string) error {
-	for p := dir; ; p = filepath.Dir(p) {
-		st, err := os.Lstat(p)
-		if err == nil && st.Mode()&fs.ModeSymlink != 0 {
-			if sys, ok := st.Sys().(*syscall.Stat_t); !ok || sys.Uid != 0 {
-				return fault.New(fault.InvalidInput, "--into %s goes through the symbolic link %s; name the real directory", dir, p)
-			}
-		}
-		if p == filepath.Dir(p) {
-			return nil
-		}
-	}
-}
-
 // materializeNew writes every artifact into a temporary directory beside
-// res.Into, checks them, and renames it into place.
-func (e Env) materializeNew(res *MaterializeResult, m store.Manifest, blobs [][]byte, receipt store.Materialized) error {
+// res.Into, in pin.parent, checks them, and renames it into place there.
+func (e Env) materializeNew(res *MaterializeResult, pin pinned, m store.Manifest, blobs [][]byte, receipt store.Materialized) error {
 	for _, a := range m.Artifacts {
 		res.Items = append(res.Items, MaterializedItem{Name: a.Name, SHA256: a.SHA256, Bytes: a.Bytes, Status: MatCreated})
 	}
@@ -355,44 +338,43 @@ func (e Env) materializeNew(res *MaterializeResult, m store.Manifest, blobs [][]
 	if res.DryRun {
 		return nil
 	}
-	parent := filepath.Dir(res.Into)
-	tmp, err := os.MkdirTemp(parent, "."+filepath.Base(res.Into)+".tmp-")
-	if err != nil {
-		return fmt.Errorf("make a directory beside %s: %w", res.Into, err)
-	}
-	defer os.RemoveAll(tmp)
-	root, err := os.OpenRoot(tmp)
+	token, err := newToken()
 	if err != nil {
 		return err
 	}
-	defer root.Close()
+	pfd := int(pin.parent.Fd())
+	tmp := "." + pin.name + ".tmp-" + token
+	if err := unix.Mkdirat(pfd, tmp, 0o700); err != nil {
+		return fmt.Errorf("make a directory beside %s: %w", res.Into, err)
+	}
+	defer removeAllAt(pfd, tmp)
+	dir, err := openDirAt(pfd, tmp)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
 	for i, a := range m.Artifacts {
-		if err := writeIn(root, a.Name, blobs[i]); err != nil {
+		if err := writeAt(dir, a.Name, blobs[i]); err != nil {
 			return err
 		}
 	}
-	if err := store.VerifyRevision(tmp, m.Artifacts); err != nil {
+	if err := verifyAt(dir, m.Artifacts); err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, res.Into); err != nil {
+	if err := unix.Renameat(pfd, tmp, pfd, pin.name); err != nil {
 		return fmt.Errorf("move the artifacts into %s: %w", res.Into, err)
 	}
-	return e.recordMaterialized(receipt, res.Into, m)
+	return e.recordMaterialized(receipt, res.Into, m, res.Items)
 }
 
-// materializeInto writes into the existing directory res.Into, after a
-// check of every target.
-func (e Env) materializeInto(res *MaterializeResult, m store.Manifest, blobs [][]byte, receipt store.Materialized, replace bool) error {
-	root, err := os.OpenRoot(res.Into)
-	if err != nil {
-		return err
-	}
-	defer root.Close()
+// materializeInto writes into the existing directory res.Into, held as dir,
+// after a check of every target.
+func (e Env) materializeInto(res *MaterializeResult, dir *os.File, m store.Manifest, blobs [][]byte, receipt store.Materialized, replace bool) error {
 	last := receipt.Dirs[res.Into]
 	var conflicts []string
 	for _, a := range m.Artifacts {
 		item := MaterializedItem{Name: a.Name, SHA256: a.SHA256, Bytes: a.Bytes}
-		cur, exists, err := readIn(root, a.Name)
+		cur, exists, err := readAt(dir, a.Name)
 		switch {
 		case err != nil:
 			return err
@@ -428,10 +410,10 @@ func (e Env) materializeInto(res *MaterializeResult, m store.Manifest, blobs [][
 			continue
 		}
 		j := slices.IndexFunc(m.Artifacts, func(a store.ArtifactEntry) bool { return a.Name == it.Name })
-		err := writeIn(root, it.Name, blobs[j])
+		err := writeAt(dir, it.Name, blobs[j])
 		if err == nil {
 			var got []byte
-			if got, _, err = readIn(root, it.Name); err == nil && store.RawSHA256(got) != it.SHA256 {
+			if got, _, err = readAt(dir, it.Name); err == nil && store.RawSHA256(got) != it.SHA256 {
 				err = fmt.Errorf("%s was not written as read", it.Name)
 			}
 		}
@@ -439,7 +421,7 @@ func (e Env) materializeInto(res *MaterializeResult, m store.Manifest, blobs [][
 			it.Status, it.Error, res.Complete = MatFailed, err.Error(), false
 		}
 	}
-	if err := e.recordMaterialized(receipt, res.Into, m); err != nil {
+	if err := e.recordMaterialized(receipt, res.Into, m, res.Items); err != nil {
 		return err
 	}
 	if !res.Complete {
@@ -448,84 +430,21 @@ func (e Env) materializeInto(res *MaterializeResult, m store.Manifest, blobs [][
 	return nil
 }
 
-// recordMaterialized keeps what was written into dir: m's files and their
-// sha256.
-func (e Env) recordMaterialized(receipt store.Materialized, dir string, m store.Manifest) error {
+// recordMaterialized keeps what was written into dir: the sha256 of each
+// of m's files that items says now holds it. A file that failed keeps the
+// sha256 recorded for it before, if any, since it still holds what was
+// written there last (or what the user put there).
+func (e Env) recordMaterialized(receipt store.Materialized, dir string, m store.Manifest, items []MaterializedItem) error {
+	before := receipt.Dirs[dir].Files
 	files := map[string]string{}
-	for _, a := range m.Artifacts {
-		files[a.Name] = a.SHA256
+	for _, it := range items {
+		switch {
+		case it.Status != MatFailed:
+			files[it.Name] = it.SHA256
+		case before[it.Name] != "":
+			files[it.Name] = before[it.Name]
+		}
 	}
 	receipt.Dirs[dir] = store.MaterializedBatch{Seq: m.Seq, At: e.Now().UTC(), Files: files}
 	return e.Store.PutMaterialized(receipt)
-}
-
-// readIn reads name under root, never following a symbolic link: os.Root
-// refuses one that leaves it, and a link at the target or at its directory
-// is refused here.
-func readIn(root *os.Root, name string) ([]byte, bool, error) {
-	if dir := filepath.Dir(filepath.FromSlash(name)); dir != "." {
-		st, err := root.Lstat(dir)
-		switch {
-		case errors.Is(err, fs.ErrNotExist):
-			return nil, false, nil
-		case err != nil:
-			return nil, false, fault.New(fault.InvalidInput, "%s: %v", dir, err)
-		case !st.IsDir():
-			return nil, false, fault.New(fault.InvalidInput, "%s in the target directory is not a directory (%s); nothing was written", dir, st.Mode().Type())
-		}
-	}
-	st, err := root.Lstat(filepath.FromSlash(name))
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, false, nil
-	}
-	if err != nil {
-		return nil, false, fault.New(fault.InvalidInput, "%s: %v", name, err)
-	}
-	if !st.Mode().IsRegular() {
-		return nil, false, fault.New(fault.InvalidInput, "%s in the target directory is not a regular file (%s); nothing was written", name, st.Mode().Type())
-	}
-	b, err := root.ReadFile(filepath.FromSlash(name))
-	return b, true, err
-}
-
-// writeIn replaces name under root with data, atomically, 0644.
-func writeIn(root *os.Root, name string, data []byte) error {
-	rel := filepath.FromSlash(name)
-	if dir := filepath.Dir(rel); dir != "." {
-		if err := root.MkdirAll(dir, 0o755); err != nil {
-			return err
-		}
-	}
-	token, err := newToken()
-	if err != nil {
-		return err
-	}
-	tmp := filepath.Join(filepath.Dir(rel), ".tmp-"+token+"-"+filepath.Base(rel))
-	f, err := root.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	if _, err := f.Write(data); err != nil {
-		f.Close()
-		_ = root.Remove(tmp)
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		_ = root.Remove(tmp)
-		return err
-	}
-	if err := f.Close(); err != nil {
-		_ = root.Remove(tmp)
-		return err
-	}
-	if err := root.Chmod(tmp, 0o644); err != nil {
-		_ = root.Remove(tmp)
-		return err
-	}
-	if err := root.Rename(tmp, rel); err != nil {
-		_ = root.Remove(tmp)
-		return err
-	}
-	return nil
 }
