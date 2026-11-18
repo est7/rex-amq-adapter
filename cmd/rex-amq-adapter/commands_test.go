@@ -492,6 +492,7 @@ func TestManagedMailCodes(t *testing.T) {
 // any command; nothing else reaches stdout.
 func TestStreamFailsBeforeConnectingWithAnEnvelope(t *testing.T) {
 	isolate(t)
+	stubTools(t)
 	t.Setenv("REX_AMQ_REX", filepath.Join(t.TempDir(), "no-rex"))
 	check(t, []want{
 		{[]string{"stream", "events", "--session", "session:01a1eac4-f222-7d79-9291-9a8a86d39ec3"}, 1, "rex_unavailable"},
