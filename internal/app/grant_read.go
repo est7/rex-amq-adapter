@@ -14,16 +14,16 @@ import (
 type GrantRead struct {
 	store.Grant
 	// ContractSHA256OK says the contract file still has the digest the grant
-	// recorded; false when it changed or cannot be read, and true when the
-	// grant names no contract.
+	// recorded, checked now; false when it changed, cannot be read, or the
+	// grant names no contract or no digest to check.
 	ContractSHA256OK bool   `json:"contract_sha256_ok"`
 	ContractNote     string `json:"contract_note,omitempty"`
 	Markdown         string `json:"markdown"`
 }
 
 // ReadGrant returns the grant of session (the caller's own when ""), for
-// the agent in loc: the lead of that session, or a personal agent linked
-// to it. Nothing is written.
+// the agent in loc: the lead of that session (sessionLead), or a personal
+// agent linked to it (core.LinkMatchesPersonal). Nothing is written.
 func (e Env) ReadGrant(loc Location, session string) (GrantRead, error) {
 	rec, ok, err := e.agentIn(loc)
 	if err != nil {
@@ -38,6 +38,20 @@ func (e Env) ReadGrant(loc Location, session string) (GrantRead, error) {
 	if err := e.mayReadGrant(rec, session); err != nil {
 		return GrantRead{}, err
 	}
+	return e.readGrant(session)
+}
+
+// ReadGrantAsHuman returns the grant of session for the user outside Rex
+// (HumanGate): nothing an agent runs gets it this way.
+func (e Env) ReadGrantAsHuman(getenv func(string) string, session string) (GrantRead, error) {
+	if err := e.HumanGate(getenv); err != nil {
+		return GrantRead{}, err
+	}
+	return e.readGrant(session)
+}
+
+// readGrant is session's grant with its contract checked again now.
+func (e Env) readGrant(session string) (GrantRead, error) {
 	g, found, err := e.Store.Grant(session)
 	if err != nil {
 		return GrantRead{}, err
@@ -45,17 +59,28 @@ func (e Env) ReadGrant(loc Location, session string) (GrantRead, error) {
 	if !found {
 		return GrantRead{}, fault.New(fault.NotFound, "Epic session %s has no notarized grant", session).With("kind", "session")
 	}
-	out := GrantRead{Grant: g, ContractSHA256OK: true, Markdown: g.Markdown()}
-	if g.Contract != "" {
-		b, err := os.ReadFile(g.Contract)
-		switch {
-		case err != nil:
-			out.ContractSHA256OK, out.ContractNote = false, fmt.Sprintf("the contract cannot be read: %v", err)
-		case store.ContractDigest(b) != g.ContractSHA256:
-			out.ContractSHA256OK, out.ContractNote = false, "the contract changed since the Epic opened"
-		}
-	}
+	out := GrantRead{Grant: g, Markdown: g.Markdown()}
+	out.ContractSHA256OK, out.ContractNote = contractCheck(g)
 	return out, nil
+}
+
+// contractCheck reads g's contract now and checks it against the digest the
+// grant recorded: ok only when both are there and agree.
+func contractCheck(g store.Grant) (ok bool, note string) {
+	switch {
+	case g.Contract == "":
+		return false, "the grant names no contract: the user's words are the whole grant"
+	case g.ContractSHA256 == "":
+		return false, "the grant recorded no digest of its contract"
+	}
+	b, err := os.ReadFile(g.Contract)
+	switch {
+	case err != nil:
+		return false, fmt.Sprintf("the contract cannot be read: %v", err)
+	case store.ContractDigest(b) != g.ContractSHA256:
+		return false, "the contract changed since the Epic opened"
+	}
+	return true, ""
 }
 
 // mayReadGrant allows the lead of session (sessionLead) and a personal agent

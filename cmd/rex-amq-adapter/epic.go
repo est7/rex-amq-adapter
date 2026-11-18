@@ -11,6 +11,7 @@ import (
 	"github.com/est7/rex-amq-adapter/internal/blob"
 	"github.com/est7/rex-amq-adapter/internal/cli"
 	"github.com/est7/rex-amq-adapter/internal/fault"
+	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 // epicOpen opens an Epic for the personal agent running it (app.OpenEpic).
@@ -219,9 +220,25 @@ func epicMessages(c *cli.Ctx, in cli.Input) (cli.Result, error) {
 	return cli.Result{Data: map[string]any{"messages": msgs, "coverage_gaps": read.CoverageGaps}}, nil
 }
 
-// epicGrant is an Epic's notarized grant, its contract digest checked again.
+// epicGrant is an Epic's notarized grant, its contract digest checked
+// again: for the Epic's lead, a personal agent linked to it, or the user
+// outside Rex, who names the session.
 func epicGrant(c *cli.Ctx, in cli.Input) (cli.Result, error) {
 	env, loc, err := caller(c)
+	if errors.Is(err, app.ErrNotInRex) {
+		session := in.Arg("session")
+		if session == "" {
+			return cli.Result{}, cli.Usage(c.Cmd, "outside Rex, name the Epic session whose grant to read")
+		}
+		if env, err = app.NewEnv(c.Getenv("REX_SERVER")); err != nil {
+			return cli.Result{}, err
+		}
+		g, err := env.ReadGrantAsHuman(c.Getenv, session)
+		if err != nil {
+			return cli.Result{}, err
+		}
+		return cli.Result{Data: g, Markdown: g.Markdown}, nil
+	}
 	if err != nil {
 		return cli.Result{}, err
 	}
@@ -233,48 +250,86 @@ func epicGrant(c *cli.Ctx, in cli.Input) (cli.Result, error) {
 }
 
 // epicHandback records the lead's whole final report as its session's
-// hand-back. Artifacts belong to design Epics, which no session is yet:
-// one given is refused, never dropped.
+// hand-back, with the artifacts --artifact names snapshot byte for byte
+// before anything is recorded (app.SnapshotArtifacts). The caller is looked
+// up first, so a refused caller reads no artifact source.
 func epicHandback(c *cli.Ctx, in cli.Input) (cli.Result, error) {
-	if len(in.All("artifact")) > 0 {
-		return cli.Result{}, fault.New(fault.FailedPrecondition, "--artifact is for a design Epic's lead, and this adapter opens no design Epics yet").With("reason", "not_design_epic")
-	}
 	body, err := cli.ReadBody(in.Arg("report"), c.Stdin)
 	if err != nil {
 		return cli.Result{}, err
+	}
+	var specs []app.ArtifactSpec
+	for _, v := range in.All("artifact") {
+		s, err := app.ParseArtifact(v)
+		if err != nil {
+			return cli.Result{}, err
+		}
+		specs = append(specs, s)
 	}
 	env, loc, err := caller(c)
 	if err != nil {
 		return cli.Result{}, err
 	}
-	if in.DryRun() {
-		h, err := env.PreviewHandBack(loc, body)
-		if err != nil {
-			return cli.Result{}, err
-		}
-		return cli.Result{Data: map[string]any{"dry_run": true, "by": h.By, "bytes": len(h.Body), "digest": h.Digest}}, nil
+	if _, err := env.PreviewHandBack(loc, body); err != nil {
+		return cli.Result{}, err
 	}
-	ctx, cancel := within(c, 10*time.Second)
-	defer cancel()
-	h, err := env.RecordHandBack(ctx, loc, body)
+	blobs, err := app.SnapshotArtifacts(specs)
 	if err != nil {
 		return cli.Result{}, err
 	}
-	return cli.Result{Data: map[string]any{"by": h.By, "at": h.At, "bytes": len(h.Body), "seq": h.Seq, "digest": h.Digest, "view": "hand_back"}}, nil
+	req := app.HandBackRequest{Body: body, Artifacts: blobs, OpID: in.Str("op-id")}
+	if in.DryRun() {
+		h, err := env.PreviewHandBackWith(loc, req)
+		if err != nil {
+			return cli.Result{}, err
+		}
+		return cli.Result{Data: map[string]any{"dry_run": true, "by": h.By, "bytes": len(h.Body), "digest": h.Digest, "artifacts": nonNil(h.Artifacts)}}, nil
+	}
+	ctx, cancel := within(c, 10*time.Second)
+	defer cancel()
+	h, changed, err := env.RecordHandBackWith(ctx, loc, req)
+	if err != nil {
+		return cli.Result{}, err
+	}
+	return cli.Result{Data: map[string]any{"by": h.By, "at": h.At, "bytes": len(h.Body), "seq": h.Seq, "digest": h.Digest, "changed": changed,
+		"artifacts": nonNil(h.Artifacts), "view": "hand_back"}}, nil
 }
 
-// epicArtifacts lists the artifact manifests an Epic's hand-backs carry.
-// Only a design Epic's hand-back carries any, and none is opened yet, so
-// the list is empty: an empty list, not an error.
+// epicArtifacts lists the artifact manifests of an Epic's hand-backs, for
+// its linked personal agent or the user (app.Artifacts).
 func epicArtifacts(c *cli.Ctx, in cli.Input) (cli.Result, error) {
-	return cli.Result{Data: cli.List[map[string]any]{Items: []map[string]any{}}}, nil
+	env, err := app.NewEnv(c.Getenv("REX_SERVER"))
+	if err != nil {
+		return cli.Result{}, err
+	}
+	ctx, cancel := within(c, 30*time.Second)
+	defer cancel()
+	ms, err := env.Artifacts(ctx, c.Getenv, in.Arg("session"), in.Int("seq"))
+	if err != nil {
+		return cli.Result{}, err
+	}
+	return cli.Result{Data: cli.List[store.Manifest]{Items: ms, Total: len(ms)}}, nil
 }
 
-// epicMaterialize writes an Epic's artifacts into --into. No hand-back
-// carries any yet (see epicArtifacts), so there is nothing to write: the
-// directory is neither created nor touched.
+// epicMaterialize writes an Epic's artifacts into --into, byte for byte
+// (app.Materialize). A batch into an existing directory that stopped part
+// way is meta.complete=false, with each file's status in data.
 func epicMaterialize(c *cli.Ctx, in cli.Input) (cli.Result, error) {
-	return cli.Result{}, fault.New(fault.NotFound, "Epic session %s has no artifacts to materialize", in.Arg("session")).With("kind", "artifact")
+	env, err := app.NewEnv(c.Getenv("REX_SERVER"))
+	if err != nil {
+		return cli.Result{}, err
+	}
+	ctx, cancel := within(c, 30*time.Second)
+	defer cancel()
+	res, err := env.Materialize(ctx, c.Getenv, app.MaterializeRequest{Session: in.Arg("session"), Into: in.Str("into"), Seq: in.Int("seq"),
+		Replace: in.Bool("replace"), DryRun: in.DryRun()})
+	if err != nil {
+		if len(res.Items) > 0 {
+			return cli.Result{Data: res, Incomplete: !res.Complete}, err
+		}
+		return cli.Result{}, err
+	}
+	return cli.Result{Data: res}, nil
 }
 
 func epicLink(c *cli.Ctx, in cli.Input) (cli.Result, error) { return linkEpic(c, in, true) }

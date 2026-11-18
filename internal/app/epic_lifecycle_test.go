@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -64,7 +65,7 @@ func TestHandBackSeqAndDigestAcrossOverwrites(t *testing.T) {
 		t.Fatal("a new report left the pulse unchanged")
 	}
 	stored, ok, err := e.Store.HandBack(key.SessionID)
-	if err != nil || !ok || stored != second {
+	if err != nil || !ok || !reflect.DeepEqual(stored, second) {
 		t.Fatalf("stored %+v %v %v, want %+v", stored, ok, err, second)
 	}
 	lc, ok, err := e.Store.EpicLifecycle(key.SessionID)

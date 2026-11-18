@@ -434,7 +434,21 @@ With `--crew pair` the Epic is
 one Slice with no orchestrator: an implementer leads in its place, on the
 implementer's routing, runs the goal itself (Checkpoints, its own `summon
 reviewer`), records the hand-back, and takes the narrator's `--control`
-directives as an orchestrator would. Closing is two-phase: the orchestrator records its whole final report
+directives as an orchestrator would. With `--crew design` the Epic argues a
+design to drafts, read-only, with no orchestrator and no goal run: an
+architect leads, seats a council of architects beside itself (`agent summon
+architect --council --cwd <dir> --grant <grant> --kind brainstorm`; it holds
+its own harness's seat), drafts `spec.md` and `NN-*.md` outside the
+repository, and hands them back byte for byte (`epic handback @<report>
+--artifact spec.md=@<file> ...`; a council architect it summoned is refused).
+Each such hand-back publishes a revision under its `seq`; read them with
+`epic artifacts <session_id>` and write one into a directory with `epic
+materialize <session_id> --into <dir> [--seq N]`: a new directory is created
+whole, and into an existing one a file changed since it was last written
+there is a `conflict` (exit 5) and nothing is written, unless `--replace`.
+Only you, linked to the Epic, and the user run these; `epic grant
+<session_id>` reads the notarized grant with `contract_sha256_ok` checked
+against the contract's bytes now. Closing is two-phase: the orchestrator records its whole final report
 (review queue with PR links, Blocked on me, Decided for you, Changed, Found)
 last, once every PR is open, with `rex-amq-adapter hand-back @<file>` (`-`
 reads stdin; a new one replaces it), which `view` shows whole as `hand_back`;

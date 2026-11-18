@@ -47,13 +47,16 @@ const (
 var epicRank = map[string]int{EpicPartialStart: 1, EpicOpened: 2, EpicHandBack: 3, EpicClosed: 4}
 
 // HandBackRef names one recorded hand-back without its body: its sequence
-// number in the session, the digest of its normalized body, who recorded it,
-// and when.
+// number in the session, its digest (HandBack.Digest), who recorded it, and
+// when.
 type HandBackRef struct {
 	Seq    int         `json:"seq"`
 	Digest string      `json:"digest"`
 	By     core.Handle `json:"by"`
 	At     time.Time   `json:"at"`
+	// OpHash is the hand-back's HandBack.OpHash: a retry under the same
+	// --op-id finds the hand-back it recorded.
+	OpHash string `json:"op_hash,omitempty"`
 }
 
 // EpicLifecycle is lifecycle.json. Hub is the Hub that opened (and may
@@ -101,7 +104,7 @@ func (l *EpicLifecycle) Advance(state string, at time.Time) bool {
 // Seq once given a digest keeps it: noting another digest under it panics,
 // so the caller numbers a different report after the latest (LatestHandBack).
 func (l *EpicLifecycle) NoteHandBack(h HandBack) {
-	ref := HandBackRef{Seq: h.Seq, Digest: h.Digest, By: h.By, At: h.At}
+	ref := HandBackRef{Seq: h.Seq, Digest: h.Digest, By: h.By, At: h.At, OpHash: h.OpHash}
 	if i := slices.IndexFunc(l.HandBacks, func(r HandBackRef) bool { return r.Seq == h.Seq }); i >= 0 {
 		if l.HandBacks[i].Digest != h.Digest {
 			panic(fmt.Sprintf("store: hand-back seq %d already has digest %s, not %s", h.Seq, l.HandBacks[i].Digest, h.Digest))
