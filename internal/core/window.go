@@ -17,6 +17,9 @@ type Peer struct {
 	Window    string
 	Parent    Handle
 	AdoptedAt time.Time
+	// Lead marks the agent that leads its Epic session (the app's
+	// sessionLead), whatever its role: who hears departures.
+	Lead bool
 }
 
 // named is how a notice names p: its handle, which is what peers mail, then
@@ -138,9 +141,10 @@ func OrchestratorLeft(p Peer) (subject, body string) {
 	return fmt.Sprintf("%s left your Rex session", p.Handle), fmt.Sprintf("%s, which owned this session's goal, left your Rex session: it quit, crashed, or its pane closed, and nobody is running the goal. Finish the step you are on, say in your final message that the goal stopped and where the work stands, then end your turn: do not take over the goal. It cannot read a reply to this mail.", p.Handle)
 }
 
-// DepartureMail says who hears at once that left departed: every orchestrator
-// among others, the other live agents in its session, or, when left owned the
-// goal, one peer to report that. to is empty when no orchestrator is involved.
+// DepartureMail says who hears at once that left departed: the lead among
+// others, the other live agents in its session (Peer.Lead), or, when left
+// led the goal, one peer to report that. to is empty when no lead is
+// involved.
 // A Stealth agent's departure is nobody's mail, and none is told to one: the
 // session watcher tells a narrator itself.
 func DepartureMail(left Peer, session string, others []Peer) (to []Handle, subject, body string) {
@@ -149,14 +153,14 @@ func DepartureMail(left Peer, session string, others []Peer) (to []Handle, subje
 	}
 	others = slices.DeleteFunc(slices.Clone(others), func(p Peer) bool { return Stealth(p.Role) })
 	for _, p := range others {
-		if p.Role == OrchestratorRole {
+		if p.Lead {
 			to = append(to, p.Handle)
 		}
 	}
 	switch {
 	case len(to) > 0:
 		subject, body = OrchestratorPeerLeft(left, session)
-	case left.Role == OrchestratorRole && len(others) > 0:
+	case left.Lead && len(others) > 0:
 		to = []Handle{reportingPeer(others).Handle}
 		subject, body = OrchestratorLeft(left)
 	}

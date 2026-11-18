@@ -287,7 +287,7 @@ func commands() []*cli.Command {
 				f("op-id", cli.KindOpID, "names this request: a retry reconciles the Epic the first run started"),
 			},
 			Tier: cli.TierLaunch, Mutating: true, Idempotent: true, DryRun: true, Input: true, Audience: cli.AudienceAgent, Roles: []string{"personal"},
-			Result:     "{session_id, op_id, replayed, lifecycle_state, orchestrator, narrator, goal_path, grant_path, ...}; a partial start exits 7 with it in data",
+			Result:     "{session_id, op_id, replayed, lifecycle_state, lead {role, block, status, handle}, narrator, goal_path, grant_path, ...}; a partial start exits 7 with it in data",
 			Guardrails: []string{"needs --goal, --asked, or both"},
 			Examples:   []string{`rex-amq-adapter epic open s1 --cwd ~/projects/x --goal goal.md --asked "run the S1 goal"`, `rex-amq-adapter epic open s1 --cwd ~/projects/x --asked "fix the login bug" --op-id me:board:epic-7#open --dry-run`},
 			Run:        epicOpen,

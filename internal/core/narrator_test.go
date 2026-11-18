@@ -11,7 +11,7 @@ import (
 // departure is nobody's mail.
 func TestNarratorStealthInSessionPolicy(t *testing.T) {
 	windowOf := map[string]string{"b:o": "w", "b:i": "w", "b:n": "w2", "b:p": "w"}
-	orch := Peer{Handle: "claude-01", Kind: Claude, Role: OrchestratorRole, Block: "b:o"}
+	orch := Peer{Handle: "claude-01", Kind: Claude, Role: OrchestratorRole, Block: "b:o", Lead: true}
 	impl := Peer{Handle: "claude-02", Kind: Claude, Role: "implementer", Block: "b:i"}
 	narr := Peer{Handle: "pi-03", Kind: Pi, Role: NarratorRole, Block: "b:n"}
 	pers := Peer{Handle: "codex-04", Kind: Codex, Role: PersonalRole, Block: "b:p"}

@@ -139,8 +139,8 @@ func fill[T comparable](dst *T, v T) {
 // not, waits as the first run did for both agents, and moves the lifecycle
 // on.
 func (e Env) reconcileOpen(ctx context.Context, loc Location, op store.EpicOpRecord, seed store.EpicLifecycle, grant epicGrant) (EpicResult, error) {
-	res := EpicResult{SessionID: op.SessionID, OpID: op.OpID, Replayed: true, Lead: epicLead(seed.Crew),
-		Orchestrator: EpicAgent{Block: op.OrchestratorBlock}, Narrator: EpicAgent{Block: op.NarratorBlock}}
+	res := EpicResult{SessionID: op.SessionID, OpID: op.OpID, Replayed: true,
+		Lead: EpicLead{Role: epicLead(seed.Crew), EpicAgent: EpicAgent{Block: op.OrchestratorBlock}}, Narrator: EpicAgent{Block: op.NarratorBlock}}
 	lc, ok, err := e.Store.EpicLifecycle(op.SessionID)
 	if err != nil {
 		return res, err
@@ -179,7 +179,7 @@ func (e Env) reconcileOpen(ctx context.Context, loc Location, op store.EpicOpRec
 	}
 	errs = append(errs, e.awaitEpicAgents(ctx, &res)...)
 	state := store.EpicPartialStart
-	if res.Orchestrator.Status == core.StartupAdopted && res.Narrator.Status == core.StartupAdopted {
+	if res.Lead.Status == core.StartupAdopted && res.Narrator.Status == core.StartupAdopted {
 		state = store.EpicOpened
 	}
 	if lc, err := e.lockedAdvanceEpic(ctx, seed, state, &op); err != nil {
@@ -321,7 +321,7 @@ func (e Env) ensureSessionCrew(ctx context.Context, session, crewName string, by
 // adopted, and fills in how each startup ended.
 func (e Env) awaitEpicAgents(ctx context.Context, res *EpicResult) []error {
 	var errs []error
-	for _, a := range []*EpicAgent{&res.Orchestrator, &res.Narrator} {
+	for _, a := range []*EpicAgent{&res.Lead.EpicAgent, &res.Narrator} {
 		s, err := e.AwaitStartup(ctx, a.Block)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("await %s: %w", a.Block, err))

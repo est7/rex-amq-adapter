@@ -38,11 +38,11 @@ func TestPersonalAgentOpensAnEpic(t *testing.T) {
 		t.Fatalf("epic:\n%s%s\n%s", out, screens, w.dump())
 	}
 	var res struct {
-		Session      string `json:"session_id"`
-		Linked       bool   `json:"linked"`
-		Orchestrator struct {
-			Block, Status, Handle string
-		} `json:"orchestrator"`
+		Session string `json:"session_id"`
+		Linked  bool   `json:"linked"`
+		Lead    struct {
+			Role, Block, Status, Handle string
+		} `json:"lead"`
 		Narrator struct {
 			Block, Status, Handle string
 		} `json:"narrator"`
@@ -51,8 +51,8 @@ func TestPersonalAgentOpensAnEpic(t *testing.T) {
 	if err := envelopeData(line, &res); err != nil {
 		t.Fatalf("output %q: %v", out, err)
 	}
-	if !res.Linked || res.Orchestrator.Status != "adopted" || res.Narrator.Status != "adopted" ||
-		res.Orchestrator.Handle != w.handleOf("orchestrator") || res.Narrator.Handle != w.handleOf("narrator") {
+	if !res.Linked || res.Lead.Role != "orchestrator" || res.Lead.Status != "adopted" || res.Narrator.Status != "adopted" ||
+		res.Lead.Handle != w.handleOf("orchestrator") || res.Narrator.Handle != w.handleOf("narrator") {
 		t.Fatalf("result %+v\n%s", res, w.dump())
 	}
 	links, _ := filepath.Glob(filepath.Join(w.root(), "extensions", "rex-amq-adapter", "links", "*.json"))
@@ -63,7 +63,7 @@ func TestPersonalAgentOpensAnEpic(t *testing.T) {
 	if err != nil || !strings.Contains(string(b), res.Session) {
 		t.Errorf("link %s: %v", b, err)
 	}
-	who, code := w.adapterIn(res.Orchestrator.Block, "agent", "list", "--all")
+	who, code := w.adapterIn(res.Lead.Block, "agent", "list", "--all")
 	if code != 0 || !strings.Contains(who, `"role":"orchestrator"`) || !strings.Contains(who, `"role":"narrator"`) || !strings.Contains(who, `"tab":"narrator(`+res.Narrator.Handle+`) | e2e-login"`) {
 		t.Errorf("agent list in the Epic: %d\n%s", code, who)
 	}
@@ -101,7 +101,7 @@ func TestPersonalAgentOpensAnEpic(t *testing.T) {
 		cockpit.Epics[0].Lifecycle.State != "opened" || cockpit.Epics[0].Lifecycle.OpID != "e2e-open-1" {
 		t.Errorf("the cockpit outside Rex: exit %d\n%s", code, out)
 	}
-	if out, code := w.adapterRunEnv(append(quiet, "REX_BLOCK="+res.Orchestrator.Block), "epic", "list", "--personal", w.handleOf("me")); code != 3 || !strings.Contains(out, `"code":"permission_denied"`) {
+	if out, code := w.adapterRunEnv(append(quiet, "REX_BLOCK="+res.Lead.Block), "epic", "list", "--personal", w.handleOf("me")); code != 3 || !strings.Contains(out, `"code":"permission_denied"`) {
 		t.Errorf("the cockpit from the orchestrator's pane: exit %d\n%s", code, out)
 	}
 }

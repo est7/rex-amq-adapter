@@ -66,17 +66,15 @@ type EpicAgent struct {
 // its first run started and started nothing; LifecycleState is the Epic's
 // lifecycle state when the command ended (store.EpicLifecycle).
 type EpicResult struct {
-	SessionID      string    `json:"session_id"`
-	Orchestrator   EpicAgent `json:"orchestrator"`
+	SessionID string `json:"session_id"`
+	// Lead is the agent that runs the goal (epicLead): an orchestrator, a
+	// pair Epic's implementer, or a design Epic's architect.
+	Lead           EpicLead  `json:"lead"`
 	Narrator       EpicAgent `json:"narrator"`
 	Linked         bool      `json:"linked"`
 	OpID           string    `json:"op_id,omitempty"`
 	LifecycleState string    `json:"lifecycle_state,omitempty"`
 	Replayed       bool      `json:"replayed,omitempty"`
-	// Lead is the role of the agent that runs the goal, whose startup
-	// Orchestrator reports: an orchestrator, or a pair Epic's implementer
-	// (epicLead).
-	Lead string `json:"lead"`
 	// GoalPath is the goal contract the lead runs, and GrantPath the Epic's
 	// notarized grant (grant.md), once written.
 	GoalPath  string `json:"goal_path,omitempty"`
@@ -86,22 +84,37 @@ type EpicResult struct {
 	Plan   *EpicPlan `json:"plan,omitempty"`
 }
 
+// EpicLead is the Epic's lead: its role, and where it was started and how
+// its startup ended.
+type EpicLead struct {
+	Role string `json:"role"`
+	EpicAgent
+}
+
 // EpicGoalMax bounds a goal contract piped in with --goal -, as handBackMax
 // bounds a hand-back.
 const EpicGoalMax = handBackMax
 
 // A pair Epic (epic --crew pair) runs one Slice with no orchestrator: its
-// implementer leads, runs the goal itself, and hands back (pairLead).
+// implementer leads, runs the goal itself, and hands back. A design Epic
+// (epic --crew design) argues a design with no orchestrator either: its
+// architect chairs the council and hands back the drafts (sessionLead).
 const (
 	pairCrew        = "pair"
+	designCrew      = "design"
 	implementerRole = "implementer"
+	architectRole   = "architect"
 )
 
-// epicLead is the role of the agent that runs an Epic of crewName's goal:
-// its orchestrator, or a pair Epic's implementer.
+// epicLead is the role of the agent that leads an Epic of crewName: a pair
+// Epic's implementer, a design Epic's architect, else its orchestrator.
+// OpenEpic records it as the session's lead_role (store.SessionPolicy).
 func epicLead(crewName string) string {
-	if crewName == pairCrew {
+	switch crewName {
+	case pairCrew:
 		return implementerRole
+	case designCrew:
+		return architectRole
 	}
 	return core.OrchestratorRole
 }
@@ -109,7 +122,7 @@ func epicLead(crewName string) string {
 // Ready reports whether the Epic is fully up: both agents adopted, and the
 // caller linked to its narrator.
 func (r EpicResult) Ready() bool {
-	return r.Linked && r.Orchestrator.Status == core.StartupAdopted && r.Narrator.Status == core.StartupAdopted
+	return r.Linked && r.Lead.Status == core.StartupAdopted && r.Narrator.Status == core.StartupAdopted
 }
 
 // OpenEpic starts an Epic for the personal agent in loc: a session labelled
@@ -194,7 +207,7 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 		return EpicResult{}, err
 	}
 	if r.DryRun {
-		return EpicResult{OpID: r.OpID, Lead: lead, DryRun: true,
+		return EpicResult{OpID: r.OpID, Lead: EpicLead{Role: lead}, DryRun: true,
 			Plan: &EpicPlan{Name: name, Dir: physical, Crew: crewName, LeadHarness: kind, NarratorHarness: narrator}}, nil
 	}
 	callerHub, err := e.hubOfSession(caller.SessionID)
@@ -282,7 +295,7 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 		}
 		return EpicResult{OpID: r.OpID}, fmt.Errorf("create the Epic's session: %w", err)
 	}
-	res := EpicResult{SessionID: session, Narrator: EpicAgent{Block: blocks[0]}, Orchestrator: EpicAgent{Block: blocks[1]}, OpID: r.OpID, Lead: lead}
+	res := EpicResult{SessionID: session, Narrator: EpicAgent{Block: blocks[0]}, Lead: EpicLead{Role: lead, EpicAgent: EpicAgent{Block: blocks[1]}}, OpID: r.OpID}
 	var errs []error
 	if policyErr != nil {
 		errs = append(errs, fmt.Errorf("record the Epic policy: %w", policyErr))
@@ -322,7 +335,7 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 		res.Linked = true
 	}
 	errs = append(errs, e.awaitEpicAgents(ctx, &res)...)
-	if res.Orchestrator.Status == core.StartupAdopted && res.Narrator.Status == core.StartupAdopted {
+	if res.Lead.Status == core.StartupAdopted && res.Narrator.Status == core.StartupAdopted {
 		if lc, err := e.lockedAdvanceEpic(ctx, seed, store.EpicOpened, op); err != nil {
 			errs = append(errs, fmt.Errorf("record the lifecycle: %w", err))
 		} else {

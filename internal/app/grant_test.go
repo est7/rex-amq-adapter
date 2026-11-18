@@ -147,7 +147,7 @@ func TestOpenEpicGrantKeepsAPipedGoalForAPairLead(t *testing.T) {
 	contract := "GOAL: one Slice\nDONE WHEN:\n- `true`\n"
 	res := openGrant(t, e, EpicRequest{Name: "piped", Dir: dir, GoalText: contract, Asked: "fix it. Full send", Crew: pairCrew})
 	id := res.SessionID
-	if res.Lead != implementerRole || res.GoalPath != e.Paths.GoalPath(id) || res.GrantPath != e.Paths.GrantPath(id) {
+	if res.Lead.Role != implementerRole || res.GoalPath != e.Paths.GoalPath(id) || res.GrantPath != e.Paths.GrantPath(id) {
 		t.Fatalf("result %+v", res)
 	}
 	if got := readOnly(t, res.GoalPath); got != contract {

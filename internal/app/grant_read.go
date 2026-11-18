@@ -58,18 +58,18 @@ func (e Env) ReadGrant(loc Location, session string) (GrantRead, error) {
 	return out, nil
 }
 
-// mayReadGrant allows the lead of session (its orchestrator, or a pair
-// Epic's implementer) and a personal agent linked to it.
+// mayReadGrant allows the lead of session (sessionLead) and a personal agent
+// linked to it.
 func (e Env) mayReadGrant(rec agent, session string) error {
 	if session == rec.SessionID {
-		lead, err := e.pairLead(rec)
+		lead, err := e.sessionLead(rec)
 		if err != nil {
 			return err
 		}
-		if rec.Role == core.OrchestratorRole || lead {
+		if lead {
 			return nil
 		}
-		return fmt.Errorf("%w: only an Epic's lead, or a personal agent linked to it, reads its grant, and %s is %q", ErrRefused, rec.Handle, rec.Role)
+		return fmt.Errorf("%w: only an Epic's lead, or a personal agent linked to it, reads its grant, and %s is %s", ErrRefused, rec.Handle, whoIs(rec))
 	}
 	if rec.Role != core.PersonalRole {
 		return fmt.Errorf("%w: only a personal agent reads the grant of another session, and %s is %q", ErrRefused, rec.Handle, rec.Role)

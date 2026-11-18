@@ -34,8 +34,8 @@ func (e Env) endpointOf(h core.Handle) (core.Endpoint, error) {
 }
 
 // gatewayEndpoint is rec as the gateway sees it now: its endpoint, marked
-// Lead when rec runs its Epic's goal (an orchestrator, or a pair Epic's lead:
-// pairLead), which is whom a narrator's control mail may reach.
+// Lead when rec leads its Epic (sessionLead), which is whom a narrator's
+// control mail may reach.
 //
 // A personal agent with a valid lease in a Hub session is a member of that
 // Hub (Endpoint.Hub), from the session's recorded policy alone: never from
@@ -50,11 +50,7 @@ func (e Env) gatewayEndpoint(rec agent) (core.Endpoint, error) {
 		}
 		return ep, nil
 	}
-	if rec.Role == core.OrchestratorRole {
-		ep.Lead = true
-		return ep, nil
-	}
-	lead, err := e.pairLead(rec)
+	lead, err := e.sessionLead(rec)
 	ep.Lead = lead
 	return ep, err
 }

@@ -175,7 +175,7 @@ func TestDryRunWritesNothing(t *testing.T) {
 		before := settledState(t, e)
 		dir := t.TempDir()
 		res, err := e.OpenEpic(ctx, loc, EpicRequest{Name: "preview", Dir: dir, Asked: "open it", OpID: "op-preview", DryRun: true})
-		if err != nil || !res.DryRun || res.Plan == nil || res.SessionID != "" || res.Lead != core.OrchestratorRole {
+		if err != nil || !res.DryRun || res.Plan == nil || res.SessionID != "" || res.Lead.Role != core.OrchestratorRole {
 			t.Fatalf("preview: %+v %v", res, err)
 		}
 		sameState(t, "epic open --dry-run", before, stateFiles(t, e))

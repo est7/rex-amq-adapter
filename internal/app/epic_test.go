@@ -63,7 +63,7 @@ func TestOpenEpicStartsOrchestratorAndNarratorAndLinks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !res.Ready() || res.SessionID != "session:epic-1" || res.Orchestrator.Handle != "claude-03" || res.Narrator.Handle != "claude-02" {
+	if !res.Ready() || res.SessionID != "session:epic-1" || res.Lead.Handle != "claude-03" || res.Narrator.Handle != "claude-02" {
 		t.Fatalf("result %+v", res)
 	}
 	if len(term.sessions_) != 1 {
@@ -139,7 +139,7 @@ func TestOpenEpicReportsAMidwayFailureWithoutTearingDown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Ready() || res.Orchestrator.Status != core.StartupAdopted || res.Narrator.Status != core.StartupTimeout || !res.Linked || res.Narrator.Block != "block:epic-1-1" {
+	if res.Ready() || res.Lead.Status != core.StartupAdopted || res.Narrator.Status != core.StartupTimeout || !res.Linked || res.Narrator.Block != "block:epic-1-1" {
 		t.Fatalf("result %+v", res)
 	}
 	if orch := term.sessions_[0].panes[1]; program(orch.Command)[0] != "codex" || orch.Command[len(orch.Command)-1] != "build the login page" {
