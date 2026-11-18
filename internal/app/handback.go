@@ -118,7 +118,7 @@ func (e Env) RecordHandBackWith(ctx context.Context, loc Location, r HandBackReq
 	}
 	// A retry of an op id: the hand-back it recorded, or a conflict.
 	if opHash != "" {
-		if i := slices.IndexFunc(lc.HandBacks, func(r store.HandBackRef) bool { return r.OpHash == opHash }); i >= 0 {
+		if i := slices.IndexFunc(lc.HandBacks, func(r store.HandBackRef) bool { return r.Accepts(opHash) }); i >= 0 {
 			ref := lc.HandBacks[i]
 			if ref.Digest != digest {
 				return h, false, errHandBackOpConflict(r.OpID)
@@ -149,8 +149,10 @@ func (e Env) RecordHandBackWith(ctx context.Context, loc Location, r HandBackReq
 		return h, true, nil
 	case latest.Digest == digest && hasPrev && prev.Seq == latest.Seq && prev.Digest == digest:
 		// The same request again: left as it was, time included, so the
-		// narrator is not told twice.
+		// narrator is not told twice; a new op id is bound to it all the
+		// same, so that op id with another report is a conflict.
 		h = prev
+		lc.NoteHandBackOp(h.Seq, opHash)
 		if err := e.Store.PutEpicLifecycle(lc); err != nil {
 			return h, false, fmt.Errorf("the hand-back is stored; recording it in the Epic's lifecycle failed (run hand-back again): %w", err)
 		}
@@ -166,8 +168,9 @@ func (e Env) RecordHandBackWith(ctx context.Context, loc Location, r HandBackReq
 		h = fresh(latest.Seq + 1)
 	}
 	// Listed before it is stored, so the one it replaces is never lost from
-	// the history.
+	// the history; the request's op id is bound to it either way.
 	lc.NoteHandBack(h)
+	lc.NoteHandBackOp(h.Seq, opHash)
 	if err := e.Store.PutEpicLifecycle(lc); err != nil {
 		return h, false, fmt.Errorf("%s: recording it in the Epic's lifecycle failed: %w", stays, err)
 	}

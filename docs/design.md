@@ -1768,7 +1768,13 @@ With `--crew design` the lead is an `architect`, briefed read-only (no
 spec and goal files outside the repository, and hands them back with
 `epic handback --artifact`, which `epic artifacts` lists and `epic
 materialize` writes byte for byte for the linked personal agent or the
-user. The narrator wakes on its hand-back and its
+user. Materialize opens `--into` once, component by component with
+`O_DIRECTORY|O_NOFOLLOW` (only a root-owned system link such as `/var` is
+followed), and does every read, write, rename, and cleanup through those
+descriptors, so swapping a directory on the path while it runs sends
+nothing elsewhere. Into an existing directory it is a non-atomic batch
+(`meta.complete=false`), and its receipt records only the files it wrote
+and checked. The narrator wakes on its hand-back and its
 departure as on an orchestrator's (the pulse is role-blind), and the gateway
 takes the pair lead as the Epic's control plane: `gatewayEndpoint` marks it
 `Lead`, so a narrator's `send --control` reaches it (`narrator_control`)
@@ -2040,8 +2046,10 @@ nothing. A pane or shell with no agent in it is not trusted for being one
 4. `ME_UNATTENDED=1` is refused unless the caller is a personal agent,
    which may carry it inherited.
 
-A personal caller reads its own scope, and a `--personal` or `--hub` naming
-another is refused. Anyone else names exactly one live personal agent by
+A personal caller reads its own scope, and a `--hub` naming another is
+refused; `--personal` is only a filter inside that scope (spec §4.2(8)): it
+narrows to the Epics the named personal agent prefers, live or departed, and
+a handle outside the scope reads the empty subset. Anyone else names exactly one live personal agent by
 handle, by a directory its working directory is in (symlinks resolved), or
 both; none is usage, and more than one is ambiguous. With `--session S`, S
 must be linked to that agent (`not_linked` otherwise); its view is read with
