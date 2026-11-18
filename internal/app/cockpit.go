@@ -168,9 +168,10 @@ func cockpitWhose(s cockpitScope) string {
 //     may carry it inherited).
 //
 // A personal caller reads its own Hub, by its own endpoint alone
-// (core.LinkMatchesPersonal); --personal narrows that to the Epics it or
-// another live member of its Hub opened or prefers, and naming anyone else,
-// or a directory it does not work in, is refused. Anyone else reads the Hub
+// (core.LinkMatchesPersonal); --personal only narrows that to the Epics the
+// named personal agent opened or prefers, live or not (§4.2(8)), so naming
+// one outside the scope reads nothing; a directory it does not work in is
+// refused. Anyone else reads the Hub
 // --hub names, else the Hub of the live personal agent --personal names,
 // else the default Hub; with none of them, it names one. However many of
 // the Hub's personal agents are live, none, one, or several, the scope is
@@ -233,13 +234,10 @@ func (e Env) cockpitScope(ctx context.Context, getenv func(string) string, req C
 		}
 		scope := cockpitScope{members: []core.Endpoint{me}, hubDir: me.Hub.Dir(), strict: true, self: &caller}
 		if req.Personal != "" {
-			// A filter inside the caller's own scope: itself, or another
-			// live member of its Hub, never a way into another Hub.
-			named, err := e.hubMember(recs, caller, me, core.Handle(req.Personal))
-			if err != nil {
-				return cockpitScope{}, err
-			}
-			scope.personal, scope.named = named.Handle, []core.Endpoint{named}
+			// A filter inside the caller's own scope (§4.2(8)): members
+			// stays the caller alone, so naming anyone, live, departed, or
+			// unknown, only narrows what the caller may read already.
+			scope.personal, scope.named = core.Handle(req.Personal), personalRecord(recs, caller, me, core.Handle(req.Personal))
 		}
 		return scope, nil
 	}
@@ -301,26 +299,21 @@ func (e Env) cockpitScope(ctx context.Context, getenv func(string) string, req C
 	return scope, nil
 }
 
-// hubMember is the endpoint of h for a --personal filter of the personal
-// caller (me, its endpoint): the caller itself, or a live personal agent of
-// the caller's Hub. Anyone else is refused: a filter never widens the scope.
-func (e Env) hubMember(recs []agent, caller agent, me core.Endpoint, h core.Handle) (core.Endpoint, error) {
+// personalRecord is the endpoint a --personal filter of the personal caller
+// (me, its endpoint) names, for matching a session-keyed link by its
+// session: the caller itself, or the recorded personal agent h, live or
+// departed. None for a handle with no such record: only a link preferring h
+// then passes the filter.
+func personalRecord(recs []agent, caller agent, me core.Endpoint, h core.Handle) []core.Endpoint {
 	if h == caller.Handle {
-		return me, nil
+		return []core.Endpoint{me}
 	}
 	for _, r := range recs {
-		if r.Handle != h || !r.Live() || r.Role != core.PersonalRole || !placed(r) {
-			continue
-		}
-		ep, err := e.gatewayEndpoint(r)
-		if err != nil {
-			return core.Endpoint{}, err
-		}
-		if me.Hub != "" && ep.Hub == me.Hub {
-			return ep, nil
+		if r.Handle == h && r.Role == core.PersonalRole && placed(r) {
+			return []core.Endpoint{r.Endpoint()}
 		}
 	}
-	return core.Endpoint{}, fmt.Errorf("%w: %s is not a live %s agent of %s's Hub, so it filters nothing %s may read", ErrRefused, h, core.PersonalRole, caller.Handle, caller.Handle)
+	return nil
 }
 
 // agentAncestor is the live record among recs, of those match accepts, whose

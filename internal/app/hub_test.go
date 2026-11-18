@@ -659,10 +659,11 @@ func TestCockpitPersonalScopeIsItsOwnEndpoint(t *testing.T) {
 	}
 }
 
-// Inside Rex, --personal narrows a personal agent's own Hub scope to the
-// Epics that member prefers (itself or another live member of its Hub,
-// §4.2(8)); it never switches Hubs, so a personal agent of another Hub or an
-// unknown handle is refused.
+// Inside Rex, --personal only narrows a personal agent's own Hub scope to
+// the Epics the named personal agent prefers, whether or not it is live
+// (§4.2(8)): it never switches Hubs, so a personal agent of another Hub or an
+// unknown handle reads the empty subset, and a member that departed still
+// filters to the Epics it prefers.
 func TestCockpitPersonalFilterInsideRex(t *testing.T) {
 	e, _ := hubCockpitWorld(t)
 	in := map[string]string{"REX_BLOCK": "block:claude-01"}
@@ -684,9 +685,23 @@ func TestCockpitPersonalFilterInsideRex(t *testing.T) {
 		t.Errorf("an Epic the filter leaves out: %v", err)
 	}
 	for _, p := range []string{"claude-09", "claude-99"} {
-		if b, err := e.ReadCockpitView(context.Background(), cockpitEnv(in), CockpitViewRequest{Personal: p}); !errors.Is(err, ErrRefused) || b != nil {
-			t.Errorf("claude-01 --personal %s: %s %v", p, b, err)
+		if ids, err := cockpitIDs(t, e, in, CockpitViewRequest{Personal: p}); err != nil || len(ids) != 0 {
+			t.Errorf("claude-01 --personal %s: %v %v; want the empty subset", p, ids, err)
 		}
+		if _, err := e.ReadCockpitView(context.Background(), cockpitEnv(in), CockpitViewRequest{Personal: p, Session: "session:e1"}); !errors.Is(err, ErrRefused) {
+			t.Errorf("claude-01 --personal %s --session session:e1: %v", p, err)
+		}
+	}
+	// P2 departs: P1 still reads P2's Epic unfiltered, and filtered by P2.
+	put(t, e, departed(seedOf(recordOf(t, e, "claude-02")), time.Now()))
+	if ids, err := cockpitIDs(t, e, in, CockpitViewRequest{}); err != nil || !slices.Equal(ids, []string{"session:e1", "session:e2"}) {
+		t.Errorf("claude-01 after claude-02 departed: %v %v", ids, err)
+	}
+	if ids, err := cockpitIDs(t, e, in, CockpitViewRequest{Personal: "claude-02"}); err != nil || !slices.Equal(ids, []string{"session:e2"}) {
+		t.Errorf("claude-01 --personal claude-02 after claude-02 departed: %v %v", ids, err)
+	}
+	if b, err := e.ReadCockpitView(context.Background(), cockpitEnv(in), CockpitViewRequest{Personal: "claude-02", Session: "session:e2"}); err != nil || !strings.Contains(string(b), `"session_id":"session:e2"`) {
+		t.Errorf("claude-01 --personal claude-02 --session session:e2 after claude-02 departed: %v", err)
 	}
 }
 
