@@ -110,7 +110,7 @@ func TestDryRunWritesNothing(t *testing.T) {
 	})
 	t.Run("agent retire", func(t *testing.T) {
 		e, term, _, fake := retireWorld(t)
-		before := stateFiles(t, e)
+		before := settledState(t, e)
 		res, err := e.Retire(ctx, Location{Block: "block:o"}, RetireRequest{Handle: "codex-03", DryRun: true})
 		if err != nil || !res.DryRun || res.Action != RetireRetired {
 			t.Fatalf("preview: %+v %v", res, err)
@@ -123,7 +123,7 @@ func TestDryRunWritesNothing(t *testing.T) {
 	t.Run("agent summon", func(t *testing.T) {
 		e, term, loc := summonWorld(t)
 		add(t, e, seed{Handle: "codex-02", Kind: core.Codex, Server: "unix:///fake.sock", BlockID: "block:b", SessionID: "session:s", Role: "reviewer", AgentPID: 2, AdoptedAt: e.Now()})
-		before := stateFiles(t, e)
+		before := settledState(t, e)
 		dry := func(r *SummonRequest) { r.DryRun = true }
 		if res := summon(t, e, loc, "reviewer", dry); res.Action != "deliver" || res.Mailed || !res.DryRun {
 			t.Fatalf("deliver preview: %+v", res)
@@ -138,7 +138,7 @@ func TestDryRunWritesNothing(t *testing.T) {
 	})
 	t.Run("mail send", func(t *testing.T) {
 		e, _ := managedWorld(t)
-		before := stateFiles(t, e)
+		before := settledState(t, e)
 		p, err := e.PreviewPost(Location{Block: "block:claude-02"}, []core.Handle{"codex-01"}, "", "")
 		if err != nil || len(p.Recipients) != 1 || !p.Recipients[0].Allow {
 			t.Fatalf("preview: %+v %v", p, err)
@@ -154,7 +154,7 @@ func TestDryRunWritesNothing(t *testing.T) {
 	t.Run("hub notify", func(t *testing.T) {
 		hub := t.TempDir()
 		e, _ := notifyWorld(t, hub)
-		before := stateFiles(t, e)
+		before := settledState(t, e)
 		n, err := ParseNotify(NotifyRequest{Ref: "inbox:1", EventID: "ev-1"})
 		if err != nil {
 			t.Fatal(err)
@@ -193,7 +193,7 @@ func TestDryRunWritesNothing(t *testing.T) {
 func TestPreviewJoin(t *testing.T) {
 	e, _ := joinWorld(t, "Window 1a2b")
 	ctx := context.Background()
-	before := stateFiles(t, e)
+	before := settledState(t, e)
 	p, err := e.PreviewJoin(ctx, Location{Block: "block:a"}, "pair", "")
 	if err != nil || p.Crew != "pair" || p.Role != "implementer" || !strings.HasPrefix(p.Label, "implementer(") {
 		t.Fatalf("preview: %+v %v", p, err)
@@ -232,7 +232,7 @@ func TestSummonDryRunMatchesTheRealDecision(t *testing.T) {
 		e, term, loc := summonWorld(t)
 		e.LookPath = installedOnly(core.Codex, core.Agy, core.Claude)
 		unapprovedCodexHook(t, e)
-		before := stateFiles(t, e)
+		before := settledState(t, e)
 		res := summon(t, e, loc, "reviewer", asked, dry)
 		if res.Action != "start" || res.Harness != core.Agy || len(res.Passed) != 1 || !strings.HasPrefix(res.Passed[0], "codex: unapproved_hooks") || !res.DryRun {
 			t.Fatalf("%+v", res)
@@ -242,7 +242,7 @@ func TestSummonDryRunMatchesTheRealDecision(t *testing.T) {
 	t.Run("an explicit Codex with unapproved hooks is refused", func(t *testing.T) {
 		e, term, loc := summonWorld(t)
 		unapprovedCodexHook(t, e)
-		before := stateFiles(t, e)
+		before := settledState(t, e)
 		res := summon(t, e, loc, "reviewer", asked, dry, func(r *SummonRequest) { r.Harness = "codex" })
 		if res.Action != "refused" || !strings.Contains(res.Reason, "unapproved_hooks") {
 			t.Fatalf("%+v", res)
@@ -252,7 +252,7 @@ func TestSummonDryRunMatchesTheRealDecision(t *testing.T) {
 	t.Run("no installed harness is refused", func(t *testing.T) {
 		e, term, loc := summonWorld(t)
 		e.LookPath = installedOnly(core.Claude)
-		before := stateFiles(t, e)
+		before := settledState(t, e)
 		res := summon(t, e, loc, "reviewer", asked, dry)
 		if res.Action != "refused" || !strings.Contains(res.Reason, "not installed") {
 			t.Fatalf("%+v", res)
@@ -264,7 +264,7 @@ func TestSummonDryRunMatchesTheRealDecision(t *testing.T) {
 		e.LookPath = installedOnly(core.Codex, core.Agy, core.Claude)
 		live := seed{Handle: "codex-12", Kind: core.Codex, Server: "unix:///fake.sock", BlockID: "block:codex-12", SessionID: "session:s", Role: "reviewer", AgentPID: 42, AdoptedAt: e.Now()}
 		add(t, e, live)
-		before := stateFiles(t, e)
+		before := settledState(t, e)
 		res := summon(t, e, loc, "reviewer", councilOf(asked), dry)
 		if res.Action != "council" || !res.DryRun || len(res.Seats) < 2 || seatActions(res) == "" {
 			t.Fatalf("%+v", res)
@@ -283,7 +283,7 @@ func TestSummonDryRunMatchesTheRealDecision(t *testing.T) {
 		e, term, loc := summonWorld(t)
 		e.LookPath = installedOnly(core.Codex, core.Agy, core.Claude)
 		unapprovedCodexHook(t, e)
-		before := stateFiles(t, e)
+		before := settledState(t, e)
 		res := summon(t, e, loc, "reviewer", councilOf(asked), dry)
 		if res.Action != "refused" || !strings.Contains(res.Reason, "codex: unapproved_hooks") || len(res.Seats) != 0 {
 			t.Fatalf("%+v", res)
@@ -301,7 +301,7 @@ func TestPreviewJoinRefusesATakenCrew(t *testing.T) {
 	if _, err := e.Join(ctx, Location{Block: "block:a"}, "pair", ""); err != nil {
 		t.Fatal(err)
 	}
-	before := stateFiles(t, e)
+	before := settledState(t, e)
 	if _, err := e.PreviewJoin(ctx, Location{Block: "block:b"}, "ship", ""); !errors.Is(err, ErrCrewTaken) || !strings.Contains(err.Error(), "pair") {
 		t.Fatalf("a taken crew previewed: %v", err)
 	}
