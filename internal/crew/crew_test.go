@@ -249,8 +249,10 @@ func TestNarratorPromptForbidsUnsolicitedMailToPersonal(t *testing.T) {
 	for _, want := range []string{
 		"Your first turn and every routine wake do only that, then end your turn",
 		"Never send unsolicited mail to the personal agent",
-		// The cases that still mail it, each with its command.
-		"rex-amq-adapter reply",
+		// The cases that still mail it, each with its command, addressed to
+		// the role (C26), never a handle.
+		"rex-amq-adapter mail reply",
+		"`rex-amq-adapter mail send --to personal --kind status",
 		"or the orchestrator departs, tell the linked personal agent",
 		`--subject "hand-back ready"`,
 		"`waiting_on_the_human`",
