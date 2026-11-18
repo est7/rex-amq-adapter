@@ -133,12 +133,20 @@ func Family(kind Kind, model string) string {
 	return ""
 }
 
-// ReviewRole reports whether role reviews others' work, and so must run on
-// another model family than the agent that summons it.
-func ReviewRole(role string) bool {
+// CrossFamily reports whether role reviews others' work, and so starts by
+// default on another model family than the agent that summons it.
+func CrossFamily(role string) bool {
 	switch role {
 	case "reviewer", "editor", "qa":
 		return true
 	}
 	return false
+}
+
+// ReadOnly reports whether role only reads the checkout it works in: the
+// review roles and the architect, which designs and never edits product
+// code. Seats of a read-only role on distinct harnesses may share one
+// directory, and only a read-only role sits a council.
+func ReadOnly(role string) bool {
+	return CrossFamily(role) || role == "architect"
 }

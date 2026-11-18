@@ -131,7 +131,7 @@ func commands() []*cli.Command {
 				f("grant", cli.KindFile, "the user's grant file the brief cites (allows a start)"),
 				f("asked", cli.KindBody, "the user's own words asking for a new agent (allows a start)"),
 				enum("harness", harnesses, "the CLI of a start (default: by role)"),
-				b("council", "a review role (reviewer, editor, qa): one seat per harness of its routing, each asked for SCORE: <n>/10; when any seat cannot be mailed or launched, none is"),
+				b("council", "a read-only role (reviewer, editor, qa, architect): one seat per harness of its routing, each asked for SCORE: <n>/10; when any seat cannot be mailed or launched, none is"),
 				f("cwd", cli.KindDir, "the directory of a started agent, such as its Slice worktree"),
 				b("split", "open a launched agent in a pane beside you, when the human asked"),
 				dflt(f("timeout", cli.KindDuration, "how long to wait for a launched agent's adoption"), "45s"),

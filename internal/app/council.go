@@ -13,10 +13,13 @@ import (
 )
 
 // A council (summon --council, after tstack's council skill) puts one
-// request in front of one seat of a review role per harness of its routing:
-// codex, agy and claude for the built-in reviewer. Each seat is the live
-// agent of that harness in the target scope, a departed one resumed (only
-// without --cwd), or a new one started. Every seat that needs a launch is
+// request in front of one seat of a read-only role (core.ReadOnly) per
+// harness of its routing: codex, agy and claude for the built-in reviewer.
+// Each seat is the live agent of that harness in the target scope, a
+// departed one resumed (only without --cwd), or a new one started; a caller
+// of the role itself, working in the target directory, holds its own
+// harness's seat (self): a design Epic's lead architect and two more make
+// three. Every seat that needs a launch is
 // checked first, and when any of them cannot be seated nothing is mailed or
 // launched: the council reports the missing seats instead of substituting
 // another harness. The request asks each seat for a score; a later council
@@ -25,7 +28,7 @@ import (
 // SeatResult is one council seat: its harness and what the summon did for it.
 type SeatResult struct {
 	Harness core.Kind          `json:"harness"`
-	Action  string             `json:"action"` // deliver, resume, start
+	Action  string             `json:"action"` // self, deliver, resume, start
 	Handle  core.Handle        `json:"handle,omitempty"`
 	Block   string             `json:"block,omitempty"`
 	Label   string             `json:"label,omitempty"`
@@ -36,18 +39,19 @@ type SeatResult struct {
 // seat is a council seat planned before anything is mailed or launched.
 type seat struct {
 	kind core.Kind
-	live *agent      // deliver
+	live *agent      // deliver, or the caller itself (self)
+	self bool        // the caller holds this seat
 	plan *launchPlan // resume (plan.departed set) or start
 }
 
 // CouncilUsage is the usage error a council for target asks, or nil: only a
-// review role, never a handle, and never with an explicit harness.
+// read-only role, never a handle, and never with an explicit harness.
 func CouncilUsage(target, harness string) error {
 	switch {
 	case core.LooksLikeHandle(target):
-		return fmt.Errorf("%w: --council fans a review role out to its seats; %s names one agent", ErrUsage, target)
-	case !core.ReviewRole(core.Role(target)):
-		return fmt.Errorf("%w: --council is for a review role (reviewer, editor, qa), which only reads the checkout; %q is not one", ErrUsage, target)
+		return fmt.Errorf("%w: --council fans a read-only role out to its seats; %s names one agent", ErrUsage, target)
+	case !core.ReadOnly(core.Role(target)):
+		return fmt.Errorf("%w: --council is for a read-only role (reviewer, editor, qa, architect), which only reads the checkout; %q is not one", ErrUsage, target)
 	case harness != "":
 		return fmt.Errorf("%w: --council seats every harness of the role's routing; --harness names one, so use one or the other", ErrUsage)
 	}
@@ -84,12 +88,30 @@ func (e Env) council(ctx context.Context, loc Location, caller agent, r SummonRe
 	if err != nil {
 		return res, err
 	}
-	res.brief = councilBody(r.Body, role, route.Harnesses)
+	// The caller of the role, in the council's directory, holds its own
+	// harness's seat; only its Epic's lead may seat a council of its own
+	// role at all (core.GuardSummon), which reserve checks.
+	self := caller.Role == role && (r.Cwd == "" || sameDir(r.Cwd, caller.Cwd))
+	lead := false
+	if caller.Role == role {
+		if lead, err = e.sessionLead(caller); err != nil {
+			return res, err
+		}
+	}
+	var selfHandle core.Handle
+	if self {
+		selfHandle = caller.Handle
+	}
+	res.brief = councilBody(r.Body, role, route.Harnesses, selfHandle, caller.Kind)
 
 	var seats []seat
 	var missing []string
 	starts := false
 	for _, k := range route.Harnesses {
+		if self && k == caller.Kind {
+			seats = append(seats, seat{kind: k, live: &caller, self: true})
+			continue
+		}
 		live, departed := seatsOf(recs, s, caller, role, k, r.Cwd)
 		switch {
 		case len(live) > 1:
@@ -147,7 +169,7 @@ func (e Env) council(ctx context.Context, loc Location, caller agent, r SummonRe
 		if !complete {
 			return refuse("your summon chain cannot be checked: an agent that summoned you is no longer recorded, so no seat was mailed or launched")
 		}
-		if tokens, err = e.reserve(ctx, caller, s, r.Kind, chain, role, launches, r.DryRun); err != nil {
+		if tokens, err = e.reserve(ctx, caller, s, r.Kind, chain, role, launches, lead, r.DryRun); err != nil {
 			var refusal core.SummonCheck
 			if errors.As(err, &refusal) {
 				return refuse(refusal.Reason + "; no seat was mailed or launched")
@@ -167,7 +189,7 @@ func (e Env) council(ctx context.Context, loc Location, caller agent, r SummonRe
 	// Mail first, as a single summon does: a resumed seat drains it.
 	for _, st := range seats {
 		out := plannedSeat(st)
-		if out.Handle != "" {
+		if out.Handle != "" && !st.self {
 			if err := e.mailAs(ctx, caller.Handle, out.Handle, r.Kind, r.Subject, res.brief); err != nil {
 				e.release(tokens)
 				return e.councilPartial(caller, r, res, err)
@@ -238,9 +260,14 @@ func seatsOf(recs []agent, s Session, caller agent, role string, kind core.Kind,
 }
 
 // councilBody is the request every seat reads: the caller's, plus what makes
-// it a council round, the seats and the score each owes.
-func councilBody(body, role string, kinds []core.Kind) string {
-	return body + fmt.Sprintf("\n\nCouncil review: this request went to one %s seat per harness (%s), each reading the same change on its own. Put `SCORE: <n>/10` in your reply, beside your verdict.", role, strings.Join(kindNames(kinds), ", "))
+// it a council round, the seats and the score each owes, and the caller
+// when it holds its own harness's seat (self, "" when it does not).
+func councilBody(body, role string, kinds []core.Kind, self core.Handle, selfKind core.Kind) string {
+	seated := ""
+	if self != "" {
+		seated = fmt.Sprintf(" %s, which sent it, holds the %s seat itself.", self, selfKind)
+	}
+	return body + fmt.Sprintf("\n\nCouncil review: this request went to one %s seat per harness (%s), each reading the same change on its own.%s Put `SCORE: <n>/10` in your reply, beside your verdict.", role, strings.Join(kindNames(kinds), ", "), seated)
 }
 
 func handleList(recs []agent) string {
@@ -288,7 +315,7 @@ func (e Env) AwaitCouncil(ctx context.Context, loc Location, r SummonRequest, re
 	res.Handles = nil
 	for i := range res.Seats {
 		st := &res.Seats[i]
-		if st.Handle == "" {
+		if st.Handle == "" || st.Action == seatSelf {
 			continue
 		}
 		if !st.Mailed && st.Startup == core.StartupAdopted {
@@ -302,11 +329,16 @@ func (e Env) AwaitCouncil(ctx context.Context, loc Location, r SummonRequest, re
 	return nil
 }
 
-// plannedSeat is what a seat would do: deliver to its live agent, resume
-// its departed one, or start one.
+// seatSelf is the action of the seat the council's caller holds itself.
+const seatSelf = "self"
+
+// plannedSeat is what a seat would do: be held by the caller itself, deliver
+// to its live agent, resume its departed one, or start one.
 func plannedSeat(st seat) SeatResult {
 	out := SeatResult{Harness: st.kind}
 	switch {
+	case st.self:
+		out.Action, out.Handle = seatSelf, st.live.Handle
 	case st.live != nil:
 		out.Action, out.Handle = "deliver", st.live.Handle
 	case st.plan.departed != nil:

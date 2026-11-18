@@ -58,12 +58,18 @@ const EpicOpenCommand = `rex-amq-adapter epic open <name> --cwd <dir> --asked "<
 
 // GuardSummon applies the guards to a summoner at depth, with chain its
 // handles from the user's agent down to itself (itself last), wanting
-// target (a handle, or a role), with live agents in the session.
-func GuardSummon(kind string, chain []Peer, depth int, target string, live int) SummonCheck {
+// target (a handle, or a role), with live agents in the session. council
+// says the summoner is its Epic's lead at depth 0 seating a council of its
+// own role: the lead itself is not a cycle then, its seats sit at depth 1,
+// and from there any summon of the role is one again.
+func GuardSummon(kind string, chain []Peer, depth int, target string, live int, council bool) SummonCheck {
 	if !RequestKinds[kind] {
 		return SummonCheck{Refused: true, Reason: fmt.Sprintf("a %s delivers but never summons: only a request (question, review_request, todo, brainstorm) starts or resumes an agent", kind)}
 	}
-	for _, p := range chain {
+	for i, p := range chain {
+		if council && depth == 0 && i == len(chain)-1 && string(p.Handle) != target {
+			continue // the lead seating its own council
+		}
 		if string(p.Handle) == target || p.Role != "" && p.Role == target {
 			return SummonCheck{Refused: true, Reason: fmt.Sprintf("cycle: %s is already in the summon chain %s", target, chainText(chain))}
 		}
