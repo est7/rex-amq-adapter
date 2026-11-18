@@ -64,7 +64,7 @@ There is no adapter daemon.
 
 ### amq's on-disk format (read by the observer)
 
-`events --json` and `who` read amq's mailbox files directly instead of
+`stream events` and `agent list` read amq's mailbox files directly instead of
 starting `amq` for each look, so they depend on a format the adapter does
 not own (`internal/amq/mailbox.go`; amq 0.x as installed, observed
 2026-11-06):
@@ -136,9 +136,9 @@ announced. A message id is the file name under
 - Ids no longer in `inbox/new` (drained) are pruned on every ledger write.
 
 Notices contain counts and the drain command only, never message content: the
-agent reads content through the adapter's `drain`, which marks it as message
+agent reads content through the adapter's `mail drain`, which marks it as message
 data. Every notice, doorbell, start brief, guide line, and role prompt names
-the adapter's mail commands (`rex-amq-adapter drain`, `send`, `reply`), never
+the adapter's mail commands (`rex-amq-adapter mail drain --include-body`, `mail send`, `mail reply`), never
 bare `amq`: they find the caller's identity themselves, and the gateway's
 drain reads only mail its gate admitted while its send records provenance
 (Gateway, below). The doorbell, hook and start notices, and summon's briefs
@@ -202,7 +202,7 @@ agent. Adoption, in order:
 
 What an agent is for (`reviewer`, `orchestrator`) is
 `identity.role`, not part of the handle, so an agent can take a role, or
-change it, and keep its handle (`join`, below). A new agent takes the role its
+change it, and keep its handle (`agent join`, below). A new agent takes the role its
 pane label names (`rex split --label reviewer -- codex --no-daemon` → handle
 `codex-01`, role `reviewer`): lowercased, other characters folded to `-`, a
 trailing number dropped; a label the adapter wrote reads back as the role it
@@ -211,7 +211,7 @@ bare kind carry no role. A resumed or re-adopted agent keeps its identity's
 role; one that has none takes the role of a launcher-written label, never of
 a label the adapter wrote for an earlier agent in the pane
 (`core.LauncherLabel`). The role chooses the briefing and makes an orchestrator;
-notices name it beside the kind (`codex-01 (codex, reviewer)`), and `who`
+notices name it beside the kind (`codex-01 (codex, reviewer)`), and `agent list`
 shows it.
 
 Taken handles are every identity's (live, or reserved for a departed session) and
@@ -224,7 +224,7 @@ then sets the pane label, so it is visible in Rex.
 
 `<role>(<handle>) | <task>`, or `<handle> | <task>` without a
 role (`reviewer(codex-01) | fix login`), where the task is what the agent said it
-is doing (`rex-amq-adapter title "<task>"`, which the identity notice names),
+is doing (`rex-amq-adapter agent title "<task>"`, which the identity notice names),
 or for a new agent the task its launcher wrote after `|` in the pane label
 (`rex split --label "reviewer | fix login"`). A label whose head is the
 adapter's (`<kind>-<NN>` or `<role>(<kind>-<NN>)`) was written for an earlier
@@ -274,7 +274,7 @@ for it, and the tab and session already show it.
 |---|---|---|
 | Claude Code | `hookSpecificOutput.sessionTitle` from `SessionStart` and `UserPromptSubmit`, the only events that carry it; it becomes the conversation's custom title (terminal title, prompt-box rule, resume picker) | at start, then at the user's next prompt after the task changed |
 | Pi | the reply's `title`, which the extension passes to `pi.setSessionName` (terminal title `π - <label> - <dir>`, footer, `/resume`) | at the next hook, within about 30 s (the mail watcher's rescan) |
-| Antigravity | `setup` adds a `"title"` block to `~/.gemini/antigravity-cli/settings.json` whose command, `rex-amq-adapter __internal pane-title --agent agy`, agy runs on every change of its agent's state and shows as the window title. It reads only the record and prints the label, or the directory's name when the block holds no agy of its own (before its first turn) | on agy's next state change |
+| Antigravity | `install setup` adds a `"title"` block to `~/.gemini/antigravity-cli/settings.json` whose command, `rex-amq-adapter __internal pane-title --agent agy`, agy runs on every change of its agent's state and shows as the window title. It reads only the record and prints the label, or the directory's name when the block holds no agy of its own (before its first turn) | on agy's next state change |
 | Codex | not supported: its thread name can be set only through its shared daemon, which `--no-daemon` turns off | |
 
 Claude Code and Pi are pushed a title, so the adapter keeps the last one it
@@ -293,11 +293,11 @@ How far each handle's title got is tracked apart from that dedupe, in
 `title-state/<handle>` (`status`, `desired`, `offered`, under the ledger
 lock): `offered` once a hook reply carried the desired title to the agent's
 current conversation, `desired` while a change made outside such a hook
-(`title`, `join --role`) waits for the next one, and `unsupported` for Codex
+(`agent title`, `agent join --role`) waits for the next one, and `unsupported` for Codex
 and agy, whose hooks carry no conversation title; agy's window title is not
 counted as one. The Epic is read from Rex (`session inspect`) only on hooks
 that carry a title (Pi's include its 30 s mail rescan), on `SessionStart` and
-`UserPromptSubmit` of Codex and agy, and on `title` and `join --role`. The
+`UserPromptSubmit` of Codex and agy, and on `agent title` and `agent join --role`. The
 hooks that run on every tool or model call (`PostToolUse`, agy's
 `PreInvocation`) ask Rex nothing, so a renamed Epic is seen at the next
 prompt. When Rex cannot be read, the hook is
@@ -305,7 +305,7 @@ given no title and nothing is tracked, rather than a title without the Epic.
 Evidence (2026-11-05, **reproduced**): a headless Claude 2.1 run recorded
 `custom-title` `claude-probe-01` and still received the identity notice as
 context; a Pi 0.84 pane's title became `π - pi-probe-01 - work`, then the
-task's label after `title`; an agy 1.5.1 pane showed `rex-amq-adapter`, then
+task's label after `agent title`; an agy 1.5.1 pane showed `rex-amq-adapter`, then
 `agy-probe-01` once adopted, then the task's label at its next turn. The
 mechanisms are from agent-post's `docs/research/session-title-sync.md` and
 agy's documentation (antigravity.google/docs/cli/title).
@@ -329,15 +329,15 @@ roles**).
 
 | Mode | Label | Who writes it |
 |---|---|---|
-| `auto` (follower) | the pane label of the one agent in it | the adapter, at adoption, `title`, `join --role`, a departure (`park`), and every reconciliation of the session (`who`, the session's watcher) |
+| `auto` (follower) | the pane label of the one agent in it | the adapter, at adoption, `agent title`, `agent join --role`, a departure (`park`), and every reconciliation of the session (`agent collect`, the session's watcher) |
 | `manual` | whatever the user typed | the user; the adapter never writes it again |
 
-Each agent gets a tab of its own by default: `summon` opens one in the
+Each agent gets a tab of its own by default: `agent summon` opens one in the
 background (`session.new_window`, one call that labels the tab and the block)
 and records it `auto` under its launch label, `<role> | <task>`; adoption
 brings it to the agent's pane label. An Epic's orchestrator and narrator tabs
 keep Rex's placeholder name and so follow their agents too. A pane beside the
-caller (`summon --split`, `rex split`) is the user's explicit choice. A tab
+caller (`agent summon --split`, `rex split`) is the user's explicit choice. A tab
 the ledger does not know is a follower only while it shows Rex's placeholder,
 `Window ` and eight lowercase hex digits (`Window 4c6fe88d`); it is recorded
 `auto` when first seen so. A follower is renamed to its agent's pane label
@@ -345,7 +345,7 @@ while exactly one live agent is in it, beside any number of blocks without
 one (a preview, a shell). A follower of several agents that still shows the
 pane label it was last given drops to that label's task
 (`orchestrator(claude-03) | audit` becomes `audit`), since one member's label
-would read as the whole team's in `who`'s TAB column; one showing no task
+would read as the whole team's in `agent list`'s `tab`; one showing no task
 keeps its label until one agent is left. The adapter's tabs of other kinds
 (the watchdog's `overflow`) stay unrecorded and are never renamed. A follower
 whose label is neither the placeholder, the label the adapter last gave it,
@@ -434,8 +434,8 @@ placement's, so a handle's epochs only grow. `adopting` is set while the
 adoption that took the lease has not finished (section 6).
 
 `sessions` grows in lineage order: a new session in the same process
-(`/clear`) is appended and becomes the current one. `who --json`, `events
---json`, and `summon` report the current one as `agent_session_id`, with the
+(`/clear`) is appended and becomes the current one. `agent list`, `stream
+events`, and `agent summon` report the current one as `agent_session_id`, with the
 identity's `cwd` beside it. The **fence** is the Rex session the gateway places
 the handle in (`core.CanExchange`): a lease in another session moves it there
 with the next `generation`, and the handle's copies of mail sent to it before
@@ -596,7 +596,7 @@ last drew), or before that a job's current name
 | Adopting a Claude session | Its pid is `CLAUDE_PID`, the harness process. A job is adopted only into a pane whose title shows it, whatever hook asks: a hook on every tool call trusts the block of the job's record, which may be stale or an older adapter's (found on the real system after the v0.8.0 upgrade). A terminal session must be its pane's foreground, so a `claude -p` another program runs in the pane is not the pane's agent and reads none of its mail (`recordFit` compares pids exactly when the hook reports one) |
 | The doorbell for a job | Typed only while the pane's foreground is a `claude` client whose title names the job, and while the job's supervisor state is not `working`: the client reports no OSC 7501 of its own, so an emptied box confirms it |
 | A terminal session whose pane title is agent view (`claude agents`, `<n> awaiting input · claude agents`) or another conversation (a job's name, another record's handle) | Its process is now a client and its conversation moved to the background for good: it departs (`agent_left_pane`) |
-| A command in a harness's tool shell (`env`, `title`, `who`, `tab`, `join`, `events`) | See **How an agent finds its identity** below; for a job, its record counts only while its pane shows it. A job no pane shows has no identity, and its failing `env` also unsets the Rex variables |
+| A command in a harness's tool shell (`agent env`, `agent title`, `agent list`, `agent join`, `stream events`) | See **How an agent finds its identity** below; for a job, its record counts only while its pane shows it. A job no pane shows has no identity, and its failing `agent env --sh` also unsets the Rex variables |
 | SessionEnd of a job | Parks the job's own record, found by session: the supervisor may drop the job from its roster first |
 
 A conversation moved to the background keeps no handle: `--fork-session`
@@ -648,8 +648,8 @@ is not sufficient evidence.
 A Rex session holds one task (an Epic) and at most one crew; each agent in
 it has a tab of its own unless the user asked for a split, and a pane label
 names the agent's role. The session is the awareness boundary, and the tab
-only tells agents apart (`who`'s TAB column). Discovery
-through `who` lists only agents in the caller's current session, including
+only tells agents apart (`agent list`'s `tab`). Discovery
+through `agent list` lists only agents in the caller's current session, including
 itself, each with the label of its tab (the window id when unlabelled). It
 resolves the server and the block's current session through Rex, then filters
 live records against the session's current layout; an unresolved session is
@@ -665,9 +665,9 @@ the one exception is an agent recorded here that moved to another session,
 died, and could not be parked. Reconciliation is housekeeping: a failure,
 including a lifecycle lock that cannot be taken, is a warning on stderr and the
 session is still listed, with the remaining records still reconciled. Only an
-unresolved session fails `who`.
+unresolved session fails `agent list`.
 The shared AMQ root is transport, not a discovery scope; the agent guide
-uses the adapter's `who` instead of the global `amq who` directory.
+uses the adapter's `agent list` instead of the global `amq who` directory.
 Rex publishes layout events (`session_view_changed`, `block_closed`,
 `terminal.child_exited`, which `rex-durable` subscribes to), but the adapter
 subscribes to none: the moment that
@@ -686,7 +686,7 @@ the lifecycle lock, which also serialises agents that start together:
   live agent recorded in the same session. The record keeps the session and
   window its block was last seen in (`session_id`, `window_id`), because a
   crashed agent's block is already gone when collection finds it. Each session reconciliation
-  (`who`, a session watcher) writes the layout into the records.
+  (`agent collect`, a session watcher) writes the layout into the records.
 - A send to a departed handle succeeds in amq, and its mail waits for a resume
   that may never come. Sending is a tool call, so the sender's next hook reads
   its outbox past `ledger/<handle>.sent`. New mail makes it check the agents
@@ -717,7 +717,7 @@ the lifecycle lock, which also serialises agents that start together:
   fails before it replies leaves them queued.
 - Mates are advice. When the session cannot be listed, adoption stands without
   them and the failure goes to the hook log. A block moved to another session
-  is not noticed until a reconciliation or the next adoption; `who`'s listing
+  is not noticed until a reconciliation or the next adoption; `agent list`'s listing
   is always current. Until then a departure is told to the session recorded.
 
 Evidence (2026-10-29, **reproduced**): Claude, Codex, Antigravity, and Pi
@@ -733,7 +733,7 @@ of team it is and what each member does. The session's crew
 when) names the crew, and the pane label a role, which the record keeps. From
 then on the record is the role: the label is overwritten, a resumed agent may
 land in any pane, and briefing and orchestrator behaviour both read it. A
-session works as at most one crew, claimed by `join CREW` or `epic --crew`;
+session works as at most one crew, claimed by `agent join CREW` or `epic open --crew`;
 its conventions brief every agent of the session in any tab, except a
 narrator or personal agent (`core.Stealth`), which takes no part in the
 crew's work. A tab's label names no crew, whatever it reads as. An agent
@@ -744,16 +744,29 @@ learns both with its identity, at adoption:
   block's foreground process): `.agents/crews` there or above, then
   `~/.config/rex-amq-adapter/crews`, then the built-in set. The first file
   found wins whole; a crew's own `<role>.md` beats the shared
-  `roles/<role>.md`. Conventions win over a role prompt where they differ. The
-  start notice stays within 9,000 of the 10,000 characters Claude Code takes
-  from a hook (a longer one is replaced by a file path and a 2,000-character
-  preview): identity, mail commands, mates, and who stands for the human stay
-  inline, and a crew or role prompt that does not fit, or is longer than 4,000
-  characters, is named by its file instead (`core.StartNotice`).
+  `roles/<role>.md`. Conventions win over a role prompt where they differ. One
+  allocator, `core.StartNotice`, composes the start notice within
+  `StartBudget` = 9,000 UTF-16 code units of `ContextCap` = 10,000, what
+  Claude Code takes from a hook (a longer value is replaced by a file path and
+  a 2,000-character preview); the rest is kept for join notes and the mail
+  line. In order it carries identity and mail commands, session-mates, the
+  task line, the crew's conventions and the role's prompt, the lead's grant
+  receipt (Opening an Epic, section 8), a personal agent's pending hand-back
+  line, and the orchestrator-routing tail; head and tail always stay inline.
+  When it does not fit, it gives up in this order: the longer prompt becomes
+  a pointer (`<bin> crew show <crew> --role <role> --text`, or a custom
+  prompt's file), then the other prompt, then the mates list becomes a count
+  with `<bin> agent list`, then the grant receipt drops `asked_verbatim`
+  (`complete: false`); a notice still over budget is cut before its tail, which stays whole. Built-in prompts degrade
+  too: before this allocator only file-backed prompts could become a pointer.
+  A role that can start peers reads "Before you start or summon a peer, run
+  `<bin> skill show peers --text`; `<bin> skill list` lists the topics." in
+  its identity notice; a narrator and a personal agent do not.
 - A session without a crew gives role prompts only, so a reviewer started
   anywhere is still briefed. An agent without a role in such a session hears
   nothing more.
-- The built-in reviewer (borrowing tstack's `sol-loop` and `council` and
+- The built-in reviewer (borrowing tstack's single-seat review loop, here
+  `solo-loop`, its `council`, and
   pstack's `interrogate`) replies `VERDICT: APPROVE | CHANGES`, `SCORE:
   <n>/10` when the request asks (a council), and findings with ids stable
   across rounds, `S1 [blocker|should|nit] <file>:<line> <claim>. Fix: …`; a
@@ -761,20 +774,22 @@ learns both with its identity, at adoption:
   builds or tests only in a temporary detached worktree of its own, since
   council seats share one checkout.
 - Review tiers, in the `pair` conventions, the orchestrator's prompt, and
-  the embedded guide (tstack's `sol-loop` and `council`, taken as written,
-  with no round cap or default score of our own): by default one seat of
+  the guide's `review` topic (tstack's single-seat loop, here `solo-loop`,
+  and `council`, taken as written, with no round cap or default score of our
+  own): by default (`solo-loop`) one seat of
   another family, 3 rounds, extended to 5 only for security, permissions,
   auth, data loss, or state/concurrency while a `blocker` or `should` stays
   open with evidence (or when the user asks), stopping when only nits
   remain; when the user says "council" (a score after it is the bar),
-  `summon reviewer --council`, rounds until every seat is satisfied or
+  `agent summon reviewer --council`, rounds until every seat is satisfied or
   reaches that score, no editing the checkout while a seat reads it, no
   substitute for a missing seat, and a `## Council review` table of scores
   per seat and round (`no score` where none was given) in the PR description
   or the final reply. In both, fight scope creep, and an item disputed after
   two replies (or the one-seat budget's end) goes to the user with both sides.
 - Briefings are advice, like mates: a lookup that fails is logged and left
-  out. A prompt over 4 000 bytes is named by path instead of inlined.
+  out. A prompt over 4,000 bytes (`MaxInline`) is named by its pointer
+  instead of inlined.
   `SessionStart` always briefs, so an agent keeps its briefing across a
   compaction. Lazy adoption briefs only a session new to the handle, or one
   whose adoption never finished.
@@ -791,9 +806,9 @@ learns both with its identity, at adoption:
   implementer, reviewer), ship (implementer; implementer, reviewer, qa), dev
   (architect; architect, implementer, reviewer), design (architect;
   architect, architect), docs (architect; architect, writer, editor).
-  `crews` lists each crew's lead and members (its role files when it
+  `crew list` lists each crew's lead and members (its role files when it
   declares none).
-- `rex-amq-adapter join [CREW] [--role R]` makes the calling agent take a
+- `rex-amq-adapter agent join [CREW] [--role R]` makes the calling agent take a
   role where it stands: the agent the user is talking to becomes the crew's
   lead instead of briefing a new one in another tab. With CREW it claims the
   crew for its Rex session, under the lifecycle lock, and takes R or the
@@ -805,7 +820,7 @@ learns both with its identity, at adoption:
   follows it shows the new pane label. The role goes into the record under
   the lifecycle lock, an orchestrator's watcher starts, and the briefing is
   printed with the members still to start, each in a new tab
-  (`summon <role>` or `rex run --label`). Later adoptions keep the role.
+  (`agent summon <role>` or `rex run --label`). Later adoptions keep the role.
 
 ### Orchestrators
 
@@ -829,9 +844,9 @@ attendance. The crew file stays out of the role lookup, and the prompt is
   changes nobody in the run made included; an outward action or landing nobody
   authorized; a missing device, account, credential, or permission), which
   nobody works around. An orchestrator that arrives later, or an agent that takes
-  the orchestrator role with `join`, appends the same text, naming every orchestrator in
+  the orchestrator role with `agent join`, appends the same text, naming every orchestrator in
   the session, to a note for each non-orchestrator mate; that note waits for the mate's
-  next prompt, so an idle peer learns it only then. `join` adds it to the
+  next prompt, so an idle peer learns it only then. `agent join` adds it to the
   briefing it prints for any other role. `roles/orchestrator.md` says the same from the orchestrator's side, with the
   brief's reserved sign-offs added to the closed set.
 - Departure (`park`) also mails every live orchestrator in the record's session,
@@ -848,7 +863,7 @@ attendance. The crew file stays out of the role lookup, and the prompt is
   detached `__internal watch <server> <session>` that reconciles the session
   every 5 s, runs the watchdog for each live orchestrator, and tells a live
   narrator what changed (see Narrator, section 8). One `flock` per session keeps
-  it single; adoption, `join`, and the end of a turn (`Stop`, Pi's settle) of an
+  it single; adoption, `agent join`, and the end of a turn (`Stop`, Pi's settle) of an
   orchestrator or narrator start it when missing. It belongs to the session, so
   it outlives an orchestrator while a narrator stays, and exits when neither is
   live, or after a minute of failed looks, since without a Rex server it would
@@ -876,8 +891,8 @@ orchestrator stays silent; the watcher ends with its agent. Real agents: section
 
 ### Summon on send
 
-`rex-amq-adapter summon <handle|role> --subject S --body B [--kind K]
-[--grant FILE | --asked "WORDS"] [--harness H] [--cwd DIR] [--split]` (`app.Env.Summon`,
+`rex-amq-adapter agent summon <handle|role> --subject S --body B [--kind K]
+[--grant FILE | --asked "WORDS"] [--harness H | --council] [--cwd DIR] [--split] [--dry-run]` (`app.Env.Summon`,
 guards in `core.GuardSummon`) lets an agent address a peer that may not be
 running. The target is resolved in the caller's Rex session:
 
@@ -950,7 +965,7 @@ refuses with every reason and never falls back to the caller's family. An
 explicit `--harness` is never swapped, and for a role without `--cwd` it passes over every agent
 of the role on another harness, live or departed: none is mailed or resumed, and a new agent
 starts on the named one (F10: a stuck Codex reviewer no longer answers for
-`summon reviewer --harness agy`). The preflight refuses Codex with
+`agent summon reviewer --harness agy`). The preflight refuses Codex with
 `unapproved_hooks` when a hook in its `hooks.json` lacks the user's `/hooks`
 approval or changed since (`install.CodexHooksNeedingReview`, a read-only
 port of Codex's `trusted_hash`: sha256 of the sorted compact JSON of the
@@ -965,7 +980,7 @@ action, handles, block, reason, grant, asked, and for a start `harness` and
 `passed_over`), and the command's own JSON line carries `harness` and
 `passed_over` too.
 
-`summon <review-role> --council` (`app.Env.council`, after tstack's
+`agent summon <review-role> --council` (`app.Env.council`, after tstack's
 `council` skill) puts one request in front of one seat per harness of the
 role's routing (`route.Harnesses`; codex, agy, claude for the built-in
 reviewer), the caller's own family included, since a council wants every
@@ -992,7 +1007,7 @@ command after fixes reaches the live seats again: the next round. The round
 loop itself, the score bar, and the `## Council review` table are the
 caller's, in the prompts (Crews and roles: review tiers).
 
-The guards hold for `summon` only. An agent started by hand (`rex split`,
+The guards hold for `agent summon` only. An agent started by hand (`rex split`,
 `rex run`) has no token: it is recorded at depth 0, as the user's own
 agent would be, and is not counted against the cap before it starts.
 
@@ -1095,9 +1110,9 @@ stood by.
 ### How an agent finds its identity
 
 Every command resolves the caller's record itself (`Caller`), so an agent runs
-`rex-amq-adapter drain`, `send` or `reply` with no setup. No identity files.
-The same resolution places `title`, `who`, `tab`, `join`, `events` and the
-managed mail verbs. `rex-amq-adapter env` prints `export AM_ROOT=… AM_ME=…`
+`rex-amq-adapter mail drain`, `mail send` or `mail reply` with no setup. No identity files.
+The same resolution places `agent title`, `agent list`, `agent join`, `stream events` and the
+managed mail verbs. `rex-amq-adapter agent env --sh` prints `export AM_ROOT=… AM_ME=…`
 from it, for a person or a script that runs raw `amq`, with `ME_UNATTENDED=1`
 added for an unattended agent (An Epic runs unattended).
 
@@ -1116,20 +1131,20 @@ names whichever pane started the process hosting the session. So:
 
 A record located by session rather than by `REX_BLOCK` comes with
 `export REX_BLOCK=… REX_SESSION=…` for its own pane, so `rex split` places a
-peer beside it. A failing `env` prints `false`, because `eval ""` succeeds and
+peer beside it. A failing `agent env --sh` prints `false`, because `eval ""` succeeds and
 `eval "$(… env)" && …` would carry on.
 
-### Observing: `rex-amq-adapter events --json`
+### Observing: `rex-amq-adapter stream events`
 
 A read-only stream of one
 scope for a dashboard or another tool: the caller's session by default,
 `--session S`, `--tab` (the caller's tab), or `--all` (every record of the
 server, so a handle that is offline in another Rex session is found here;
-`who` stays on the caller's session). It takes no adapter lock and writes nothing (no record, ledger,
+`agent list` stays on the caller's session). It takes no adapter lock and writes nothing (no record, ledger,
 log, injector wrapper, or lock file; tested by comparing the state
 directory before and after), and never collects or supervises, so watching
 cannot change what happens to an agent. The same projection
-(`core.Project`) renders `who`.
+(`core.Project`) renders `agent list`.
 
 - Entities: agents keyed by handle (record, placement and tab, pane
   `present`/`gone`, role, task, `agent_session_id` (the newest of the
@@ -1163,9 +1178,9 @@ cannot change what happens to an agent. The same projection
   in a mailbox the stream first sees later is not told as an event, though
   the message shows its state.
 
-### The human's panel: `rex-amq-adapter panel --json`
+### The human's panel: `rex-amq-adapter stream panel`
 
-`panel --json [--session S]` (`app.Env.Panel`) is the session-scope events
+`stream panel [--session S]` (`app.Env.Panel`) is the session-scope events
 stream with the session's panel added, for the human's floating panel
 (`rex-amq-ui`), which reads no state file itself. It reads as `events` does:
 no lock, no mail moved, no receipt, no byte written under the state
@@ -1187,7 +1202,7 @@ content hash).
   read with the layout on the Rex tick; a session Rex cannot describe keeps
   its last label); `crew` (`crew.json`'s `crew`, `claimed_by`, `claimed_at`,
   plus `lead` and `members` from the crew definition the Epic's recorded
-  directory (`lifecycle.json`'s `dir`, where `epic --crew` resolved it) sees,
+  directory (`lifecycle.json`'s `dir`, where `epic open --crew` resolved it) sees,
   or, in a session with none recorded, the claiming agent's directory; left
   out when it does not resolve there); `attention` (handle to
   `turn_error@<ts>`, `waiting_on_the_human@<ts>`, `stalled@<ts>` for every
@@ -1195,7 +1210,7 @@ content hash).
   `waiting_on_the_human` appears only once the blocked look has told the
   episode, after 30 s, and carries when it began; the
   narrator's `attention`, which needs no narrator); `view` (as
-  `view --cockpit --session` reads it: view.json through `withStored`, or
+  `epic show` reads it: view.json through `withStored`, or
   the lifecycle alone with a `no_view` gap; a session with a hand-back but
   neither a view nor a lifecycle reads as that hand-back alone, with the same
   gap); `cockpit`, only when the session holds a live personal record (`[]`
@@ -1209,7 +1224,7 @@ content hash).
   `value` the whole projection, and `changed` its top-level fields that
   differ. The view's `as_of` cursor and its obligations' `age_seconds`,
   which move with every narrator refresh, are left out of the comparison,
-  so a quiet session sends only heartbeats. `events --json` never carries a
+  so a quiet session sends only heartbeats. `stream events` never carries a
   panel.
 
 ## 5. Typed doorbell (injector)
@@ -1264,7 +1279,7 @@ lease is collection's.
 A doorbell deferred again and again is the one delivery failure that is
 otherwise silent: mail waits durably, the sender waits for a reply, and
 nothing reports that, say, an agent update changed its input box so every
-attempt ends `box_not_found`. `who` therefore shows each agent's latest
+attempt ends `box_not_found`. `agent list` therefore shows each agent's latest (`delivery.doorbell`)
 outcome and how long the same outcome has repeated (`core.DoorbellSummary`), and
 the agent guide tells a sender to read it before writing again. With no unread
 mail it shows `-` unless the last doorbell was accepted: a deferral that mail
@@ -1326,7 +1341,7 @@ has nothing to say. Its peers start, and resume, with
 asks before each `amq` command, and outside auto mode it may stop in plan
 mode for a review no unattended run gives (F17).
 
-**Pi** has no command hooks. `setup` installs a small JavaScript extension
+**Pi** has no command hooks. `install setup` installs a small JavaScript extension
 (`~/.pi/agent/extensions/rex-amq-adapter.js`, or under `PI_CODING_AGENT_DIR`)
 that holds no policy: it runs `rex-amq-adapter hook <event> --agent pi` with a
 JSON payload (`session_id`, `agent_pid` = `process.pid`, `stop_hook_active`) and
@@ -1386,7 +1401,7 @@ lock, and a `SessionStart` can run out of time: in a crew launch (2026-10-29,
 **reproduced**) Codex's start was killed mid-adoption and its first turn
 ended inside the minute, so it idled with no mailbox until the next prompt.
 
-**Waiting for a started peer.** `rex-amq-adapter await <block>` polls every
+**Waiting for a started peer.** `rex-amq-adapter agent await <block>` polls every
 250 ms and prints one JSON line: `adopted` with the handle once the adoption
 finished, `trust_screen`
 (a folder-trust, hooks, settings, or project MCP-server approval dialog on the block's screen), `blocked` (the program reports
@@ -1434,8 +1449,8 @@ because it runs inside an adoption's hook budget. "Left" notes are advice and
 go once.
 
 **Garbage collection** runs over every record before every adoption and on
-`rex-amq-adapter collect`; `rex-amq-adapter who` and a session watcher run it only
-for their tab, and it finishes unfinished departures. A lease whose block is gone or now runs
+`rex-amq-adapter agent collect`; a session watcher runs it only
+for its session, and it finishes unfinished departures. A lease whose block is gone or now runs
 a different foreground process is released like a departure (waker retired,
 the lease archived into `last_placement` with the binding check's code,
 session-mates told it left); an identity whose agent departed more than 7 days
@@ -1445,7 +1460,7 @@ cannot be reached leaves its leases alone, since absence cannot be proven. The
 departed identity itself is the reservation: while it exists its handle is
 taken for new names, and its sessions get the handle back on resume. Past 7 days a
 resumed session is named afresh, and peers that still address the old handle
-find it missing from `who`. Mailboxes are kept; collection of old mailboxes is
+find it missing from `agent list`. Mailboxes are kept; collection of old mailboxes is
 out of scope for the first version.
 
 The injector never retires its own waker. A waker whose agent is gone keeps
@@ -1458,9 +1473,10 @@ waker) checks it and brings back a dead one; an independent review killed a
 waker, delivered mail to the idle agent, and saw nothing ring until this was
 added (executed). A waker that dies mid-turn is revived at that turn's end; one
 that dies while the agent sits idle is revived at its next turn or session
-start, or by `who` in its session, which a sender runs when a peer stays silent
-(reproduced in `internal/e2e`). `who` holds the lifecycle lock for at most 1.5 s
-doing so: a waker that will not come up must not stall every tab's adoption.
+start, or by a `mail send` to it, which checks each recipient's waker after it
+delivers, or by `agent collect` in its session. `agent list` only reads and
+repairs nothing. The repair is bounded: a waker that will not come up must not
+stall the send or every tab's adoption.
 Global collection does not check wakers: it runs inside every adoption's hook
 budget. The hook timeouts and the adapter's budgets come
 from one table (`install.hookTimeouts`).
@@ -1506,13 +1522,24 @@ Rex kept:
 
 ## 7. Installation
 
-`rex-amq-adapter setup|status|remove [--agent claude|codex|agy|pi] [--dry-run] [--json]`,
-modeled on `rex skill`:
+`rex-amq-adapter install setup|status|remove [--agent claude|codex|agy|pi] [--force] [--dry-run]`,
+modeled on `rex skill`. `install setup` and `install remove` are the human's
+(`human_only`: an agent, a process under one, or `ME_UNATTENDED=1` gets
+`guard_denied`, exit 6); `install status` reads only.
 
 - **Skill**: a stub `SKILL.md` in `~/.claude/skills/rex-amq-adapter` and
-  `~/.agents/skills/rex-amq-adapter` whose body runs
-  `rex-amq-adapter __internal skill`. The guide ships inside the binary, so an
-  upgrade updates what agents read.
+  `~/.agents/skills/rex-amq-adapter`: frontmatter, the guide's topic index
+  (generated from each topic's frontmatter, at most 1.5 KiB), and "Run
+  `<bin> skill show <topic> --text`". The guide is 10 topics embedded in the
+  binary (`internal/guide/topics/NN-<topic>.md`, frontmatter `topic` and
+  `summary`, each at most 8 KiB): `identity`, `task-label`, `mail`, `peers`,
+  `crews`, `review`, `epics`, `summon`, `rex`, `rules`. `skill list` returns
+  the index, `skill show <topic> --text` one topic, and `skill show` with no
+  topic the index; an unknown topic exits 4 (`not_found`, `details.kind=topic`,
+  `details.topics`, `next_action: rex-amq-adapter skill list`). Topic bodies
+  always come from the running binary, and `install status` reports the stub
+  `outdated` when it differs from what that binary generates (after a `brew
+  upgrade`, say).
 - **Pi**: the extension file carries a marker line like the skill stub, so a
   same-named extension without it is foreign: kept by setup (unless `--force`)
   and by remove. Pi reads `~/.agents/skills`, which it shares with Codex; the
@@ -1532,7 +1559,7 @@ modeled on `rex skill`:
   every hook after it (executed).
 - **Status vocabulary**: `current`, `outdated`, `missing`, `foreign`.
   A foreign skill of the same name is reported as a conflict and kept unless
-  `--force`. `remove` deletes only what setup installed.
+  `--force`. `install remove` deletes only what setup installed.
 - Codex requires approving new hooks in `/hooks`; setup prints this.
 - **Supervisors**: the `supervisor` item turns off what runs sessions in a
   shared process another terminal started (section 4): `"disableAgentView":
@@ -1549,7 +1576,7 @@ modeled on `rex skill`:
   edit by hand. It is `current` when off (for Claude also through managed
   settings or `CLAUDE_CODE_DISABLE_AGENT_VIEW` in an `env`), `missing` when
   unset, and `foreign` when the user set it on, which setup keeps unless
-  `--force`. `remove` keeps it: setup cannot tell whether the user
+  `--force`. `install remove` keeps it: setup cannot tell whether the user
   wanted it off anyway, and turning a supervisor back on would bring the
   misplaced sessions back. A running Codex daemon is not stopped.
 - **Native task-list tools**: the `tasks` item enables each harness's native
@@ -1557,7 +1584,7 @@ modeled on `rex skill`:
   "1"` under `"env"` in Claude Code's `settings.json`, and `enabled = true`
   under `[tools.update_plan]` in Codex's `config.toml`), using the same
   order-preserving JSON merge and go-toml-checked line edits, `--force`
-  handling, and `remove` retention (`kept`) as `supervisor`.
+  handling, and `install remove` retention (`kept`) as `supervisor`.
 - The agent guide carries every Rex command it uses (opening a peer in a pane,
   tab, or session; reading a peer's screen and status). It does not depend on
   Rex's own skill, so an agent needs one skill lookup, not two.
@@ -1586,15 +1613,15 @@ Overridable with `REX_AMQ_ADAPTER_HOME` (tests use a temporary directory).
 │       ├── provenance/<msg_id>.json        sender and recipients (session, generation) at sending, op, system
 │       ├── provenance/pending/<token>.json the same before amq returned the id
 │       ├── quarantine/<handle>/<msg_id>.md (+ .json reason)  mail the gateway took out of an inbox
-│       ├── notifications/<sha256(event id)>.json  the doorbell notify-personal sent for an event (dedup)
-│       ├── notifications.lock      held while notify-personal looks up and sends one event
+│       ├── notifications/<sha256(event id)>.json  the doorbell hub notify sent for an event (dedup)
+│       ├── notifications.lock      held while hub notify looks up and sends one event
 │       ├── sessions/<session_id>/view.json  the session's view, written whole by its narrator
 │       ├── sessions/<session_id>/pulse.json what the session's watcher last told the narrator
-│       ├── sessions/<session_id>/crew.json  the crew the session works as (join CREW, epic --crew)
-│       ├── sessions/<session_id>/policy.json the Epic's external-write policy (epic; ME_UNATTENDED)
-│       ├── sessions/<session_id>/hand-back.json the orchestrator's latest hand-back, whole, with seq and digest (hand-back)
+│       ├── sessions/<session_id>/crew.json  the crew the session works as (agent join CREW, epic open --crew)
+│       ├── sessions/<session_id>/policy.json the session's policy: Hub or Epic, lead_role and lead_handle, external writes (epic open; ME_UNATTENDED)
+│       ├── sessions/<session_id>/hand-back.json the lead's latest hand-back, whole, with seq and digest (epic handback)
 │       ├── sessions/<session_id>/lifecycle.json the Epic's lifecycle: partial_start, opened, hand_back, closed
-│       ├── sessions/<session_id>/goal.md     a goal contract piped in with epic --goal - (0444, written once)
+│       ├── sessions/<session_id>/goal.md     a goal contract piped in with epic open --goal - (0444, written once)
 │       ├── sessions/<session_id>/grant.json  the Epic's notarized grant: asked, relayed_by, relayed_at, contract, contract_sha256 (0444, written once)
 │       ├── sessions/<session_id>/grant.md    the same grant for agents to read, the user's words quoted verbatim (0444)
 │       └── epic-ops/<open|close>-<sha256(op_id)>.json  one epic or epic close --op-id request and how far it got
@@ -1632,30 +1659,30 @@ Overridable with `REX_AMQ_ADAPTER_HOME` (tests use a temporary directory).
 One AMQ root holds every Epic (a Rex session) and every Personal agent
 (`core.CanExchange`). Members of one
 Epic mail each other; Epics never do. A `personal` agent and the `narrator` of
-an Epic its session is linked with (`link`/`unlink`) mail each other, and
+an Epic its session is linked with (`epic link`/`epic unlink`) mail each other, and
 nothing else crosses sessions. The narrator takes no member mail, only the
 adapter's own notices (provenance `system`, never a header label or a sender
 named `system`); its one message into the Epic is a control directive to the
 Epic's lead (`Endpoint.Lead`, which the app layer marks with `sessionLead`:
 the agent of the session policy's `lead_role` nobody summoned, and once
-adopted its `lead_handle`) carrying a request id, sent with the managed `send --control
+adopted its `lead_handle`) carrying a request id, sent with the managed `mail send --control
 <request id>` (the only path that records `op: control`, and refused to any
 caller but a narrator; a plain send from a narrator is refused). A handle the adapter never adopted (the
 user, a script) still reaches ordinary members, never a narrator or a Personal
 agent. A member's send refused for `personal_reaches_only_a_linked_narrator`
 names the path that does reach the personal agent: an Epic lead's
-`rex-amq-adapter hand-back @<file>`, which the narrator relays. A move of a handle to another session starts a generation
+`rex-amq-adapter epic handback @<file>`, which the narrator relays. A move of a handle to another session starts a generation
 (`Record.Generation`), and mail addressed to an earlier one is fenced.
 
-The adapter applies the policy where it sends (`summon`, notices, and the
-managed `send`/`reply`), where mail arrives (the injector, the session-start
+The adapter applies the policy where it sends (`agent summon`, notices, and the
+managed `mail send`/`mail reply`), where mail arrives (the injector, the session-start
 and announce hooks, before a Pi extension is handed the inbox: refused mail
 moves to the quarantine, unread and with no receipt), and on the managed
-`read`, `drain`, `thread`, `trace`, `dlq read`, and `list`. For a placed agent
+`mail read`, `mail drain`, `mail thread`, `mail trace`, `mail dlq read`, and `mail list`. For a placed agent
 the arrival gate fails closed: a file whose header cannot be read is
-quarantined (headers are read whole, as amq reads them). A managed `drain`
+quarantined (headers are read whole, as amq reads them). A managed `mail drain`
 reads by exact id only the mail its own gate admitted, one drain per agent at
-a time; a managed `trace` shows only evidence about messages the caller may
+a time; a managed `mail trace` shows only evidence about messages the caller may
 read, in their senders' and recipients' mailboxes. What an agent sent from a
 placement it has left is fenced from it too. Each send records its provenance
 under a token in the message's context before amq delivers it, so an arrival
@@ -1668,10 +1695,10 @@ handle its header names, so `amq send --me <personal> --to <personal>` is not
 the Personal agent's own mail. Ordinary members still take it as before
 (`sender_outside_rex`, `self`, `same_epic`).
 
-### notify-personal
+### hub notify
 
-`rex-amq-adapter notify-personal --ref inbox:<id>|timer:<id> --event-id <id>
-[--hub DIR] [--personal HANDLE] [--summary TEXT]` is the one way a producer
+`rex-amq-adapter hub notify --ref inbox:<id>|timer:<id> --event-id <id>
+[--hub DIR] [--personal HANDLE] [--summary TEXT] [--dry-run]` is the one way a producer
 outside Rex (an Inbox entry, a launchd Timer tick) reaches a Personal agent
 (spec claim C16). It acts as no agent and resolves no caller: the adapter
 collects first (so a crashed pane is parked), takes every live, placed
@@ -1707,10 +1734,10 @@ another `--me` names any sender. `events` only reads and applies no gate.
 
 ### Opening an Epic
 
-`rex-amq-adapter epic <name> -c DIR [--goal FILE|-] [--asked "WORDS"] [--crew C]`
+`rex-amq-adapter epic open <name> --cwd DIR [--goal FILE|-] [--asked "WORDS"] [--crew C]`
 (`app.Env.OpenEpic`) is the whole start, so a personal agent runs one command
 and its user sees no steps. It refuses a caller that is not a live `personal`
-agent, and needs a grant as `summon` does: a goal contract, which the lead's
+agent, and needs a grant as `agent summon` does: a goal contract, which the lead's
 brief runs (make-goal's prompt for a contract in a file, whole, so the run
 ends at either of its exits, `/goal`-prefixed for Claude Code), or the user's
 own words, which become the brief when there is no contract; both may be
@@ -1727,11 +1754,24 @@ one and a second writer cannot replace it); an `--op-id` replay keeps the
 first run's grant and writes only what is missing. Rex assigns the session id
 in `session.create`, after the lead's command line is fixed, so its brief
 cannot name these files: the lead's start notice does instead
-(`grantNotice`, `core.GrantNotice`), ending with `Goal: <contract>` and
-`Grant: <grant.md> (user's words relayed verbatim by personal <handle>,
-recorded by rex-amq-adapter)`, and a piped contract's brief points the lead
-at that `Goal:` line. Only an orchestrator nobody summoned or a pair lead
-gets the lines. `EpicResult` and `SessionView` carry `goal_path` and
+(`grantNotice`), ending with a grant receipt (`core.GrantReceipt`) and the
+`Goal: <contract>` and `Grant: <grant.md> (user's words relayed verbatim by
+personal <handle>, recorded by rex-amq-adapter)` lines, and a piped
+contract's brief points the lead at that `Goal:` line. Only the Epic's lead
+(`sessionLead`, below) gets them, built from the stored grant record, never
+from mail. The receipt lists `relayed_by`, `relayed_at`, `grant_path`,
+`contract_path` and `contract_sha256` (`(none)` without a contract),
+`contract_sha256_ok`, `complete`, and `asked_verbatim`: each line of the
+user's words prefixed `> `, with control, bidi, and ANSI characters shown as
+visible escapes (`\u202e`, `\x1b`), so no line can pose as `Grant:`,
+`Goal:`, or `AMQ:`. `contract_sha256_ok` is recomputed from the contract's
+bytes when the notice is composed. `complete` is true only when the whole
+receipt fits the start budget and the contract checks out (a grant without a
+contract has nothing to check); otherwise `asked_verbatim` is left out
+entirely, never truncated, since a cut restriction reads as a wider grant,
+and `next_action: rex-amq-adapter epic grant <session_id>` tells the lead to
+read the whole grant first. The receipt shows that the adapter recorded the
+personal agent's relay; it is not the user's signature. `EpicResult` and `SessionView` carry `goal_path` and
 `grant_path`. One
 `session.create` makes the Epic's Rex session, labelled with the whole name
 (pane labels shorten it to their task width), with two windows, all or none: the narrator's tab,
@@ -1771,7 +1811,7 @@ materialize` writes byte for byte for the linked personal agent or the
 user. The narrator wakes on its hand-back and its
 departure as on an orchestrator's (the pulse is role-blind), and the gateway
 takes the pair lead as the Epic's control plane: `gatewayEndpoint` marks it
-`Lead`, so a narrator's `send --control` reaches it (`narrator_control`)
+`Lead`, so a narrator's `mail send --control` reaches it (`narrator_control`)
 while one to any other implementer is refused
 (`narrator_never_mails_workers`). The session watcher runs its watchdog
 for the lead whatever its role.
@@ -1790,9 +1830,9 @@ in each launched command's own `env` prefix (`withUnattendedEnv`), never
 assumed from a pane inheriting the adapter's environment, which Rex panes do
 not:
 
-- `epic` sets it on both the narrator's and the orchestrator's (a pair Epic's
+- `epic open` sets it on both the narrator's and the orchestrator's (a pair Epic's
   implementer's) command.
-- `summon`'s start and resume (`launchUnattended`) set it on every target
+- `agent summon`'s start and resume (`launchUnattended`) set it on every target
   that is not `personal` when the target is an orchestrator or narrator, the
   caller or the departed agent is recorded unattended, or the session has an
   unattended policy. An unreadable policy starts nothing (the reservation is
@@ -1801,7 +1841,7 @@ not:
 - Adoption (`adoptUnattended`) records `store.Identity.Unattended` on an agent
   that is not `personal` when its hook's environment carries the marker, the
   handle ran unattended before, or its session's policy is unattended.
-- `rex-amq-adapter env` adds `ME_UNATTENDED=1` to its export line for such a
+- `rex-amq-adapter agent env --sh` adds `ME_UNATTENDED=1` to its export line for such a
   record.
 
 A `personal` agent never gets the marker: nothing sets, reads, or clears it
@@ -1818,9 +1858,9 @@ roles, and workers of an unattended caller, get the marker.
 
 Nothing closes an Epic on its own: a hand-back can leave items only the user
 can act on, and a killed session's screens are gone for good. The end has two
-phases. The orchestrator records its final report, whole, with
-`rex-amq-adapter hand-back TEXT|@FILE|-` (`app.Env.RecordHandBack`: a live
-orchestrator placed in a session only, a non-empty body of at most 256 KiB,
+phases. The Epic's lead records its final report, whole, with
+`rex-amq-adapter epic handback TEXT|@FILE|-` (`app.Env.RecordHandBack`: a live
+lead (`sessionLead`) placed in a session only, a non-empty body of at most 256 KiB,
 refused rather than cut). It is written atomically to
 `sessions/<id>/hand-back.json` (`store.HandBack`: `by`, `at`, `body`,
 `seq`, `digest`), replacing the one before only once the Epic's lifecycle
@@ -1838,7 +1878,7 @@ one takes the next `seq` (a file from before `seq` counts as the first). Under
 hand-back backfilled when an earlier failure left it out), which numbers
 the hand-backs: a new report takes the `seq` after its latest, and a `seq`
 never changes its digest. The lifecycle moves to `hand_back`:
-the narrator's refresh writes it into `view.json`, and every `view` read puts
+the narrator's refresh writes it into `view.json`, and every `epic show` read puts
 the stored one in place in memory, so it is whole the moment it is recorded.
 The session's pulse marks its author with the hand-back's time and a digest
 of its body (`core.PulseMember.HandBack`), which the watcher reads from that
@@ -1886,7 +1926,7 @@ Its writers hold `epic-lifecycle.lock`, taken before the lifecycle lock
 wherever both are held. These records are written at the edges; what Rex
 shows is read live.
 
-`epic --op-id ID` and `epic close --op-id ID` each keep an operation record,
+`epic open --op-id ID` and `epic close --op-id ID` each keep an operation record,
 `epic-ops/<kind>-<sha256(ID)>.json` (`store.EpicOpRecord`), whose
 `request_hash` is a SHA-256 of the request's identity as JSON: for an open,
 the caller's session key, the name, the symlink-resolved directory, the goal
@@ -1937,7 +1977,7 @@ own. A direct session the user started is never an Epic to close.
 ### Retiring a peer
 
 An agent closes a finished peer of its own Rex session with
-`rex-amq-adapter retire <handle> [--force]` (`app.Env.Retire`). A raw
+`rex-amq-adapter agent retire <handle> [--force]` (`app.Env.Retire`). A raw
 `rex block close` reads as a crash: collection finds the block gone, parks
 the record as `block_gone`, mails the orchestrator that the peer "quit,
 crashed, or its pane closed", and the narrator's pulse raises an urgent
@@ -1969,7 +2009,7 @@ crashed, or its pane closed", and the narrator's pulse raises an urgent
    collection that follows find a departed record and do nothing. A close
    that fails leaves the departure standing, exits non-zero, and names the
    block for `rex block close <block>`. The agent still runs then, and its
-   next turn takes its handle back like any resume; once `who` lists it
+   next turn takes its handle back like any resume; once `agent list` lists it
    again, retiring it again closes it quietly.
 
 Each Rex call made under the lock (the rest check, the look, the close) is
@@ -1990,14 +2030,14 @@ crash between two looks) is an urgent `left`. The handle stays reserved
 ### Narrator
 
 A `narrator` (`core.Stealth`, like a `personal` agent) observes its Epic
-without taking part. It is nobody's mate: `who` (but not `who --all`), start
+without taking part. It is nobody's mate: `agent list` (but not `agent list --all`), start
 notices, join and leave notes, departure mail, error routing, the watchdog,
 the cross-family takeover, and the summon cap all leave it out. `summon
 narrator` opens it in a background tab of its own, which follows it like
 any agent's.
 
 It observes in two tiers, neither of which moves a message, writes a receipt,
-or reads a mailbox as its owner (`view refresh`):
+or reads a mailbox as its owner (`epic refresh`):
 
 1. Envelopes: the session's agents, their recent mail headers, and the open
    obligations `amq thread open --owed-by/--owed-to --json` finds without
@@ -2007,7 +2047,7 @@ or reads a mailbox as its owner (`view refresh`):
    outbox sent), only for messages whose send-time provenance places sender
    and every recipient in the session. By default that is the Epic lead's
    control-plane mail (mail its orchestrator, or a pair Epic's implementer
-   lead, sent or received: the `lead` the provenance recorded); `view read --ids` reads named peer mail on demand.
+   lead, sent or received: the `lead` the provenance recorded); `epic messages --ids` reads named peer mail on demand.
 
 What was not read is listed in `coverage_gaps` (`peer_mail_body_not_read`,
 `unverified_provenance` for mail sent without the adapter, `other_session`,
@@ -2016,15 +2056,15 @@ What was not read is listed in `coverage_gaps` (`peer_mail_body_not_read`,
 excerpts, gaps, limits, the narrator's own `--summary`, and the
 orchestrator's recorded `hand_back`, uncut) is written whole; the
 narrator, the session's orchestrator, a pane with no agent in that session,
-and a personal agent linked to the Epic read it with `view`; anyone else is
+and a personal agent linked to the Epic read it with `epic show`; anyone else is
 refused. Every read puts the stored hand-back and the Epic's `lifecycle` in
 place in memory.
 
 ### Cockpit
 
-`view --cockpit [--session S] [--personal H] [--hub DIR]`
-(`app.Env.ReadCockpitView`) is the human's, or a personal agent's, read-only
-view of one personal agent's Epics. Its scope is one live `personal` record
+`epic list [--personal H] [--hub DIR]` and `epic show [S]`
+(`app.Env.ReadCockpitView`) are the human's, or a Hub personal agent's, read-only
+view of a Hub's Epics. Its scope is one live `personal` record
 and the Epics linked to it; it moves no mail, writes no receipt, and starts
 nothing. A pane or shell with no agent in it is not trusted for being one
 (C20: `!hasAgent` is no authorization), and every gate must pass:
@@ -2074,7 +2114,7 @@ yet" on its first turn, which held the personal agent's Stop hook.
 ## 9. Module layout
 
 ```
-cmd/rex-amq-adapter/   subcommands: hook, inject, env, title, who, events, panel, await, collect, crews, tab, trust, summon, epic, notify-personal, view, hand-back, join, send, reply, read, drain, thread, trace, dlq, list, link, unlink, setup, status, remove, __internal, version
+cmd/rex-amq-adapter/   the v:2 nouns (agent, mail, epic, hub, crew, trust, stream, install, skill, schema, version) on one CommandSpec registry (commands.go), plus the internal callbacks hook, inject, and __internal
 internal/app/          entry points: observe, ask core, act (adopt, inject, announce, depart, collect, discovery, await, session watcher, narrator view, and watchdog, summon, join, the events and panel streams); who runs a command (Caller); the hook's process ancestry (golang.org/x/sys)
 internal/core/         pure policy: the gateway (CanExchange), handle choice, roles and pane labels, inject decision, announce decision, session-mates, notice text, the observer's projection and diff
 internal/crew/         crew and role prompt lookup across project, user, and built-in layers; crew headers (lead, members); built-in prompts; routing.toml, each role's harnesses, models, and efforts
