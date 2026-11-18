@@ -18,6 +18,7 @@ import (
 
 	"github.com/est7/rex-amq-adapter/internal/core"
 	"github.com/est7/rex-amq-adapter/internal/fsutil"
+	"github.com/est7/rex-amq-adapter/internal/guide"
 )
 
 // Agent is one harness and where its skill and hooks live.
@@ -332,12 +333,17 @@ const stubMarker = "rex-amq-adapter-stub"
 // Description stays under 400 characters and keeps the trigger phrases.
 const skillDescription = `Talk to other coding agents in Rex terminals over AMQ. Use when an AMQ notice or doorbell arrives ("AMQ: … unread message(s) for <handle>", "you are <handle> in Rex"); when the user asks to send, ask, or reply to another agent in Rex, or to start a peer agent and hand it work ("开个 codex 审一下", "spin up a reviewer"); or for your AMQ identity. Outside Rex it does not apply.`
 
+// stub is the SKILL.md setup installs: frontmatter, the guide's index as
+// this binary generates it, and how to read a topic. The topics themselves
+// always come from the running binary; Status compares an installed stub
+// with this one, so a binary upgraded without a new setup reads outdated.
 func stub(self string) string {
 	return "---\nname: " + skillName + "\ndescription: " + yamlQuote(skillDescription) + "\nmetadata:\n  " + stubMarker + ": \"1\"\n---\n" +
 		"<!-- Installed by \"rex-amq-adapter install setup\". Remove it with \"rex-amq-adapter install remove\". -->\n\n" +
-		"Run `" + self + " skill show --text` and follow the guide it prints. The guide ships\n" +
-		"inside the installed adapter, so it matches the version that delivers your mail.\n\n" +
-		"If the command fails, the adapter is not installed at that path: tell the user to\n" +
+		"# rex-amq-adapter\n\n" +
+		"The guide ships inside the installed adapter, so it matches the version that delivers your mail. " +
+		guide.Index(self) +
+		"\nIf the command fails, the adapter is not installed at that path: tell the user to\n" +
 		"run `rex-amq-adapter install setup` again, and stop.\n"
 }
 

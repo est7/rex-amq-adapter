@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
+	"github.com/est7/rex-amq-adapter/internal/guide"
 )
 
 // A settings file with someone else's hooks and keys in a deliberate order.
@@ -542,5 +543,43 @@ func TestStopFailureUpgradeAndRemoval(t *testing.T) {
 	}
 	if strings.Contains(read(t, codexFile), "StopFailure") {
 		t.Fatalf("remove left Codex's stray StopFailure:\n%s", read(t, codexFile))
+	}
+}
+
+// The stub carries the guide's index as this binary generates it; a stub an
+// older binary wrote (here, the single-guide stub before topics) reads
+// outdated until setup rewrites it, and remove still removes it.
+func TestSkillStubCarriesTheGeneratedIndex(t *testing.T) {
+	dir, agents := setup(t)
+	self := "/opt/rex/rex-amq-adapter"
+	s := stub(self)
+	if !strings.Contains(s, guide.Index(self)) || !strings.Contains(s, "`"+self+" skill show <topic> --text`") {
+		t.Fatalf("stub lacks the generated index:\n%s", s)
+	}
+	if n := len(guide.Index(self)); n > guide.MaxIndex {
+		t.Errorf("index in the stub is %d bytes", n)
+	}
+	old := "---\nname: rex-amq-adapter\nmetadata:\n  " + stubMarker + ": \"1\"\n---\nRun `" + self + " skill show --text` and follow the guide it prints.\n"
+	path := filepath.Join(dir, ".claude", "skills", skillName, "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := Status(agents[:1], self); st[0].Kind != "skill" || st[0].State != "outdated" {
+		t.Fatalf("an older stub reads %+v", st[0])
+	}
+	if items, err := Setup(agents[:1], Options{SelfBin: self}); err != nil || items[0].Change != "updated" || read(t, path) != s {
+		t.Fatalf("setup over an older stub: %+v %v", items, err)
+	}
+	if st, _ := Status(agents[:1], self); st[0].State != "current" {
+		t.Fatalf("after setup: %+v", st[0])
+	}
+	if err := os.WriteFile(path, []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if items, err := Remove(agents[:1], Options{SelfBin: self}); err != nil || items[0].Change != "removed" || exists(path) {
+		t.Fatalf("remove of an older stub: %+v %v", items, err)
 	}
 }

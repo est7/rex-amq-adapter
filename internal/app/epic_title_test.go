@@ -152,7 +152,8 @@ func TestEpicTitleUnsupportedForCodexAndAgy(t *testing.T) {
 
 // The guide agents read keeps the Rex session label for the human's Epic.
 func TestEpicTitleGuideForbidsSessionRename(t *testing.T) {
-	text := strings.Join(strings.Fields(guide.Skill), " ")
+	t1, _ := guide.Find("task-label")
+	text := strings.Join(strings.Fields(t1.Markdown), " ")
 	for _, rule := range []string{"one Rex session is one Epic", "Never run `rex session rename` for your own task"} {
 		if !strings.Contains(text, rule) {
 			t.Errorf("the guide does not say %q", rule)
