@@ -162,7 +162,7 @@ func TestSignalEndsAFiniteCommandWithItsCode(t *testing.T) {
 		exit int
 	}{{syscall.SIGTERM, "terminated", 143}, {syscall.SIGINT, "interrupted", 130}} {
 		cmd := exec.Command(bin, "agent", "await", "block:01a1eac4-f234-7985-8bef-2ea92c753265", "--timeout", "60s")
-		cmd.Env = []string{"HOME=" + work, "PATH=/usr/bin:/bin", "REX_AMQ_ADAPTER_HOME=" + filepath.Join(work, "state"), "REX_AMQ_REX=" + slow, "REX_SERVER=unix:///nonexistent/rex.sock"}
+		cmd.Env = []string{"HOME=" + work, "PATH=/usr/bin:/bin", "REX_AMQ_ADAPTER_HOME=" + filepath.Join(work, "state"), "REX_AMQ_REX=" + slow, "REX_AMQ_AMQ=" + slow, "REX_SERVER=unix:///nonexistent/rex.sock"}
 		var o, e bytes.Buffer
 		cmd.Stdout, cmd.Stderr = &o, &e
 		_ = os.Remove(marker)
