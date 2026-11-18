@@ -233,6 +233,20 @@ func (e Env) replayClose(ctx context.Context, caller agent, me core.Endpoint, op
 		return res, true, err
 	}
 	defer unlock()
+	// Another close (another op id, or a tab of the Hub with none) may have
+	// closed the Epic since this one failed: its tombstone answers, so this
+	// op is reconciled to closed and nothing is killed, parked, or unlinked
+	// again.
+	if lc, ok, err := e.Store.EpicLifecycle(op.SessionID); err != nil {
+		return res, true, err
+	} else if ok && lc.State == store.EpicClosed {
+		if op.Advance(store.EpicClosed, e.Now().UTC()) {
+			if err := e.Store.PutEpicOp(op); err != nil {
+				return res, true, fmt.Errorf("record the close under --op-id %q: %w", opID, err)
+			}
+		}
+		return CloseResult{SessionID: op.SessionID, OpID: opID, Parked: []core.Handle{}, LifecycleState: store.EpicClosed, Replayed: true}, true, nil
+	}
 	on := e.Rex
 	if e.RexOn != nil && op.Server != "" {
 		on = e.RexOn(op.Server)

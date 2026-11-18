@@ -165,9 +165,14 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 			role = core.Role(blk.Label)
 		}
 	}
+	// An agent that stays in its session keeps its admission, unless the role
+	// it takes now is not the one it was admitted with (a launcher label that
+	// names a role for an agent that had none): that is admitted again, and a
+	// refusal leaves its identity and lease as they were.
 	stays := hasOwn && own.Live() && own.SessionID == blk.SessionID
+	admits := !stays || role != own.Role
 	hubKey := core.HubKey("")
-	if !stays {
+	if admits {
 		if role, hubKey, err = e.admitAdoption(recs, server, blk.SessionID, handle, own, hasOwn, role, cwd, summoned || in.SummonToken != "", in.Unattended); err != nil {
 			return Adoption{}, err
 		}
@@ -252,7 +257,7 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	}
 	// A personal agent makes its session a Hub's before it is published, so
 	// no admission ever sees it in a session of no policy.
-	if id.Role == core.PersonalRole && !stays {
+	if id.Role == core.PersonalRole && admits {
 		if err := e.ensureHubPolicy(blk.SessionID, server, hubKey, handle); err != nil {
 			return Adoption{}, err
 		}

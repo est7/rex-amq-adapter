@@ -69,16 +69,22 @@ const ObligationHandBack = "hand_back"
 // members' endpoints and its directory, narrowed to one personal agent's
 // Epics when one is named.
 type cockpitScope struct {
-	members  []core.Endpoint // live personal agents of the Hub read
-	hubDir   string          // the Hub directory; "" for a personal agent of no Hub
+	members []core.Endpoint // live personal agents of the Hub read
+	hubDir  string          // the Hub directory; "" for a personal agent of no Hub
+	// strict is set for an authenticated personal caller inside Rex: its
+	// own endpoint (members) is the whole grant (core.LinkMatchesPersonal),
+	// and no link is read as the Hub's by its directory or by the Hub its
+	// personal session has now.
+	strict   bool
 	personal core.Handle     // --personal: a filter
+	named    []core.Endpoint // the endpoint --personal names, for a session-keyed link
 	self     *agent          // the personal caller or the one matched
 }
 
 // matches reports whether link l is in the scope.
 func (c cockpitScope) matches(e Env, l core.Link) bool {
 	in := slices.ContainsFunc(c.members, func(m core.Endpoint) bool { return core.LinkMatchesPersonal(l, m) })
-	if !in && c.hubDir != "" {
+	if !in && !c.strict && c.hubDir != "" {
 		if l.Hub != "" {
 			in = l.Hub.Dir() == c.hubDir
 		} else if key, err := e.hubOfSession(l.Personal.SessionID); err == nil && key != "" {
@@ -91,7 +97,7 @@ func (c cockpitScope) matches(e Env, l core.Link) bool {
 	if l.PreferredPersonal != "" {
 		return l.PreferredPersonal == c.personal
 	}
-	return slices.ContainsFunc(c.members, func(m core.Endpoint) bool { return m.Handle == c.personal && m.Session() == l.Personal })
+	return slices.ContainsFunc(c.named, func(m core.Endpoint) bool { return m.Handle == c.personal && m.Session() == l.Personal })
 }
 
 // ReadCockpitView returns, for the caller whose environment getenv reads,
@@ -161,8 +167,10 @@ func cockpitWhose(s cockpitScope) string {
 //  4. ME_UNATTENDED=1 is refused unless the caller is a personal agent (which
 //     may carry it inherited).
 //
-// A personal caller reads its own Hub, and naming another personal agent or
-// a directory it does not work in is refused. Anyone else reads the Hub
+// A personal caller reads its own Hub, by its own endpoint alone
+// (core.LinkMatchesPersonal); --personal narrows that to the Epics it or
+// another live member of its Hub opened or prefers, and naming anyone else,
+// or a directory it does not work in, is refused. Anyone else reads the Hub
 // --hub names, else the Hub of the live personal agent --personal names,
 // else the default Hub; with none of them, it names one. However many of
 // the Hub's personal agents are live, none, one, or several, the scope is
@@ -216,9 +224,6 @@ func (e Env) cockpitScope(ctx context.Context, getenv func(string) string, req C
 		return cockpitScope{}, fmt.Errorf("%w: the cockpit is the human's or a personal agent's, and this command runs unattended (ME_UNATTENDED=1)", ErrRefused)
 	}
 	if isPersonal {
-		if req.Personal != "" && core.Handle(req.Personal) != caller.Handle {
-			return cockpitScope{}, fmt.Errorf("%w: %s reads its own cockpit, not %s's", ErrRefused, caller.Handle, req.Personal)
-		}
 		if req.Hub != "" && !dirWithin(caller.Cwd, req.Hub) {
 			return cockpitScope{}, fmt.Errorf("%w: %s does not work in %s", ErrRefused, caller.Handle, req.Hub)
 		}
@@ -226,7 +231,17 @@ func (e Env) cockpitScope(ctx context.Context, getenv func(string) string, req C
 		if err != nil {
 			return cockpitScope{}, err
 		}
-		return cockpitScope{members: []core.Endpoint{me}, hubDir: me.Hub.Dir(), self: &caller}, nil
+		scope := cockpitScope{members: []core.Endpoint{me}, hubDir: me.Hub.Dir(), strict: true, self: &caller}
+		if req.Personal != "" {
+			// A filter inside the caller's own scope: itself, or another
+			// live member of its Hub, never a way into another Hub.
+			named, err := e.hubMember(recs, caller, me, core.Handle(req.Personal))
+			if err != nil {
+				return cockpitScope{}, err
+			}
+			scope.personal, scope.named = named.Handle, []core.Endpoint{named}
+		}
+		return scope, nil
 	}
 	scope := cockpitScope{personal: core.Handle(req.Personal)}
 	if req.Hub != "" {
@@ -254,7 +269,7 @@ func (e Env) cockpitScope(ctx context.Context, getenv func(string) string, req C
 		if scope.hubDir == "" {
 			scope.hubDir = ep.Hub.Dir()
 		}
-		scope.members, scope.self = []core.Endpoint{ep}, named
+		scope.members, scope.named, scope.self = []core.Endpoint{ep}, []core.Endpoint{ep}, named
 		return scope, nil
 	}
 	if scope.hubDir == "" {
@@ -284,6 +299,28 @@ func (e Env) cockpitScope(ctx context.Context, getenv func(string) string, req C
 		scope.self = nil
 	}
 	return scope, nil
+}
+
+// hubMember is the endpoint of h for a --personal filter of the personal
+// caller (me, its endpoint): the caller itself, or a live personal agent of
+// the caller's Hub. Anyone else is refused: a filter never widens the scope.
+func (e Env) hubMember(recs []agent, caller agent, me core.Endpoint, h core.Handle) (core.Endpoint, error) {
+	if h == caller.Handle {
+		return me, nil
+	}
+	for _, r := range recs {
+		if r.Handle != h || !r.Live() || r.Role != core.PersonalRole || !placed(r) {
+			continue
+		}
+		ep, err := e.gatewayEndpoint(r)
+		if err != nil {
+			return core.Endpoint{}, err
+		}
+		if me.Hub != "" && ep.Hub == me.Hub {
+			return ep, nil
+		}
+	}
+	return core.Endpoint{}, fmt.Errorf("%w: %s is not a live %s agent of %s's Hub, so it filters nothing %s may read", ErrRefused, h, core.PersonalRole, caller.Handle, caller.Handle)
 }
 
 // agentAncestor is the live record among recs, of those match accepts, whose

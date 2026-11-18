@@ -187,12 +187,28 @@ func (e Env) council(ctx context.Context, loc Location, caller agent, r SummonRe
 		block, err := e.launchPlanned(ctx, caller, s, r.Split, *st.plan, token)
 		if err != nil {
 			e.release(tokens[next-1:])
+			if reason, ok := launchRefusal(err); ok && next == 1 && !mailedAny(res.Seats) {
+				// Refused under the lock before the first pane: nothing
+				// was mailed or launched, so the council is refused whole.
+				res.Seats = nil
+				return refuse(reason + "; no seat was mailed or launched")
+			}
 			return e.councilPartial(caller, r, res, err)
 		}
 		res.Seats[i].Block = block
 	}
 	e.summonLog(caller, r, res)
 	return res, nil
+}
+
+// mailedAny reports whether any of seats was mailed.
+func mailedAny(seats []SeatResult) bool {
+	for _, st := range seats {
+		if st.Mailed {
+			return true
+		}
+	}
+	return false
 }
 
 // councilPartial logs a council that failed after some seats were mailed or

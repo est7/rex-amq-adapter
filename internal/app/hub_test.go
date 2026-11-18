@@ -535,3 +535,196 @@ func TestEpicCloseRace(t *testing.T) {
 		t.Error("an op id reused with --force was accepted")
 	}
 }
+
+// A close whose kill failed (its op left closing) and that another op id has
+// since seen through is answered, on its retry, by the Epic's tombstone:
+// changed false, its op reconciled to closed, and no second kill, park, or
+// unlink.
+func TestEpicCloseReplayAfterAnotherOpClosed(t *testing.T) {
+	e, term, loc := closeWorld(t)
+	kc := &killCounter{fakeTerm: term}
+	e.Rex, e.RexOn = kc, func(string) Terminal { return kc }
+	a := CloseRequest{Session: "session:epic", Asked: "close it", OpID: "op-a"}
+	term.mu.Lock()
+	term.killErr = errors.New("injected kill failure")
+	term.mu.Unlock()
+	if _, err := closeEpic(e, loc, a); err == nil {
+		t.Fatal("op-a closed despite the failed kill")
+	}
+	if op, ok, _ := e.Store.EpicOp(store.EpicOpClose, "op-a"); !ok || op.State != store.EpicClosing {
+		t.Fatalf("op-a after its failed kill: %+v", op)
+	}
+	term.mu.Lock()
+	term.killErr = nil
+	term.mu.Unlock()
+	b, err := closeEpic(e, loc, CloseRequest{Session: "session:epic", Asked: "close it", OpID: "op-b"})
+	if err != nil || !b.Changed {
+		t.Fatalf("op-b: %+v %v", b, err)
+	}
+	kills := kc.kills.Load()
+	res, err := closeEpic(e, loc, a)
+	if err != nil || res.Changed || !res.Replayed || res.LifecycleState != store.EpicClosed || res.Parked == nil || len(res.Parked) != 0 {
+		t.Fatalf("op-a retried after op-b closed the Epic: %+v %v", res, err)
+	}
+	if n := kc.kills.Load(); n != kills {
+		t.Fatalf("the retry killed again: %d kills, %d before it", n, kills)
+	}
+	if op, _, _ := e.Store.EpicOp(store.EpicOpClose, "op-a"); op.State != store.EpicClosed {
+		t.Errorf("op-a not reconciled: %+v", op)
+	}
+	if lc, _, _ := e.Store.EpicLifecycle("session:epic"); lc.CloseOpID != "op-b" {
+		t.Errorf("the tombstone was rewritten: %+v", lc)
+	}
+}
+
+// hubCockpitWorld is two personal agents of one Hub (claude-01 in
+// session:p1, claude-02 in session:p2) and one of another Hub (claude-09 in
+// session:p9); Hub links to session:e1 (preferring claude-01) and session:e2
+// (preferring claude-02), and a session-keyed link of session:p2 to
+// session:legacy, made before links named Hubs.
+func hubCockpitWorld(t *testing.T) (Env, string) {
+	t.Helper()
+	e := realAmqEnv(t, &fakeTerm{})
+	e.Ancestors = func() ([]proc, error) { return []proc{{PID: 9001}, {PID: 9000}}, nil }
+	hubDir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.Getenv = func(k string) string {
+		if k == "ME_HUB" {
+			return hubDir
+		}
+		return ""
+	}
+	key, other := core.NewHubKey(fakeServer, hubDir), core.NewHubKey(fakeServer, "/other")
+	put(t, e,
+		seed{Handle: "claude-01", Role: core.PersonalRole, SessionID: "session:p1", Cwd: hubDir},
+		seed{Handle: "claude-02", Role: core.PersonalRole, SessionID: "session:p2", Cwd: hubDir},
+		seed{Handle: "claude-09", Role: core.PersonalRole, SessionID: "session:p9", Cwd: "/other"})
+	putHub(t, e, "session:p1", key)
+	putHub(t, e, "session:p2", key)
+	putHub(t, e, "session:p9", other)
+	for i, epic := range []string{"session:e1", "session:e2"} {
+		pref := core.Handle([]string{"claude-01", "claude-02"}[i])
+		if err := e.Store.PutLink(core.Link{Hub: key, Personal: core.SessionKey{Server: fakeServer, SessionID: "session:p" + string(rune('1'+i))}, PreferredPersonal: pref, Epic: core.SessionKey{Server: fakeServer, SessionID: epic}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := e.Store.PutEpicLifecycle(store.EpicLifecycle{SessionID: epic, Server: fakeServer, Hub: key, State: store.EpicOpened, PersonalHandle: pref}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := e.Store.PutLink(core.Link{Personal: core.SessionKey{Server: fakeServer, SessionID: "session:p2"}, Epic: core.SessionKey{Server: fakeServer, SessionID: "session:legacy"}}); err != nil {
+		t.Fatal(err)
+	}
+	return e, hubDir
+}
+
+func cockpitIDs(t *testing.T, e Env, env map[string]string, req CockpitViewRequest) ([]string, error) {
+	t.Helper()
+	b, err := e.ReadCockpitView(context.Background(), cockpitEnv(env), req)
+	if err != nil {
+		return nil, err
+	}
+	var v CockpitView
+	if err := json.Unmarshal(b, &v); err != nil {
+		t.Fatal(err)
+	}
+	out := []string{}
+	for _, ep := range v.Epics {
+		out = append(out, ep.SessionID)
+	}
+	slices.Sort(out)
+	return out, nil
+}
+
+// Inside Rex a personal agent reads by its own endpoint alone
+// (core.LinkMatchesPersonal): a session-keyed link of another personal
+// session is not its Hub's because that session is a member of the Hub now.
+// Outside Rex, --hub still reads the Hub's directory, legacy links included.
+func TestCockpitPersonalScopeIsItsOwnEndpoint(t *testing.T) {
+	e, hubDir := hubCockpitWorld(t)
+	ids, err := cockpitIDs(t, e, map[string]string{"REX_BLOCK": "block:claude-01"}, CockpitViewRequest{})
+	if err != nil || !slices.Equal(ids, []string{"session:e1", "session:e2"}) {
+		t.Errorf("claude-01 inside Rex: %v %v", ids, err)
+	}
+	if _, err := e.ReadCockpitView(context.Background(), cockpitEnv(map[string]string{"REX_BLOCK": "block:claude-01"}), CockpitViewRequest{Session: "session:legacy"}); !errors.Is(err, ErrRefused) {
+		t.Errorf("claude-01 reading another session's legacy link: %v", err)
+	}
+	// The legacy link's own session still reads it.
+	if ids, err := cockpitIDs(t, e, map[string]string{"REX_BLOCK": "block:claude-02"}, CockpitViewRequest{}); err != nil || !slices.Equal(ids, []string{"session:e1", "session:e2", "session:legacy"}) {
+		t.Errorf("claude-02 inside Rex: %v %v", ids, err)
+	}
+	if ids, err := cockpitIDs(t, e, nil, CockpitViewRequest{Hub: hubDir}); err != nil || !slices.Equal(ids, []string{"session:e1", "session:e2", "session:legacy"}) {
+		t.Errorf("outside Rex, --hub: %v %v", ids, err)
+	}
+}
+
+// Inside Rex, --personal narrows a personal agent's own Hub scope to the
+// Epics that member prefers (itself or another live member of its Hub,
+// §4.2(8)); it never switches Hubs, so a personal agent of another Hub or an
+// unknown handle is refused.
+func TestCockpitPersonalFilterInsideRex(t *testing.T) {
+	e, _ := hubCockpitWorld(t)
+	in := map[string]string{"REX_BLOCK": "block:claude-01"}
+	for _, c := range []struct {
+		personal string
+		want     []string
+	}{
+		{"claude-01", []string{"session:e1"}},
+		{"claude-02", []string{"session:e2"}},
+	} {
+		if ids, err := cockpitIDs(t, e, in, CockpitViewRequest{Personal: c.personal}); err != nil || !slices.Equal(ids, c.want) {
+			t.Errorf("claude-01 --personal %s: %v %v", c.personal, ids, err)
+		}
+	}
+	if b, err := e.ReadCockpitView(context.Background(), cockpitEnv(in), CockpitViewRequest{Personal: "claude-02", Session: "session:e2"}); err != nil || !strings.Contains(string(b), `"session_id":"session:e2"`) {
+		t.Errorf("claude-01 --personal claude-02 --session session:e2: %v", err)
+	}
+	if _, err := e.ReadCockpitView(context.Background(), cockpitEnv(in), CockpitViewRequest{Personal: "claude-02", Session: "session:e1"}); !errors.Is(err, ErrRefused) {
+		t.Errorf("an Epic the filter leaves out: %v", err)
+	}
+	for _, p := range []string{"claude-09", "claude-99"} {
+		if b, err := e.ReadCockpitView(context.Background(), cockpitEnv(in), CockpitViewRequest{Personal: p}); !errors.Is(err, ErrRefused) || b != nil {
+			t.Errorf("claude-01 --personal %s: %s %v", p, b, err)
+		}
+	}
+}
+
+// A repeated adoption in the same session is admitted again when the role
+// it would take changed: a roleless agent of an Epic's session whose
+// launcher label now says personal is refused (epic_session_no_personal),
+// and keeps its identity, role, and lease as they were; the Epic's session
+// gets no Hub policy.
+func TestHubReadoptRoleChangeIsAdmitted(t *testing.T) {
+	e, term, _ := hubWorld(t)
+	term.mu.Lock()
+	term.fgs["block:c"] = rex.Process{PID: os.Getpid(), Name: "pi", Cwd: t.TempDir()}
+	term.mu.Unlock()
+	if err := e.Store.PutSessionPolicy(epicPolicy("session:t", fakeServer, "", "claude-09", e.Now())); err != nil {
+		t.Fatal(err)
+	}
+	hookAs(t, e, term, "block:c", "r1", "", HookInput{})
+	before, ok, err := e.agentAt("block:c")
+	if err != nil || !ok || before.Role != "" || !before.Live() {
+		t.Fatalf("adopted roleless in the Epic: %+v %v %v", before, ok, err)
+	}
+	leaseBefore, _, err := e.Store.LeaseOf(before.Handle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := hookAs(t, e, term, "block:c", "r1", core.PersonalRole+" | x", HookInput{})
+	if !strings.Contains(r.Notice, "personal agent lives only in a Hub session") {
+		t.Errorf("notice %q", r.Notice)
+	}
+	after := recordNamed(t, e, before.Handle)
+	if after.Role != "" || !after.Live() {
+		t.Fatalf("a refused re-adoption changed the agent: %+v", after)
+	}
+	leaseAfter, _, err := e.Store.LeaseOf(before.Handle)
+	if err != nil || leaseAfter.Epoch != leaseBefore.Epoch || !leaseAfter.AcquiredAt.Equal(leaseBefore.AcquiredAt) {
+		t.Errorf("a refused re-adoption touched the lease: %+v, before %+v (%v)", leaseAfter, leaseBefore, err)
+	}
+	if p, _, _ := e.Store.SessionPolicy("session:t"); p.Hub() {
+		t.Errorf("the Epic's session became a Hub's: %+v", p)
+	}
+}

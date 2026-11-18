@@ -422,7 +422,9 @@ func newToken() (string, error) {
 // own (launch), in the directory it ran in, with a fixed first prompt that
 // makes it read its mailbox: a resumed session runs no start hook, so the
 // prompt is what re-adopts it and delivers the waiting mail. Its record
-// keeps its handle, lineage and mail.
+// keeps its handle, lineage and mail. launchPlanned rechecks the guards under
+// the lifecycle lock, so a refusal there (a join that made the session a
+// Hub's meanwhile) is the summon's: refused, and the reservation given back.
 func (e Env) resume(ctx context.Context, caller agent, s Session, r SummonRequest, departed agent, res SummonResult) (SummonResult, error) {
 	p, refusal, err := e.planResume(ctx, caller, departed)
 	if err != nil || refusal != "" {
@@ -444,12 +446,35 @@ func (e Env) resume(ctx context.Context, caller agent, s Session, r SummonReques
 	}
 	block, err := e.launchPlanned(ctx, caller, s, r.Split, p, res.Token)
 	if err != nil {
-		_ = e.Store.DeleteSummon(res.Token)
+		e.dropToken(res.Token)
+		if reason, ok := launchRefusal(err); ok {
+			res.Action, res.Reason = "refused", reason+"; the message waits in "+string(departed.Handle)+"'s mailbox"
+			e.summonLog(caller, r, res)
+			return res, nil
+		}
 		return res, err
 	}
 	res.Action, res.Block, res.Label, res.Cwd = "resume", block, p.label, p.cwd
 	e.summonLog(caller, r, res)
 	return res, nil
+}
+
+// errCallerGone is a launch refused because the agent that summoned it is no
+// longer live: no pane opens, and a resume leaves its mail waiting.
+var errCallerGone = errors.New("no longer a live agent")
+
+// launchRefusal is the reason launchPlanned refused err's launch under the
+// lifecycle lock, before any pane opened (the Hub guard, or a caller gone),
+// and false for a failure.
+func launchRefusal(err error) (string, bool) {
+	var g core.SummonCheck
+	switch {
+	case errors.As(err, &g):
+		return g.Reason, true
+	case errors.Is(err, errCallerGone):
+		return err.Error(), true
+	}
+	return "", false
 }
 
 // launchPlan is a launch every check has passed: what it runs, where, and
@@ -489,8 +514,37 @@ func (e Env) planResume(ctx context.Context, caller agent, departed agent) (p la
 	return launchPlan{kind: departed.Kind, role: departed.Role, label: core.PaneLabel(departed.Handle, departed.Role, departed.Task), cwd: cwd, launch: launch, cmd: cmd, departed: &departed}, "", nil
 }
 
-// launchPlanned opens p's pane (launch) under token.
+// launchPlanned opens p's pane (launch) under token, once the launch is
+// committed: it re-reads the caller and its session under LockLifecycle and
+// re-runs the Hub guard there, so a join that made the session a Hub's while
+// the launch was planned (the harness lookup and the trust preflight take
+// real time) still refuses before any pane opens. The lock is held through
+// the pane and its tab: a launch is what a concurrent join must not miss, so
+// neither can slip between the recheck and the commit. A refusal is a
+// core.SummonCheck or errCallerGone (launchRefusal); the caller gives the
+// reservation back.
 func (e Env) launchPlanned(ctx context.Context, caller agent, s Session, split bool, p launchPlan, token string) (string, error) {
+	unlock, err := e.Store.LockLifecycle(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
+	fresh, ok, err := e.agentOf(caller.Handle)
+	if err != nil {
+		return "", err
+	}
+	if !ok || !fresh.Live() {
+		return "", fmt.Errorf("%s is %w, so nothing was launched", caller.Handle, errCallerGone)
+	}
+	caller = fresh
+	if g, err := e.guardSummoner(caller); err != nil {
+		return "", err
+	} else if g.Refused {
+		return "", g
+	}
+	if s, err = e.loadSession(ctx, s.server, s.id); err != nil {
+		return "", err
+	}
 	unattended, err := e.launchUnattended(s.id, p.role, caller, p.departed)
 	if err != nil {
 		return "", err
@@ -570,7 +624,10 @@ func (e Env) start(ctx context.Context, caller agent, s Session, r SummonRequest
 	}
 	block, err := e.launchPlanned(ctx, caller, s, r.Split, p, res.Token)
 	if err != nil {
-		_ = e.Store.DeleteSummon(res.Token)
+		if reason, ok := launchRefusal(err); ok {
+			return refuse(reason)
+		}
+		e.dropToken(res.Token)
 		return res, err
 	}
 	res.Action, res.Block, res.Label, res.Cwd = "start", block, p.label, p.cwd
