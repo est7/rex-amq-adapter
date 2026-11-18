@@ -176,10 +176,12 @@ fields you name. On a terminal a command prints text; `--text` forces text
 anywhere, and for a document (`skill show`, `crew show`, `agent join`) it
 prints the markdown itself. `stream events` and `stream panel` print the
 `schema: 1` NDJSON frames once connected. Warnings travel in `warnings`, not
-on stderr. A command that changes something takes `--dry-run`, which runs
-every check and resolves the target, then writes, sends, and launches
-nothing. `--input @FILE|-|<json>` passes a write command's arguments as one
-JSON object.
+on stderr. A command whose `schema <command>` says `"supports_dry_run":
+true` takes `--dry-run`, which runs every check and resolves the target,
+then writes, sends, and launches nothing; one whose schema says `"input":
+true` takes `--input @FILE|-|<json>`, its arguments as one JSON object. Not
+every command that changes state has either: `mail drain`, `epic refresh`,
+and `agent title` take neither flag, and refuse it as `usage` (exit 2).
 
 The exit status says what kind of failure it was; `error.code` names it:
 
@@ -625,7 +627,9 @@ An agent's start notice names its identity and its mail commands
 run `skill show peers --text` first; a narrator and a personal agent are
 not. One allocator fits the whole notice into 9,000 UTF-16 code units of the
 10,000 Claude Code takes from a hook, keeping the rest for join notes and
-the mail line. The notice carries identity and mail commands, session-mates,
+the mail line; when the join notes queued during adoption and the mail line
+need more, the notice is composed within what they leave, so the whole hook
+reply still fits the 10,000. The notice carries identity and mail commands, session-mates,
 the task, the crew's conventions and the role's prompt, the lead's grant
 receipt, a personal agent's pending hand-back line, and who stands for you.
 When it does not fit, it gives up, in this order: the longer prompt becomes

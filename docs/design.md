@@ -749,7 +749,11 @@ learns both with its identity, at adoption:
   `StartBudget` = 9,000 UTF-16 code units of `ContextCap` = 10,000, what
   Claude Code takes from a hook (a longer value is replaced by a file path and
   a 2,000-character preview); the rest is kept for join notes and the mail
-  line. In order it carries identity and mail commands, session-mates, the
+  line. The hook reply as a whole stays within `ContextCap` too
+  (`core.HookReply`): a first-prompt adoption's notice is composed within
+  what its queued window notes and mail notice leave (at most `StartBudget`),
+  giving up its parts in the order below, and notes too many even for the
+  least notice give way oldest first to one line that counts them. In order it carries identity and mail commands, session-mates, the
   task line, the crew's conventions and the role's prompt, the lead's grant
   receipt (Opening an Epic, section 8), a personal agent's pending hand-back
   line, and the orchestrator-routing tail; head and tail always stay inline.

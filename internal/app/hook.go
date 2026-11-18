@@ -193,7 +193,7 @@ func (e Env) sessionStart(ctx context.Context, kind core.Kind, loc Location, in 
 	if err != nil {
 		return Reply{}, err
 	}
-	r := Reply{Notice: e.identityNotice(ctx, a, a.Unread), Title: e.syncTitle(ctx, kind, EventSessionStart, a.Agent, in.SessionID)}
+	r := Reply{Notice: core.StartNotice(e.identityParts(ctx, a, a.Unread)), Title: e.syncTitle(ctx, kind, EventSessionStart, a.Agent, in.SessionID)}
 	if kind.InProcess() {
 		// The extension delivers waiting mail itself, with a turn of its own,
 		// from the first scan of this inbox; marking it announced here would
@@ -226,7 +226,7 @@ func (e Env) announce(ctx context.Context, kind core.Kind, loc Location, in Hook
 	if err != nil {
 		return Reply{}, err
 	}
-	identity := ""
+	var identity *core.StartParts
 	f := own
 	if ok {
 		f = e.recordFit(kind, rec, in)
@@ -240,7 +240,8 @@ func (e Env) announce(ctx context.Context, kind core.Kind, loc Location, in Hook
 		case adopted:
 			rec = a.Agent
 			if !a.Known {
-				identity = e.identityNotice(ctx, a, 0)
+				p := e.identityParts(ctx, a, 0)
+				identity = &p
 			}
 		case !hasMailbox && errors.Is(err, ErrStartedInPane):
 			return Reply{}, nil
@@ -274,11 +275,17 @@ func (e Env) announce(ctx context.Context, kind core.Kind, loc Location, in Hook
 	if may.undelivered {
 		sent = e.checkableSent(ctx, rec)
 	}
-	r, err := e.announceMail(ctx, rec, in, event, identity, may.window, sent)
+	// The pane-label request joins the reply after it is composed, so the
+	// reply keeps room for it (core.HookReply).
+	reserve := 0
+	if identity == nil && hook == EventPrompt {
+		reserve = core.ContextLen(core.TaskNotice(rec.Handle, rec.Role, e.SelfBin+" agent title", "")) + 1
+	}
+	r, err := e.announceMail(ctx, rec, in, event, identity, may.window, sent, core.ContextCap-reserve)
 	if err == nil {
 		r.Title = e.syncTitle(ctx, kind, hook, rec, in.SessionID)
 		// An identity notice carries the request already: it counts as asked.
-		if ask := e.askTask(ctx, kind, hook, rec, in.SessionID); identity == "" {
+		if ask := e.askTask(ctx, kind, hook, rec, in.SessionID); identity == nil {
 			r.Notice = joinNotices(r.Notice, ask)
 		}
 	}
@@ -296,7 +303,10 @@ func (e Env) adoptUnlessBackingOff(ctx context.Context, kind core.Kind, loc Loca
 	return a, err == nil, err
 }
 
-func (e Env) announceMail(ctx context.Context, rec agent, in HookInput, event core.HookEvent, identity string, window bool, sent []string) (Reply, error) {
+// announceMail is rec's reply to event: identity's start notice (nil for
+// none), its queued window notes when window is set, and its mail notice,
+// within budget (withWindowNotes).
+func (e Env) announceMail(ctx context.Context, rec agent, in HookInput, event core.HookEvent, identity *core.StartParts, window bool, sent []string, budget int) (Reply, error) {
 	unlock, err := e.Store.LockLedger(ctx, rec.Handle)
 	if err != nil {
 		return Reply{}, err
@@ -329,7 +339,7 @@ func (e Env) announceMail(ctx context.Context, rec agent, in HookInput, event co
 	if mail == "" && event == core.TurnEnding {
 		return Reply{}, nil
 	}
-	return e.withWindowNotes(rec.Handle, window, identity, mail)
+	return e.withWindowNotes(rec.Handle, window, identity, mail, budget)
 }
 
 // holdBack leaves out of unread the messages not yet announced while rec's
@@ -373,10 +383,10 @@ func (e Env) holdBack(rec agent, unread []string, announced map[string]bool) []s
 }
 
 // withWindowNotes builds the reply, taking h's queued window notes when
-// window is set. Taking them is the last step that can fail, so a hook that
-// fails earlier leaves them queued for the next prompt. The caller holds h's
-// ledger lock.
-func (e Env) withWindowNotes(h core.Handle, window bool, identity, mail string) (Reply, error) {
+// window is set, the whole of it within budget (core.HookReply).
+// Taking them is the last step that can fail, so a hook that fails earlier
+// leaves them queued for the next prompt. The caller holds h's ledger lock.
+func (e Env) withWindowNotes(h core.Handle, window bool, identity *core.StartParts, mail string, budget int) (Reply, error) {
 	var notes []string
 	if window {
 		var err error
@@ -384,12 +394,18 @@ func (e Env) withWindowNotes(h core.Handle, window bool, identity, mail string) 
 			return Reply{}, err
 		}
 	}
-	return Reply{Notice: joinNotices(append(append([]string{identity}, notes...), mail)...)}, nil
+	return Reply{Notice: core.HookReply(budget, identity, notes, mail)}, nil
 }
 
 // identityNotice tells a newly adopted agent who it is, who is beside it,
-// and what its crew and role ask of it.
+// and what its crew and role ask of it, within core.StartBudget.
 func (e Env) identityNotice(ctx context.Context, a Adoption, unread int) string {
+	return core.StartNotice(e.identityParts(ctx, a, unread))
+}
+
+// identityParts are the parts of a's start notice, for the allocator to
+// compose (core.StartNotice, core.HookReply).
+func (e Env) identityParts(ctx context.Context, a Adoption, unread int) core.StartParts {
 	mates := core.MatesNotice(a.Mates)
 	if core.Stealth(a.Agent.Role) {
 		// A narrator never mails a worker, and a personal agent only a
@@ -417,14 +433,14 @@ func (e Env) identityNotice(ctx context.Context, a Adoption, unread int) string 
 			kept = append(kept, t)
 		}
 	}
-	return core.StartNotice(core.StartParts{
+	return core.StartParts{
 		Head:     core.SessionNotice(a.Agent.Handle, a.Agent.Role, e.SelfBin, unread),
 		Mates:    mates,
 		Task:     core.TaskNotice(a.Agent.Handle, a.Agent.Role, e.SelfBin+" agent title", a.Agent.Task),
 		Briefing: e.briefing(ctx, a),
 		Receipt:  receipt,
 		Tail:     strings.Join(kept, "\n\n"),
-	})
+	}
 }
 
 // obligationNotice is the line a personal agent's start notice adds when

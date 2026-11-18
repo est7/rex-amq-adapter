@@ -60,7 +60,10 @@ Machine mode is one JSON line on stdout, and stderr stays empty:
 
 - `--dry-run` runs every check, resolves the target, and reports what would
   happen, writing, sending, and launching nothing. Use it before anything
-  expensive or outward.
+  expensive or outward. Only a command whose `schema <command>` says
+  `"supports_dry_run": true` takes it, and only one that says `"input":
+  true` takes `--input`; `mail drain`, `epic refresh`, and `agent title` take
+  neither (exit 2).
 - There is no `-y` and no `--yes`: no command accepts them (exit 2), so no flag
   silently authorizes an action. A named confirmation is explicit: `--asked
   "<the user's words>"`, `--confirm purge`, `--force`.

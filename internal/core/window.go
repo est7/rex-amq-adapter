@@ -249,7 +249,9 @@ func prompt(title, text, path string, name bool, pointer string) string {
 const ContextCap = 10000
 
 // StartBudget is what a start notice may take of ContextCap, leaving the rest
-// for the join notes and mail line the same hook reply can carry.
+// for the join notes and mail line the same hook reply can carry. It is the
+// start notice's share when those fit; HookReply keeps the whole reply within
+// ContextCap when they do not.
 const StartBudget = ContextCap - 1000
 
 // ContextLen is the length of s as a harness written in JavaScript counts
@@ -290,9 +292,13 @@ type StartParts struct {
 // out the user's words (complete: false, pointing at `epic grant`; it never
 // carries a part of them). A notice still over budget then (no input this
 // adapter writes gets there) is cut before its tail.
-func StartNotice(p StartParts) string {
+func StartNotice(p StartParts) string { return startNoticeWithin(p, StartBudget) }
+
+// startSteps are what a start notice gives up, in order; the first gives up
+// nothing.
+func startSteps(p StartParts) []func(*StartParts) {
 	conventionsFirst := ContextLen(p.Briefing.Conventions) >= ContextLen(p.Briefing.RolePrompt)
-	steps := []func(*StartParts){
+	return []func(*StartParts){
 		func(*StartParts) {},
 		func(q *StartParts) {
 			q.Briefing.NameConventions, q.Briefing.NameRole = conventionsFirst, !conventionsFirst
@@ -306,10 +312,14 @@ func StartNotice(p StartParts) string {
 			}
 		},
 	}
+}
+
+// startNoticeWithin is StartNotice within budget units.
+func startNoticeWithin(p StartParts, budget int) string {
 	var s string
-	for _, step := range steps {
+	for _, step := range startSteps(p) {
 		step(&p)
-		if s = p.compose(); ContextLen(s) <= StartBudget {
+		if s = p.compose(); ContextLen(s) <= budget {
 			return s
 		}
 	}
@@ -319,7 +329,73 @@ func StartNotice(p StartParts) string {
 	if tail != "" {
 		sep = "\n\n"
 	}
-	return cut(p.compose(), StartBudget-ContextLen(sep+tail)) + sep + tail
+	return cut(p.compose(), budget-ContextLen(sep+tail)) + sep + tail
+}
+
+// startFloor is the length of p's start notice once it gave up everything
+// it may give up: the least it needs whole.
+func startFloor(p StartParts) int {
+	for _, step := range startSteps(p) {
+		step(&p)
+	}
+	return ContextLen(p.compose())
+}
+
+// HookReply is a hook's whole context: the start notice of start (nil for
+// none), the window notes queued for the agent (oldest first), and the mail
+// notice, space-joined, within budget (at most ContextCap; the caller keeps
+// out of it what it appends after). The mail and the notes take their room
+// first, and the start notice is composed within what they leave, at most
+// StartBudget, giving up its parts in StartNotice's order: its prompts
+// become pointers before a grant receipt that does not fit leaves out the
+// user's words whole (complete: false), never a part of them. Notes too
+// many for even the least start notice (startFloor) give way oldest first,
+// to one line that counts them (WindowNotesCount).
+func HookReply(budget int, start *StartParts, notes []string, mail string) string {
+	budget = min(budget, ContextCap)
+	floor := 0
+	if start != nil {
+		floor = startFloor(*start) + 1
+	}
+	rest := func(kept []string) string {
+		return joinSpaced(append(append([]string{WindowNotesCount(len(notes) - len(kept))}, kept...), mail)...)
+	}
+	kept := notes
+	for len(kept) > 0 && floor+ContextLen(rest(kept)) > budget {
+		kept = kept[1:]
+	}
+	tail := rest(kept)
+	out := tail
+	if start != nil {
+		out = joinSpaced(startNoticeWithin(*start, min(StartBudget, budget-ContextLen(tail)-1)), tail)
+	}
+	if ContextLen(out) <= budget {
+		return out
+	}
+	// Only a mail notice near the budget by itself gets here (none this
+	// adapter writes does); the start notice in it was composed within what
+	// was left, so no receipt in it carries the user's words.
+	return cut(out, budget)
+}
+
+// WindowNotesCount stands for n window notes a hook reply had no room for;
+// "" for none.
+func WindowNotesCount(n int) string {
+	if n == 0 {
+		return ""
+	}
+	return fmt.Sprintf("AMQ: %d earlier note(s) about agents joining or leaving your Rex session did not fit here: `rex-amq-adapter agent list` names who is here now.", n)
+}
+
+// joinSpaced joins the non-empty notices with a space.
+func joinSpaced(notices ...string) string {
+	var out []string
+	for _, n := range notices {
+		if n != "" {
+			out = append(out, n)
+		}
+	}
+	return strings.Join(out, " ")
 }
 
 // compose renders p's parts in the order an agent reads them: the head, its
