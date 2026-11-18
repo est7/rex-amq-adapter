@@ -568,7 +568,7 @@ func TestStartNoticeKeepsWithinTheHookBudget(t *testing.T) {
 	head, tail := startParts("reviewer")
 	conv, role := strings.Repeat("x", MaxInline), strings.Repeat("y", MaxInline)
 	b := Briefing{Crew: "custom", Conventions: conv, ConventionsPath: "/c/team-conventions.md", Role: "reviewer", RolePrompt: role, RolePath: "/c/reviewer.md"}
-	n := StartNotice(head, b, tail)
+	n := StartNotice(StartParts{Head: head, Briefing: b, Tail: tail})
 	if l := ContextLen(n); l > StartBudget {
 		t.Fatalf("notice is %d long, budget %d", l, StartBudget)
 	}
@@ -589,10 +589,10 @@ func TestStartNoticeKeepsWithinTheHookBudget(t *testing.T) {
 	}
 	// What fits is composed as before: head, briefing, tail.
 	small := Briefing{Crew: "pair", Conventions: "Review first.", Role: "reviewer", RolePrompt: "You review."}
-	if got, want := StartNotice(head, small, tail), head+"\n\n"+BriefNotice(small)+"\n\n"+tail; got != want {
+	if got, want := StartNotice(StartParts{Head: head, Briefing: small, Tail: tail}), head+"\n\n"+BriefNotice(small)+"\n\n"+tail; got != want {
 		t.Errorf("a notice within budget changed:\n%q\nwant\n%q", got, want)
 	}
-	if got := StartNotice(head, Briefing{}, ""); got != head {
+	if got := StartNotice(StartParts{Head: head}); got != head {
 		t.Errorf("no briefing and no routing: %q", got)
 	}
 }

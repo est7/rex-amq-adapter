@@ -396,21 +396,35 @@ func (e Env) identityNotice(ctx context.Context, a Adoption, unread int) string 
 		// linked narrator: neither is told to reach its session's agents.
 		mates = ""
 	}
-	head := joinNotices(core.SessionNotice(a.Agent.Handle, a.Agent.Role, e.SelfBin, unread), mates) +
-		"\n" + core.TaskNotice(a.Agent.Handle, a.Agent.Role, e.SelfBin+" agent title", a.Agent.Task)
 	// After the briefing, so it reads as the word on whom "the human" means;
-	// an orchestrator hears this from its own role prompt.
-	tail := ""
+	// an orchestrator hears this from its own role prompt. The Goal and
+	// Grant lines end it, where a lead's brief tells it to look.
+	var tail []string
 	if a.Agent.Role != core.OrchestratorRole && !core.Stealth(a.Agent.Role) {
-		tail = core.OrchestratorNotice(a.Mates)
+		tail = append(tail, core.OrchestratorNotice(a.Mates))
 	}
-	if g := e.grantNotice(a.Agent); g != "" {
-		tail = strings.TrimPrefix(tail+"\n\n"+g, "\n\n")
+	tail = append(tail, e.obligationNotice(a.Agent))
+	g, lead := e.leadGrant(a.Agent)
+	var receipt *core.GrantReceipt
+	if lead {
+		r := e.grantReceipt(a.Agent.SessionID, g)
+		receipt = &r
+		tail = append(tail, core.GrantNotice(g.Contract, e.Paths.GrantPath(a.Agent.SessionID), g.RelayedBy))
 	}
-	if o := e.obligationNotice(a.Agent); o != "" {
-		tail = strings.TrimPrefix(tail+"\n\n"+o, "\n\n")
+	var kept []string
+	for _, t := range tail {
+		if t != "" {
+			kept = append(kept, t)
+		}
 	}
-	return core.StartNotice(head, e.briefing(ctx, a), tail)
+	return core.StartNotice(core.StartParts{
+		Head:     core.SessionNotice(a.Agent.Handle, a.Agent.Role, e.SelfBin, unread),
+		Mates:    mates,
+		Task:     core.TaskNotice(a.Agent.Handle, a.Agent.Role, e.SelfBin+" agent title", a.Agent.Task),
+		Briefing: e.briefing(ctx, a),
+		Receipt:  receipt,
+		Tail:     strings.Join(kept, "\n\n"),
+	})
 }
 
 // obligationNotice is the line a personal agent's start notice adds when
@@ -442,24 +456,47 @@ func (e Env) obligationNotice(rec agent) string {
 
 // grantNotice is the Goal and Grant lines of rec's start notice when rec
 // leads an Epic that has a notarized grant (sessionLead); "" for every other
-// agent. Like the briefing it is advice: what cannot be read is reported and
-// left out.
+// agent.
 func (e Env) grantNotice(rec agent) string {
+	g, ok := e.leadGrant(rec)
+	if !ok {
+		return ""
+	}
+	return core.GrantNotice(g.Contract, e.Paths.GrantPath(rec.SessionID), g.RelayedBy)
+}
+
+// leadGrant is the stored grant of rec's session when rec leads it
+// (sessionLead); ok is false for every other agent and a session with no
+// grant. It reads the store only, never mail. Like the briefing it is
+// advice: what cannot be read is reported and left out.
+func (e Env) leadGrant(rec agent) (store.Grant, bool) {
 	lead, err := e.sessionLead(rec)
 	if err != nil {
 		fmt.Fprintf(Diagnostics, "%v\n", err)
 	}
 	if !lead {
-		return ""
+		return store.Grant{}, false
 	}
 	g, ok, err := e.Store.Grant(rec.SessionID)
 	if err != nil {
 		fmt.Fprintf(Diagnostics, "read the grant of %s: %v\n", rec.SessionID, err)
 	}
+	return g, ok
+}
+
+// grantReceipt is the receipt of grant g of session, its contract checked
+// against the bytes it has now. A grant that names no contract has nothing
+// to check.
+func (e Env) grantReceipt(session string, g store.Grant) core.GrantReceipt {
+	ok := g.Contract == ""
 	if !ok {
-		return ""
+		ok, _ = contractCheck(g)
 	}
-	return core.GrantNotice(g.Contract, e.Paths.GrantPath(rec.SessionID), g.RelayedBy)
+	return core.GrantReceipt{
+		SessionID: session, RelayedBy: g.RelayedBy, RelayedAt: g.RelayedAt,
+		GrantPath: e.Paths.GrantPath(session), ContractPath: g.Contract, ContractSHA256: g.ContractSHA256,
+		ContractOK: ok, Asked: g.Asked,
+	}
 }
 
 // briefing finds the agent's crew (its Rex session's, sessionCrew) and its
