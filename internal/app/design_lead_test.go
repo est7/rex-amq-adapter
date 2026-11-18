@@ -207,3 +207,56 @@ func TestDesignLeadLegacyFallback(t *testing.T) {
 		}
 	}
 }
+
+// A design Epic's lead is briefed read-only, never to run a goal: no
+// `/goal`, no run-goal, whatever its harness. The brief chairs the design
+// crew's deliberation, convenes the council of architects in the Epic's
+// directory under the notarized grant, drafts the spec and goal files
+// outside the repository, lints each goal file, and hands them back as
+// artifacts. Every other crew's lead still runs the goal contract.
+func TestDesignBrief(t *testing.T) {
+	for _, harness := range []string{"", "codex"} {
+		t.Run("harness="+harness, func(t *testing.T) {
+			e, term, loc, goal := openEpicWorld(t)
+			dir := filepath.Dir(goal)
+			e.Crews = crew.Load
+			adoptPane(t, e, "block:epic-1-1", "agy-02", core.NarratorRole)
+			adoptPane(t, e, "block:epic-1-2", "claude-03", architectRole)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if _, err := e.OpenEpic(ctx, loc, EpicRequest{Name: "design it", Dir: dir, Goal: goal, Crew: designCrew, Harness: harness, Asked: "design the cache"}); err != nil {
+				t.Fatal(err)
+			}
+			cmd := term.sessions_[0].panes[1].Command
+			brief := cmd[len(cmd)-1]
+			for _, forbidden := range []string{"/goal", "run-goal", "Execute the goal contract"} {
+				if strings.Contains(brief, forbidden) {
+					t.Errorf("the design brief contains %q: %q", forbidden, brief)
+				}
+			}
+			for _, want := range []string{
+				"read-only",
+				"design crew's conventions",
+				"rex-amq-adapter agent summon architect --council --cwd " + dir + " --grant ",
+				"--kind brainstorm",
+				"`spec.md`", "`NN-<slug>.md`", "never in the repository",
+				"lint_goal.py",
+				"rex-amq-adapter epic handback @",
+				"--artifact spec.md=@",
+				goal,
+			} {
+				if !strings.Contains(brief, want) {
+					t.Errorf("the design brief lacks %q: %q", want, brief)
+				}
+			}
+		})
+	}
+	// Without a contract the brief carries the user's words.
+	if b := designBrief(epicGrant{asked: "pick a queue"}, "/repo"); !strings.Contains(b, "pick a queue") || strings.Contains(b, "/goal") {
+		t.Errorf("brief on the user's words: %q", b)
+	}
+	// Every other crew's lead still runs the goal on a claude harness.
+	if b := orchestratorBrief(core.Claude, epicGrant{goal: "/g.md"}, "dev", "/repo"); !strings.HasPrefix(b, "/goal Load skill run-goal") {
+		t.Errorf("a dev lead's brief: %q", b)
+	}
+}

@@ -191,7 +191,7 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 	if err != nil {
 		return EpicResult{}, err
 	}
-	brief := orchestratorBrief(kind, grant)
+	brief := orchestratorBrief(kind, grant, crewName, dir)
 	if crewName != "" {
 		if e.Crews == nil {
 			return EpicResult{}, fmt.Errorf("%w: no crews are available", ErrUsage)
@@ -427,8 +427,12 @@ func readEpicGrant(r EpicRequest) (epicGrant, error) {
 // is its grant, or the user's words as they asked. A piped contract has no
 // path until the session exists, so the lead finds it on the Goal: line of
 // its start notice (grantNotice), which adoption gives it only once the
-// grant is notarized.
-func orchestratorBrief(kind core.Kind, g epicGrant) string {
+// grant is notarized. A design Epic's lead runs no goal: it gets the
+// read-only deliberation brief (designBrief) instead.
+func orchestratorBrief(kind core.Kind, g epicGrant, crewName, dir string) string {
+	if crewName == designCrew {
+		return designBrief(g, dir)
+	}
 	var at string
 	switch {
 	case g.goal != "":
@@ -447,6 +451,32 @@ func orchestratorBrief(kind core.Kind, g epicGrant) string {
 		run = "/goal " + run
 	}
 	return run
+}
+
+// designBrief is a design Epic's lead's first prompt. A design Epic writes
+// no product code and runs no goal contract (so never run-goal): its lead
+// chairs the design crew's deliberation, seats a council of architects
+// beside itself, drafts the spec and goal files outside the repository,
+// checks each goal file, and hands the drafts back as byte-for-byte
+// artifacts, which the user's personal agent materializes. The grant's path
+// exists only once the session does, so the lead reads it on the Grant:
+// line of its start notice.
+func designBrief(g epicGrant, dir string) string {
+	var ask string
+	switch {
+	case g.goal != "":
+		ask = "The question is the brief at " + g.goal + " (the path on the `Goal:` line of your AMQ start notice)."
+	case g.piped:
+		ask = "The question is the brief at the path on the `Goal:` line of your AMQ start notice."
+	default:
+		ask = "The question, in the user's words: " + g.asked
+	}
+	return "You lead a design Epic: a read-only deliberation that ends in drafts, not code. " + ask + "\n\n" +
+		"1. Chair it by the design crew's conventions (your start notice carries them): seal your own proposal first, then run the rounds, the claim ledger, the vote, and the report.\n" +
+		"2. Convene the council of architects beside you: `rex-amq-adapter agent summon architect --council --cwd " + dir + " --grant <the path on the Grant: line of your start notice> --kind brainstorm --subject \"<the question in a few words>\" --body @<the question file>`. You hold your own harness's seat; one architect starts on each other harness.\n" +
+		"3. Edit nothing in " + dir + ", and let no member edit it: read it, and probe only outside it. Draft `spec.md` and one goal file per Goal (`NN-<slug>.md`) in a run directory or a temporary directory of your own, never in the repository.\n" +
+		"4. Check each goal file with make-goal's linter (`python3 <make-goal skill dir>/scripts/lint_goal.py <file>`) and fix every FAIL.\n" +
+		"5. Hand back the report and the drafts byte for byte: `rex-amq-adapter epic handback @<report file> --artifact spec.md=@<draft dir>/spec.md --artifact 01-<slug>.md=@<draft dir>/01-<slug>.md` (one --artifact per file). The user's personal agent materializes them; a revision the user asks for comes back to you, and you hand back again."
 }
 
 // notarize keeps g for session as the personal agent by relayed it: a piped
