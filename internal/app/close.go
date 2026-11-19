@@ -36,9 +36,12 @@ type CloseRequest struct {
 }
 
 // CloseResult is what was closed. Replayed says a retry of OpID found the
-// close its first run started and finished it.
+// close its first run started and finished it. Changed is false when the
+// Epic was closed already (by another personal agent of the Hub, or another
+// op id): nothing was killed, parked, or unlinked again.
 type CloseResult struct {
 	SessionID      string        `json:"session_id"`
+	Changed        bool          `json:"changed"`
 	Parked         []core.Handle `json:"parked"`
 	Unlinked       bool          `json:"unlinked"`
 	OpID           string        `json:"op_id,omitempty"`
@@ -51,15 +54,24 @@ type CloseResult struct {
 // CloseEpic closes the Epic session r.Session for the personal agent in
 // loc: it kills the Rex session, parks every live agent recorded in it as
 // departed for epic_closed (handles stay reserved for a resume, ReserveFor),
-// removes the caller's link to it, and records the Epic's lifecycle closed.
+// removes every link to it the caller's Hub holds, and records the Epic's
+// lifecycle closed. Any personal agent of the Hub the Epic is linked to may
+// close it (core.LinkMatchesPersonal); the lifecycle's personal agent is a
+// delivery preference, never the one allowed.
+//
 // It refuses a caller that is not a live personal agent, one without the
-// user's words, and a session not linked to the caller; unless forced, also
-// while an agent other than a Stealth one is not at rest or holds unread
-// mail. With r.OpID, the close is recorded once those guards pass and before
-// the kill, so a retry of the same request finishes it whatever the first
-// run got to, the unlink included; the op id reused for another request is
-// refused. Without one, a retry before the unlink finishes what is left: a
-// session already gone is not an error.
+// user's words, and a session not linked to the caller's Hub; unless
+// forced, also while an agent other than a Stealth one is not at rest or
+// holds unread mail. Membership, the link, and the busy check are decided
+// under LockEpicLifecycle and then LockLifecycle, so two closes of one Epic
+// (two tabs of the Hub, two op ids) converge on one termination: the second
+// finds the closed lifecycle (its tombstone) and returns changed false,
+// killing nothing. With r.OpID (whose identity is the Hub, the Epic, and
+// --force), the close is recorded once those guards pass and before the
+// kill, so a retry of the same request finishes it whatever the first run
+// got to, the unlink included; the op id reused for another request is
+// refused. Without one, a retry before the lifecycle is closed finishes
+// what is left: a session already gone is not an error.
 func (e Env) CloseEpic(ctx context.Context, loc Location, r CloseRequest) (CloseResult, error) {
 	res := CloseResult{SessionID: r.Session, OpID: r.OpID}
 	caller, ok, err := e.agentIn(loc)
@@ -79,15 +91,35 @@ func (e Env) CloseEpic(ctx context.Context, loc Location, r CloseRequest) (Close
 	if err := ValidOpID(r.OpID); err != nil {
 		return res, err
 	}
-	hash := requestHash(closeIdentity{Personal: caller.Endpoint().Session(), Session: r.Session})
+	if r.Session == "" || r.Session == caller.SessionID {
+		return res, fmt.Errorf("%w: name an Epic session other than your own", ErrUsage)
+	}
+	me, err := e.gatewayEndpoint(caller)
+	if err != nil {
+		return res, err
+	}
+	hash := requestHash(closeIdentityOf(me, r))
 	// A recorded close is looked up before the link: the run that recorded
 	// it may have removed the link before it died.
 	if r.OpID != "" {
-		if out, done, err := e.replayClose(ctx, caller, r.OpID, hash); done || err != nil {
+		if out, done, err := e.replayClose(ctx, caller, me, r.OpID, hash); done || err != nil {
 			return out, err
 		}
 	}
-	link, err := e.linkTo(caller, r.Session)
+	unlockEpic, err := e.Store.LockEpicLifecycle(ctx)
+	if err != nil {
+		return res, err
+	}
+	defer unlockEpic()
+	unlock, err := e.Store.LockLifecycle(ctx)
+	if err != nil {
+		return res, err
+	}
+	defer unlock()
+	if done, err := e.closedAlready(caller, me, r, hash, &res); done || err != nil {
+		return res, err
+	}
+	link, err := e.linkTo(caller, me, r.Session)
 	if err != nil {
 		return res, err
 	}
@@ -106,19 +138,9 @@ func (e Env) CloseEpic(ctx context.Context, loc Location, r CloseRequest) (Close
 		}
 	}
 	if r.DryRun {
-		res.DryRun, res.Parked = true, []core.Handle{}
+		res.DryRun, res.Parked, res.Changed = true, []core.Handle{}, true
 		return res, nil
 	}
-	unlockEpic, err := e.Store.LockEpicLifecycle(ctx)
-	if err != nil {
-		return res, err
-	}
-	defer unlockEpic()
-	unlock, err := e.Store.LockLifecycle(ctx)
-	if err != nil {
-		return res, err
-	}
-	defer unlock()
 	var op *store.EpicOpRecord
 	if r.OpID != "" {
 		prev, found, err := e.Store.EpicOp(store.EpicOpClose, r.OpID)
@@ -138,13 +160,57 @@ func (e Env) CloseEpic(ctx context.Context, loc Location, r CloseRequest) (Close
 			}
 		}
 	}
-	return e.finishClose(ctx, on, link, caller, op)
+	return e.finishClose(ctx, on, link.Epic, caller, me, op)
+}
+
+// closeIdentityOf is the identity of close request r from personal agent
+// me: its Hub (its session when it has none), the Epic, and --force.
+func closeIdentityOf(me core.Endpoint, r CloseRequest) closeIdentity {
+	id := closeIdentity{Hub: string(me.Hub), Session: r.Session, Force: r.Force}
+	if me.Hub == "" {
+		id.Personal = me.Session()
+	}
+	return id
+}
+
+// closedAlready answers a close of an Epic whose lifecycle is closed (its
+// tombstone) for a caller of the Hub (or the session) that it was linked to:
+// changed false, nothing killed again; with an op id not seen yet it is
+// recorded closed, so its replay answers the same. done is false when the
+// Epic is not closed, or the tombstone names another Hub. The caller holds
+// LockEpicLifecycle and then LockLifecycle.
+func (e Env) closedAlready(caller agent, me core.Endpoint, r CloseRequest, hash string, res *CloseResult) (bool, error) {
+	lc, ok, err := e.Store.EpicLifecycle(r.Session)
+	if err != nil || !ok || lc.State != store.EpicClosed {
+		return false, err
+	}
+	if !(lc.Hub != "" && lc.Hub == me.Hub) && !(lc.PersonalSessionID != "" && lc.PersonalSessionID == caller.SessionID && lc.Server == caller.Server) {
+		return false, nil
+	}
+	res.LifecycleState, res.Parked = lc.State, []core.Handle{}
+	if r.DryRun || r.OpID == "" {
+		res.DryRun = r.DryRun
+		return true, nil
+	}
+	prev, found, err := e.Store.EpicOp(store.EpicOpClose, r.OpID)
+	switch {
+	case err != nil:
+		return true, err
+	case found && prev.RequestHash != hash:
+		return true, errOpConflict(store.EpicOpClose, r.OpID)
+	case found:
+		return true, nil
+	}
+	now := e.Now().UTC()
+	return true, e.Store.PutEpicOp(store.EpicOpRecord{Kind: store.EpicOpClose, OpID: r.OpID, RequestHash: hash, SessionID: r.Session, Server: lc.Server,
+		PersonalHandle: caller.Handle, PersonalSessionID: caller.SessionID, State: store.EpicClosed, CreatedAt: now, UpdatedAt: now})
 }
 
 // replayClose finishes the close recorded under opID, when there is one: done
 // is false when there is none, and the close goes on as a new one. The op id
-// of another request (another caller, another session) is refused.
-func (e Env) replayClose(ctx context.Context, caller agent, opID, hash string) (res CloseResult, done bool, err error) {
+// of another request (another Hub, another session, another --force) is
+// refused.
+func (e Env) replayClose(ctx context.Context, caller agent, me core.Endpoint, opID, hash string) (res CloseResult, done bool, err error) {
 	unlockEpic, err := e.Store.LockEpicLifecycle(ctx)
 	if err != nil {
 		return res, true, err
@@ -157,36 +223,52 @@ func (e Env) replayClose(ctx context.Context, caller agent, opID, hash string) (
 	if op.RequestHash != hash {
 		return CloseResult{OpID: opID}, true, errOpConflict(store.EpicOpClose, opID)
 	}
+	if op.State == store.EpicClosed {
+		// Seen through already: the tombstone answers, and nothing is
+		// killed, parked, or unlinked again.
+		return CloseResult{SessionID: op.SessionID, OpID: opID, Parked: []core.Handle{}, Unlinked: true, LifecycleState: store.EpicClosed, Replayed: true}, true, nil
+	}
 	unlock, err := e.Store.LockLifecycle(ctx)
 	if err != nil {
 		return res, true, err
 	}
 	defer unlock()
+	// Another close (another op id, or a tab of the Hub with none) may have
+	// closed the Epic since this one failed: its tombstone answers, so this
+	// op is reconciled to closed and nothing is killed, parked, or unlinked
+	// again.
+	if lc, ok, err := e.Store.EpicLifecycle(op.SessionID); err != nil {
+		return res, true, err
+	} else if ok && lc.State == store.EpicClosed {
+		if op.Advance(store.EpicClosed, e.Now().UTC()) {
+			if err := e.Store.PutEpicOp(op); err != nil {
+				return res, true, fmt.Errorf("record the close under --op-id %q: %w", opID, err)
+			}
+		}
+		return CloseResult{SessionID: op.SessionID, OpID: opID, Parked: []core.Handle{}, LifecycleState: store.EpicClosed, Replayed: true}, true, nil
+	}
 	on := e.Rex
 	if e.RexOn != nil && op.Server != "" {
 		on = e.RexOn(op.Server)
 	}
-	link := core.Link{Personal: caller.Endpoint().Session(), Epic: core.SessionKey{Server: op.Server, SessionID: op.SessionID}}
-	res, err = e.finishClose(ctx, on, link, caller, &op)
+	res, err = e.finishClose(ctx, on, core.SessionKey{Server: op.Server, SessionID: op.SessionID}, caller, me, &op)
 	res.Replayed = true
 	return res, true, err
 }
 
-// linkTo is caller's link to the Epic session, refused when there is none.
-func (e Env) linkTo(caller agent, session string) (core.Link, error) {
-	if session == "" || session == caller.SessionID {
-		return core.Link{}, fmt.Errorf("%w: name an Epic session other than your own", ErrUsage)
-	}
-	links, err := e.Store.Links()
+// linkTo is a link that grants caller (me, its gateway endpoint) the Epic
+// session, refused when there is none.
+func (e Env) linkTo(caller agent, me core.Endpoint, session string) (core.Link, error) {
+	links, err := e.linkedEpics(me)
 	if err != nil {
 		return core.Link{}, err
 	}
 	for _, l := range links {
-		if l.Personal == caller.Endpoint().Session() && l.Epic.SessionID == session {
+		if l.Epic.SessionID == session {
 			return l, nil
 		}
 	}
-	return core.Link{}, fmt.Errorf("%w: %s is not an Epic linked to %s (`rex-amq-adapter epic list` lists yours); a session you did not open is the user's to close", ErrRefused, session, caller.Handle)
+	return core.Link{}, fmt.Errorf("%w: %s is not an Epic linked to %s or its Hub (`rex-amq-adapter epic list` lists them); a session you did not open is the user's to close", ErrRefused, session, caller.Handle)
 }
 
 // unsettled names each live agent of epic, Stealth ones aside, that is not

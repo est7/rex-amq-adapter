@@ -228,15 +228,16 @@ func (e Env) handBackView(key core.SessionKey) (*SessionView, error) {
 // sorted by session id, counted from records and stored views: no Epic's
 // Rex session is asked.
 func (e Env) panelCockpit(personal agent, all []agent) ([]PanelEpic, error) {
-	links, err := e.Store.Links()
+	me, err := e.gatewayEndpoint(personal)
+	if err != nil {
+		return nil, err
+	}
+	links, err := e.linkedEpics(me)
 	if err != nil {
 		return nil, err
 	}
 	out := []PanelEpic{}
 	for _, l := range links {
-		if l.Personal != personal.Endpoint().Session() {
-			continue
-		}
 		c, err := e.cockpitEpic(l.Epic)
 		if err != nil {
 			return nil, err

@@ -164,7 +164,8 @@ type NotifyResult struct {
 // since; the event id with any of the three changed is refused, so a replay
 // never reports a delivery outside what it asked for. With no live personal agent it
 // sends nothing and says so (no error); with more than one that --hub and
-// --personal leave, it refuses rather than mail them all.
+// --personal leave, it rings the one the user spoke to last (its most
+// recent prompt, else its latest lease), never all of them.
 //
 // Delivery is at least once: a run that dies after amq delivered and before
 // the record is written sends again on retry.
@@ -211,19 +212,13 @@ func (e Env) notifyPersonal(ctx context.Context, n Notify, dryRun bool) (NotifyR
 	if err != nil {
 		return res, err
 	}
-	switch len(targets) {
-	case 0:
+	// Several live personal agents of the Hub: the one the user spoke to
+	// last rings (C26).
+	target, ok := e.mostRecent(targets)
+	if !ok {
 		res.Status = NotifyNoLivePersonal
 		return res, nil
-	case 1:
-	default:
-		var hs []string
-		for _, t := range targets {
-			hs = append(hs, string(t.Handle))
-		}
-		return res, refusal(fault.FailedPrecondition, "ambiguous_personal", "%d live personal agents (%s); name one with --personal or --hub", len(targets), strings.Join(hs, ", "))
 	}
-	target := targets[0]
 	if dryRun {
 		res.Status, res.To, res.SessionID = NotifyNotified, target.Handle, target.SessionID
 		return res, nil
@@ -258,7 +253,7 @@ func (e Env) notifyPersonal(ctx context.Context, n Notify, dryRun bool) (NotifyR
 }
 
 // livePersonals is every live, placed personal agent whose block Rex still
-// shows, narrowed by n's --personal and --hub. A block Rex cannot show (gone,
+// shows, narrowed by n's --personal and --hub (the Hub's members). A block Rex cannot show (gone,
 // or its server unreachable, as when Rex is not running) is no target: the
 // producer keeps its entry.
 func (e Env) livePersonals(ctx context.Context, n Notify) ([]agent, error) {
@@ -268,10 +263,19 @@ func (e Env) livePersonals(ctx context.Context, n Notify) ([]agent, error) {
 	}
 	var out []agent
 	for _, r := range recs {
-		if !r.Live() || r.Role != core.PersonalRole || !placed(r) ||
-			n.personal != "" && r.Handle != n.personal ||
-			n.hub != "" && !sameOrWithin(r.Cwd, n.hub) {
+		if !r.Live() || r.Role != core.PersonalRole || !placed(r) || n.personal != "" && r.Handle != n.personal {
 			continue
+		}
+		if n.hub != "" {
+			// A member of the Hub by its session's policy; one of no Hub
+			// by the directory it works in.
+			hub, err := e.hubOfSession(r.SessionID)
+			if err != nil {
+				return nil, err
+			}
+			if hub != "" && hub.Dir() != n.hub || hub == "" && !sameOrWithin(r.Cwd, n.hub) {
+				continue
+			}
 		}
 		if _, err := e.RexOn(r.Server).InspectBlock(ctx, r.BlockID); err != nil {
 			fmt.Fprintf(Diagnostics, "notify: %s is not reachable: %v\n", r.Handle, err)

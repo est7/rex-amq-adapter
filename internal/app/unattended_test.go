@@ -63,8 +63,8 @@ func TestOpenEpicRunsItsAgentsUnattended(t *testing.T) {
 					t.Errorf("%s command %q: want %s=1 in its env prefix before %s", agent.role, cmd, UnattendedEnv, agent.harness)
 				}
 			}
-			p, ok, err := e.Store.EpicPolicy("session:epic-1")
-			want := store.EpicPolicy{SessionID: "session:epic-1", Server: fakeServer, Unattended: true, CreatedBy: "claude-01", CreatedAt: now}
+			p, ok, err := e.Store.SessionPolicy("session:epic-1")
+			want := store.SessionPolicy{Kind: store.PolicyEpic, SessionID: "session:epic-1", Server: fakeServer, LeadRole: core.OrchestratorRole, Unattended: true, CreatedBy: "claude-01", CreatedAt: now}
 			if err != nil || !ok || p != want {
 				t.Errorf("policy %+v ok=%v err=%v, want %+v", p, ok, err, want)
 			}
@@ -81,7 +81,7 @@ func TestOpenEpicRunsItsAgentsUnattended(t *testing.T) {
 // putPolicy records session as an Epic's, as epic would.
 func putPolicy(t *testing.T, e Env, session string) {
 	t.Helper()
-	if err := e.Store.PutEpicPolicy(store.EpicPolicy{SessionID: session, Unattended: true, CreatedBy: "claude-09", CreatedAt: e.Now()}); err != nil {
+	if err := e.Store.PutSessionPolicy(store.SessionPolicy{Kind: store.PolicyEpic, SessionID: session, Unattended: true, CreatedBy: "claude-09", CreatedAt: e.Now()}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -259,6 +259,10 @@ func TestAdoptRecordsUnattendedAndEnvExportsIt(t *testing.T) {
 	if rec := adopt(t, e2, term2, "block:w", "implementer | x", "conv-w", HookInput{}); !rec.Unattended {
 		t.Errorf("a worker adopted in an Epic's session: %+v", rec)
 	}
+	// A personal agent lives in a session of its own (C25), never the Epic's.
+	term2.mu.Lock()
+	term2.sessions = map[string]string{"window:1": "session:me"}
+	term2.mu.Unlock()
 	for _, in := range []HookInput{{}, {Unattended: true}} {
 		me := adopt(t, e2, term2, "block:me", "personal", "conv-me", in)
 		if me.Role != core.PersonalRole || me.Unattended {

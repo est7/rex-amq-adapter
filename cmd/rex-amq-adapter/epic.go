@@ -107,8 +107,9 @@ func epicClose(c *cli.Ctx, in cli.Input) (cli.Result, error) {
 	return cli.Result{Data: res}, nil
 }
 
-// epicList lists the Epics linked to a personal agent: the caller, or from
-// outside its pane the one --personal or --hub names (app.ReadCockpitView).
+// epicList lists the Epics linked to a Hub: the caller's, or from outside a
+// personal agent's pane the one --hub names, the Hub of the personal agent
+// --personal names (a filter too), or the default Hub (app.ReadCockpitView).
 func epicList(c *cli.Ctx, in cli.Input) (cli.Result, error) {
 	env, err := app.NewEnv(c.Getenv("REX_SERVER"))
 	if err != nil {
@@ -124,16 +125,17 @@ func epicList(c *cli.Ctx, in cli.Input) (cli.Result, error) {
 	if err := json.Unmarshal(raw, &v); err != nil {
 		return cli.Result{}, err
 	}
-	page, err := cli.Page(v.Epics, in, "epic list|"+string(v.Personal)+"|"+v.SessionID)
+	page, err := cli.Page(v.Epics, in, "epic list|"+v.Hub+"|"+string(v.Personal)+"|"+v.SessionID)
 	if err != nil {
 		return cli.Result{}, err
 	}
-	return cli.Result{Data: epicPage{List: page, Personal: string(v.Personal), SessionID: v.SessionID}}, nil
+	return cli.Result{Data: epicPage{List: page, Hub: v.Hub, Personal: string(v.Personal), SessionID: v.SessionID}}, nil
 }
 
-// epicPage is the list of a personal agent's Epics, with whose they are.
+// epicPage is the list of a Hub's Epics, with whose they are.
 type epicPage struct {
 	cli.List[app.CockpitEpic]
+	Hub       string `json:"hub,omitempty"`
 	Personal  string `json:"personal"`
 	SessionID string `json:"session_id"`
 }
@@ -152,7 +154,7 @@ func epicShow(c *cli.Ctx, in cli.Input) (cli.Result, error) {
 		if env, err = app.NewEnv(c.Getenv("REX_SERVER")); err != nil {
 			return cli.Result{}, err
 		}
-		raw, err := env.ReadCockpitView(ctx, c.Getenv, app.CockpitViewRequest{Session: session})
+		raw, err := env.ReadCockpitView(ctx, c.Getenv, app.CockpitViewRequest{Session: session, Hub: in.Str("hub"), Personal: in.Str("personal")})
 		if err != nil {
 			return cli.Result{}, err
 		}

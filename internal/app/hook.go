@@ -13,6 +13,7 @@ import (
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/core"
+	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 // Hook event names, as installed on the command line.
@@ -184,6 +185,11 @@ func (e Env) sessionStart(ctx context.Context, kind core.Kind, loc Location, in 
 		// identity, and why.
 		return Reply{Notice: dup.Error()}, nil
 	}
+	var hr *HubRefusal
+	if errors.As(err, &hr) {
+		// Refused admission (C25): no identity, and the agent hears why.
+		return Reply{Notice: hr.Notice}, nil
+	}
 	if err != nil {
 		return Reply{}, err
 	}
@@ -238,6 +244,13 @@ func (e Env) announce(ctx context.Context, kind core.Kind, loc Location, in Hook
 			}
 		case !hasMailbox && errors.Is(err, ErrStartedInPane):
 			return Reply{}, nil
+		case !hasMailbox && errors.Is(err, ErrHubRefused):
+			// Refused admission (C25): told why at each prompt it submits.
+			var hr *HubRefusal
+			if hook == EventPrompt && errors.As(err, &hr) {
+				return Reply{Notice: hr.Notice}, nil
+			}
+			return Reply{}, nil
 		case errors.As(err, new(*DuplicateSessionError)):
 			// A refused process is not the record's agent, whatever the
 			// record's fit: it reads none of its mail. It hears why at each
@@ -253,6 +266,9 @@ func (e Env) announce(ctx context.Context, kind core.Kind, loc Location, in Hook
 		case err != nil:
 			fmt.Fprintf(Diagnostics, "finish adopting %s: %v\n", rec.Handle, err)
 		}
+	}
+	if hook == EventPrompt {
+		e.touchActivity(rec)
 	}
 	var sent []string
 	if may.undelivered {
@@ -391,7 +407,37 @@ func (e Env) identityNotice(ctx context.Context, a Adoption, unread int) string 
 	if g := e.grantNotice(a.Agent); g != "" {
 		tail = strings.TrimPrefix(tail+"\n\n"+g, "\n\n")
 	}
+	if o := e.obligationNotice(a.Agent); o != "" {
+		tail = strings.TrimPrefix(tail+"\n\n"+o, "\n\n")
+	}
 	return core.StartNotice(head, e.briefing(ctx, a), tail)
+}
+
+// obligationNotice is the line a personal agent's start notice adds when
+// Epics linked to its Hub hold a hand-back it has not closed them on (their
+// lifecycles, whatever mail was read); "" otherwise. Like the briefing it is
+// advice: what cannot be read is reported and left out.
+func (e Env) obligationNotice(rec agent) string {
+	if rec.Role != core.PersonalRole {
+		return ""
+	}
+	me, err := e.gatewayEndpoint(rec)
+	if err != nil {
+		fmt.Fprintf(Diagnostics, "read the Epics of %s: %v\n", rec.Handle, err)
+		return ""
+	}
+	links, err := e.linkedEpics(me)
+	if err != nil {
+		fmt.Fprintf(Diagnostics, "read the Epics of %s: %v\n", rec.Handle, err)
+		return ""
+	}
+	n := 0
+	for _, l := range links {
+		if lc, ok, err := e.Store.EpicLifecycle(l.Epic.SessionID); err == nil && ok && lc.State == store.EpicHandBack {
+			n++
+		}
+	}
+	return core.ObligationNotice(n)
 }
 
 // grantNotice is the Goal and Grant lines of rec's start notice when rec

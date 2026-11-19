@@ -41,11 +41,11 @@ func (e Env) launchUnattended(session, role string, caller agent, departed *agen
 	if role == core.OrchestratorRole || role == core.NarratorRole || caller.Unattended || departed != nil && departed.Unattended {
 		return true, nil
 	}
-	p, _, err := e.Store.EpicPolicy(session)
+	p, _, err := e.Store.SessionPolicy(session)
 	if err != nil {
-		return false, fmt.Errorf("read the Epic policy of %s: %w", session, err)
+		return false, fmt.Errorf("read the policy of session %s: %w", session, err)
 	}
-	return p.Unattended, nil
+	return p.Epic() && p.Unattended, nil
 }
 
 // adoptUnattended reports whether an agent of role, being adopted in
@@ -59,9 +59,9 @@ func (e Env) adoptUnattended(role, session string, in HookInput, was bool) (bool
 	if in.Unattended || was {
 		return true, nil
 	}
-	p, _, err := e.Store.EpicPolicy(session)
+	p, _, err := e.Store.SessionPolicy(session)
 	if err != nil {
-		return false, fmt.Errorf("read the Epic policy of %s: %w", session, err)
+		return false, fmt.Errorf("read the policy of session %s: %w", session, err)
 	}
-	return p.Unattended, nil
+	return p.Epic() && p.Unattended, nil
 }

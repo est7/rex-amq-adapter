@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
@@ -196,7 +197,11 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 		return EpicResult{OpID: r.OpID, Lead: lead, DryRun: true,
 			Plan: &EpicPlan{Name: name, Dir: physical, Crew: crewName, LeadHarness: kind, NarratorHarness: narrator}}, nil
 	}
-	seed := store.EpicLifecycle{Name: name, Dir: physical, PersonalHandle: caller.Handle, PersonalSessionID: caller.SessionID, Server: caller.Server, Crew: crewName, OpenOpID: r.OpID}
+	callerHub, err := e.hubOfSession(caller.SessionID)
+	if err != nil {
+		return EpicResult{}, err
+	}
+	seed := store.EpicLifecycle{Name: name, Dir: physical, Hub: callerHub, PersonalHandle: caller.Handle, PersonalSessionID: caller.SessionID, Server: caller.Server, Crew: crewName, OpenOpID: r.OpID}
 	var op *store.EpicOpRecord
 	// release frees LockEpicLifecycle when an op id took it: once the new
 	// session is recorded, or on any return before.
@@ -249,7 +254,7 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 		}
 		return EpicResult{}, fmt.Errorf("trust preflight: %w", err)
 	}
-	narrate := fmt.Sprintf("Narrate the Epic %q for the personal agent %s. On this first turn, refresh the view, add your reading with --summary, and end your turn: do not mail %s now. Mail it only when your role prompt says so (its question, a hand-back or orchestrator departure, a wait on the human).", name, caller.Handle, caller.Handle)
+	narrate := fmt.Sprintf("Narrate the Epic %q for its Hub's personal agent (%s opened it). On this first turn, refresh the view, add your reading with --summary, and end your turn: do not mail %s now, nor any personal agent. Mail one only when your role prompt says so (its question, a hand-back or orchestrator departure, a wait on the human), always as `rex-amq-adapter mail send --to personal`: the adapter delivers to whichever personal agent of the Hub is with the user.", name, caller.Handle, caller.Handle)
 	// The narrator's tab first and the orchestrator's last, which Rex makes
 	// the session's active tab; both keep Rex's placeholder name, so each
 	// follows its agent (core.FollowTab).
@@ -346,11 +351,17 @@ func (e Env) newEpicSession(ctx context.Context, name string, panes []rex.Pane, 
 		return session, blocks, nil, nil, nil, err
 	}
 	now := e.Now().UTC()
-	policyErr = e.Store.PutEpicPolicy(store.EpicPolicy{SessionID: session, Server: by.Server, Unattended: true, CreatedBy: by.Handle, CreatedAt: now})
+	policyErr = e.Store.PutSessionPolicy(epicPolicy(session, by.Server, crewName, by.Handle, now))
 	if crewName != "" {
 		crewErr = e.Store.PutSessionCrew(session, store.SessionCrew{Crew: crewName, ClaimedBy: by.Handle, ClaimedAt: now})
 	}
 	return session, blocks, policyErr, crewErr, e.notarize(session, by.Handle, grant), nil
+}
+
+// epicPolicy is the policy of an Epic's session: unattended, led by its
+// crew's lead role (epicLead).
+func epicPolicy(session, server, crewName string, by core.Handle, at time.Time) store.SessionPolicy {
+	return store.SessionPolicy{Kind: store.PolicyEpic, SessionID: session, Server: server, LeadRole: epicLead(crewName), Crew: crewName, Unattended: true, CreatedBy: by, CreatedAt: at}
 }
 
 // maxSessionLabel is the longest session label Rex takes (session.create).

@@ -13,6 +13,7 @@ import (
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/core"
+	"github.com/est7/rex-amq-adapter/internal/crew"
 	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
@@ -269,13 +270,33 @@ func TestSummonOpensATabOfItsOwn(t *testing.T) {
 	}
 }
 
-// An agent whose first hook runs before summon records its tab still gets
-// the tab to follow it: the launch follows the tab once it is recorded.
+// An agent whose first hook runs while summon is still launching it gets the
+// tab to follow it. Its hook runs in its own process, as Rex starts it, so it
+// waits for the lifecycle lock summon holds through the launch and the tab's
+// record, and follows the tab once it is recorded.
 func TestSummonTabFollowsAnAgentAdoptedBeforeItsTabWasRecorded(t *testing.T) {
 	e, term, loc := summonWorld(t)
-	var rec agent
-	term.started = func(l launch) { rec = adoptLaunch(t, e, term, l, core.Codex, "early") }
+	type adopted struct {
+		a   Adoption
+		err error
+	}
+	done := make(chan adopted, 1)
+	term.started = func(l launch) {
+		term.mu.Lock()
+		term.label = l.Label
+		term.mu.Unlock()
+		go func() {
+			a, err := e.Adopt(context.Background(), Location{Block: l.Block}, core.Codex, HookInput{SessionID: "early", SummonToken: tokenOf(l)})
+			done <- adopted{a, err}
+		}()
+	}
 	res := summon(t, e, loc, "reviewer", func(r *SummonRequest) { r.Asked = "go" })
+	got := <-done
+	if got.err != nil {
+		t.Fatal(got.err)
+	}
+	rec := got.a.Agent
+	t.Cleanup(func() { _, _ = e.AMQ.RetireHandle(context.Background(), e.Paths.Root(), string(rec.Handle)) })
 	if res.Action != "start" || rec.Handle == "" {
 		t.Fatalf("%+v, adopted %+v", res, rec)
 	}
@@ -560,5 +581,39 @@ func TestSummonExplicitHarnessSkipsAPeerOfAnotherKind(t *testing.T) {
 	add(t, e5, codex(e5))
 	if res := summon(t, e5, loc5, "codex-02", asked("agy")); res.Action != "deliver" || len(term5.launches) != 0 {
 		t.Fatalf("%+v", res)
+	}
+}
+
+// A join that makes the caller personal (and so its session a Hub's) while
+// a start is planned, between the reservation and the pane, is seen by the
+// recheck under the lifecycle lock just before the launch: the summon is
+// refused for the Hub, no pane opens, and the reservation is given back. The
+// join runs while the harness is looked up (pickHarness), after reserve.
+func TestSummonJoinPersonalRaceRefusesBeforeLaunch(t *testing.T) {
+	e, term, loc := summonWorld(t)
+	e.Crews = func(string) crew.Library { return crew.Load("") }
+	installed := installedOnly(core.Codex, core.Agy, core.Claude)
+	joined := false
+	e.LookPath = func(bin string) (string, error) {
+		if !joined {
+			joined = true
+			if _, err := e.Join(context.Background(), loc, "", core.PersonalRole); err != nil {
+				t.Errorf("join --role personal: %v", err)
+			}
+		}
+		return installed(bin)
+	}
+	res := summon(t, e, loc, "reviewer", func(r *SummonRequest) { r.Asked = "review it" })
+	if !joined {
+		t.Fatal("the harness was never looked up")
+	}
+	if res.Action != "refused" || res.Block != "" || !strings.Contains(res.Reason, "personal agent") {
+		t.Fatalf("a summon raced by a personal join: %+v", res)
+	}
+	if len(term.launches) != 0 {
+		t.Fatalf("launched %d panes: %+v", len(term.launches), term.launches)
+	}
+	if n, _ := e.Store.PendingSummons("session:s", e.Now()); n != 0 {
+		t.Fatalf("pending reservations: %d", n)
 	}
 }

@@ -33,6 +33,7 @@ const (
 	KindSingleLine Kind = "single_line"   // a subject, title, summary, name
 	KindBody       Kind = "body"          // multi-line text, or @FILE, or -
 	KindDir        Kind = "dir"           // an existing directory
+	KindPath       Kind = "path"          // a path, which may no longer exist
 	KindFile       Kind = "file"          // an existing regular file
 	KindFileOrDash Kind = "file_or_stdin" // an existing regular file, or - for stdin
 	KindOutDir     Kind = "out_dir"       // a directory to write, created if absent
@@ -194,7 +195,7 @@ func (s Value) check(v string) (string, error) {
 		if err := CheckBody(v); err != nil {
 			return "", err
 		}
-	case KindDir, KindFile, KindOutDir:
+	case KindDir, KindFile, KindOutDir, KindPath:
 		return checkPath(v, s.Kind)
 	case KindFileOrDash:
 		if v == "-" {
@@ -306,6 +307,9 @@ func checkPath(p string, kind Kind) (string, error) {
 	abs, err := filepath.Abs(p)
 	if err != nil {
 		return "", bad("%s cannot be made absolute: %v", q(p), err)
+	}
+	if kind == KindPath {
+		return abs, nil
 	}
 	st, err := os.Stat(abs)
 	switch {

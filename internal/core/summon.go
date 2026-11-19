@@ -39,10 +39,22 @@ func (c SummonCheck) Error() string { return c.Reason }
 // back to it. It opens an Epic instead, whose orchestrator starts the crew.
 func GuardSummoner(role string) SummonCheck {
 	if role == PersonalRole {
-		return SummonCheck{Refused: true, Reason: "a personal agent coordinates Epics only; open one with 'rex-amq-adapter epic <name> -c <dir> --asked \"…\"'"}
+		return SummonCheck{Refused: true, Reason: "a personal agent coordinates Epics only; open one with '" + EpicOpenCommand + "'"}
 	}
 	return SummonCheck{}
 }
+
+// GuardHubSummoner refuses a summon from a Hub session (C25): it holds
+// personal agents only, so whatever it would start is work for an Epic.
+func GuardHubSummoner(hub bool) SummonCheck {
+	if hub {
+		return SummonCheck{Refused: true, Reason: "this Rex session is a Hub, for personal agents only; multi-agent work opens an Epic: '" + EpicOpenCommand + "'"}
+	}
+	return SummonCheck{}
+}
+
+// EpicOpenCommand is how a personal agent opens an Epic.
+const EpicOpenCommand = `rex-amq-adapter epic open <name> --cwd <dir> --asked "<the user's words>"`
 
 // GuardSummon applies the guards to a summoner at depth, with chain its
 // handles from the user's agent down to itself (itself last), wanting

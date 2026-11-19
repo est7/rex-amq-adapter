@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
+	"github.com/est7/rex-amq-adapter/internal/core"
 	"github.com/est7/rex-amq-adapter/internal/fault"
 	"github.com/est7/rex-amq-adapter/internal/rex"
 	"github.com/est7/rex-amq-adapter/internal/store"
@@ -98,12 +99,17 @@ func SummonRefusal(reason string) *fault.Error {
 		why = "too_deep"
 	case strings.Contains(reason, "personal agent coordinates Epics"):
 		why = "personal_summoner"
+	case strings.Contains(reason, "this Rex session is a Hub"):
+		why = "hub_session"
 	case strings.Contains(reason, "delivers but never summons"):
 		why = "kind_not_request"
 	}
 	f := fault.New(code, "%s", reason).With("reason", why)
 	if code == fault.UntrustedFolder {
 		untrustedNext(f, reason)
+	}
+	if why == "personal_summoner" || why == "hub_session" {
+		f.WithNext(core.EpicOpenCommand)
 	}
 	return f
 }

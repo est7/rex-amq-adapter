@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,9 +21,9 @@ import (
 // The gateway's state lives in the AMQ root's extension area, which amq
 // cleanup leaves alone (amq docs/adr-layer-extensions.md):
 //
-//   - links/<personal>__<epic>.json: a link the user made (core.Link). Every
-//     decision reads the directory, so link and unlink take effect at once,
-//     for wakers and hooks already running.
+//   - links/<personal>__<epic>.json or links/hub_<hub>__<epic>.json: a link
+//     the user made (core.Link). Every decision reads the directory, so link
+//     and unlink take effect at once, for wakers and hooks already running.
 //   - provenance/<msg_id>.json: who sent a message, from where, to whom, as
 //     what (Provenance), written by the adapter when it sends.
 //     provenance/pending/<token>.json is the same record before amq gave the
@@ -41,23 +43,37 @@ func (p Paths) quarantine() string { return filepath.Join(p.Extensions(), "quara
 
 func sessionKey(k core.SessionKey) string { return fileKey(k.Server + "|" + k.SessionID) }
 
+// linkPath is where l is kept: links/hub_<sha256(hub)[:16]>__<epic>.json for
+// a Hub's link, links/<personal>__<epic>.json for a session-keyed one.
 func (s Store) linkPath(l core.Link) string {
-	return filepath.Join(s.P.links(), sessionKey(l.Personal)+"__"+sessionKey(l.Epic)+".json")
+	owner := sessionKey(l.Personal)
+	if l.Hub != "" {
+		sum := sha256.Sum256([]byte(l.Hub))
+		owner = "hub_" + hex.EncodeToString(sum[:])[:16]
+	}
+	return filepath.Join(s.P.links(), owner+"__"+sessionKey(l.Epic)+".json")
 }
 
-// PutLink records l. Linking twice is linking once.
+// PutLink records l. Linking twice is linking once: a grant already
+// recorded keeps who made it and its preferred personal agent.
 func (s Store) PutLink(l core.Link) error {
-	if l.Personal.SessionID == "" || l.Epic.SessionID == "" {
-		return errors.New("a link needs both sessions")
+	if (l.Hub == "" && l.Personal.SessionID == "") || l.Epic.SessionID == "" {
+		return errors.New("a link needs its Hub or personal session, and its Epic")
 	}
 	if err := os.MkdirAll(s.P.links(), 0o700); err != nil {
+		return err
+	}
+	path := s.linkPath(l)
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
 	b, err := json.Marshal(l)
 	if err != nil {
 		return err
 	}
-	return fsutil.WriteAtomic(s.linkPath(l), append(b, '\n'))
+	return fsutil.WriteAtomic(path, append(b, '\n'))
 }
 
 // DeleteLink removes l; existed is false when there was none.

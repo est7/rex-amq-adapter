@@ -36,6 +36,26 @@ func stateFiles(t *testing.T, e Env) map[string]string {
 	return files
 }
 
+// settledState is stateFiles once every session watcher a fixture's
+// adoption spawned has written its log: the watcher appends after the spawn
+// returns, which must not count as the command under test writing.
+func settledState(t *testing.T, e Env) map[string]string {
+	t.Helper()
+	for end := time.Now().Add(5 * time.Second); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+		logs, _ := filepath.Glob(filepath.Join(e.Paths.Logs(), "watch-*.log"))
+		pending := false
+		for _, l := range logs {
+			if st, err := os.Stat(l); err == nil && st.Size() == 0 {
+				pending = true
+			}
+		}
+		if !pending {
+			break
+		}
+	}
+	return stateFiles(t, e)
+}
+
 func sameState(t *testing.T, what string, before, after map[string]string) {
 	t.Helper()
 	if maps.Equal(before, after) {
@@ -61,7 +81,7 @@ func TestDryRunWritesNothing(t *testing.T) {
 	ctx := context.Background()
 	t.Run("epic close", func(t *testing.T) {
 		e, term, loc := closeWorld(t)
-		before := stateFiles(t, e)
+		before := settledState(t, e)
 		res, err := e.CloseEpic(ctx, loc, CloseRequest{Session: "session:epic", Asked: "close it", DryRun: true})
 		if err != nil || !res.DryRun {
 			t.Fatalf("preview: %+v %v", res, err)
@@ -73,7 +93,7 @@ func TestDryRunWritesNothing(t *testing.T) {
 	})
 	t.Run("epic link, unlink, handback", func(t *testing.T) {
 		e, _, loc := closeWorld(t)
-		before := stateFiles(t, e)
+		before := settledState(t, e)
 		if _, changed, err := e.PreviewLink(ctx, loc, "session:epic", false); err != nil || !changed {
 			t.Fatalf("unlink preview: changed=%v %v", changed, err)
 		}
@@ -152,7 +172,7 @@ func TestDryRunWritesNothing(t *testing.T) {
 	})
 	t.Run("epic open", func(t *testing.T) {
 		e, term, loc := closeWorld(t)
-		before := stateFiles(t, e)
+		before := settledState(t, e)
 		dir := t.TempDir()
 		res, err := e.OpenEpic(ctx, loc, EpicRequest{Name: "preview", Dir: dir, Asked: "open it", OpID: "op-preview", DryRun: true})
 		if err != nil || !res.DryRun || res.Plan == nil || res.SessionID != "" || res.Lead != core.OrchestratorRole {

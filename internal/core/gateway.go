@@ -1,5 +1,7 @@
 package core
 
+import "time"
+
 // The gateway policy decides which agents may exchange mail on the one AMQ
 // root every agent shares. Rex sessions are Epics: an Epic's members work
 // together and nothing crosses between Epics, except one channel the user
@@ -51,6 +53,10 @@ type Endpoint struct {
 	SessionID  string `json:"session_id,omitempty"`
 	Generation int    `json:"generation,omitempty"`
 	Lead       bool   `json:"lead,omitempty"`
+	// Hub is the Hub a personal agent is a member of: set by the app only
+	// for a personal agent with a valid lease in a session whose policy is
+	// that Hub's (LinkMatchesPersonal).
+	Hub HubKey `json:"hub,omitempty"`
 }
 
 // Session is the session e is in.
@@ -59,11 +65,27 @@ func (e Endpoint) Session() SessionKey { return SessionKey{Server: e.Server, Ses
 // Placed reports whether e is known to be in a Rex session.
 func (e Endpoint) Placed() bool { return e.Server != "" && e.SessionID != "" }
 
-// Link is a grant the user made: Personal's session may exchange mail with
-// the Narrator of Epic.
+// Link is a grant the user made: the personal agents of Hub (or, for a link
+// without one, of Personal's session) may exchange mail with the Narrator of
+// Epic (LinkMatchesPersonal). Personal is the session of the personal agent
+// that made it; PreferredPersonal is where the narrator's mail goes first,
+// a delivery preference and never a permission.
 type Link struct {
-	Personal SessionKey `json:"personal"`
-	Epic     SessionKey `json:"epic"`
+	Hub               HubKey     `json:"hub,omitempty"`
+	Personal          SessionKey `json:"personal"`
+	PreferredPersonal Handle     `json:"preferred_personal,omitempty"`
+	Epic              SessionKey `json:"epic"`
+	CreatedBy         Handle     `json:"created_by,omitempty"`
+	CreatedAt         time.Time  `json:"created_at,omitzero"`
+}
+
+// SameGrant reports whether l and o grant the same channel: the same Epic
+// to the same Hub, or, for links without a Hub, to the same session.
+func (l Link) SameGrant(o Link) bool {
+	if l.Epic != o.Epic || l.Hub != o.Hub {
+		return false
+	}
+	return l.Hub != "" || l.Personal == o.Personal
 }
 
 // OpKind is what a message was sent as.
@@ -196,7 +218,7 @@ func personal(sender, recipient Endpoint, links []Link) Decision {
 		return deny(ReasonUnplaced)
 	}
 	for _, l := range links {
-		if l.Personal == p.Session() && l.Epic == other.Session() {
+		if l.Epic == other.Session() && LinkMatchesPersonal(l, p) {
 			return allow(ReasonLinked)
 		}
 	}

@@ -170,6 +170,11 @@ func (e Env) finishDeparture(ctx context.Context, rec agent) error {
 	if err := e.wakeForDeparture(ctx, rec); err != nil {
 		return err
 	}
+	// A personal agent's unread narrator mail goes to the Hub's personal
+	// agent that is live, or waits for the next one (C26).
+	if err := e.redeliverFrom(ctx, rec); err != nil {
+		return err
+	}
 	return e.Store.FinishDeparture(rec.Handle)
 }
 
