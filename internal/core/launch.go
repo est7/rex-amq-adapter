@@ -54,6 +54,26 @@ func ParseLaunch(kind Kind, model, effort string) (Launch, error) {
 	return Launch{Model: model, Effort: effort}, nil
 }
 
+// resumeSessionRe is what a harness conversation id looks like: Claude
+// Code, Codex, Pi, and Antigravity all name one by a UUID (Pi's and Codex's
+// are UUIDv7), so letters, digits, and dashes, starting with a letter or a
+// digit, so it can never be read as a flag.
+var resumeSessionRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,127}$`)
+
+// ValidateResumeSessionID checks session, a conversation id read from an
+// identity record on disk, before it goes on a resume command line: one
+// that starts with "-" would be read as a flag, and one with a space,
+// quote, or control character is no id any harness writes.
+func ValidateResumeSessionID(kind Kind, session string) error {
+	if session == "" {
+		return fmt.Errorf("no %s conversation id is recorded", kind)
+	}
+	if !resumeSessionRe.MatchString(session) {
+		return fmt.Errorf("%s conversation id %q is not one (want %s)", kind, session, resumeSessionRe)
+	}
+	return nil
+}
+
 // Args returns argv, a command of kind's CLI, with l's model and effort
 // flags after its program, where each CLI takes them for a start and a
 // resume alike: claude and agy --model/--effort, codex -m and

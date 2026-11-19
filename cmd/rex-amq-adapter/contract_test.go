@@ -297,7 +297,7 @@ func TestHumanGate(t *testing.T) {
 		}
 		return n
 	}()
-	for _, want := range []string{"trust grant", "trust root add", "trust root remove", "hub add", "hub remove", "install setup", "install remove", "stream panel", "epic list", "epic show"} {
+	for _, want := range []string{"trust grant", "trust root add", "trust root remove", "hub add", "hub remove", "install setup", "install remove", "stream panel", "epic list", "epic show", "epic revive"} {
 		if !slices.Contains(names, want) {
 			t.Errorf("%s is not guarded (guarded: %v)", want, names)
 		}

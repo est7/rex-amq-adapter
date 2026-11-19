@@ -303,6 +303,17 @@ func commands() []*cli.Command {
 			Run:        epicClose,
 		},
 		{
+			Path: path("epic", "revive"), Summary: "(on the user's words) resume a live Epic's lead, narrator, and agents in place after a Rex server or machine restart",
+			Args: []cli.Arg{a("session", cli.KindSessionID, true, "the Epic's Rex session")},
+			Flags: []cli.Flag{f("asked", cli.KindBody, "the user's own words asking to revive it: logged with the revive"), dflt(f("timeout", cli.KindDuration, "how long to wait for the resumed agents to be adopted"), "90s"),
+				f("op-id", cli.KindOpID, "names this request: a retry resumes only what is still down")},
+			Tier: cli.TierLaunch, Mutating: true, Idempotent: true, DryRun: true, Audience: cli.AudienceAgent, Roles: []string{"personal", "human"}, Guard: cli.GuardHumanOutsideRex,
+			Result:     "{session_id, op_id, replayed, lifecycle_state, server_instance, linked, view_refreshed, agents: [{handle, kind, role, block, agent_session_id, cwd, action, status, reason, note}]}; agents' action is already_live, resumed_in_place, respawned_window, or (--dry-run) resume_in_place/respawn_window; a partial start exits 7 with it in data",
+			Guardrails: []string{"a closed Epic is never revived (exit 5)", "an agent whose block holds another agent's process, a non-shell, or unsent input is refused, not clobbered"},
+			Examples:   []string{`rex-amq-adapter epic revive session:01a1eac4-f222-7d79-9291-9a8a86d39ec3 --asked "把 Epic 恢复起来"`, `rex-amq-adapter epic revive session:01a1eac4-f222-7d79-9291-9a8a86d39ec3 --dry-run`},
+			Run:        epicRevive,
+		},
+		{
 			Path: path("epic", "list"), Summary: "the Epics linked to a personal agent: lifecycle, hand-back, whether a view exists",
 			Flags: []cli.Flag{f("hub", cli.KindDir, "outside a personal agent's pane: the Hub directory (default: the default Hub)"), f("personal", cli.KindHandle, "only Epics this personal agent opened or prefers (outside its pane: names its Hub)")},
 			Tier:  cli.TierRead, Audience: cli.AudienceAgent, Roles: []string{"personal", "human"}, Guard: cli.GuardHumanOutsideRex, List: true,

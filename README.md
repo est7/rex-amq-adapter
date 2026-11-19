@@ -391,6 +391,40 @@ moving back. Each hand-back carries a `seq` and a `digest`
 the same report again keeps its `seq` and does not wake the narrator, a new
 one takes the next.
 
+### After a Rex restart: `epic revive`
+
+A Rex server restart (or a reboot after which Rex restores its sessions) keeps
+an Epic's session, tabs, and block ids, and kills the agents in them: each
+block comes back as an idle login shell under a new server instance, while the
+adapter keeps who ran where and the conversation each ran as. Run
+
+```bash
+rex-amq-adapter epic revive <session_id> --dry-run    # the plan: who resumes where; nothing typed, opened, or written
+rex-amq-adapter epic revive <session_id> --asked "<your words>" --op-id <id>
+```
+
+from a terminal of your own, or have your personal agent run it. It refuses a
+session with no Epic lifecycle or one Rex no longer has (exit 4) and a closed
+Epic (exit 5), then releases the leases of agents that died with the server and
+resumes, in the block each ran in, the Epic's lead and narrator and every other
+agent of it that died where it ran (its process gone, or its pane taken over)
+rather than leaving; a retired, replaced, or session-ended agent stays down.
+Each resumes its latest conversation (`claude --resume`, `codex --no-daemon
+resume`, `agy --conversation`, `pi --session`) on the model and effort it was
+launched on, with `ME_UNATTENDED=1`, and its handle, mail, and lineage come back
+with it. The command is typed into a block only when no other agent holds it,
+its foreground is a shell, and its screen shows a fresh shell's empty prompt
+of a common shape (a draft, a command run there since the restart, or a custom
+prompt the adapter cannot read shows more or other); otherwise that agent is
+`refused` with the reason and nothing is typed. Every launch is recorded before
+it starts, so a retry after a timeout or a lost reply waits for it, or cancels
+it if it never ran, rather than starting the conversation twice. A lead's or narrator's block
+that was closed gets a tab of its own instead (`respawned_window`). An agent
+already live is left alone (`already_live`), so running it again resumes only
+what is still down. It waits up to `--timeout` (90s) for each to be adopted,
+starts the session's watcher, rebuilds the view, and exits 0 when every agent
+is `ready`, else 7 with each agent's `action` and `status` in `data`.
+
 ### Grant receipt
 
 The Epic's lead (its orchestrator, a pair Epic's implementer, or a design
@@ -565,6 +599,7 @@ rex-amq-adapter epic show <epic-session> --fields lifecycle,hand_back   # an Epi
 rex-amq-adapter epic list                      # read-only: the Epics linked to your Hub
 rex-amq-adapter epic refresh --summary "<what changed>"   # (the narrator) rebuild the view; `epic messages --ids …` reads named mail
 rex-amq-adapter epic handback @report.md       # (the Epic's lead, last) record its final report; epic show shows it as hand_back
+rex-amq-adapter epic revive <epic-session>     # (you or a personal agent) after a Rex restart, resume the Epic's agents in their own blocks
 rex-amq-adapter hub notify --ref inbox:42 --event-id ev-1 [--hub ~/me] [--summary "…"]   # (an outside producer) ring the Hub's live personal agent
 ```
 

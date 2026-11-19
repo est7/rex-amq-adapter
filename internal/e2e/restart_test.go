@@ -227,3 +227,119 @@ func TestRexRebuildTakesTheHandleOverBehindANewFence(t *testing.T) {
 		return strings.Contains(w.got("solo"), "AMQ doorbell: 1 unread message(s) for "+h)
 	})
 }
+
+// shellIn waits until block, restored after a restart, shows its login
+// shell at a prompt: a foreground process and a screen with text on it.
+func (w *world) shellIn(block string) {
+	w.t.Helper()
+	w.until("a shell prompt in the restored "+block, 20*time.Second, func() bool {
+		out, err := w.rexErr("block", "call", "-b", block, "process")
+		if err != nil || !strings.Contains(out, `"foreground":{"pid"`) {
+			return false
+		}
+		screen, err := w.rexErr("capture", "-b", block, "--trim")
+		return err == nil && strings.TrimSpace(screen) != ""
+	})
+}
+
+// After a Rex restart, `epic revive` run by the Epic's personal agent
+// resumes the Epic's lead, its narrator, and the worker beside the lead, each
+// in the block it ran in (the same block id), as the same handle on its
+// conversation, under a new lease on the new server instance, unattended. A
+// second revive finds them live and touches nothing.
+func TestEpicReviveResumesInPlaceAfterRexRestart(t *testing.T) {
+	w := newRestartableWorld(t)
+	tb := w.newTab("me", "personal")
+	w.ready("me")
+	w.typeInto(tb.first, "epic open e2e-revive --cwd "+w.project("app")+" --asked open-it --timeout 40")
+	w.until("the epic command to finish", 50*time.Second, func() bool { return strings.Contains(w.joined("me"), "exit=") })
+	if out := w.joined("me"); !strings.Contains(out, "exit=0") {
+		t.Fatalf("epic:\n%s\n%s", out, w.dump())
+	}
+	w.ready("orchestrator")
+	w.ready("narrator")
+	orch, narr := w.handleOf("orchestrator"), w.handleOf("narrator")
+	orchBefore, narrBefore := w.leaseOf(orch), w.leaseOf(narr)
+	session := orchBefore["session_id"].(string)
+	orchBlock, narrBlock := orchBefore["block_id"].(string), narrBefore["block_id"].(string)
+	// The worker runs in the Epic's repository, which the user trusts, so
+	// its resume meets no folder dialog (the revive preflights it).
+	peerBlock := firstBlock(w, []byte(w.rex("split", "-b", orchBlock, "--split=right", "--shell=none", "--focus=false", "--label", "implementer",
+		"-c", w.project("app"), "--json", "--", "/bin/sh", filepath.Join(w.dir, "agent.sh"), "peer")))
+	w.ready("peer")
+	peer := w.handleOf("peer")
+	peerBefore := w.leaseOf(peer)
+	instance := w.instanceID()
+	joined := len(w.joined("me"))
+
+	w.restartServer(true)
+	newInstance := w.instanceID()
+	if newInstance == instance || newInstance == "" {
+		t.Fatalf("the server instance after a restart: %q (was %q)", newInstance, instance)
+	}
+	for _, b := range []string{orchBlock, narrBlock, peerBlock} {
+		if !strings.Contains(strings.Join(w.blocksOf(session), " "), b) {
+			t.Fatalf("the restart lost %s of %s", b, session)
+		}
+	}
+	// The personal agent comes back first, as the user would start it.
+	w.relaunch(tb.first, "me")
+	for _, b := range []string{orchBlock, narrBlock, peerBlock} {
+		w.shellIn(b)
+	}
+	for _, name := range []string{"orchestrator", "narrator", "peer"} {
+		_ = os.Remove(filepath.Join(w.dir, name+".ready"))
+	}
+	w.typeInto(tb.first, "epic revive "+session+" --asked revive-it --timeout 40 --op-id e2e-revive-1")
+	w.until("the revive to finish", 60*time.Second, func() bool { return strings.Contains(w.joined("me")[joined:], "exit=") })
+	out := w.joined("me")[joined:]
+	if !strings.Contains(out, "exit=0") {
+		t.Fatalf("revive:\n%s\n%s", out, w.dump())
+	}
+	var res struct {
+		Session  string `json:"session_id"`
+		Instance string `json:"server_instance"`
+		Agents   []struct {
+			Handle, Block, Action, Status, Role string
+			AgentSessionID                      string `json:"agent_session_id"`
+		} `json:"agents"`
+	}
+	line, _, _ := strings.Cut(out, "\n")
+	if err := envelopeData(line, &res); err != nil {
+		t.Fatalf("output %q: %v", out, err)
+	}
+	if res.Session != session || res.Instance != newInstance || len(res.Agents) != 3 {
+		t.Fatalf("result %+v", res)
+	}
+	want := map[string]struct{ block, name string }{orch: {orchBlock, "orchestrator"}, narr: {narrBlock, "narrator"}, peer: {peerBlock, "peer"}}
+	for _, a := range res.Agents {
+		wa, ok := want[a.Handle]
+		if !ok || a.Block != wa.block || a.Action != "resumed_in_place" || a.Status != "ready" || a.AgentSessionID != wa.name {
+			t.Errorf("revived %+v, want %s in %s", a, wa.name, wa.block)
+		}
+	}
+	for h, before := range map[string]map[string]any{orch: orchBefore, narr: narrBefore, peer: peerBefore} {
+		w.ready(want[h].name)
+		after := w.leaseOf(h)
+		if after == nil || after["block_id"] != before["block_id"] || after["session_id"] != session ||
+			after["server_instance"] != newInstance || asInt(after["epoch"]) <= asInt(before["epoch"]) {
+			t.Errorf("%s: lease before %v, after %v", h, before, after)
+		}
+		if got := w.handleOf(want[h].name); got != h {
+			t.Errorf("%s came back as %s", want[h].name, got)
+		}
+		b, err := os.ReadFile(filepath.Join(w.dir, want[h].name+".unattended"))
+		if err != nil || string(b) != "1" {
+			t.Errorf("%s runs attended after the revive: %q %v", h, b, err)
+		}
+	}
+
+	// Run again: every agent is live, so nothing is typed and the op id replays.
+	before := len(w.joined("me"))
+	w.typeInto(tb.first, "epic revive "+session+" --op-id e2e-revive-1")
+	w.until("the second revive", 30*time.Second, func() bool { return strings.Contains(w.joined("me")[before:], "exit=") })
+	again := w.joined("me")[before:]
+	if !strings.Contains(again, "exit=0") || !strings.Contains(again, `"replayed":true`) || strings.Count(again, `"already_live"`) != 3 {
+		t.Fatalf("second revive:\n%s", again)
+	}
+}

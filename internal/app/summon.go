@@ -789,17 +789,24 @@ func (e Env) launch(ctx context.Context, caller agent, s Session, split bool, la
 	if split {
 		return e.Rex.NewSplit(ctx, s.id, caller.BlockID, label, cwd, cmd)
 	}
-	window, block, err := e.Rex.NewWindow(ctx, s.id, label, label, cwd, cmd)
+	return e.openTab(ctx, s.id, label, cwd, cmd)
+}
+
+// openTab opens a tab of its own in session, in the background, running
+// cmd in a block labelled label, and records the tab as one that follows
+// its agent's pane label (core.FollowTab).
+func (e Env) openTab(ctx context.Context, session, label, cwd string, cmd []string) (string, error) {
+	window, block, err := e.Rex.NewWindow(ctx, session, label, label, cwd, cmd)
 	if err != nil {
 		return "", err
 	}
-	if err := e.Store.PutTab(store.Tab{WindowID: window, SessionID: s.id, Mode: core.WindowAuto, LastLabel: label}); err != nil {
+	if err := e.Store.PutTab(store.Tab{WindowID: window, SessionID: session, Mode: core.WindowAuto, LastLabel: label}); err != nil {
 		fmt.Fprintf(Diagnostics, "record the tab %s: %v\n", window, err)
 	}
 	// The agent runs from the moment the tab opens: an adoption that
 	// followed the tab before it was recorded found a named tab it does not
 	// own and left it, so follow it once more now that it is.
-	e.followTab(ctx, s.id, window)
+	e.followTab(ctx, session, window)
 	return block, nil
 }
 

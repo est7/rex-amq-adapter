@@ -89,6 +89,42 @@ words `epic close` kills the Epic's Rex session, parks its agents (their handles
 stay reserved for a resume), and unlinks it. It refuses while an agent of the
 Epic is working or holds unread mail, unless the user says `--force`.
 
+## After a Rex restart: revive
+
+A Rex server or machine restart keeps the Epic's session, tabs, and block ids
+but kills every agent in them: each block comes back as an idle login shell
+under a new server instance, while the adapter's records keep who ran there and
+the conversation each ran as.
+
+```bash
+rex-amq-adapter epic revive <session_id> --dry-run   # who would resume where: no pane, no tab, nothing written
+rex-amq-adapter epic revive <session_id> --asked "<the user's words>" --op-id <id>
+```
+
+`epic revive` resumes those conversations in the blocks they ran in, so the
+layout, the handles, and the waiting mail are what they were. It covers the
+lead and narrator always, plus every other agent that died where it ran rather
+than leaving (its process gone, or its pane taken by something else); a
+retired, replaced, or closed-block agent is never revived. Stale leases are
+reconciled first, so an agent still live is left alone (`action: already_live`)
+and a retry resumes only what is still down. A closed Epic is never revived
+(exit 5), nor a session Rex no longer has (exit 4).
+
+Each agent resumes by its latest conversation id, on the model and effort it
+was launched on, unattended as every Epic agent is, with a first prompt saying
+who revived it and to drain its mail. The command is typed into a block only
+when that block holds no other agent's process, its foreground is a shell, and
+it shows a fresh shell's empty prompt of a common shape (no draft, nothing run
+since; a custom prompt is refused); otherwise that agent is refused with its
+reason and nothing is typed, and the user empties it, runs Rex's Clear Terminal on it, and revives again. A
+closed lead or narrator block is replaced by a tab of its own
+(`action: respawned_window`). `status` is `ready` once an agent was adopted as
+itself, else how its startup ended (`timeout`, `trust_screen`, `blocked`,
+`exited`). The command waits up to `--timeout` (default 90s), then makes sure
+the watcher runs and rebuilds the view; when not every agent is ready it exits
+7 with all of it in `data`. `--asked` records the user's words in
+`logs/revive.log`.
+
 ## Narrator-only commands
 
 ```bash

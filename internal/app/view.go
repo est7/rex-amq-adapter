@@ -294,6 +294,12 @@ func (e Env) RefreshSessionView(ctx context.Context, loc Location, summary strin
 	if err != nil {
 		return SessionView{}, err
 	}
+	return e.refreshView(ctx, narr, key, summary)
+}
+
+// refreshView rebuilds the view of key, narr's session, and writes it
+// whole, keeping the last narrative unless summary replaces it.
+func (e Env) refreshView(ctx context.Context, narr agent, key core.SessionKey, summary string) (SessionView, error) {
 	v, err := e.buildView(ctx, narr, key)
 	if err != nil {
 		return v, err
