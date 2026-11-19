@@ -16,7 +16,7 @@ import (
 	"github.com/est7/rex-amq-adapter/internal/fsutil"
 )
 
-// notify-personal's dedup records live beside the gateway's state:
+// hub notify's dedup records live beside the gateway's state:
 //
 //   - notifications/<sha256(event id)>.json: the doorbell sent for an outside
 //     producer's event (Notification), so a retried event is not sent again.
@@ -24,7 +24,7 @@ import (
 
 func (p Paths) notifications() string { return filepath.Join(p.Extensions(), "notifications") }
 
-// Notification is the doorbell notify-personal sent for one event of an
+// Notification is the doorbell hub notify sent for one event of an
 // outside producer (an Inbox or Timer entry): the request (the ref, and the
 // --hub and --personal it was narrowed by, empty when not given), and the
 // personal agent, session, and message it reached.
@@ -46,7 +46,7 @@ func (s Store) notificationPath(eventID string) string {
 	return filepath.Join(s.P.notifications(), hex.EncodeToString(sum[:])+".json")
 }
 
-// LockNotify serialises notify-personal, so two runs for one event never both
+// LockNotify serialises hub notify, so two runs for one event never both
 // send.
 func (s Store) LockNotify(ctx context.Context) (func(), error) {
 	return fsutil.Flock(ctx, filepath.Join(s.P.Extensions(), "notifications.lock"))

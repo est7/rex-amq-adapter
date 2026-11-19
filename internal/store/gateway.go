@@ -30,7 +30,7 @@ import (
 //     message its id.
 //   - quarantine/<handle>/<msg_id>.md: a message the gateway took out of
 //     handle's inbox undelivered, and <msg_id>.json why.
-//   - notifications/: notify-personal's dedup records (notify.go).
+//   - notifications/: hub notify's dedup records (notify.go).
 
 // Extensions is the adapter's directory in the AMQ root's extension area.
 func (p Paths) Extensions() string {

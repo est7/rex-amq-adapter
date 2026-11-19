@@ -112,7 +112,7 @@ func together(a, b agent) bool { return a.SessionID != "" && a.SessionID == b.Se
 // placed reports whether r was recorded anywhere it can be told about.
 func placed(r agent) bool { return r.SessionID != "" }
 
-// tab is how who names window w: its label, else its id.
+// tab is how agent list names window w: its label, else its id.
 func (s Session) tab(w string) string {
 	if l := s.tabs[w]; l != "" {
 		return l
@@ -164,7 +164,7 @@ func (e Env) followMoves(ctx context.Context, s Session) error {
 
 // SuperviseSession brings back the dead wakers of the live agents s holds. The
 // Stop hook cannot: an idle agent runs no hooks, so mail to it would wait unseen
-// until the agent's next turn. A peer whose mail goes unanswered runs who.
+// until the agent's next turn. `agent collect` runs it for its session.
 func (e Env) SuperviseSession(ctx context.Context, s Session) error {
 	// A waker that will not come up is waited for under the lock every
 	// adoption needs.
@@ -190,7 +190,7 @@ func (e Env) SuperviseSession(ctx context.Context, s Session) error {
 	return errors.Join(errs...)
 }
 
-// SessionAgents projects the running agents s holds: who's rows. With all,
+// SessionAgents projects the running agents s holds: agent list's rows. With all,
 // the admin view, it adds the ones reserved for a resume and the Stealth
 // agents (a narrator, a personal agent) the ordinary view leaves out. It
 // reads records and mailboxes only.

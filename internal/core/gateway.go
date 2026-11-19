@@ -12,7 +12,7 @@ import "time"
 // A message the adapter has no provenance record of (written with amq
 // directly) names a sender it cannot vouch for, so it never reaches a
 // Personal agent or a Narrator, whichever handle it names. The one way an
-// outside producer reaches a Personal agent is notify-personal: the adapter
+// outside producer reaches a Personal agent is `hub notify`: the adapter
 // sends it in the Personal agent's own name, as a system notice.
 //
 // The policy holds for every supported path (the adapter's managed mail
@@ -30,7 +30,7 @@ const (
 // ordinary views: a Narrator observes its Epic and a Personal agent talks
 // only to linked Narrators, so neither is a mate a worker lists, mails,
 // hears join or leave, reports to, or hands a stalled goal to. Explicit
-// admin views (who --all, events) still show them.
+// admin views (agent list --all, stream events) still show them.
 func Stealth(role string) bool { return role == NarratorRole || role == PersonalRole }
 
 // SessionKey names a Rex session (an Epic, or a Personal agent's session)
@@ -98,7 +98,7 @@ const (
 	// start, a decision) to an Epic's lead (its Orchestrator, or a pair
 	// Epic's implementer), under ControlRequestID.
 	OpControl OpKind = "control"
-	// OpNotify is notify-personal's doorbell: the adapter mails a Personal
+	// OpNotify is hub notify's doorbell: the adapter mails a Personal
 	// agent in its own name for an outside producer (an Inbox or Timer
 	// entry).
 	OpNotify OpKind = "notify"
