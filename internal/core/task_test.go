@@ -61,7 +61,7 @@ func TestSessionNoticeCarriesTheMailCommands(t *testing.T) {
 		"/x/rex-amq-adapter mail send --to <handle>",
 		"end your turn",
 		"the agent that briefed you",
-		"skill before you start or summon a peer",
+		"Before you start or summon a peer, run `/x/rex-amq-adapter skill show peers --text`; `/x/rex-amq-adapter skill list` lists the topics.",
 	} {
 		if !strings.Contains(n, want) {
 			t.Errorf("notice lacks %q:\n%s", want, n)
@@ -77,7 +77,7 @@ func TestSessionNoticeCarriesTheMailCommands(t *testing.T) {
 func TestSessionNoticeOfAStealthRoleSendsItToItsRolePrompt(t *testing.T) {
 	for _, role := range []string{NarratorRole, PersonalRole} {
 		n := SessionNotice("claude-05", role, "/x/rex-amq-adapter", 0)
-		if strings.Contains(n, "send --to <handle>") || !strings.Contains(n, "your role prompt names") {
+		if strings.Contains(n, "send --to <handle>") || !strings.Contains(n, "your role prompt names") || strings.Contains(n, "skill show peers") {
 			t.Errorf("%s notice:\n%s", role, n)
 		}
 	}

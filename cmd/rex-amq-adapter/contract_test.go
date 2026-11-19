@@ -479,8 +479,8 @@ func TestOutputModes(t *testing.T) {
 	if r := invoke(t, "", "version", "--json", "--text"); r.code != 2 {
 		t.Errorf("--json --text: exit %d", r.code)
 	}
-	r = invoke(t, "", "skill", "show", "--text")
-	if r.code != 0 || !strings.HasPrefix(r.stdout, "---") && !strings.HasPrefix(r.stdout, "#") {
+	r = invoke(t, "", "skill", "show", "peers", "--text")
+	if r.code != 0 || !strings.HasPrefix(r.stdout, "#") {
 		t.Errorf("skill show --text is not raw markdown: %q", r.stdout[:min(80, len(r.stdout))])
 	}
 }

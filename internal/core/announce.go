@@ -113,8 +113,8 @@ func HookNotice(a Announcement, h Handle, bin string, event HookEvent) string {
 
 // SessionNotice is the SessionStart context's AMQ part: who the agent is
 // and how to use AMQ. It carries the mail commands themselves, so a peer
-// another agent briefed can work without loading the guide; the guide is for
-// starting peers. What its pane label shows (TaskNotice) follows on a line of
+// another agent briefed can work without reading the guide; a role that may
+// start peers is pointed at the guide's peers topic. What its pane label shows (TaskNotice) follows on a line of
 // its own, since it applies whether or not the agent messages anyone. bin
 // is the adapter's absolute path: its mail commands find the caller's
 // identity themselves and check the gateway, which bare amq does not.
@@ -129,8 +129,12 @@ func SessionNotice(h Handle, role, bin string, unread int) string {
 		s += "Write to an agent with `" + bin + " mail send --to <handle> --subject \"…\" --body \"…\"`; a refusal names its reason. " +
 			"What you produce for the agent that briefed you (a report, a design doc) goes back to it by AMQ, as the result or its path, not into a preview pane. "
 	}
-	s += "After you send, end your turn: the reply arrives as a notice, so never poll. " +
-		"Load the rex-amq-adapter skill before you start or summon a peer, or for anything else about AMQ."
+	s += "After you send, end your turn: the reply arrives as a notice, so never poll."
+	if !Stealth(role) {
+		// A narrator and a personal agent never start a peer: a personal
+		// agent opens an Epic, which its role prompt teaches.
+		s += " Before you start or summon a peer, run `" + bin + " skill show peers --text`; `" + bin + " skill list` lists the topics."
+	}
 	if unread > 0 {
 		s += fmt.Sprintf(" You have %d unread message(s): drain them with `%s mail drain --include-body` and act on them.", unread, bin)
 	}

@@ -183,35 +183,63 @@ func reportingPeer(peers []Peer) Peer {
 type Briefing struct {
 	Crew, Conventions, ConventionsPath string
 	Role, RolePrompt, RolePath         string
+	// NameConventions and NameRole name a prompt instead of inlining it. The
+	// start notice's allocator sets them as it makes room; a prompt longer
+	// than MaxInline is named whatever they say.
+	NameConventions, NameRole bool
 }
 
-// MaxInline is the longest prompt a notice carries whole. A longer file is
+// MaxInline is the longest prompt a notice carries whole. A longer prompt is
 // named instead, so the notice stays well inside what a harness accepts from
 // a hook.
 const MaxInline = 4000
 
 // BriefNotice is the part of a start notice that carries the briefing; ""
 // when there is none.
-func BriefNotice(b Briefing) string { return briefNotice(b, false, false) }
+func BriefNotice(b Briefing) string { return briefNotice(b) }
 
-// briefNotice is BriefNotice, naming the conventions or the role prompt by
-// its file instead of inlining it when asked and the prompt has a file.
-func briefNotice(b Briefing, nameConventions, nameRole bool) string {
+// briefNotice is the briefing as the notice carries it: a prompt inlined
+// while it is within MaxInline, a pointer to its file or, for a built-in
+// prompt with no file, to the command that prints it.
+func briefNotice(b Briefing) string {
 	var parts []string
 	if b.Conventions != "" {
-		parts = append(parts, prompt(fmt.Sprintf("Team conventions of crew %q, shared by the agents in this Rex session; where they differ from your role prompt, they win", b.Crew), b.Conventions, b.ConventionsPath, nameConventions))
+		parts = append(parts, prompt(fmt.Sprintf("Team conventions of crew %q, shared by the agents in this Rex session; where they differ from your role prompt, they win", b.Crew), b.Conventions, b.ConventionsPath, b.NameConventions, conventionsPointer(b.Crew)))
 	}
 	if b.RolePrompt != "" {
-		parts = append(parts, prompt("Your role here is "+b.Role, b.RolePrompt, b.RolePath, nameRole))
+		parts = append(parts, prompt("Your role here is "+b.Role, b.RolePrompt, b.RolePath, b.NameRole, rolePointer(b.Crew, b.Role)))
 	}
 	return strings.Join(parts, "\n\n")
 }
 
-func prompt(title, text, path string, name bool) string {
-	if (name || len(text) > MaxInline) && path != "" {
+// conventionsPointer is how the notice names crew crew's conventions when
+// it does not inline them: their file, or for a built-in crew the command
+// that prints them.
+func conventionsPointer(crew string) string {
+	name := crew
+	if name == "" {
+		name = "<crew>"
+	}
+	return "rex-amq-adapter crew show " + name + " --text"
+}
+
+// rolePointer is how the notice names role's prompt when it does not inline
+// it.
+func rolePointer(crew, role string) string {
+	if crew == "" {
+		return "rex-amq-adapter crew show --role " + role + " --text"
+	}
+	return "rex-amq-adapter crew show " + crew + " --role " + role + " --text"
+}
+
+func prompt(title, text, path string, name bool, pointer string) string {
+	if !name && len(text) <= MaxInline {
+		return title + ":\n" + text
+	}
+	if path != "" {
 		return title + ": read " + path + " before you start."
 	}
-	return title + ":\n" + text
+	return title + ": run `" + pointer + "` before you start."
 }
 
 // ContextCap is the most a hook may give Claude Code as context: a longer
@@ -221,7 +249,9 @@ func prompt(title, text, path string, name bool) string {
 const ContextCap = 10000
 
 // StartBudget is what a start notice may take of ContextCap, leaving the rest
-// for the join notes and mail line the same hook reply can carry.
+// for the join notes and mail line the same hook reply can carry. It is the
+// start notice's share when those fit; HookReply keeps the whole reply within
+// ContextCap when they do not.
 const StartBudget = ContextCap - 1000
 
 // ContextLen is the length of s as a harness written in JavaScript counts
@@ -237,30 +267,188 @@ func ContextLen(s string) int {
 	return n
 }
 
-// StartNotice composes a start notice: head (identity, mail, mates, task),
-// the briefing, and tail (who stands for the human), within StartBudget.
-// head and tail always stay inline, since an agent cannot do without them;
-// a prompt that does not fit is named by its file, the longer one first. A
-// briefing whose prompts have no file (the built-in ones, which tests keep
-// short) is inlined whatever its length.
-func StartNotice(head string, b Briefing, tail string) string {
-	compose := func(nameConventions, nameRole bool) string {
-		s := head
-		if brief := briefNotice(b, nameConventions, nameRole); brief != "" {
-			s += "\n\n" + brief
+// StartParts is everything a start notice carries, one part each, so the
+// allocator can decide what a notice over StartBudget gives up.
+type StartParts struct {
+	// Head is the identity and mail commands; it always stays inline.
+	Head string
+	// Mates names the session-mates (MatesNotice); Task is the pane-label
+	// line (TaskNotice).
+	Mates, Task string
+	// Briefing is the crew's conventions and the role's prompt.
+	Briefing Briefing
+	// Receipt is an Epic lead's grant receipt; every other agent has none.
+	Receipt *GrantReceipt
+	// Tail is who stands for the human, what waits on the human, and the
+	// lead's Goal and Grant lines; it always stays inline, last.
+	Tail string
+}
+
+// StartNotice is the one allocator of a start notice's StartBudget: head,
+// mates, task, briefing, grant receipt, tail, in that order. Head and tail
+// always stay inline, since an agent cannot do without them. What does not
+// fit is given up in this order: the longer prompt becomes a pointer, then
+// the other, then the mates list becomes a count, then the receipt leaves
+// out the user's words (complete: false, pointing at `epic grant`; it never
+// carries a part of them). A notice still over budget then (no input this
+// adapter writes gets there) is cut before its tail.
+func StartNotice(p StartParts) string { return startNoticeWithin(p, StartBudget) }
+
+// startSteps are what a start notice gives up, in order; the first gives up
+// nothing.
+func startSteps(p StartParts) []func(*StartParts) {
+	conventionsFirst := ContextLen(p.Briefing.Conventions) >= ContextLen(p.Briefing.RolePrompt)
+	return []func(*StartParts){
+		func(*StartParts) {},
+		func(q *StartParts) {
+			q.Briefing.NameConventions, q.Briefing.NameRole = conventionsFirst, !conventionsFirst
+		},
+		func(q *StartParts) { q.Briefing.NameConventions, q.Briefing.NameRole = true, true },
+		func(q *StartParts) { q.Mates = MatesCount(q.Mates) },
+		func(q *StartParts) {
+			if q.Receipt != nil {
+				r := q.Receipt.Withheld()
+				q.Receipt = &r
+			}
+		},
+	}
+}
+
+// startNoticeWithin is StartNotice within budget units.
+func startNoticeWithin(p StartParts, budget int) string {
+	var s string
+	for _, step := range startSteps(p) {
+		step(&p)
+		if s = p.compose(); ContextLen(s) <= budget {
+			return s
 		}
-		if tail != "" {
-			s += "\n\n" + tail
+	}
+	tail := p.Tail
+	p.Tail = ""
+	sep := ""
+	if tail != "" {
+		sep = "\n\n"
+	}
+	return cut(p.compose(), budget-ContextLen(sep+tail)) + sep + tail
+}
+
+// startFloor is the length of p's start notice once it gave up everything
+// it may give up: the least it needs whole.
+func startFloor(p StartParts) int {
+	for _, step := range startSteps(p) {
+		step(&p)
+	}
+	return ContextLen(p.compose())
+}
+
+// HookReply is a hook's whole context: the start notice of start (nil for
+// none), the window notes queued for the agent (oldest first), and the mail
+// notice, space-joined, within budget (at most ContextCap; the caller keeps
+// out of it what it appends after). The mail and the notes take their room
+// first, and the start notice is composed within what they leave, at most
+// StartBudget, giving up its parts in StartNotice's order: its prompts
+// become pointers before a grant receipt that does not fit leaves out the
+// user's words whole (complete: false), never a part of them. Notes too
+// many for even the least start notice (startFloor) give way oldest first,
+// to one line that counts them (WindowNotesCount).
+func HookReply(budget int, start *StartParts, notes []string, mail string) string {
+	budget = min(budget, ContextCap)
+	floor := 0
+	if start != nil {
+		floor = startFloor(*start) + 1
+	}
+	rest := func(kept []string) string {
+		return joinSpaced(append(append([]string{WindowNotesCount(len(notes) - len(kept))}, kept...), mail)...)
+	}
+	kept := notes
+	for len(kept) > 0 && floor+ContextLen(rest(kept)) > budget {
+		kept = kept[1:]
+	}
+	tail := rest(kept)
+	out := tail
+	if start != nil {
+		out = joinSpaced(startNoticeWithin(*start, min(StartBudget, budget-ContextLen(tail)-1)), tail)
+	}
+	if ContextLen(out) <= budget {
+		return out
+	}
+	// Only a mail notice near the budget by itself gets here (none this
+	// adapter writes does); the start notice in it was composed within what
+	// was left, so no receipt in it carries the user's words.
+	return cut(out, budget)
+}
+
+// WindowNotesCount stands for n window notes a hook reply had no room for;
+// "" for none.
+func WindowNotesCount(n int) string {
+	if n == 0 {
+		return ""
+	}
+	return fmt.Sprintf("AMQ: %d earlier note(s) about agents joining or leaving your Rex session did not fit here: `rex-amq-adapter agent list` names who is here now.", n)
+}
+
+// joinSpaced joins the non-empty notices with a space.
+func joinSpaced(notices ...string) string {
+	var out []string
+	for _, n := range notices {
+		if n != "" {
+			out = append(out, n)
 		}
+	}
+	return strings.Join(out, " ")
+}
+
+// compose renders p's parts in the order an agent reads them: the head, its
+// mates and task lines, then the briefing, receipt, and tail as paragraphs.
+func (p StartParts) compose() string {
+	head := p.Head
+	if p.Mates != "" {
+		head += " " + p.Mates
+	}
+	if p.Task != "" {
+		head += "\n" + p.Task
+	}
+	parts := []string{head, briefNotice(p.Briefing)}
+	if p.Receipt != nil {
+		parts = append(parts, p.Receipt.Render())
+	}
+	parts = append(parts, p.Tail)
+	var out []string
+	for _, s := range parts {
+		if s != "" {
+			out = append(out, s)
+		}
+	}
+	return strings.Join(out, "\n\n")
+}
+
+// cut shortens s to at most n UTF-16 code units, never inside a rune,
+// marking a cut with an ellipsis.
+func cut(s string, n int) string {
+	if ContextLen(s) <= n {
 		return s
 	}
-	conventionsFirst := ContextLen(b.Conventions) >= ContextLen(b.RolePrompt)
-	steps := [][2]bool{{false, false}, {conventionsFirst, !conventionsFirst}, {true, true}}
-	var s string
-	for _, st := range steps {
-		if s = compose(st[0], st[1]); ContextLen(s) <= StartBudget {
-			break
+	used := 0
+	for i, r := range s {
+		w := 1
+		if r > 0xFFFF {
+			w = 2
 		}
+		if used+w > n-1 {
+			return s[:i] + "…"
+		}
+		used += w
 	}
 	return s
+}
+
+// MatesCount is a mates line cut to the number of agents it names and the
+// command that lists them; "" stays "".
+func MatesCount(mates string) string {
+	if mates == "" {
+		return ""
+	}
+	list, _, _ := strings.Cut(strings.TrimPrefix(mates, "Agents beside you in this Rex session: "), ". Reach them")
+	n := len(strings.Split(list, "), "))
+	return fmt.Sprintf("%d agent(s) are beside you in this Rex session: `rex-amq-adapter agent list` names them.", n)
 }

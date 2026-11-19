@@ -537,10 +537,10 @@ func commands() []*cli.Command {
 		},
 		{
 			Path: path("skill", "show"), Summary: "one topic of the agent guide",
-			Args: []cli.Arg{a("topic", cli.KindTopic, false, "the topic (default: the whole guide)")},
+			Args: []cli.Arg{a("topic", cli.KindTopic, false, "the topic (default: the index of topics)")},
 			Tier: cli.TierRead, Audience: cli.AudienceAgent, Doc: true,
-			Result:   "{topic, markdown}; --text prints the markdown; an unknown topic exits 4 naming the topics",
-			Examples: []string{"rex-amq-adapter skill show guide --text", "rex-amq-adapter skill show"},
+			Result:   "{topic, markdown}; without a topic, the index; --text prints the markdown; an unknown topic exits 4 naming the topics",
+			Examples: []string{"rex-amq-adapter skill show peers --text", "rex-amq-adapter skill show"},
 			Run:      skillShow,
 		},
 		// top level

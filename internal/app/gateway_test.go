@@ -166,7 +166,7 @@ func TestQuarantineAtHookForANarrator(t *testing.T) {
 	if err := e.sendSystem(ctx, "claude-03", "agy-02", "notice", "from the adapter"); err != nil {
 		t.Fatal(err)
 	}
-	r, err := e.announceMail(ctx, narr, HookInput{}, core.ToolFinished, "", false, nil)
+	r, err := e.announceMail(ctx, narr, HookInput{}, core.ToolFinished, nil, false, nil, core.ContextCap)
 	if err != nil {
 		t.Fatal(err)
 	}
