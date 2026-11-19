@@ -892,8 +892,9 @@ running. The target is resolved in the caller's Rex session:
    in the caller's directory or `--cwd` (`start`); the caller awaits its
    adoption and then delivers. `--cwd` always means a new agent there: it
    refuses a handle, and a directory a live agent of the role works in. A
-   review role (`core.ReviewRole`: reviewer, editor, qa) only reads the
-   checkout, so a council seats one per harness there: it is refused only
+   read-only role (`core.ReadOnly`: reviewer, editor, qa, architect) only
+   reads the checkout, so a council seats one per harness there (a caller
+   of the role in that directory holds its own harness's seat, `self`): it is refused only
    when a live seat on the same harness works in that directory (`--harness`
    names the harness), and a start with no `--harness` passes over the
    harnesses already seated (`busy`), refusing when none of its families is
@@ -1635,8 +1636,9 @@ an Epic its session is linked with (`link`/`unlink`) mail each other, and
 nothing else crosses sessions. The narrator takes no member mail, only the
 adapter's own notices (provenance `system`, never a header label or a sender
 named `system`); its one message into the Epic is a control directive to the
-Epic's lead (`Endpoint.Lead`: its orchestrator, or a pair Epic's implementer
-lead, which the app layer marks with `pairLead`) carrying a request id, sent with the managed `send --control
+Epic's lead (`Endpoint.Lead`, which the app layer marks with `sessionLead`:
+the agent of the session policy's `lead_role` nobody summoned, and once
+adopted its `lead_handle`) carrying a request id, sent with the managed `send --control
 <request id>` (the only path that records `op: control`, and refused to any
 caller but a narrator; a plain send from a narrator is refused). A handle the adapter never adopted (the
 user, a script) still reaches ordinary members, never a narrator or a Personal
@@ -1751,20 +1753,34 @@ the user's own would: the orchestrator is depth 0 in its session.
 With `--crew pair` the Epic is one Slice and has no orchestrator: the second
 pane is an `implementer`, on the implementer's routing (`--harness` still
 overrides it) and briefed as the orchestrator would be, and the result's
-`lead` says so (`orchestrator` keeps its key and reports that agent). The
-pair crew's conventions tell it to run the contract with `run-goal`, commit
-Checkpoints, summon its own reviewer, and hand back. `pairLead` lets it do
-what only an orchestrator does: an implementer nobody summoned, in a session
-whose crew is `pair` and that holds no orchestrator record, live or
-departed, records the hand-back and reads its own Epic's view; an
-implementer an orchestrator summoned, or one in an Epic that had an
-orchestrator, stays a worker. The narrator wakes on its hand-back and its
+`lead` says so (`lead.role`, with that agent's block, status, and handle).
+The pair crew's conventions tell it to run the contract with `run-goal`,
+commit Checkpoints, summon its own reviewer, and hand back. `sessionLead`
+lets it do what only a lead does: the session's policy records
+`lead_role: implementer` when the Epic opens and the first implementer
+nobody summoned adopted there as `lead_handle`; that one records the
+hand-back, reads its own Epic's view and grant, takes the narrator's
+control mail, keeps the watcher, and hears departures, and every other
+implementer stays a worker. A session whose policy predates `lead_role`
+falls back to its orchestrator, live or departed, else its crew's lead.
+With `--crew design` the lead is an `architect`, briefed read-only (no
+`run-goal`): it seats a council of architects beside itself, drafts the
+spec and goal files outside the repository, and hands them back with
+`epic handback --artifact`, which `epic artifacts` lists and `epic
+materialize` writes byte for byte for the linked personal agent or the
+user. Materialize opens `--into` once, component by component with
+`O_DIRECTORY|O_NOFOLLOW` (only a root-owned system link such as `/var` is
+followed), and does every read, write, rename, and cleanup through those
+descriptors, so swapping a directory on the path while it runs sends
+nothing elsewhere. Into an existing directory it is a non-atomic batch
+(`meta.complete=false`), and its receipt records only the files it wrote
+and checked. The narrator wakes on its hand-back and its
 departure as on an orchestrator's (the pulse is role-blind), and the gateway
 takes the pair lead as the Epic's control plane: `gatewayEndpoint` marks it
 `Lead`, so a narrator's `send --control` reaches it (`narrator_control`)
 while one to any other implementer is refused
-(`narrator_never_mails_workers`). The orchestrator watchdog does not run for
-it.
+(`narrator_never_mails_workers`). The session watcher runs its watchdog
+for the lead whatever its role.
 
 ### An Epic runs unattended
 
@@ -2030,8 +2046,10 @@ nothing. A pane or shell with no agent in it is not trusted for being one
 4. `ME_UNATTENDED=1` is refused unless the caller is a personal agent,
    which may carry it inherited.
 
-A personal caller reads its own scope, and a `--personal` or `--hub` naming
-another is refused. Anyone else names exactly one live personal agent by
+A personal caller reads its own scope, and a `--hub` naming another is
+refused; `--personal` is only a filter inside that scope (spec §4.2(8)): it
+narrows to the Epics the named personal agent prefers, live or departed, and
+a handle outside the scope reads the empty subset. Anyone else names exactly one live personal agent by
 handle, by a directory its working directory is in (symlinks resolved), or
 both; none is usage, and more than one is ambiguous. With `--session S`, S
 must be linked to that agent (`not_linked` otherwise); its view is read with

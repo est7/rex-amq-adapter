@@ -441,19 +441,13 @@ func (e Env) obligationNotice(rec agent) string {
 }
 
 // grantNotice is the Goal and Grant lines of rec's start notice when rec
-// leads an Epic that has a notarized grant (an orchestrator nobody summoned,
-// or a pair Epic's lead); "" for every other agent. Like the briefing it is
-// advice: what cannot be read is reported and left out.
+// leads an Epic that has a notarized grant (sessionLead); "" for every other
+// agent. Like the briefing it is advice: what cannot be read is reported and
+// left out.
 func (e Env) grantNotice(rec agent) string {
-	if rec.Parent != "" || !placed(rec) {
-		return ""
-	}
-	lead := rec.Role == core.OrchestratorRole
-	if !lead {
-		var err error
-		if lead, err = e.pairLead(rec); err != nil {
-			fmt.Fprintf(Diagnostics, "tell whether %s leads its Epic: %v\n", rec.Handle, err)
-		}
+	lead, err := e.sessionLead(rec)
+	if err != nil {
+		fmt.Fprintf(Diagnostics, "%v\n", err)
 	}
 	if !lead {
 		return ""

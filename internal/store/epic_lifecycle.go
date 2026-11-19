@@ -47,13 +47,37 @@ const (
 var epicRank = map[string]int{EpicPartialStart: 1, EpicOpened: 2, EpicHandBack: 3, EpicClosed: 4}
 
 // HandBackRef names one recorded hand-back without its body: its sequence
-// number in the session, the digest of its normalized body, who recorded it,
-// and when.
+// number in the session, its digest (HandBack.Digest), who recorded it, and
+// when.
 type HandBackRef struct {
 	Seq    int         `json:"seq"`
 	Digest string      `json:"digest"`
 	By     core.Handle `json:"by"`
 	At     time.Time   `json:"at"`
+	// OpHash is the hand-back's HandBack.OpHash: a retry under the same
+	// --op-id finds the hand-back it recorded. OpHashes are the other op
+	// ids accepted for this Seq since (the same report again under a new
+	// --op-id), so each stays bound to this hand-back (Accepts).
+	OpHash   string   `json:"op_hash,omitempty"`
+	OpHashes []string `json:"op_hashes,omitempty"`
+}
+
+// Accepts reports whether the op id whose hash is opHash recorded, or was
+// accepted for, this hand-back.
+func (r HandBackRef) Accepts(opHash string) bool {
+	return opHash != "" && (r.OpHash == opHash || slices.Contains(r.OpHashes, opHash))
+}
+
+// withOp is r with opHash among the op ids it accepts.
+func (r HandBackRef) withOp(opHash string) HandBackRef {
+	switch {
+	case opHash == "" || r.Accepts(opHash):
+	case r.OpHash == "":
+		r.OpHash = opHash
+	default:
+		r.OpHashes = append(slices.Clip(r.OpHashes), opHash)
+	}
+	return r
 }
 
 // EpicLifecycle is lifecycle.json. Hub is the Hub that opened (and may
@@ -97,16 +121,19 @@ func (l *EpicLifecycle) Advance(state string, at time.Time) bool {
 }
 
 // NoteHandBack records h among the lifecycle's hand-backs: the entry of the
-// same sequence number is replaced, wherever it is; a new one is appended. A
-// Seq once given a digest keeps it: noting another digest under it panics,
-// so the caller numbers a different report after the latest (LatestHandBack).
+// same sequence number is replaced, wherever it is, keeping every op id it
+// accepted (h's added); a new one is appended. A Seq once given a digest
+// keeps it: noting another digest under it panics, so the caller numbers a
+// different report after the latest (LatestHandBack).
 func (l *EpicLifecycle) NoteHandBack(h HandBack) {
-	ref := HandBackRef{Seq: h.Seq, Digest: h.Digest, By: h.By, At: h.At}
+	ref := HandBackRef{Seq: h.Seq, Digest: h.Digest, By: h.By, At: h.At, OpHash: h.OpHash}
 	if i := slices.IndexFunc(l.HandBacks, func(r HandBackRef) bool { return r.Seq == h.Seq }); i >= 0 {
-		if l.HandBacks[i].Digest != h.Digest {
-			panic(fmt.Sprintf("store: hand-back seq %d already has digest %s, not %s", h.Seq, l.HandBacks[i].Digest, h.Digest))
+		prev := l.HandBacks[i]
+		if prev.Digest != h.Digest {
+			panic(fmt.Sprintf("store: hand-back seq %d already has digest %s, not %s", h.Seq, prev.Digest, h.Digest))
 		}
-		l.HandBacks[i] = ref
+		ref.OpHash, ref.OpHashes = prev.OpHash, prev.OpHashes
+		l.HandBacks[i] = ref.withOp(h.OpHash)
 	} else {
 		l.HandBacks = append(l.HandBacks, ref)
 	}
@@ -114,6 +141,19 @@ func (l *EpicLifecycle) NoteHandBack(h HandBack) {
 	if h.At.After(l.UpdatedAt) {
 		l.UpdatedAt = h.At
 	}
+}
+
+// NoteHandBackOp binds the op id whose hash is opHash to the hand-back of
+// seq the lifecycle lists, which the request it named matched (the same
+// report again): a later request under that op id with another report is
+// then a conflict. It reports whether seq is listed.
+func (l *EpicLifecycle) NoteHandBackOp(seq int, opHash string) bool {
+	i := slices.IndexFunc(l.HandBacks, func(r HandBackRef) bool { return r.Seq == seq })
+	if i < 0 {
+		return false
+	}
+	l.HandBacks[i] = l.HandBacks[i].withOp(opHash)
+	return true
 }
 
 // LatestHandBack is the lifecycle's hand-back of the highest Seq; ok is

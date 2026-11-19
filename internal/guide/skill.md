@@ -327,8 +327,9 @@ of its own under a built-in role (`architect`, `reviewer`, `qa`, `writer`,
 - **Several Slices.** One implementer per Slice, in that Slice's worktree
   (`summon implementer --cwd <worktree>`), and one reviewer or QA kept open
   across Slices (`summon reviewer` without `--cwd` reaches it).
-- **Council seats.** A review role reads a Slice worktree without writing
-  it, so up to one seat per harness may share it. `summon reviewer --council
+- **Council seats.** A read-only role (reviewer, editor, qa, architect)
+  reads a Slice worktree without writing it, so up to one seat per harness
+  may share it. `summon reviewer --council
   --cwd <worktree>` seats them all at once, one per harness of
   `[role.reviewer].harness` (Review tiers); `summon reviewer --cwd
   <worktree>` again starts one more seat on a harness not yet seated there,
@@ -371,9 +372,12 @@ brief is declined in one line and listed as a follow-up.
   is checked first; when one is not installed, fails its preflight, or would
   pass the session cap, the summon is refused naming each and nothing is
   mailed or launched. Report the missing seat; never substitute another
-  harness. `--council` takes a review role only, never a handle or
+  harness. `--council` takes a read-only role only, never a handle or
   `--harness` (exit 2). The JSON lists `seats`, each with its harness,
-  action, handle, and startup.
+  action, handle, and startup. A design Epic's lead architect seats its own
+  council (`summon architect --council --cwd <its directory>`): it holds its
+  harness's seat itself (`action: self`), so the council is the lead and one
+  architect on each other harness.
   Act on each result as it arrives, but edit nothing in the checkout while a
   seat still reads it; a seat the user marks non-blocking is not waited
   for, and a late result from it is feedback whose score is not recorded.
@@ -430,7 +434,21 @@ With `--crew pair` the Epic is
 one Slice with no orchestrator: an implementer leads in its place, on the
 implementer's routing, runs the goal itself (Checkpoints, its own `summon
 reviewer`), records the hand-back, and takes the narrator's `--control`
-directives as an orchestrator would. Closing is two-phase: the orchestrator records its whole final report
+directives as an orchestrator would. With `--crew design` the Epic argues a
+design to drafts, read-only, with no orchestrator and no goal run: an
+architect leads, seats a council of architects beside itself (`agent summon
+architect --council --cwd <dir> --grant <grant> --kind brainstorm`; it holds
+its own harness's seat), drafts `spec.md` and `NN-*.md` outside the
+repository, and hands them back byte for byte (`epic handback @<report>
+--artifact spec.md=@<file> ...`; a council architect it summoned is refused).
+Each such hand-back publishes a revision under its `seq`; read them with
+`epic artifacts <session_id>` and write one into a directory with `epic
+materialize <session_id> --into <dir> [--seq N]`: a new directory is created
+whole, and into an existing one a file changed since it was last written
+there is a `conflict` (exit 5) and nothing is written, unless `--replace`.
+Only you, linked to the Epic, and the user run these; `epic grant
+<session_id>` reads the notarized grant with `contract_sha256_ok` checked
+against the contract's bytes now. Closing is two-phase: the orchestrator records its whole final report
 (review queue with PR links, Blocked on me, Decided for you, Changed, Found)
 last, once every PR is open, with `rex-amq-adapter hand-back @<file>` (`-`
 reads stdin; a new one replaces it), which `view` shows whole as `hand_back`;
@@ -496,9 +514,9 @@ without its own; the JSON names the `harness` started and each one
 brief, in your directory or the one `--cwd` names (a Slice worktree), and told
 once it is adopted. With `--cwd` it only ever starts a new agent there, a
 second one of a live role included: it refuses a handle and a directory a live
-agent of the role already works in (a review role only on the same harness:
+agent of the role already works in (a read-only role only on the same harness:
 see Council seats), and a departed one is not resumed. `--council` fans a
-review role out to one seat per harness of its routing (Review tiers). The guards decide, and a refusal says
+read-only role out to one seat per harness of its routing (Review tiers). The guards decide, and a refusal says
 why; never retry a refused summon with other words:
 
 - a personal agent never summons: it opens an Epic (`epic`), and the refusal

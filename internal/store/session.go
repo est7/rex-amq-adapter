@@ -21,8 +21,10 @@ import (
 //     told the narrator about, and the notice that told it (PulseCursor).
 //   - sessions/<session_id>/crew.json: the crew the session works as
 //     (SessionCrew), claimed by join CREW or epic --crew.
-//   - sessions/<session_id>/hand-back.json: the orchestrator's latest
-//     hand-back (HandBack), which the view carries whole.
+//   - sessions/<session_id>/hand-back.json: the lead's latest hand-back
+//     (HandBack), which the view carries whole.
+//   - sessions/<session_id>/artifacts/<seq>/: the artifacts a hand-back
+//     carried (artifact.go), and materialized.json beside them.
 //   - sessions/<session_id>/policy.json: the Epic's external-write policy
 //     (EpicPolicy), written when epic creates the session.
 //   - sessions/<session_id>/lifecycle.json: the Epic's lifecycle
@@ -124,17 +126,22 @@ func (p Paths) handBackPath(id string) string {
 	return filepath.Join(p.SessionDir(id), "hand-back.json")
 }
 
-// HandBack is the final report an orchestrator recorded when its run ended:
+// HandBack is the final report an Epic's lead recorded when its run ended:
 // the whole text, as written, for the session's view. Seq numbers the
-// session's distinct hand-backs from 1, and Digest (HandBackDigest) is what
-// tells a new one from the same one recorded again; a file written before
-// either was kept has neither.
+// session's distinct hand-backs from 1, and Digest is what tells a new one
+// from the same one recorded again: the report's (HandBackDigest), folded
+// with its Artifacts' (HandBackWithArtifacts) when it carries any, so a
+// revision of the artifacts alone is a new hand-back. A file written before
+// Seq and Digest were kept has neither. OpHash is the SHA-256 of the
+// --op-id the hand-back was recorded under, "" for none.
 type HandBack struct {
-	By     core.Handle `json:"by"`
-	At     time.Time   `json:"at"`
-	Body   string      `json:"body"`
-	Seq    int         `json:"seq,omitempty"`
-	Digest string      `json:"digest,omitempty"`
+	By        core.Handle     `json:"by"`
+	At        time.Time       `json:"at"`
+	Body      string          `json:"body"`
+	Seq       int             `json:"seq,omitempty"`
+	Digest    string          `json:"digest,omitempty"`
+	Artifacts []ArtifactEntry `json:"artifacts,omitempty"`
+	OpHash    string          `json:"op_hash,omitempty"`
 }
 
 // HandBack reads session id's latest hand-back; ok is false when none was

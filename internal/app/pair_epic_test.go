@@ -45,7 +45,7 @@ func TestPairEpicOpensItsImplementerAndNarrator(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !res.Ready() || res.Lead != tc.lead || res.Orchestrator.Handle != "claude-03" {
+			if !res.Ready() || res.Lead.Role != tc.lead || res.Lead.Handle != "claude-03" {
 				t.Fatalf("result %+v", res)
 			}
 			panes := term.sessions_[0].panes
@@ -268,7 +268,7 @@ func TestPairEpicOpIDReconcilesItsSessionWithItsLeadAndPolicy(t *testing.T) {
 	req := EpicRequest{Name: "one slice", Dir: filepath.Dir(goal), Goal: goal, Crew: pairCrew, OpID: "me:board:pair-1#open"}
 	repair := breakOpRecord(t, e, term, req.OpID)
 	first, err := openWithin(e, loc, req, time.Second)
-	if err == nil || !strings.Contains(err.Error(), "retry with the same op id") || first.SessionID != "session:epic-1" || first.Lead != implementerRole {
+	if err == nil || !strings.Contains(err.Error(), "retry with the same op id") || first.SessionID != "session:epic-1" || first.Lead.Role != implementerRole {
 		t.Fatalf("first run %+v: %v", first, err)
 	}
 	repair()
@@ -286,7 +286,7 @@ func TestPairEpicOpIDReconcilesItsSessionWithItsLeadAndPolicy(t *testing.T) {
 	if len(term.sessions_) != 1 {
 		t.Fatalf("the retry created another session: %+v", term.sessions_)
 	}
-	if !again.Replayed || !again.Ready() || again.Lead != implementerRole || again.Orchestrator.Block != "block:epic-1-2" || again.LifecycleState != store.EpicOpened {
+	if !again.Replayed || !again.Ready() || again.Lead.Role != implementerRole || again.Lead.Block != "block:epic-1-2" || again.LifecycleState != store.EpicOpened {
 		t.Fatalf("retry %+v", again)
 	}
 	p, ok, err := e.Store.SessionPolicy("session:epic-1")

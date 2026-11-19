@@ -360,8 +360,8 @@ func TestDecideStartup(t *testing.T) {
 }
 
 func TestDepartureMailGoesToTheOrchestratorOrItsReportingPeer(t *testing.T) {
-	orch := Peer{Handle: "claude-02", Kind: Claude, Role: OrchestratorRole}
-	goal2 := Peer{Handle: "codex-02", Kind: Codex, Role: OrchestratorRole}
+	orch := Peer{Handle: "claude-02", Kind: Claude, Role: OrchestratorRole, Lead: true}
+	goal2 := Peer{Handle: "codex-02", Kind: Codex, Role: OrchestratorRole, Lead: true}
 	pi := Peer{Handle: "pi-01", Kind: Pi}
 	agy := Peer{Handle: "agy-01", Kind: Agy}
 	claude := Peer{Handle: "claude-01", Kind: Claude}

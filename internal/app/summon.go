@@ -51,8 +51,8 @@ type SummonRequest struct {
 	// Split opens a launched agent in a pane beside the caller, which the
 	// human asked for, instead of the default, a tab of its own.
 	Split bool
-	// Council fans a review role out to one seat per harness in its
-	// routing (council.go): only for a review role, never with Harness.
+	// Council fans a read-only role out to one seat per harness in its
+	// routing (council.go): only for a read-only role, never with Harness.
 	Council bool
 	// DryRun resolves the target and runs the guards, then reports what
 	// would happen: no mail, no reservation, no pane. The trust preflight,
@@ -172,19 +172,19 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 			e.summonLog(caller, r, res)
 			return res, nil
 		}
-		// A review role only reads the checkout, so seats on distinct
-		// harnesses may share it (a council): only a second live seat of the
-		// same harness there is refused, and a start that names no harness
-		// passes over the harnesses already seated (busy).
+		// A read-only role (core.ReadOnly) only reads the checkout, so seats
+		// on distinct harnesses may share it (a council): only a second live
+		// seat of the same harness there is refused, and a start that names
+		// no harness passes over the harnesses already seated (busy).
 		for _, rec := range live {
 			if !sameDir(rec.Cwd, r.Cwd) {
 				continue
 			}
-			if core.ReviewRole(target) && (r.Harness == "" || string(rec.Kind) != r.Harness) {
+			if core.ReadOnly(target) && (r.Harness == "" || string(rec.Kind) != r.Harness) {
 				busy = append(busy, rec.Kind)
 				continue
 			}
-			if core.ReviewRole(target) {
+			if core.ReadOnly(target) {
 				res.Action, res.Reason = "refused", fmt.Sprintf("a live %s on %s (%s) already works in %s; name another harness with --harness for another seat", target, rec.Kind, rec.Handle, r.Cwd)
 			} else {
 				res.Action, res.Reason = "refused", fmt.Sprintf("a live %s (%s) already works in %s; two agents of one role in one directory would edit the same files", target, rec.Handle, r.Cwd)
@@ -238,7 +238,7 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 	}
 	// The guards and the reservation, together under the lifecycle lock:
 	// two summoners racing the cap both see the other's reservation.
-	tokens, err := e.reserve(ctx, caller, s, r.Kind, chain, target, []*agent{departed}, r.DryRun)
+	tokens, err := e.reserve(ctx, caller, s, r.Kind, chain, target, []*agent{departed}, false, r.DryRun)
 	if err != nil {
 		var refusal core.SummonCheck
 		if errors.As(err, &refusal) {
@@ -332,8 +332,10 @@ func (e Env) chain(recs []agent, rec agent) (chain []core.Peer, complete bool) {
 // pending launches, and on success writes one summon per launch under a
 // fresh token, which reserves a place until adoption consumes it or it
 // expires. Each launch is a resume of the departed agent it names, or a
-// start (nil); either all of them fit the cap or none is reserved.
-func (e Env) reserve(ctx context.Context, caller agent, s Session, kind string, chain []core.Peer, target string, launches []*agent, dry bool) ([]string, error) {
+// start (nil); either all of them fit the cap or none is reserved. council
+// says the caller is its Epic's lead seating a council of its own role
+// (core.GuardSummon).
+func (e Env) reserve(ctx context.Context, caller agent, s Session, kind string, chain []core.Peer, target string, launches []*agent, council, dry bool) ([]string, error) {
 	unlock, err := e.Store.LockLifecycle(ctx)
 	if err != nil {
 		return nil, err
@@ -367,7 +369,7 @@ func (e Env) reserve(ctx context.Context, caller agent, s Session, kind string, 
 	if err != nil {
 		return nil, err
 	}
-	if g := core.GuardSummon(kind, chain, caller.Depth, target, live+pending); g.Refused {
+	if g := core.GuardSummon(kind, chain, caller.Depth, target, live+pending, council); g.Refused {
 		return nil, g
 	}
 	if live+pending+len(launches) > core.SummonCap {
@@ -579,7 +581,7 @@ func (e Env) start(ctx context.Context, caller agent, s Session, r SummonRequest
 	if err != nil {
 		return refuse(fmt.Sprintf("the routing of role %s cannot be read, so no agent was started: %v", role, err))
 	}
-	// A review role takes the first ready harness of another family than the
+	// A cross-family role takes the first ready harness of another family than the
 	// caller's, installed even when it is the only one; every other role its
 	// first harness, launched even when this process's PATH lacks it
 	// (pickHarness).
@@ -592,20 +594,23 @@ func (e Env) start(ctx context.Context, caller agent, s Session, r SummonRequest
 			return refuse(err.Error())
 		}
 		kinds = []core.Kind{kind}
-	case core.ReviewRole(role):
+	case core.CrossFamily(role):
 		mine := core.Family(caller.Kind, caller.Model)
 		if kinds = otherFamilies(route, mine); len(kinds) == 0 {
 			return refuse(fmt.Sprintf("no harness in the routing of %s (%s) runs a model family known to differ from yours (%s %s), so no agent was started; name one with --harness", role, strings.Join(kindNames(route.Harnesses), ", "), caller.Kind, orUnknown(mine)))
 		}
-		if len(busy) > 0 {
-			free := slices.DeleteFunc(slices.Clone(kinds), func(k core.Kind) bool { return slices.Contains(busy, k) })
-			if len(free) == 0 {
-				return refuse(fmt.Sprintf("every harness the routing of %s offers you (%s) already has a live %s in %s, so no agent was started; name another with --harness", role, strings.Join(kindNames(kinds), ", "), role, cwd))
-			}
-			kinds = free
-		}
 	}
-	kind, passed, refusal, err := e.pickHarness(ctx, cwd, kinds, r.Harness == "" && core.ReviewRole(role))
+	// Seats a read-only role already holds in --cwd (busy) are passed over;
+	// for a role that is not cross-family that leaves its first harness or
+	// nothing.
+	if r.Harness == "" && len(busy) > 0 {
+		free := slices.DeleteFunc(slices.Clone(kinds), func(k core.Kind) bool { return slices.Contains(busy, k) })
+		if len(free) == 0 {
+			return refuse(fmt.Sprintf("every harness the routing of %s offers you (%s) already has a live %s in %s, so no agent was started; name another with --harness", role, strings.Join(kindNames(kinds), ", "), role, cwd))
+		}
+		kinds = free
+	}
+	kind, passed, refusal, err := e.pickHarness(ctx, cwd, kinds, r.Harness == "" && core.CrossFamily(role))
 	if err != nil {
 		e.dropToken(res.Token)
 		return res, err

@@ -194,12 +194,12 @@ func (e Env) viewReader(ctx context.Context, loc Location, session string) (stri
 		}
 		return s.id, nil
 	}
-	lead, err := e.pairLead(rec)
+	lead, err := e.sessionLead(rec)
 	if err != nil {
 		return "", err
 	}
 	switch {
-	case rec.Role == core.NarratorRole, rec.Role == core.OrchestratorRole, lead:
+	case rec.Role == core.NarratorRole, lead:
 		if session != "" && session != rec.SessionID {
 			return "", refused(fmt.Sprintf("%s reading the view of %s", rec.Handle, session), core.Decision{Reason: core.ReasonCrossEpic})
 		}

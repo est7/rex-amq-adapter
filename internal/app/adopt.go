@@ -276,6 +276,11 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	if err != nil {
 		return Adoption{}, err
 	}
+	// The first agent of the Epic's lead role nobody summoned becomes its
+	// lead, before anything reads who leads (its watcher, its notice).
+	if err := e.claimLead(rec); err != nil {
+		return Adoption{}, err
+	}
 	// The committed identity preserves lineage if token cleanup fails or the
 	// process exits here; a retry keeps that lineage and finishes cleanup.
 	if summoned {
