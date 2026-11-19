@@ -17,13 +17,13 @@ import (
 	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
-// notify-personal is the one way a producer outside Rex (an Inbox entry, a
+// `hub notify` is the one way a producer outside Rex (an Inbox entry, a
 // Timer tick) reaches a personal agent: the adapter finds the live personal
 // agent itself and mails it in its own name as a system notice (OpNotify),
 // so no caller ever chooses a sender. It never starts or resumes an agent;
 // the producer keeps its entry, so an offline personal agent misses nothing.
 
-// NotifyRequest is a notify-personal call as given: --ref, --event-id, and
+// NotifyRequest is a hub notify call as given: --ref, --event-id, and
 // the optional --hub, --personal, and --summary.
 type NotifyRequest struct {
 	Ref, EventID, Hub, Personal, Summary string
@@ -144,7 +144,7 @@ const (
 	NotifyNoLivePersonal = "no_live_personal"
 )
 
-// NotifyResult is what notify-personal did, printed as JSON. Deduped is set
+// NotifyResult is what hub notify did, printed as JSON. Deduped is set
 // when the event was notified before and nothing was sent now.
 type NotifyResult struct {
 	Status    string      `json:"status"`

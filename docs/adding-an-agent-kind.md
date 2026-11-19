@@ -23,7 +23,7 @@ over.
 | **Wake at rest** | Reach an *idle* agent | typed doorbell via `amq wake --inject-via` (needs OSC 7501 status + an input-box classifier); Pi: `sendMessage(…, {triggerTurn: true})` |
 | **Tell a sender** | After the agent sends mail, say once which of it no agent will read, without starting a turn of its own | every `announce` hook but Pi's mail watcher (`announcing.undelivered`); the agent's outbox is read, never the send intercepted |
 | **Report a failed turn** | Tell the agent that should act, once, that this agent's turn ended in an error or a limit, from the harness's own reason; never for a cancel | Claude `StopFailure`; agy `Stop` `terminationReason`; Pi settle `outcome`; Codex `Stop` + the rollout's last row (`abnormalStop` / `reportTurnError` in `internal/app`) |
-| **Depart and supervise** | Retire the waker when the agent ends and tell its session-mates; revive a dead waker | `SessionEnd`; `collect` when there is none (agy); `Stop` runs `SuperviseWaker` |
+| **Depart and supervise** | Retire the waker when the agent ends and tell its session-mates; revive a dead waker | `SessionEnd`; `agent collect` (or a session watcher) when there is none (agy); `Stop` runs `SuperviseWaker` |
 
 ## 2. Probe the agent
 
@@ -98,9 +98,9 @@ official pages), find and then exercise:
 - whether the harness can run a session in a shared process that another
   terminal started (Claude Code's agent view, Codex's app-server daemon):
   such a session inherits that terminal's `REX_BLOCK`. Find the setting that
-  turns it off and give the agent a `SupervisorFile` so setup turns it off
+  turns it off and give the agent a `SupervisorFile` so `install setup` turns it off
   (`internal/install/supervisor.go`); if the harness gates its native task-list
-  tools behind a setting on current models, give it a `TasksFile` so setup
+  tools behind a setting on current models, give it a `TasksFile` so `install setup`
   turns them on (`internal/install/tasks.go`);
 - that every hook descends from the pane's foreground process (`ps -o
   pid=,ppid=,comm=` up from the hook against `rex block call -b <block>
@@ -111,7 +111,8 @@ official pages), find and then exercise:
 - the variable the harness sets afresh in its tool shells naming the session
   (`CLAUDE_CODE_SESSION_ID`, `CODEX_THREAD_ID`, `PI_SESSION_ID`,
   `ANTIGRAVITY_CONVERSATION_ID`), and that it equals the hooks' session id:
-  `env`, `title`, `who`, `join`, and `events` find their caller by it;
+  `agent env`, `agent title`, `agent list`, `agent join`, and `stream events`
+  find their caller by it;
 - how the harness's own title can be set: a hook output field (Claude's
   `sessionTitle`), an extension API (Pi's `setSessionName`), or a command it
   runs for its window title (agy's `"title"` block); see `titleCarried` and
@@ -189,12 +190,14 @@ Make the changes in this order; each step has tests before the next.
 6. **Installer** — `internal/install/install.go`: add the agent to `Agents`
    (taking its directory from `core.HarnessDirs`, `Found`), and its hook
    writer: append-only entries in an event array (Claude, Codex), an owned
-   named group (agy), or a marked file (Pi's extension). `status`, `setup`,
-   `remove` must stay idempotent, keep other entries and key order, never
-   overwrite a foreign item without `--force`, and remove only what setup
-   wrote. Test like `TestAgyHookGroup` / `TestPiExtension`.
-7. **Guide** — `internal/guide/skill.md`: name the kind in the first
-   paragraph and add its launch-with-brief form to "Start a peer".
+   named group (agy), or a marked file (Pi's extension). `install status`,
+   `install setup`, and `install remove` must stay idempotent, keep other
+   entries and key order, never overwrite a foreign item without `--force`,
+   and remove only what setup wrote. Test like `TestAgyHookGroup` / `TestPiExtension`.
+7. **Guide** — `internal/guide/topics/01-identity.md`: name the kind in the
+   first paragraph; `internal/guide/topics/04-peers.md`: add its
+   launch-with-brief form to "Start a peer". Keep each topic within
+   `guide.MaxTopic` (`TestSkillTopicSizes` in `cmd/rex-amq-adapter/skill_test.go`).
 8. **Launch and resume** — `internal/app/summon.go`: add explicit cases to
    `startCommand` and `resumeCommand`; an unlisted kind must be refused rather
    than launch another harness. Verify the installed CLI parser before choosing
@@ -217,10 +220,10 @@ configuration for a probe:
 
 | Agent | How its hooks were isolated |
 |---|---|
-| Claude Code | `claude --settings <file written by setup in a fake HOME>` |
+| Claude Code | `claude --settings <file written by install setup in a fake HOME>` |
 | Codex | hooks passed inline: `codex --no-daemon -c 'hooks.<Event>=[{hooks=[{type="command",command="…",timeout=N}]}]'` (approve them in the review screen) |
-| Antigravity | a scratch git project whose `.agents/hooks.json` is copied from a fake-HOME `setup` |
-| Pi | `pi -e <extension written by setup with PI_CODING_AGENT_DIR=<temp>>` |
+| Antigravity | a scratch git project whose `.agents/hooks.json` is copied from a fake-HOME `install setup` |
+| Pi | `pi -e <extension written by install setup with PI_CODING_AGENT_DIR=<temp>>` |
 
 Always export `REX_AMQ_ADAPTER_HOME=<temp dir>` for the agent you start; a probe
 without it writes into the owner's real state directory.
@@ -239,16 +242,16 @@ Run every row; each must be observed, not inferred:
 
 | Scenario | Expected |
 |---|---|
-| Agent starts (or its first turn starts) | `rex-amq-adapter who` lists it `live`; pane relabeled; it can name its handle |
+| Agent starts (or its first turn starts) | `rex-amq-adapter agent list` lists it `live`; pane relabeled; it can name its handle |
 | Mail to the idle agent | doorbell `accepted` (or in-process delivery), the agent drains and replies |
 | Mail while it runs a `sleep` tool | injector `deferred agent_working`, nothing typed; in-band hook announces; drained mid-turn |
 | Mail while it writes without tools | turn-end hold continues the turn once; drained |
 | Mail while a draft sits in its box | `deferred draft_in_box`, draft untouched; delivered after the box is cleared |
 | Mail while a dialog is open | `deferred agent_blocked` (or held by the extension); dialog untouched |
 | Normal exit | record `departed`, waker `missing` |
-| Kill the agent | `collect` parks it and retires the waker |
+| Kill the agent | `agent collect` parks it and retires the waker |
 | Kill its waker, finish a turn, then send mail | waker revived by `Stop`; doorbell delivered |
-| Peer launched with its brief and a `--label` | `await <block>` prints `adopted` with the handle; adopted under the label; reports back |
+| Peer launched with its brief and a `--label` | `agent await <block>` prints `adopted` with the handle; adopted under the label; reports back |
 | Hook latency | in-band hook well under its budget (measure p50/max) |
 
 Clean up before reporting: close every tab you opened, confirm no `amq wake`

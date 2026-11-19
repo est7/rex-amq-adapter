@@ -414,7 +414,7 @@ func (e Env) cockpitEpic(epic core.SessionKey) (CockpitEpic, error) {
 
 // dirWithin reports whether dir is hub or inside it, symbolic links
 // resolved; a directory that cannot be resolved is in no hub
-// (sameOrWithin, which notify-personal's --hub uses too).
+// (sameOrWithin, which hub notify's --hub uses too).
 func dirWithin(dir, hub string) bool {
 	if hub == "" {
 		return false

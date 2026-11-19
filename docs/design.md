@@ -657,15 +657,21 @@ an error, never a global fallback. `--all` adds departed records last recorded
 in that session; the record's session and window are written at adoption and
 updated when a session is reconciled, so an agent moved since then is listed
 where it was at that moment once it departs.
-Its reconciliation covers that session too: the agents the layout places
-there, plus agents recorded there whose block left the session's layout, which
-is closed or moved to another session (reconciliation finds which). A failure
-in another session therefore does not reveal its agents through error output;
-the one exception is an agent recorded here that moved to another session,
-died, and could not be parked. Reconciliation is housekeeping: a failure,
-including a lifecycle lock that cannot be taken, is a warning on stderr and the
-session is still listed, with the remaining records still reconciled. Only an
-unresolved session fails `agent list`.
+`agent list` only reads (`SessionAgents`): it reconciles no record and
+repairs no waker, and a warning travels in the envelope's `warnings[]`,
+never on stderr. Only an unresolved session fails it. Reconciliation belongs
+to `agent collect` (`CollectSession`, then `SuperviseSession` for the dead
+wakers of the session's live agents) and to the session watcher, each pass of
+which runs `CollectSession`; `mail send` brings back each live recipient's
+dead waker after it delivers (`repairWakers`). Reconciling a session covers
+the agents the layout places there, plus agents recorded there whose block
+left the session's layout, which is closed or moved to another session
+(reconciliation finds which). A failure in another session therefore does not
+reveal its agents through error output; the one exception is an agent recorded
+here that moved to another session, died, and could not be parked.
+Reconciliation is housekeeping: a failure, including a lifecycle lock that
+cannot be taken, is a warning in `agent collect`'s `warnings[]`
+(`meta.complete=false`), and the remaining records are still reconciled.
 The shared AMQ root is transport, not a discovery scope; the agent guide
 uses the adapter's `agent list` instead of the global `amq who` directory.
 Rex publishes layout events (`session_view_changed`, `block_closed`,
@@ -1292,8 +1298,8 @@ to its newest entries (at most 1000, half of 1 MB) once it passes 1 MB.
 
 The doorbell is the adapter's own line (`core.Doorbell`), never amq's payload:
 `AMQ doorbell: <n> unread message(s) for <handle> (you are <handle> in Rex;
-skill: rex-amq-adapter). Run <abs path> drain --include-body, then act on each
-message.`
+skill: rex-amq-adapter). Run <abs path> mail drain --include-body, then act on
+each message.`
 
 amq runs the injector through a wrapper, `<state>/bin/inject`, which execs the
 adapter binary and is rewritten whenever the binary's path changes. amq refuses
@@ -1613,10 +1619,12 @@ Overridable with `REX_AMQ_ADAPTER_HOME` (tests use a temporary directory).
 ~/.local/state/rex-amq-adapter/
 ├── amq-root/                 shared AMQ root (agents/, meta/config.json)
 │   └── extensions/rex-amq-adapter/   the gateway's state, which amq cleanup leaves alone
-│       ├── links/<personal>__<epic>.json   a Personal session linked with an Epic's narrator
+│       ├── links/hub_<sha256(hub_key)[:16]>__<epic>.json  a Hub linked with an Epic's narrator
+│       ├── links/<personal>__<epic>.json   the same keyed by a Personal session (a link with no Hub)
 │       ├── provenance/<msg_id>.json        sender and recipients (session, generation) at sending, op, system
 │       ├── provenance/pending/<token>.json the same before amq returned the id
 │       ├── quarantine/<handle>/<msg_id>.md (+ .json reason)  mail the gateway took out of an inbox
+│       ├── redelivered/<msg_id>.json      a narrator's message a departed personal agent left unread, delivered again in its Hub
 │       ├── notifications/<sha256(event id)>.json  the doorbell hub notify sent for an event (dedup)
 │       ├── notifications.lock      held while hub notify looks up and sends one event
 │       ├── sessions/<session_id>/view.json  the session's view, written whole by its narrator
@@ -1624,13 +1632,17 @@ Overridable with `REX_AMQ_ADAPTER_HOME` (tests use a temporary directory).
 │       ├── sessions/<session_id>/crew.json  the crew the session works as (agent join CREW, epic open --crew)
 │       ├── sessions/<session_id>/policy.json the session's policy: Hub or Epic, lead_role and lead_handle, external writes (epic open; ME_UNATTENDED)
 │       ├── sessions/<session_id>/hand-back.json the lead's latest hand-back, whole, with seq and digest (epic handback)
+│       ├── sessions/<session_id>/artifacts/<seq>/<rel>  a hand-back's artifacts, byte for byte, read-only (epic handback --artifact)
+│       ├── sessions/<session_id>/artifacts/<seq>/manifest.json  that revision's names, sha256, and bytes
+│       ├── sessions/<session_id>/materialized.json  what epic materialize last wrote, to tell a local change
 │       ├── sessions/<session_id>/lifecycle.json the Epic's lifecycle: partial_start, opened, hand_back, closed
 │       ├── sessions/<session_id>/goal.md     a goal contract piped in with epic open --goal - (0444, written once)
 │       ├── sessions/<session_id>/grant.json  the Epic's notarized grant: asked, relayed_by, relayed_at, contract, contract_sha256 (0444, written once)
 │       ├── sessions/<session_id>/grant.md    the same grant for agents to read, the user's words quoted verbatim (0444)
-│       └── epic-ops/<open|close>-<sha256(op_id)>.json  one epic or epic close --op-id request and how far it got
+│       └── epic-ops/<open|close>-<sha256(op_id)>.json  one epic open or epic close --op-id request and how far it got
 ├── bin/inject                the wrapper amq wake runs as --inject-via
 ├── identities/<handle>.json  who each handle is: kind, role, sessions, cwd, fence, last placement
+├── activity/<handle>         touched at each prompt a personal agent submits: when the user last spoke to it
 ├── leases/<handle>.json      where a running handle's agent runs: block, incarnation, epoch (removed on departure)
 ├── turn-error/<handle>.json  the agent's last turn error, which passes it over as a recipient
 ├── ledger/<handle>.json      announced message ids
@@ -1641,6 +1653,10 @@ Overridable with `REX_AMQ_ADAPTER_HOME` (tests use a temporary directory).
 ├── logs/watch-<session>.log  a session watcher's stdout/stderr
 ├── logs/hooks.log            hook failures
 ├── logs/summon.log           summon launches and self-attested grants
+├── logs/trust.log            every folder-trust grant (trust grant, a trust root's first need)
+├── logs/crash-<time>.txt     a redacted dump of a crash
+├── cache/blobs/<sha256>.txt  a message body past a read's cap, in full (0600)
+├── trust.json                the user's folder-trust grants and declared roots
 ├── window/<handle>           window notes (joins, departures) queued for the next prompt
 ├── tabs/<window>.json        the tab ledger: who names each tab (auto, manual) and its last label
 ├── title/<handle>            the title last given each session's harness (Claude Code, Pi)
@@ -1656,6 +1672,10 @@ Overridable with `REX_AMQ_ADAPTER_HOME` (tests use a temporary directory).
 ├── logs/blocked.log          one line per episode of an agent waiting on the user
 ├── epic-lifecycle.lock       serialises Epic opens, closes, and hand-backs (taken before lifecycle.lock)
 └── lifecycle.lock
+
+$XDG_CONFIG_HOME/rex-amq-adapter/   (~/.config/rex-amq-adapter when unset)
+├── config.toml               hub_dirs: the Hub directories (hub add, hub remove)
+└── crews/                    the user's crews, roles/, and routing.toml, over the built-in ones
 ```
 
 ### Gateway
@@ -1708,7 +1728,8 @@ outside Rex (an Inbox entry, a launchd Timer tick) reaches a Personal agent
 collects first (so a crashed pane is parked), takes every live, placed
 `personal` record whose block Rex still shows (a block Rex cannot show, or a
 server it cannot reach, is no target), narrows them by `--personal` (the
-handle) and `--hub` (the agent's directory is the hub or below it, both
+handle) and `--hub` (a member of that Hub by its session's policy, or, for an
+agent of no Hub, one whose directory is the hub or below it, both
 symlink-resolved), and mails the one left in its own name as a system notice,
 `op: notify`. The gateway admits exactly that (`adapter_notify_personal`: a
 system `notify` from a placed Personal agent to itself); a caller can never
@@ -1719,8 +1740,9 @@ summary made one line and capped at 280 bytes), and the subject is
 
 It never starts or resumes an agent. With no live Personal agent it sends
 nothing and prints `{"status":"no_live_personal",...}` (exit 0): the producer
-keeps its entry. With more than one left it refuses (exit 1) rather than mail
-them all. Under `notifications.lock` each event id is looked up first: a
+keeps its entry. With more than one left it rings the one the user spoke to
+last (C26, `mostRecent`: its latest prompt, `activity/<handle>`, else when its
+lease was taken; ties go to the first handle), never all of them. Under `notifications.lock` each event id is looked up first: a
 repeat of a notified event (the same `--ref`, `--hub`, and `--personal`; the
 hub compared after resolving symlinks) answers with the same `to`,
 `session_id`, and `message_id` and `"deduped":true` without sending, even
@@ -2042,7 +2064,7 @@ crash between two looks) is an urgent `left`. The handle stays reserved
 A `narrator` (`core.Stealth`, like a `personal` agent) observes its Epic
 without taking part. It is nobody's mate: `agent list` (but not `agent list --all`), start
 notices, join and leave notes, departure mail, error routing, the watchdog,
-the cross-family takeover, and the summon cap all leave it out. `summon
+the cross-family takeover, and the summon cap all leave it out. `agent summon
 narrator` opens it in a background tab of its own, which follows it like
 any agent's.
 
@@ -2072,10 +2094,11 @@ place in memory.
 
 ### Cockpit
 
-`epic list [--personal H] [--hub DIR]` and `epic show [S]`
-(`app.Env.ReadCockpitView`) are the human's, or a Hub personal agent's, read-only
-view of a Hub's Epics. Its scope is one live `personal` record
-and the Epics linked to it; it moves no mail, writes no receipt, and starts
+`epic list [--personal H] [--hub DIR]` and `epic show [S] [--personal H]
+[--hub DIR]` (`app.Env.ReadCockpitView`) are the human's, or a Hub personal
+agent's, read-only view of a Hub's Epics. Its scope is the Epics linked to one
+Hub (`core.LinkMatchesPersonal`), whichever of the Hub's personal agents are
+live and however many; it moves no mail, writes no receipt, and starts
 nothing. A pane or shell with no agent in it is not trusted for being one
 (C20: `!hasAgent` is no authorization), and every gate must pass:
 
@@ -2093,11 +2116,16 @@ nothing. A pane or shell with no agent in it is not trusted for being one
 A personal caller reads its own scope, and a `--hub` naming another is
 refused; `--personal` is only a filter inside that scope (spec §4.2(8)): it
 narrows to the Epics the named personal agent prefers, live or departed, and
-a handle outside the scope reads the empty subset. Anyone else names exactly one live personal agent by
-handle, by a directory its working directory is in (symlinks resolved), or
-both; none is usage, and more than one is ambiguous. With `--session S`, S
-must be linked to that agent (`not_linked` otherwise); its view is read with
-the stored hand-back and lifecycle, and an Epic whose narrator has not
+a handle outside the scope reads the empty subset. Anyone else (a pane or
+shell with no agent) reads a Hub: the one `--hub DIR` names (symlinks
+resolved), else the Hub of the live personal agent `--personal` names, else
+the default Hub (`hub list`'s first); with none configured it is usage. The
+scope takes the Hub's links and the session-keyed links of its live personal
+agents, so it does not depend on how many are live; `--personal` there also
+narrows to that agent's Epics, and one naming no live personal agent of the
+Hub is refused. With the positional session S, S must be linked to the Hub
+in scope (`not_linked` otherwise); its view is read with the stored
+hand-back and lifecycle, and an Epic whose narrator has not
 written a view yet but whose lifecycle is recorded reads as that lifecycle
 alone, with a `no_view` coverage gap. Without it the summary lists each
 linked Epic (`session_id`, `name`, `dir`, `lifecycle`, `hand_back`,
@@ -2127,19 +2155,24 @@ yet" on its first turn, which held the personal agent's Stop hook.
 
 ```
 cmd/rex-amq-adapter/   the v:2 nouns (agent, mail, epic, hub, crew, trust, stream, install, skill, schema, version) on one CommandSpec registry (commands.go), plus the internal callbacks hook, inject, and __internal
+internal/cli/          the CommandSpec registry: parsing, pre-I/O validation, the human guard, the three help tiers, schema, --input, --fields, list bounds
+internal/out/          the only writer of stdout: the v:2 envelope or text, stream frames, and the internal callbacks' protocol bytes (TestStdoutSingleWriter)
+internal/fault/        the closed set of error codes and the exit status each maps to (schema errors)
 internal/app/          entry points: observe, ask core, act (adopt, inject, announce, depart, collect, discovery, await, session watcher, narrator view, and watchdog, summon, join, the events and panel streams); who runs a command (Caller); the hook's process ancestry (golang.org/x/sys)
-internal/core/         pure policy: the gateway (CanExchange), handle choice, roles and pane labels, inject decision, announce decision, session-mates, notice text, the observer's projection and diff
+internal/core/         pure policy: the gateway (CanExchange), Hub keys and session admission (AdmitRole), handle choice, roles and pane labels, inject decision, announce decision, session-mates, notice text and its budget, the lead's grant receipt, the observer's projection and diff
 internal/crew/         crew and role prompt lookup across project, user, and built-in layers; crew headers (lead, members); built-in prompts; routing.toml, each role's harnesses, models, and efforts
 internal/fsutil/       flock and atomic replace
 internal/rex/          rex CLI client: process, program_status, capture, write, block and window labels, whoami, block list, new window
 internal/amq/          wake check/start/repair/retire, mailbox registration, inbox listing (ported); read-only mailbox, header, and receipt readers
 internal/screen/       input-box classifier (ported from herdr-amq-adapter)
-internal/store/        identities and leases (invariants I1-I4), ledger, inject log, window notes, reservations, locks; the gateway's links, provenance, and quarantine; notify-personal's dedup records
+internal/store/        identities and leases (invariants I1-I4), ledger, inject log, window notes, reservations, locks; the gateway's Hub- and session-keyed links, provenance, and quarantine; session policy, crew, view, grant, hand-back, artifacts, and Epic lifecycle; hub notify's dedup records; personal-agent activity and redelivery (route)
+internal/hub/          the Hub directories: ME_HUB, else config.toml hub_dirs (hub add, hub remove), else ~/me, symlinks resolved
+internal/blob/         bounds a read's message bodies; the rest spills to cache/blobs/<sha256>.txt (0600)
 internal/transcript/   reads the end of an agent's own transcript (Claude Code, Codex, Pi JSONL; Antigravity's SQLite through sqlite3) into rows for the watchdog and turn-error routing, and a departed agent's working directory for a resume
 internal/trust/        folder trust: each harness's rule (Check), the user's grants and declared roots (trust.json, logs/trust.log), Claude/Codex store keys via install, agy --settings / pi --approve per session
 internal/e2e/          scripted agents on a private Rex server and real amq wake
 internal/install/      settings.json / hooks.json merge, stub skills, supervisor and task-tool settings (config.toml through go-toml)
-internal/guide/        embedded agent guide
+internal/guide/        the agent guide as embedded topics (topics/*.md) and the index generated from their frontmatter (skill list, skill show)
 ```
 
 The core takes observations and returns decisions; `rex/`, `amq/`, and `store/`
@@ -2262,7 +2295,7 @@ and Claude Code 2.1.316, adapter state isolated by `REX_AMQ_ADAPTER_HOME`:
 | A handle names the wrong harness (`codex-…` running Claude) | The kind is never read from a label; a pane that changes kind keeps only its role |
 | Two agents claim one handle | Adoption holds the lifecycle lock; mailbox registration holds the root registry lock |
 | Installing hooks invalidates Codex trust | Append-only placement |
-| A waker dies and an idle agent never hears of mail | Every `Stop` checks the waker and revives a dead one, and `who` does so for its session when a sender checks on a silent peer; nothing in Rex would notice (executed by the independent review, fixed and tested) |
+| A waker dies and an idle agent never hears of mail | Every `Stop` checks the waker and revives a dead one, `mail send` does so for each live recipient after it delivers, and `agent collect` for its session; nothing in Rex would notice (executed by the independent review, fixed and tested) |
 | A hook dies between writing a record and finishing | `lease.adopting` or `last_placement.unfinished` marks the transition and a later hook or collection finishes it (executed in `transition_test.go`) |
 | One failed send leaves an idle orchestrator unaware a peer left | The departure stays unfinished until the mail goes out; a duplicate costs one turn (executed in `transition_test.go`) |
 | Pi's notice is lost after the ledger marks it announced | The ledger is written before `pi.sendMessage` returns; if delivery fails there, an idle Pi is reminded after 5 minutes, and `agent_before_settle` reminds at the end of the next run. While a Pi dialog is open (`ui_prompt_start` … `ui_prompt_end`) the extension asks the adapter nothing, so no mail is marked announced; it delivers when the dialog closes (not yet exercised end to end) |

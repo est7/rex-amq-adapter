@@ -687,8 +687,16 @@ REX_AMQ_LIVE=1 go test ./internal/rex/     # inside a Rex terminal: the rex CLI 
 
 `internal/core` holds all policy and has no I/O; `internal/app` wires it to the
 `rex` CLI (`internal/rex`), `amq` (`internal/amq`), and the state directory
-(`internal/store`). `internal/screen` is the input-box classifier ported from
+(`internal/store`). `cmd/rex-amq-adapter` declares every command once in the
+`internal/cli` registry; `internal/out` is the only writer of stdout (the v:2
+envelope) and `internal/fault` the closed set of error codes. `internal/hub`
+resolves the Hub directories, `internal/blob` caps message bodies,
+`internal/guide` embeds the agent guide's topics, `internal/trust` carries
+folder trust, `internal/install` writes the hooks and settings, and
+`internal/transcript` reads each harness's own transcript.
+`internal/screen` is the input-box classifier ported from
 [herdr-amq-adapter](https://github.com/est7/herdr-amq-adapter).
+`docs/design.md` §9 lists every package.
 
 Run one test suite at a time: e2e hooks that exceed their budget under
 several concurrent suites fail the test instead of retrying.
