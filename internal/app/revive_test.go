@@ -725,3 +725,64 @@ func TestReviveReconcilesAnInPlaceLaunch(t *testing.T) {
 		t.Errorf("after its agent left: %+v %v, %d writes", byHandle(fourth)["pi-01"], err, len(w.writes("block:o")))
 	}
 }
+
+// A launch recorded on a server instance that restarted since died with it,
+// whether its launcher had run or not: its block, kept, holds a fresh
+// login shell, and the next revive resumes the agent there (in its own
+// block, or in the tab an earlier revive opened) after the usual pane
+// checks, never waiting on it forever; a pane holding a draft still refuses
+// (codex-27's round-3 S2).
+func TestReviveReplansALaunchARestartKilled(t *testing.T) {
+	for _, respawn := range []bool{false, true} {
+		w := newReviveWorld(t)
+		w.term.mu.Lock()
+		w.term.wrote, w.term.started = nil, nil
+		if respawn {
+			delete(w.term.windows, "block:o")
+		}
+		w.term.mu.Unlock()
+		if _, err := w.revive(ReviveRequest{Timeout: 30 * time.Millisecond}); err != nil {
+			t.Fatal(err)
+		}
+		pending, _ := w.e.Store.PendingRevives(reviveSess)
+		pl := pending["pi-01"]
+		if pl.ServerInstance != "i" || pl.Block == "" {
+			t.Fatalf("respawn=%v: pending %+v", respawn, pl)
+		}
+		_ = os.Remove(pl.Script) // it ran, then the server restarted before its adoption
+		w.term.mu.Lock()
+		w.term.fgs[pl.Block] = rex.Process{PID: shellPID + 1, Name: "-fish"}
+		w.term.screens[pl.Block] = "\x1b[1m❯\x1b[0m echo half-typed\r\n"
+		w.term.mu.Unlock()
+		w.e.Rex = restartedTerm{w.term, "i-after-restart"}
+		w.e.RexOn = func(string) Terminal { return w.e.Rex }
+		before := len(w.writes(pl.Block))
+		res, err := w.revive(ReviveRequest{Timeout: 30 * time.Millisecond})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if a := byHandle(res)["pi-01"]; a.Action != ReviveRefused || len(w.writes(pl.Block)) != before {
+			t.Errorf("respawn=%v: a draft in the restored pane: %+v", respawn, a)
+		}
+		w.term.mu.Lock()
+		w.term.screens[pl.Block] = "\x1b[1m❯\x1b[0m \r\n"
+		w.term.mu.Unlock()
+		res, err = w.revive(ReviveRequest{Timeout: 30 * time.Millisecond})
+		if err != nil {
+			t.Fatal(err)
+		}
+		a := byHandle(res)["pi-01"]
+		if a.Action != ReviveResumedInPlace || a.Block != pl.Block || len(w.writes(pl.Block)) != before+1 {
+			t.Errorf("respawn=%v: %+v, %d writes", respawn, a, len(w.writes(pl.Block)))
+		}
+		w.term.mu.Lock()
+		tabs := len(w.term.launches)
+		w.term.mu.Unlock()
+		if want := map[bool]int{false: 0, true: 1}[respawn]; tabs != want {
+			t.Errorf("respawn=%v: %d tabs opened", respawn, tabs)
+		}
+		if p, _ := w.e.Store.PendingRevives(reviveSess); p["pi-01"].ServerInstance != "i-after-restart" {
+			t.Errorf("respawn=%v: the new launch's record %+v", respawn, p["pi-01"])
+		}
+	}
+}

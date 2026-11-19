@@ -20,6 +20,9 @@ import (
 //     tab is the one new block (not in PriorBlocks) labelled Label.
 //   - ShellPID is the login shell an in-place launch was typed into: that
 //     shell in the foreground again means the agent ran and exited.
+//   - ServerInstance is the Rex server instance it was launched on: a
+//     server restarted since killed whatever it started, so every other
+//     field but Block describes a dead attempt.
 type PendingRevive struct {
 	Block          string    `json:"block,omitempty"`
 	AgentSessionID string    `json:"agent_session_id"`
@@ -28,6 +31,7 @@ type PendingRevive struct {
 	Label          string    `json:"label,omitempty"`
 	PriorBlocks    []string  `json:"prior_blocks,omitempty"`
 	ShellPID       int       `json:"shell_pid,omitempty"`
+	ServerInstance string    `json:"server_instance"`
 	At             time.Time `json:"at"`
 }
 

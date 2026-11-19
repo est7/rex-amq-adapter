@@ -2089,7 +2089,11 @@ in their own blocks:
    is asked for anything: its launcher script, the conversation, the action,
    and the block (in place: the agent's own, with the pid of the shell it is
    typed into; a tab: its label and the session's blocks before it, the tab's
-   id once Rex returns it). A reply that is an error keeps the record. A later
+   id once Rex returns it), and the Rex server instance it runs on: a
+   restart since then killed it, so its shell pid and its tab's liveness
+   describe a dead attempt, and the revive replans the agent in that block,
+   kept by the restart, after the usual pane checks (`launchDied`). A reply
+   that is an error keeps the record. A later
    revive, with or without the same op id, reconciles it first
    (`reconcileLaunch`): a launcher still on disk has not run, so it is removed
    (`cancelLaunch`) and can never run, and the agent is planned anew; a tab

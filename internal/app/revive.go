@@ -201,7 +201,7 @@ func (e Env) ReviveEpic(ctx context.Context, getenv func(string) string, r Reviv
 	if err != nil {
 		return res, err
 	}
-	plans, err := on.planRevive(ctx, key, by, pending)
+	plans, err := on.planRevive(ctx, key, by, pending, srv.InstanceID)
 	if err != nil {
 		return res, err
 	}
@@ -214,7 +214,7 @@ func (e Env) ReviveEpic(ctx context.Context, getenv func(string) string, r Reviv
 		}
 		return res, nil
 	}
-	launched, err := on.launchRevived(ctx, key, plans, pending)
+	launched, err := on.launchRevived(ctx, key, plans, pending, srv.InstanceID)
 	res.Agents = launched
 	if err == nil && r.OpID != "" && !res.Replayed {
 		now := e.Now().UTC()
@@ -294,7 +294,7 @@ type revivePlan struct {
 // revive recorded as pending, still starting, is waited for again rather
 // than started twice (pendingLaunch); pending entries that no longer apply
 // are dropped from pending, which a live run writes back when it launches.
-func (e Env) planRevive(ctx context.Context, key core.SessionKey, by agent, pending map[core.Handle]store.PendingRevive) ([]revivePlan, error) {
+func (e Env) planRevive(ctx context.Context, key core.SessionKey, by agent, pending map[core.Handle]store.PendingRevive, instance string) ([]revivePlan, error) {
 	recs, err := e.agents()
 	if err != nil {
 		return nil, err
@@ -331,7 +331,7 @@ func (e Env) planRevive(ctx context.Context, key core.SessionKey, by agent, pend
 			continue
 		}
 		if pl, ok := pending[rec.Handle]; ok {
-			state, why, err := e.reconcileLaunch(ctx, s, rec, &pl)
+			state, why, err := e.reconcileLaunch(ctx, s, rec, &pl, instance)
 			if err != nil {
 				return nil, fmt.Errorf("reconcile the earlier launch of %s: %w", rec.Handle, err)
 			}
@@ -345,8 +345,17 @@ func (e Env) planRevive(ctx context.Context, key core.SessionKey, by agent, pend
 				p.Action, p.Status, p.Reason = ReviveRefused, ReviveRefused, why
 				plans = append(plans, p)
 				continue
+			case launchDied:
+				// A restart killed it where it ran: that block, kept, is
+				// where the agent resumes now (its own, or the tab an
+				// earlier revive gave it), after the usual pane checks. The
+				// record stays until a launch there replaces it, so a pane
+				// refused now is still the agent's on the next revive.
+				p.rec.BlockID, p.Block = pl.Block, pl.Block
+				pending[rec.Handle] = pl
+			default:
+				delete(pending, rec.Handle)
 			}
-			delete(pending, rec.Handle)
 		}
 		if reason, err := e.planReviveAgent(ctx, key, s, by, required, &p); err != nil {
 			return nil, fmt.Errorf("plan the revive of %s: %w", rec.Handle, err)
@@ -371,19 +380,36 @@ const (
 	// launchUnclear: it cannot be attributed (two tabs carry its label);
 	// nothing is started for the agent.
 	launchUnclear
+	// launchDied: a Rex restart since it was launched killed it, and its
+	// block, kept by the restart, holds a fresh login shell: the agent is
+	// planned anew in that block.
+	launchDied
 )
 
 // reconcileLaunch decides what became of pl, the recorded launch of rec,
-// from the session s as Rex shows it and pl's launcher, which removes
+// on the Rex server instance that runs now, from the session s as Rex
+// shows it and pl's launcher, which removes
 // itself as it starts (writeLauncher). A launch still possible but not
 // running yet (its launcher unclaimed, in place) is cancelled by removing
 // the launcher first (cancelLaunch), which leaves its fate certain; a tab
 // whose id the earlier revive never learned is found by its label among the
 // blocks that were not there before it. pl.Block is filled in when found.
-func (e Env) reconcileLaunch(ctx context.Context, s Session, rec agent, pl *store.PendingRevive) (launchState, string, error) {
+func (e Env) reconcileLaunch(ctx context.Context, s Session, rec agent, pl *store.PendingRevive, instance string) (launchState, string, error) {
 	if pl.AgentSessionID != rec.Session() {
 		_, err := e.cancelLaunch(pl.Script)
 		return launchEnded, "", err
+	}
+	if pl.ServerInstance != instance {
+		// Launched on a server instance that is gone: whatever it started
+		// died with it, and its shell pid and its tab's liveness describe
+		// that server. The launcher is claimed so it never runs late.
+		if _, err := e.cancelLaunch(pl.Script); err != nil {
+			return launchEnded, "", err
+		}
+		if _, here := s.windowOf[pl.Block]; pl.Block != "" && here {
+			return launchDied, "", nil
+		}
+		return launchEnded, "", nil
 	}
 	if pl.Block == "" {
 		found, err := e.newBlocksLabelled(ctx, s.id, pl.Label, pl.PriorBlocks)
@@ -641,7 +667,7 @@ func (e Env) freeShell(ctx context.Context, key core.SessionKey, rec agent) (str
 // whose block was closed, a tab is opened running it. A launch whose reply
 // is an error stays recorded: whether Rex did it is for the retry to tell.
 // A failure to start one is that agent's, and the others go on.
-func (e Env) launchRevived(ctx context.Context, key core.SessionKey, plans []revivePlan, pending map[core.Handle]store.PendingRevive) ([]ReviveAgent, error) {
+func (e Env) launchRevived(ctx context.Context, key core.SessionKey, plans []revivePlan, pending map[core.Handle]store.PendingRevive, instance string) ([]ReviveAgent, error) {
 	unlock, err := e.Store.LockLifecycle(ctx)
 	if err != nil {
 		return nil, err
@@ -651,6 +677,7 @@ func (e Env) launchRevived(ctx context.Context, key core.SessionKey, plans []rev
 		return nil, fmt.Errorf("record the Epic's pending revives: %w", err)
 	}
 	record := func(h core.Handle, pl store.PendingRevive) error {
+		pl.ServerInstance = instance
 		pending[h] = pl
 		if err := e.Store.PutPendingRevives(key.SessionID, pending); err != nil {
 			return fmt.Errorf("record the launch of %s before it: %w", h, err)
