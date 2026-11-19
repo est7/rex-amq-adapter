@@ -1639,6 +1639,7 @@ Overridable with `REX_AMQ_ADAPTER_HOME` (tests use a temporary directory).
 │       ├── sessions/<session_id>/artifacts/<seq>/manifest.json  that revision's names, sha256, and bytes
 │       ├── sessions/<session_id>/materialized.json  what epic materialize last wrote, to tell a local change
 │       ├── sessions/<session_id>/lifecycle.json the Epic's lifecycle: partial_start, opened, hand_back, closed
+│       ├── sessions/<session_id>/revive.json the launches epic revive started that were not yet adopted, by handle
 │       ├── sessions/<session_id>/goal.md     a goal contract piped in with epic open --goal - (0444, written once)
 │       ├── sessions/<session_id>/grant.json  the Epic's notarized grant: asked, relayed_by, relayed_at, contract, contract_sha256 (0444, written once)
 │       ├── sessions/<session_id>/grant.md    the same grant for agents to read, the user's words quoted verbatim (0444)
@@ -2059,9 +2060,12 @@ in their own blocks:
    tells it to drain its mail.
 5. Place. When the agent's block is still in the session, `paneFree` decides
    whether it may be typed into: no other handle leases it, its foreground is
-   a shell (`isShell`), and its screen ends at an empty prompt
-   (`screen.ShellPromptEmpty`: the last non-blank line ends in a prompt glyph,
-   failing closed on anything else). It is checked again under the lifecycle
+   a shell (`isShell`), and its screen is a fresh shell's empty prompt
+   (`screen.ShellPromptEmpty`: exactly one prompt glyph on the whole screen,
+   ending its last non-blank line; a draft that ends in a glyph, a multi-line
+   draft or continuation prompt, and any command run in the pane before all
+   show a second one, and anything it does not recognise fails closed). Typing
+   is not atomic with that look: keys the user presses in between are theirs. It is checked again under the lifecycle
    lock just before the write (`resumeInPlace`). The command goes into a
    `0700` one-shot script under `<state>/revive/` that removes itself, `cd`s,
    and `exec`s the argv, and the shell is sent `/bin/sh '<script>'`: the
@@ -2071,7 +2075,15 @@ in their own blocks:
    clobbered draft. A lead or narrator whose block is gone from the session
    gets a tab of its own instead (`openTab`, `respawned_window`); another
    agent whose block is gone is refused.
-6. Await and settle. It waits, up to `--timeout`, for each resumed block to be
+6. Record. Each launch is written, the moment it starts, to
+   `sessions/<id>/revive.json` (`store.PendingRevive`: block, conversation,
+   action), under `epic-lifecycle.lock`. A later revive, with or without the
+   same op id, that finds an agent's launch still starting there (its block in
+   the session, running something other than a shell) waits for that block
+   instead of typing into it or opening a second tab; one that ended (its
+   block gone or back at a shell) is planned anew. An entry is dropped once
+   its agent is ready.
+7. Await and settle. It waits, up to `--timeout`, for each resumed block to be
    adopted as the same handle (`AwaitStartup`); the resumed conversation's
    first hook takes its handle back by lineage, under the next lease epoch,
    with the new `server_instance`. Then it starts the session's watcher if

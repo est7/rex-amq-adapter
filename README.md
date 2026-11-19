@@ -413,8 +413,11 @@ Each resumes its latest conversation (`claude --resume`, `codex --no-daemon
 resume`, `agy --conversation`, `pi --session`) on the model and effort it was
 launched on, with `ME_UNATTENDED=1`, and its handle, mail, and lineage come back
 with it. The command is typed into a block only when no other agent holds it,
-its foreground is a shell, and its prompt line is empty; otherwise that agent
-is `refused` with the reason and nothing is typed. A lead's or narrator's block
+its foreground is a shell, and its screen shows a fresh shell's empty prompt
+(a draft, or a command run there since the restart, shows more); otherwise
+that agent is `refused` with the reason and nothing is typed. A launch still
+starting when the wait ends is recorded, so a retry waits for it rather than
+starting the conversation twice. A lead's or narrator's block
 that was closed gets a tab of its own instead (`respawned_window`). An agent
 already live is left alone (`already_live`), so running it again resumes only
 what is still down. It waits up to `--timeout` (90s) for each to be adopted,

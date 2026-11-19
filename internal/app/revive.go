@@ -197,7 +197,11 @@ func (e Env) ReviveEpic(ctx context.Context, getenv func(string) string, r Reviv
 			return res, fmt.Errorf("reconcile the Epic's leases: %w", err)
 		}
 	}
-	plans, err := on.planRevive(ctx, key, by)
+	pending, err := e.Store.PendingRevives(key.SessionID)
+	if err != nil {
+		return res, err
+	}
+	plans, err := on.planRevive(ctx, key, by, pending)
 	if err != nil {
 		return res, err
 	}
@@ -210,7 +214,7 @@ func (e Env) ReviveEpic(ctx context.Context, getenv func(string) string, r Reviv
 		}
 		return res, nil
 	}
-	launched, err := on.launchRevived(ctx, key, plans)
+	launched, err := on.launchRevived(ctx, key, plans, pending)
 	res.Agents = launched
 	if err == nil && r.OpID != "" && !res.Replayed {
 		now := e.Now().UTC()
@@ -286,8 +290,11 @@ type revivePlan struct {
 // planRevive decides, for every agent recorded in key's session that the
 // revive covers, what it does, checking everything that can be checked
 // before a pane is touched. It reads Rex and the records only; by is who
-// revives, named in the resumed agents' first prompt.
-func (e Env) planRevive(ctx context.Context, key core.SessionKey, by agent) ([]revivePlan, error) {
+// revives, named in the resumed agents' first prompt. A launch an earlier
+// revive recorded as pending, still starting, is waited for again rather
+// than started twice (pendingLaunch); pending entries that no longer apply
+// are dropped from pending, which a live run writes back when it launches.
+func (e Env) planRevive(ctx context.Context, key core.SessionKey, by agent, pending map[core.Handle]store.PendingRevive) ([]revivePlan, error) {
 	recs, err := e.agents()
 	if err != nil {
 		return nil, err
@@ -318,9 +325,20 @@ func (e Env) planRevive(ctx context.Context, key core.SessionKey, by agent) ([]r
 		}
 		p := revivePlan{rec: rec, ReviveAgent: ReviveAgent{Handle: rec.Handle, Kind: rec.Kind, Role: rec.Role, Block: rec.BlockID, AgentSessionID: rec.Session(), Cwd: rec.Cwd}}
 		if rec.Live() {
+			delete(pending, rec.Handle)
 			p.Action, p.Status = ReviveAlreadyLive, ReviveReady
 			plans = append(plans, p)
 			continue
+		}
+		if pl, ok := pending[rec.Handle]; ok {
+			if starting, err := e.pendingLaunch(ctx, s, rec, pl); err != nil {
+				return nil, err
+			} else if starting {
+				p.Action, p.Block, p.Note = pl.Action, pl.Block, "launched by an earlier revive at "+pl.At.Format(time.RFC3339)+" and still starting: waited for, not started again"
+				plans = append(plans, p)
+				continue
+			}
+			delete(pending, rec.Handle)
 		}
 		if reason, err := e.planReviveAgent(ctx, key, s, by, required, &p); err != nil {
 			return nil, fmt.Errorf("plan the revive of %s: %w", rec.Handle, err)
@@ -330,6 +348,28 @@ func (e Env) planRevive(ctx context.Context, key core.SessionKey, by agent) ([]r
 		plans = append(plans, p)
 	}
 	return plans, nil
+}
+
+// pendingLaunch reports whether pl, a launch of rec an earlier revive
+// recorded, is still starting: it resumes rec's current conversation, its
+// block is in session s, and that block runs something other than a shell
+// (the harness, before its first hook). A block gone or back at a shell
+// means the launch ended, and the agent is planned anew.
+func (e Env) pendingLaunch(ctx context.Context, s Session, rec agent, pl store.PendingRevive) (bool, error) {
+	if pl.AgentSessionID != rec.Session() {
+		return false, nil
+	}
+	if _, here := s.windowOf[pl.Block]; !here {
+		return false, nil
+	}
+	fg, ok, err := e.Rex.Foreground(ctx, pl.Block)
+	switch {
+	case errors.Is(err, rex.ErrNotFound):
+		return false, nil
+	case err != nil:
+		return false, err
+	}
+	return ok && !isShell(fg.Name), nil
 }
 
 // reviveCandidate reports whether the revive covers rec: always the Epic's
@@ -400,11 +440,11 @@ func (e Env) planReviveAgent(ctx context.Context, key core.SessionKey, s Session
 	if err != nil {
 		return "", err
 	}
-	cmd, ok := reviveCommand(rec, launch, e.revivePrompt(rec, by), unattended || rec.Unattended)
+	cmd, ok := reviveCommand(rec, launch, e.revivePrompt(rec, by), unattended || rec.Unattended, func(argv []string) []string { return e.trustGate().Args(p.Cwd, argv) })
 	if !ok {
 		return fmt.Sprintf("%s (%s) cannot be resumed from outside", rec.Handle, rec.Kind), nil
 	}
-	p.cmd = e.trustGate().Args(p.Cwd, cmd)
+	p.cmd = cmd
 	if _, here := s.windowOf[rec.BlockID]; !here || rec.BlockID == "" {
 		if !required {
 			return fmt.Sprintf("%s's block %s is no longer in the session", rec.Handle, rec.BlockID), nil
@@ -420,16 +460,18 @@ func (e Env) planReviveAgent(ctx context.Context, key core.SessionKey, s Session
 }
 
 // reviveCommand is the command that resumes rec's conversation with prompt
-// as its first turn: its harness's resume command, with the model and
+// as its first turn: its harness's resume command with the session trust
+// trust gives the bare argv (agy --settings, pi --approve, which name the
+// program first: trust.Gate.Args, as launch applies it), the model and
 // effort it was launched on, carrying them to its adoption
 // (withLaunchEnv), and ME_UNATTENDED=1 when it runs unattended. false for
 // a harness the adapter cannot resume from outside.
-func reviveCommand(rec agent, l core.Launch, prompt string, unattended bool) ([]string, bool) {
+func reviveCommand(rec agent, l core.Launch, prompt string, unattended bool, trust func([]string) []string) ([]string, bool) {
 	cmd, ok := resumeCommand(rec.Kind, rec.Session(), prompt)
 	if !ok {
 		return nil, false
 	}
-	cmd = withLaunchEnv(l, l.Args(rec.Kind, cmd))
+	cmd = withLaunchEnv(l, trust(l.Args(rec.Kind, cmd)))
 	if unattended {
 		cmd = withUnattendedEnv(cmd)
 	}
@@ -477,7 +519,7 @@ func (e Env) paneFree(ctx context.Context, key core.SessionKey, rec agent) (stri
 		return "", err
 	}
 	if !screen.ShellPromptEmpty(vt) {
-		return fmt.Sprintf("%s's block %s shows no empty shell prompt (someone's unsent input, or a prompt not drawn yet); nothing was typed into it: clear it and revive again", rec.Handle, rec.BlockID), nil
+		return fmt.Sprintf("%s's block %s shows no fresh shell's empty prompt (someone's unsent input, output of a command run there, or a prompt not drawn yet); nothing was typed into it: empty the prompt, clear the pane with Rex's Clear Terminal (it drops the scrollback, which Ctrl+L keeps), and revive again", rec.Handle, rec.BlockID), nil
 	}
 	return "", nil
 }
@@ -486,14 +528,27 @@ func (e Env) paneFree(ctx context.Context, key core.SessionKey, rec agent) (stri
 // adoption takes a block between its check and its write: in its block, the
 // pane is checked once more and the command typed into its shell; in a new
 // tab, the tab is opened. A failure to start one is that agent's, and the
-// others go on.
-func (e Env) launchRevived(ctx context.Context, key core.SessionKey, plans []revivePlan) ([]ReviveAgent, error) {
+// others go on. pending, with every launch added the moment it starts, is
+// recorded before the first launch and after each (the caller holds
+// LockEpicLifecycle), so a retry after a timeout, a crash, or a concurrent
+// revive waits for a launch instead of starting its conversation again.
+func (e Env) launchRevived(ctx context.Context, key core.SessionKey, plans []revivePlan, pending map[core.Handle]store.PendingRevive) ([]ReviveAgent, error) {
 	unlock, err := e.Store.LockLifecycle(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer unlock()
+	if err := e.Store.PutPendingRevives(key.SessionID, pending); err != nil {
+		return nil, fmt.Errorf("record the Epic's pending revives: %w", err)
+	}
 	out := make([]ReviveAgent, 0, len(plans))
+	var errs []error
+	record := func(a ReviveAgent) {
+		pending[a.Handle] = store.PendingRevive{Block: a.Block, AgentSessionID: a.AgentSessionID, Action: a.Action, At: e.Now().UTC()}
+		if err := e.Store.PutPendingRevives(key.SessionID, pending); err != nil {
+			errs = append(errs, fmt.Errorf("record the pending revive of %s: %w", a.Handle, err))
+		}
+	}
 	for _, p := range plans {
 		a := p.ReviveAgent
 		switch a.Action {
@@ -505,6 +560,7 @@ func (e Env) launchRevived(ctx context.Context, key core.SessionKey, plans []rev
 				a.Action, a.Status, a.Reason = ReviveRefused, ReviveRefused, reason
 			} else {
 				a.Action = ReviveResumedInPlace
+				record(a)
 			}
 		case reviveRespawnPlan:
 			block, err := e.openTab(ctx, key.SessionID, core.PaneLabel(p.rec.Handle, p.rec.Role, p.rec.Task), p.Cwd, p.cmd)
@@ -512,11 +568,12 @@ func (e Env) launchRevived(ctx context.Context, key core.SessionKey, plans []rev
 				a.Action, a.Status, a.Reason = ReviveRefused, ReviveRefused, fmt.Sprintf("open a tab for %s: %v", p.rec.Handle, err)
 			} else {
 				a.Action, a.Block = ReviveRespawned, block
+				record(a)
 			}
 		}
 		out = append(out, a)
 	}
-	return out, nil
+	return out, errors.Join(errs...)
 }
 
 // resumeInPlace types p's command into its block's shell, after checking
@@ -604,6 +661,9 @@ func (e Env) awaitRevived(ctx context.Context, timeout time.Duration, agents []R
 // narrator's view shows them. Both are advice: a failure is reported, and
 // the agents stay revived.
 func (e Env) settleRevived(ctx context.Context, key core.SessionKey, res *ReviveResult) {
+	if err := e.dropPendingRevives(ctx, key, res.Agents); err != nil {
+		fmt.Fprintf(Diagnostics, "drop the revived agents' pending launches: %v\n", err)
+	}
 	recs, err := e.agents()
 	if err != nil {
 		fmt.Fprintf(Diagnostics, "read the revived Epic's agents: %v\n", err)
@@ -624,6 +684,26 @@ func (e Env) settleRevived(ctx context.Context, key core.SessionKey, res *Revive
 			}
 		}
 	}
+}
+
+// dropPendingRevives forgets the pending launches of the agents now ready:
+// their adoption took the block. One still starting stays for a retry.
+func (e Env) dropPendingRevives(ctx context.Context, key core.SessionKey, agents []ReviveAgent) error {
+	unlock, err := e.Store.LockEpicLifecycle(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	pending, err := e.Store.PendingRevives(key.SessionID)
+	if err != nil || len(pending) == 0 {
+		return err
+	}
+	for _, a := range agents {
+		if a.Status == ReviveReady {
+			delete(pending, a.Handle)
+		}
+	}
+	return e.Store.PutPendingRevives(key.SessionID, pending)
 }
 
 // reviveLog appends one JSON line per live revive to logs/revive.log, with

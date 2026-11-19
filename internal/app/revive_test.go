@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -307,7 +308,7 @@ func TestReviveNeverClobbersADraftOrAProgram(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := byHandle(res)
-	if a := got["pi-03"]; a.Action != ReviveRefused || !strings.Contains(a.Reason, "no empty shell prompt") {
+	if a := got["pi-03"]; a.Action != ReviveRefused || !strings.Contains(a.Reason, "no fresh shell's empty prompt") {
 		t.Errorf("the draft's block: %+v", a)
 	}
 	if a := got["pi-02"]; a.Action != ReviveRefused || !strings.Contains(a.Reason, "runs vim") {
@@ -405,7 +406,7 @@ func TestReviveCommandPerHarness(t *testing.T) {
 	}
 	for _, c := range cases {
 		rec := agent{Identity: store.Identity{Kind: c.kind, Sessions: []string{"old", "s-1"}}}
-		cmd, ok := reviveCommand(rec, c.launch, "P", true)
+		cmd, ok := reviveCommand(rec, c.launch, "P", true, slices.Clip)
 		if !ok {
 			t.Fatalf("%s: not resumable", c.kind)
 		}
@@ -413,7 +414,7 @@ func TestReviveCommandPerHarness(t *testing.T) {
 		if !slices.Equal(cmd, append(env, c.want...)) {
 			t.Errorf("%s: %q", c.kind, cmd)
 		}
-		if cmd, _ := reviveCommand(rec, c.launch, "P", false); slices.Contains(cmd, "ME_UNATTENDED=1") {
+		if cmd, _ := reviveCommand(rec, c.launch, "P", false, slices.Clip); slices.Contains(cmd, "ME_UNATTENDED=1") {
 			t.Errorf("%s attended: %q", c.kind, cmd)
 		}
 	}
@@ -452,4 +453,106 @@ func TestReviveRefusesAMalformedConversationID(t *testing.T) {
 func isCode(err error, c fault.Code) bool {
 	f, ok := fault.As(err)
 	return ok && f.Code == c
+}
+
+// A draft that ends in a prompt glyph is still a draft: typing the resume
+// after it would submit it (`echo pending # /bin/sh …` runs echo). Nothing
+// is typed, and the agent is refused (codex-27's round-1 S1).
+func TestReviveRefusesADraftEndingInAPromptGlyph(t *testing.T) {
+	for _, draft := range []string{"❯ echo pending # \r\n", "user@host:~$ echo $\r\n", "user@host:~$ echo \"a\r\n> \r\n"} {
+		w := newReviveWorld(t)
+		w.term.mu.Lock()
+		w.term.screens["block:w"] = draft
+		w.term.mu.Unlock()
+		res, err := w.revive(ReviveRequest{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if a := byHandle(res)["pi-03"]; a.Action != ReviveRefused || len(w.writes("block:w")) != 0 {
+			t.Errorf("%q: %+v, writes %q", draft, a, w.writes("block:w"))
+		}
+	}
+}
+
+// A launch still starting when the revive's wait ran out is recorded, so
+// a retry (the same op id, or none) waits for that launch instead of
+// starting the conversation again in another tab or typing into the pane
+// it runs in; once it is adopted the retry reports it ready and forgets it
+// (codex-27's round-1 S2).
+func TestReviveRetryWaitsForALaunchStillStarting(t *testing.T) {
+	w := newReviveWorld(t)
+	w.term.mu.Lock()
+	delete(w.term.windows, "block:o")
+	started := w.term.started
+	w.term.started = nil // the replacement harness runs, its first hook not yet
+	w.term.mu.Unlock()
+	first, err := w.revive(ReviveRequest{OpID: "pending", Timeout: 30 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a := byHandle(first)["pi-01"]; a.Action != ReviveRespawned || a.Status != string(core.StartupTimeout) {
+		t.Fatalf("first: %+v", a)
+	}
+	if p, _ := w.e.Store.PendingRevives(reviveSess); p["pi-01"].Block != "block:launch-1" || p["pi-01"].AgentSessionID != orchSID {
+		t.Fatalf("pending after a timeout: %+v", p)
+	}
+	for _, op := range []string{"pending", ""} {
+		again, err := w.revive(ReviveRequest{OpID: op, Timeout: 30 * time.Millisecond})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if a := byHandle(again)["pi-01"]; a.Action != ReviveRespawned || a.Block != "block:launch-1" {
+			t.Errorf("retry %q: %+v", op, a)
+		}
+	}
+	w.term.mu.Lock()
+	n := len(w.term.launches)
+	w.term.mu.Unlock()
+	if n != 1 {
+		t.Fatalf("the conversation was started %d times", n)
+	}
+	started(launch{Block: "block:launch-1", Command: []string{"pi", "--session", orchSID}}) // its first hook runs
+	done, err := w.revive(ReviveRequest{})
+	if err != nil || byHandle(done)["pi-01"].Status != ReviveReady {
+		t.Fatalf("after its adoption: %+v %v", done, err)
+	}
+	if p, _ := w.e.Store.PendingRevives(reviveSess); len(p) != 0 {
+		t.Errorf("pending launches left: %+v", p)
+	}
+}
+
+// A project the user trusts through the adapter's grant passes the
+// preflight, so the resumed agent must carry that session trust too: Pi's
+// --approve and Antigravity's --settings go on the harness's own argv,
+// before the env wrapper (codex-27's round-1 S3).
+func TestReviveCarriesTheSessionTrustOfAGrantedProject(t *testing.T) {
+	w := newReviveWorld(t)
+	ctx := context.Background()
+	if err := os.MkdirAll(filepath.Join(w.dir, ".pi"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(w.dir, ".pi", "settings.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.e.trustGate().Grant(ctx, w.dir, "explicit"); err != nil {
+		t.Fatal(err)
+	}
+	key := core.SessionKey{Server: fakeServer, SessionID: reviveSess}
+	s, err := w.e.loadSession(ctx, key.Server, key.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := recordOf(t, w.e, "pi-03")
+	p := revivePlan{rec: rec, ReviveAgent: ReviveAgent{Cwd: rec.Cwd}}
+	if refusal, err := w.e.planReviveAgent(ctx, key, s, agent{}, false, &p); err != nil || refusal != "" {
+		t.Fatalf("plan: %s %v", refusal, err)
+	}
+	if i := slices.Index(p.cmd, "pi"); i < 0 || !slices.Contains(p.cmd[i:], "--approve") {
+		t.Errorf("pi: %q", p.cmd)
+	}
+	agy := agent{Identity: store.Identity{Kind: core.Agy, Sessions: []string{workerSID}}}
+	cmd, _ := reviveCommand(agy, core.Launch{}, "P", true, func(argv []string) []string { return w.e.trustGate().Args(w.dir, argv) })
+	if i := slices.Index(cmd, "agy"); i < 0 || cmd[i+1] != "--settings" {
+		t.Errorf("agy: %q", cmd)
+	}
 }

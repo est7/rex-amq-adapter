@@ -8,24 +8,43 @@ import "strings"
 var promptGlyphs = []string{"$", "%", "#", ">", "❯", "➜", "λ", "»", "›", "➤", "▶", "∴"}
 
 // ShellPromptEmpty reports whether screen, a terminal's VT capture, shows a
-// shell waiting at an empty prompt: its last line with any text on it ends
-// in a prompt glyph, so nothing typed follows it. It fails closed: a prompt
-// that ends otherwise (a right-hand prompt, a theme it does not know), a
-// screen still blank, or a shell drawing something else reads as not
-// empty, and nothing should be typed into it.
+// freshly started shell waiting at an empty prompt: the whole screen holds
+// exactly one prompt glyph, and it ends the last line with text on it.
+//
+// One glyph is the boundary a suffix alone cannot give: a draft ending in a
+// glyph (`❯ echo pending # `) shows the prompt's glyph and the draft's, a
+// multi-line draft or a shell's continuation prompt (bash's `> `, zsh's
+// `dquote> `) shows the first line's prompt above it, and so does any
+// command run in the pane before. It fails closed: a prompt that ends
+// otherwise (a right-hand prompt, a theme it does not know), a glyph in the
+// prompt's own text, a blank screen, and anything else read as not empty,
+// and nothing should be typed into it.
 func ShellPromptEmpty(screen string) bool {
 	lines := strings.Split(PlainText(screen), "\n")
+	last := -1
 	for i := len(lines) - 1; i >= 0; i-- {
-		l := strings.TrimSpace(lines[i])
-		if l == "" {
-			continue
+		if strings.TrimSpace(lines[i]) != "" {
+			last = i
+			break
 		}
-		for _, g := range promptGlyphs {
-			if strings.HasSuffix(l, g) {
-				return true
-			}
-		}
+	}
+	if last < 0 {
 		return false
+	}
+	glyphs := 0
+	for _, l := range lines[:last+1] {
+		for _, g := range promptGlyphs {
+			glyphs += strings.Count(l, g)
+		}
+	}
+	if glyphs != 1 {
+		return false
+	}
+	end := strings.TrimSpace(lines[last])
+	for _, g := range promptGlyphs {
+		if strings.HasSuffix(end, g) {
+			return true
+		}
 	}
 	return false
 }
