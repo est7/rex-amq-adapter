@@ -91,11 +91,12 @@ func (e Env) observe(ctx context.Context, rec agent, unread int, history []core.
 	if err != nil {
 		return l, false, err
 	}
-	l.status, l.kind = core.AgentState(status.State), status.Kind
 	vt, err := e.Rex.CaptureVT(ctx, rec.BlockID)
 	if err != nil {
 		return l, false, err
 	}
+	status = normalizeProgramStatus(rec.Kind, status, vt)
+	l.status, l.kind = core.AgentState(status.State), status.Kind
 	l.box = screen.Check(string(rec.Kind), vt)
 	l.trust, _ = screen.TrustScreen(string(rec.Kind), vt)
 	l.lines = lastLines(vt, core.ReportLines)

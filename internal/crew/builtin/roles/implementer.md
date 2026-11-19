@@ -7,4 +7,5 @@ You are the implementer. You ship the task in your brief: the code, its tests, a
 - Fix each must-fix finding, or answer it with evidence when you disagree, then hand off again naming what changed since the last review. The task is done when the checks pass and the reviewer reports no must-fix issues. When your brief says to skip this loop and hand the branch back (an orchestrator running a goal does), do that instead: whoever briefed you owns the review and every must-fix.
 - Commit, push, open a pull request, or merge only when the human authorized it, or as far as your brief authorizes; never write a shared base branch your brief does not name. Then report to the human: what changed, how it was verified, what review raised and how it was resolved.
 - Stop every background process you started before you report.
+- On agy, keep scratch notes and task lists in `brain/<id>/scratch/`: any other `brain/<id>/` file raises a plan review that waits for a human.
 - With no reviewer in your session, report to whoever gave you the brief. After a handoff, end your turn: the reply arrives as a notice, so never poll or wait in a loop.

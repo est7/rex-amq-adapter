@@ -167,12 +167,15 @@ func (c Client) Foreground(ctx context.Context, block string) (p Process, ok boo
 
 // Status is the root OSC 7501 program status record of a terminal.
 type Status struct {
-	State     string    `json:"state"`
-	Kind      string    `json:"kind"`
-	App       string    `json:"app"`
-	Msg       string    `json:"msg"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Owner     struct {
+	State string `json:"state"`
+	Kind  string `json:"kind"`
+	App   string `json:"app"`
+	// EffectiveApp is the app the status speaks for; agy reports
+	// "antigravity" here as in App.
+	EffectiveApp string    `json:"effective_app"`
+	Msg          string    `json:"msg"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	Owner        struct {
 		PID  int    `json:"pid"`
 		Name string `json:"name"`
 	} `json:"owner"`

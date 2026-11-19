@@ -34,6 +34,7 @@ func (e Env) blocked(ctx context.Context, orch agent, s Session, rec agent) erro
 	if err != nil {
 		return err
 	}
+	st = normalizeProgramStatus(rec.Kind, st, vt)
 	what := ""
 	blocked := reports && core.AgentState(st.State) == core.StateBlocked
 	switch {

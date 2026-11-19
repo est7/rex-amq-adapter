@@ -99,7 +99,8 @@ func (e Env) inject(ctx context.Context, r InjectRequest, rec agent) core.Outcom
 	if err != nil {
 		return rexOutcome(err)
 	}
-	if jobStatus, jobReports, isJob, err := e.jobStatus(rec); err != nil {
+	jobStatus, jobReports, isJob, err := e.jobStatus(rec)
+	if err != nil {
 		return deferredErr("state_unreadable", err)
 	} else if isJob {
 		status, reports = jobStatus, jobReports
@@ -107,6 +108,9 @@ func (e Env) inject(ctx context.Context, r InjectRequest, rec agent) core.Outcom
 	vt, err := e.Rex.CaptureVT(ctx, rec.BlockID)
 	if err != nil {
 		return rexOutcome(err)
+	}
+	if !isJob && reports {
+		status = normalizeProgramStatus(rec.Kind, status, vt)
 	}
 	_, trust := screen.TrustScreen(string(rec.Kind), vt)
 	if o, ok := core.DecideWrite(core.Readiness{
