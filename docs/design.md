@@ -1011,8 +1011,9 @@ a Rex failure midway returns the seats already launched with the error and
 releases the unused tokens. The request every seat reads ends with a line
 asking for `SCORE: <n>/10`, and the command awaits each launched seat's
 adoption in parallel (`AwaitCouncil`) and mails it to each started one. Its
-JSON line adds `seats` (harness, action, handle, block, mailed, startup); it
-exits 3 when refused and 1 when a launched seat was not adopted. The same
+envelope's `data` adds `seats` (harness, action, handle, block, mailed,
+startup); a refusal exits 3 (`cap_reached` 5), and a launched seat that was
+not adopted exits 7 (`seat_failed`) with the seats in `data`. The same
 command after fixes reaches the live seats again: the next round. The round
 loop itself, the score bar, and the `## Council review` table are the
 caller's, in the prompts (Crews and roles: review tiers).
@@ -1175,13 +1176,15 @@ cannot change what happens to an agent. The same projection
   `changed` top-level fields) and `remove` (entity, key), `event` (`kind`
   `doorbell` from the injector log, `drained` from amq's receipts,
   `dead_lettered` when a copy reaches a dead-letter box; with `occurred_at`),
-  and `heartbeat` every 5 s. Diagnostics go to stderr.
+  and `heartbeat` every 5 s. Diagnostics go to stderr only in text mode;
+  with `--json` or off a terminal they stay off stderr (the run's warnings).
 - Local state is read every second (identities and leases only when their
   directories changed), Rex every two seconds (the layout and each live agent's program
   status). A new sample of an unchanged state is no change: `observed_at` and
   `source` are left out of the comparison, so polling alone emits only
   heartbeats. A failed look is reported and retried; only a failed write ends
-  the stream. SIGINT or SIGTERM ends it with status 0.
+  the stream. SIGINT or SIGTERM ends it with status 130 (`interrupted`) or 143
+  (`terminated`) after the frames already written.
 - Events are told once and only after the stream starts: the injector log is
   cut by rewriting it, so its attempts are told by time, not by offset;
   receipts and dead letters present at the start are history. A dead letter
@@ -1741,8 +1744,9 @@ summary made one line and capped at 280 bytes), and the subject is
 It never starts or resumes an agent. With no live Personal agent it sends
 nothing and prints `{"status":"no_live_personal",...}` (exit 0): the producer
 keeps its entry. With more than one left it rings the one the user spoke to
-last (C26, `mostRecent`: its latest prompt, `activity/<handle>`, else when its
-lease was taken; ties go to the first handle), never all of them. Under `notifications.lock` each event id is looked up first: a
+last (C26, `mostRecent`: its latest prompt, `activity/<handle>`, or when its
+lease was taken, whichever is later; ties go to the lexicographically first
+handle), never all of them. Under `notifications.lock` each event id is looked up first: a
 repeat of a notified event (the same `--ref`, `--hub`, and `--personal`; the
 hub compared after resolving symlinks) answers with the same `to`,
 `session_id`, and `message_id` and `"deduped":true` without sending, even
@@ -1816,7 +1820,8 @@ nothing started is torn down, and the command exits 0 only when both agents
 are adopted and linked. The Epic's agents start outside any summon chain, as
 the user's own would: the orchestrator is depth 0 in its session.
 
-With `--crew pair` the Epic is one Slice and has no orchestrator: the second
+With `--crew pair` the Epic runs at most 3 Slices one after another, on lane
+1, and has no orchestrator: the second
 pane is an `implementer`, on the implementer's routing (`--harness` still
 overrides it) and briefed as the orchestrator would be, and the result's
 `lead` says so (`lead.role`, with that agent's block, status, and handle).
@@ -2094,9 +2099,10 @@ place in memory.
 
 ### Cockpit
 
-`epic list [--personal H] [--hub DIR]` and `epic show [S] [--personal H]
-[--hub DIR]` (`app.Env.ReadCockpitView`) are the human's, or a Hub personal
-agent's, read-only view of a Hub's Epics. Its scope is the Epics linked to one
+`epic list [--personal H] [--hub DIR]`, and `epic show S [--personal H]
+[--hub DIR]` run outside Rex (`app.Env.ReadCockpitView`), are the human's,
+or a Hub personal agent's, read-only view of a Hub's Epics. Inside Rex,
+`epic show [S]` takes another path (`ReadSessionView`, below). Its scope is the Epics linked to one
 Hub (`core.LinkMatchesPersonal`), whichever of the Hub's personal agents are
 live and however many; it moves no mail, writes no receipt, and starts
 nothing. A pane or shell with no agent in it is not trusted for being one
@@ -2130,6 +2136,15 @@ written a view yet but whose lifecycle is recorded reads as that lifecycle
 alone, with a `no_view` coverage gap. Without it the summary lists each
 linked Epic (`session_id`, `name`, `dir`, `lifecycle`, `hand_back`,
 `has_view`). A closed Epic is unlinked, so it leaves the summary.
+
+`epic show [S]` inside Rex reads `ReadSessionView` instead (`viewReader`), and
+ignores `--hub` and `--personal`: the session's narrator and lead read their
+own session; a personal agent reads an Epic linked to it (S may be left out
+when exactly one is); a pane with no live agent reads its own session only;
+any other role is refused. It returns the stored view with the hand-back and
+lifecycle put in place, and with no view written yet it fails
+(`failed_precondition`, reason `no_view`) rather than falling back to the
+lifecycle alone.
 
 The narrator takes no member mail. The session's watcher compares a
 deterministic pulse of the session (members, tasks, newest mail id, attention
