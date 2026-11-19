@@ -2060,29 +2060,45 @@ in their own blocks:
    tells it to drain its mail.
 5. Place. When the agent's block is still in the session, `paneFree` decides
    whether it may be typed into: no other handle leases it, its foreground is
-   a shell (`isShell`), and its screen is a fresh shell's empty prompt
-   (`screen.ShellPromptEmpty`: exactly one prompt glyph on the whole screen,
-   ending its last non-blank line; a draft that ends in a glyph, a multi-line
-   draft or continuation prompt, and any command run in the pane before all
-   show a second one, and anything it does not recognise fails closed). Typing
-   is not atomic with that look: keys the user presses in between are theirs. It is checked again under the lifecycle
-   lock just before the write (`resumeInPlace`). The command goes into a
-   `0700` one-shot script under `<state>/revive/` that removes itself, `cd`s,
-   and `exec`s the argv, and the shell is sent `/bin/sh '<script>'`: the
-   user's login shell may be fish, whose quoting differs from sh's, and a
-   failed `cd` leaves the shell and the block as they were. A pane that fails
+   a shell (`isShell`), and its screen is a fresh shell's empty prompt it
+   positively recognises (`screen.ShellPromptEmpty`): exactly one prompt glyph
+   on the whole screen, ending its last non-blank line, after a prompt text of
+   a shape it knows with a glyph that shape draws (`promptShapes`: a theme's
+   glyph alone, `user@host:path$`, fish's `user@host path>`, Fedora's
+   `[user@host dir]$`, macOS bash's `host:dir user$`, zsh's `host%`, a bare
+   path). The screen cannot tell a prompt from a draft typed after one, so
+   whatever it does not recognise is refused: a second glyph (a draft that
+   ends in one, a continuation prompt, a command run before) and any other
+   prompt (`app: ` after a custom PS1), whatever its line ends in. Rex
+   offers no shell-integration marks to do better. Typing is not atomic with
+   that look: keys the user presses in between are theirs. It is checked
+   again under the lifecycle lock just before the write (`resumeInPlace`).
+   The command goes into a `0700` one-shot script under `<state>/revive/`
+   that removes itself (its claim: it exits at once when the script is
+   already gone), `cd`s, and `exec`s the argv, and the shell is sent
+   `/bin/sh '<script>'`: the user's login shell may be fish, whose quoting
+   differs from sh's, and a failed `cd` leaves the shell and the block as
+   they were. A pane that fails
    the check is that agent's refusal (`action: refused`, its reason), never a
    clobbered draft. A lead or narrator whose block is gone from the session
-   gets a tab of its own instead (`openTab`, `respawned_window`); another
-   agent whose block is gone is refused.
-6. Record. Each launch is written, the moment it starts, to
-   `sessions/<id>/revive.json` (`store.PendingRevive`: block, conversation,
-   action), under `epic-lifecycle.lock`. A later revive, with or without the
-   same op id, that finds an agent's launch still starting there (its block in
-   the session, running something other than a shell) waits for that block
-   instead of typing into it or opening a second tab; one that ended (its
-   block gone or back at a shell) is planned anew. An entry is dropped once
-   its agent is ready.
+   gets a tab of its own instead, running `/bin/sh '<script>'` too (`respawn`,
+   `openTab`, `respawned_window`); another agent whose block is gone is
+   refused.
+6. Record, ahead of the launch. Under `epic-lifecycle.lock` each launch is
+   written to `sessions/<id>/revive.json` (`store.PendingRevive`) before Rex
+   is asked for anything: its launcher script, the conversation, the action,
+   and the block (in place: the agent's own, with the pid of the shell it is
+   typed into; a tab: its label and the session's blocks before it, the tab's
+   id once Rex returns it). A reply that is an error keeps the record. A later
+   revive, with or without the same op id, reconciles it first
+   (`reconcileLaunch`): a launcher still on disk has not run, so it is removed
+   (`cancelLaunch`) and can never run, and the agent is planned anew; a tab
+   whose id was never learned is the one new block with its label (none: it
+   never opened; two: `refused`, nothing started); a tab still there, or an
+   in-place launch whose launcher was claimed and whose pane does not show
+   the shell it was typed into again, is still starting, and its block is
+   waited for, never typed into or opened twice. An entry is dropped once its
+   agent is ready or live.
 7. Await and settle. It waits, up to `--timeout`, for each resumed block to be
    adopted as the same handle (`AwaitStartup`); the resumed conversation's
    first hook takes its handle back by lineage, under the next lease epoch,

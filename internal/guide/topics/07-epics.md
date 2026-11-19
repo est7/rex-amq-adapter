@@ -114,7 +114,8 @@ Each agent resumes by its latest conversation id, on the model and effort it
 was launched on, unattended as every Epic agent is, with a first prompt saying
 who revived it and to drain its mail. The command is typed into a block only
 when that block holds no other agent's process, its foreground is a shell, and
-it shows a fresh shell's empty prompt (no draft, nothing run since); otherwise that agent is refused with its
+it shows a fresh shell's empty prompt of a common shape (no draft, nothing run
+since; a custom prompt is refused); otherwise that agent is refused with its
 reason and nothing is typed, and the user empties it, runs Rex's Clear Terminal on it, and revives again. A
 closed lead or narrator block is replaced by a tab of its own
 (`action: respawned_window`). `status` is `ready` once an agent was adopted as

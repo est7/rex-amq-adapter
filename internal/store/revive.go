@@ -9,15 +9,25 @@ import (
 	"github.com/est7/rex-amq-adapter/internal/core"
 )
 
-// PendingRevive is a launch `epic revive` started and has not yet seen
-// adopted: the block it typed the resume into or opened for it, the
-// conversation it resumes there, and how (the revive's action). A retry
-// that finds it, with that block still running something other than a
-// shell, waits for it instead of starting the conversation a second time.
+// PendingRevive is a launch `epic revive` committed to and has not seen
+// adopted, written before the launch so a retry can tell what it did
+// whatever the launch's reply said or whether the revive lived to read it:
+//
+//   - Script is the one-shot launcher the launch runs, which removes itself
+//     as it starts: while it exists the launch has not run.
+//   - Block is the block it runs in: the agent's own (in place), or the tab
+//     Rex opened for it; "" while that tab's id is not known, and then the
+//     tab is the one new block (not in PriorBlocks) labelled Label.
+//   - ShellPID is the login shell an in-place launch was typed into: that
+//     shell in the foreground again means the agent ran and exited.
 type PendingRevive struct {
-	Block          string    `json:"block"`
+	Block          string    `json:"block,omitempty"`
 	AgentSessionID string    `json:"agent_session_id"`
 	Action         string    `json:"action"`
+	Script         string    `json:"script"`
+	Label          string    `json:"label,omitempty"`
+	PriorBlocks    []string  `json:"prior_blocks,omitempty"`
+	ShellPID       int       `json:"shell_pid,omitempty"`
 	At             time.Time `json:"at"`
 }
 

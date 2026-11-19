@@ -331,10 +331,18 @@ func (e Env) planRevive(ctx context.Context, key core.SessionKey, by agent, pend
 			continue
 		}
 		if pl, ok := pending[rec.Handle]; ok {
-			if starting, err := e.pendingLaunch(ctx, s, rec, pl); err != nil {
-				return nil, err
-			} else if starting {
+			state, why, err := e.reconcileLaunch(ctx, s, rec, &pl)
+			if err != nil {
+				return nil, fmt.Errorf("reconcile the earlier launch of %s: %w", rec.Handle, err)
+			}
+			switch state {
+			case launchStarting:
+				pending[rec.Handle] = pl
 				p.Action, p.Block, p.Note = pl.Action, pl.Block, "launched by an earlier revive at "+pl.At.Format(time.RFC3339)+" and still starting: waited for, not started again"
+				plans = append(plans, p)
+				continue
+			case launchUnclear:
+				p.Action, p.Status, p.Reason = ReviveRefused, ReviveRefused, why
 				plans = append(plans, p)
 				continue
 			}
@@ -350,26 +358,117 @@ func (e Env) planRevive(ctx context.Context, key core.SessionKey, by agent, pend
 	return plans, nil
 }
 
-// pendingLaunch reports whether pl, a launch of rec an earlier revive
-// recorded, is still starting: it resumes rec's current conversation, its
-// block is in session s, and that block runs something other than a shell
-// (the harness, before its first hook). A block gone or back at a shell
-// means the launch ended, and the agent is planned anew.
-func (e Env) pendingLaunch(ctx context.Context, s Session, rec agent, pl store.PendingRevive) (bool, error) {
+// launchState is what became of a launch an earlier revive recorded.
+type launchState int
+
+const (
+	// launchEnded: it never ran, was cancelled, or ran and its agent left;
+	// the agent is planned anew.
+	launchEnded launchState = iota
+	// launchStarting: its harness runs, or its launcher has yet to start,
+	// in a known block: the revive waits for that block.
+	launchStarting
+	// launchUnclear: it cannot be attributed (two tabs carry its label);
+	// nothing is started for the agent.
+	launchUnclear
+)
+
+// reconcileLaunch decides what became of pl, the recorded launch of rec,
+// from the session s as Rex shows it and pl's launcher, which removes
+// itself as it starts (writeLauncher). A launch still possible but not
+// running yet (its launcher unclaimed, in place) is cancelled by removing
+// the launcher first (cancelLaunch), which leaves its fate certain; a tab
+// whose id the earlier revive never learned is found by its label among the
+// blocks that were not there before it. pl.Block is filled in when found.
+func (e Env) reconcileLaunch(ctx context.Context, s Session, rec agent, pl *store.PendingRevive) (launchState, string, error) {
 	if pl.AgentSessionID != rec.Session() {
-		return false, nil
+		_, err := e.cancelLaunch(pl.Script)
+		return launchEnded, "", err
+	}
+	if pl.Block == "" {
+		found, err := e.newBlocksLabelled(ctx, s.id, pl.Label, pl.PriorBlocks)
+		if err != nil {
+			return launchEnded, "", err
+		}
+		switch len(found) {
+		case 0:
+			// No tab carries its label: Rex never opened it, or it closed as
+			// its program ended. Cancelled, it can never run.
+			_, err := e.cancelLaunch(pl.Script)
+			return launchEnded, "", err
+		case 1:
+			pl.Block = found[0]
+		default:
+			return launchUnclear, fmt.Sprintf("%s's earlier launch cannot be told apart: %d new tabs are labelled %q (%s); close the ones that do not run it and revive again", rec.Handle, len(found), pl.Label, strings.Join(found, ", ")), nil
+		}
 	}
 	if _, here := s.windowOf[pl.Block]; !here {
-		return false, nil
+		_, err := e.cancelLaunch(pl.Script)
+		return launchEnded, "", err
+	}
+	if pl.Action == ReviveRespawned {
+		// Its own tab runs only the launcher, then the harness, and closes
+		// when that ends: while the block is there the launch is on.
+		return launchStarting, "", nil
+	}
+	cancelled, err := e.cancelLaunch(pl.Script)
+	if err != nil || cancelled {
+		// Typed and never run (the text lost, or the shell never got to
+		// it): cancelled, it never will. The pane is checked again before
+		// anything else is typed.
+		return launchEnded, "", err
 	}
 	fg, ok, err := e.Rex.Foreground(ctx, pl.Block)
 	switch {
 	case errors.Is(err, rex.ErrNotFound):
-		return false, nil
+		return launchEnded, "", nil
 	case err != nil:
+		return launchEnded, "", err
+	}
+	if ok && (pl.ShellPID != 0 && fg.PID == pl.ShellPID || pl.ShellPID == 0 && isShell(fg.Name)) {
+		// The shell it was typed into is back in the foreground: the
+		// launch ran and its agent exited.
+		return launchEnded, "", nil
+	}
+	return launchStarting, "", nil
+}
+
+// cancelLaunch claims script, a launch's launcher, before the launch can:
+// removed, the launcher exits as it starts and the launch never runs
+// (cancelled true); already gone, the launch claimed it and runs. A dry run
+// removes nothing and reads an unclaimed launcher as cancelled.
+func (e Env) cancelLaunch(script string) (bool, error) {
+	if script == "" {
+		return false, nil
+	}
+	if e.preview {
+		_, err := os.Stat(script)
+		return err == nil, nil
+	}
+	switch err := os.Remove(script); {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, os.ErrNotExist):
+		return false, nil
+	default:
 		return false, err
 	}
-	return ok && !isShell(fg.Name), nil
+}
+
+// newBlocksLabelled lists the blocks of session labelled label that are
+// not among prior: the tab a launch opened, whose reply was lost.
+func (e Env) newBlocksLabelled(ctx context.Context, session, label string, prior []string) ([]string, error) {
+	blocks, err := e.Rex.ListBlocks(ctx, session)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, b := range blocks {
+		if b.Label == label && !slices.Contains(prior, b.ID) {
+			out = append(out, b.ID)
+		}
+	}
+	return out, nil
 }
 
 // reviveCandidate reports whether the revive covers rec: always the Epic's
@@ -495,43 +594,53 @@ func (e Env) revivePrompt(rec agent, by agent) string {
 // prompt line holds nothing typed, so the command typed in clobbers
 // nobody's input.
 func (e Env) paneFree(ctx context.Context, key core.SessionKey, rec agent) (string, error) {
+	reason, _, err := e.freeShell(ctx, key, rec)
+	return reason, err
+}
+
+// freeShell is paneFree that also returns the pid of the shell found
+// waiting in rec's block.
+func (e Env) freeShell(ctx context.Context, key core.SessionKey, rec agent) (string, int, error) {
 	if l, ok, err := e.Store.LeaseAt(key.Server, rec.BlockID); err != nil {
-		return "", err
+		return "", 0, err
 	} else if ok && l.Handle != rec.Handle {
-		return fmt.Sprintf("%s's block %s runs %s now", rec.Handle, rec.BlockID, l.Handle), nil
+		return fmt.Sprintf("%s's block %s runs %s now", rec.Handle, rec.BlockID, l.Handle), 0, nil
 	}
 	fg, ok, err := e.Rex.Foreground(ctx, rec.BlockID)
 	if errors.Is(err, rex.ErrNotFound) {
-		return fmt.Sprintf("%s's block %s is gone", rec.Handle, rec.BlockID), nil
+		return fmt.Sprintf("%s's block %s is gone", rec.Handle, rec.BlockID), 0, nil
 	}
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	if !ok || !isShell(fg.Name) {
 		name := fg.Name
 		if !ok {
 			name = "no process"
 		}
-		return fmt.Sprintf("%s's block %s runs %s, not an idle shell; nothing was typed into it", rec.Handle, rec.BlockID, name), nil
+		return fmt.Sprintf("%s's block %s runs %s, not an idle shell; nothing was typed into it", rec.Handle, rec.BlockID, name), 0, nil
 	}
 	vt, err := e.Rex.CaptureVT(ctx, rec.BlockID)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	if !screen.ShellPromptEmpty(vt) {
-		return fmt.Sprintf("%s's block %s shows no fresh shell's empty prompt (someone's unsent input, output of a command run there, or a prompt not drawn yet); nothing was typed into it: empty the prompt, clear the pane with Rex's Clear Terminal (it drops the scrollback, which Ctrl+L keeps), and revive again", rec.Handle, rec.BlockID), nil
+		return fmt.Sprintf("%s's block %s shows no fresh shell's empty prompt (someone's unsent input, output of a command run there, or a prompt not drawn yet); nothing was typed into it: empty the prompt, clear the pane with Rex's Clear Terminal (it drops the scrollback, which Ctrl+L keeps), and revive again", rec.Handle, rec.BlockID), 0, nil
 	}
-	return "", nil
+	return "", fg.PID, nil
 }
 
 // launchRevived starts each planned resume, under the lifecycle lock so no
-// adoption takes a block between its check and its write: in its block, the
-// pane is checked once more and the command typed into its shell; in a new
-// tab, the tab is opened. A failure to start one is that agent's, and the
-// others go on. pending, with every launch added the moment it starts, is
-// recorded before the first launch and after each (the caller holds
-// LockEpicLifecycle), so a retry after a timeout, a crash, or a concurrent
-// revive waits for a launch instead of starting its conversation again.
+// adoption takes a block between its check and its write. Every launch runs
+// a one-shot launcher (writeLauncher) and is recorded in pending, with that
+// launcher, before Rex is asked for anything (the caller holds
+// LockEpicLifecycle): a retry after a lost reply, a timeout, or a revive
+// that died part way finds it there and reconciles it (reconcileLaunch)
+// instead of starting the conversation again. In place, the pane is checked
+// once more and the launcher typed into its shell; for a lead or narrator
+// whose block was closed, a tab is opened running it. A launch whose reply
+// is an error stays recorded: whether Rex did it is for the retry to tell.
+// A failure to start one is that agent's, and the others go on.
 func (e Env) launchRevived(ctx context.Context, key core.SessionKey, plans []revivePlan, pending map[core.Handle]store.PendingRevive) ([]ReviveAgent, error) {
 	unlock, err := e.Store.LockLifecycle(ctx)
 	if err != nil {
@@ -541,53 +650,59 @@ func (e Env) launchRevived(ctx context.Context, key core.SessionKey, plans []rev
 	if err := e.Store.PutPendingRevives(key.SessionID, pending); err != nil {
 		return nil, fmt.Errorf("record the Epic's pending revives: %w", err)
 	}
-	out := make([]ReviveAgent, 0, len(plans))
-	var errs []error
-	record := func(a ReviveAgent) {
-		pending[a.Handle] = store.PendingRevive{Block: a.Block, AgentSessionID: a.AgentSessionID, Action: a.Action, At: e.Now().UTC()}
+	record := func(h core.Handle, pl store.PendingRevive) error {
+		pending[h] = pl
 		if err := e.Store.PutPendingRevives(key.SessionID, pending); err != nil {
-			errs = append(errs, fmt.Errorf("record the pending revive of %s: %w", a.Handle, err))
+			return fmt.Errorf("record the launch of %s before it: %w", h, err)
 		}
+		return nil
 	}
+	out := make([]ReviveAgent, 0, len(plans))
 	for _, p := range plans {
 		a := p.ReviveAgent
+		var reason string
+		var err error
 		switch a.Action {
 		case reviveInPlacePlan:
-			if reason, err := e.resumeInPlace(ctx, key, p); err != nil || reason != "" {
-				if err != nil {
-					reason = err.Error()
-				}
-				a.Action, a.Status, a.Reason = ReviveRefused, ReviveRefused, reason
-			} else {
+			if reason, err = e.resumeInPlace(ctx, key, p, record); err == nil && reason == "" {
 				a.Action = ReviveResumedInPlace
-				record(a)
 			}
 		case reviveRespawnPlan:
-			block, err := e.openTab(ctx, key.SessionID, core.PaneLabel(p.rec.Handle, p.rec.Role, p.rec.Task), p.Cwd, p.cmd)
-			if err != nil {
-				a.Action, a.Status, a.Reason = ReviveRefused, ReviveRefused, fmt.Sprintf("open a tab for %s: %v", p.rec.Handle, err)
-			} else {
+			var block string
+			if block, err = e.respawn(ctx, key, p, record); err == nil {
 				a.Action, a.Block = ReviveRespawned, block
-				record(a)
 			}
+		}
+		if err != nil {
+			reason = err.Error()
+		}
+		if reason != "" {
+			a.Action, a.Status, a.Reason = ReviveRefused, ReviveRefused, reason
 		}
 		out = append(out, a)
 	}
-	return out, errors.Join(errs...)
+	return out, nil
 }
 
-// resumeInPlace types p's command into its block's shell, after checking
-// the pane again. The command goes in a launcher script the shell runs
-// with /bin/sh, so whatever shell the user's login shell is (fish quotes
-// otherwise than sh), the agent's argv reaches it as written; the script
-// removes itself, and a cd that fails leaves the shell, and the pane, as
-// they were.
-func (e Env) resumeInPlace(ctx context.Context, key core.SessionKey, p revivePlan) (string, error) {
-	if reason, err := e.paneFree(ctx, key, p.rec); err != nil || reason != "" {
+// resumeInPlace types p's launcher into its block's shell, after checking
+// the pane again, once the launch is recorded. The launcher runs with
+// /bin/sh, so whatever shell the user's login shell is (fish quotes
+// otherwise than sh), the agent's argv reaches it as written; it removes
+// itself, and a cd that fails leaves the shell, and the pane, as they were.
+// A write that fails leaves the record: the retry cancels the launcher if
+// the text never ran.
+func (e Env) resumeInPlace(ctx context.Context, key core.SessionKey, p revivePlan, record func(core.Handle, store.PendingRevive) error) (string, error) {
+	reason, shell, err := e.freeShell(ctx, key, p.rec)
+	if err != nil || reason != "" {
 		return reason, err
 	}
 	script, err := e.writeLauncher(p.Cwd, p.cmd)
 	if err != nil {
+		return "", err
+	}
+	pl := store.PendingRevive{Block: p.rec.BlockID, AgentSessionID: p.AgentSessionID, Action: ReviveResumedInPlace, Script: script, ShellPID: shell, At: e.Now().UTC()}
+	if err := record(p.rec.Handle, pl); err != nil {
+		_ = os.Remove(script)
 		return "", err
 	}
 	if label := core.PaneLabel(p.rec.Handle, p.rec.Role, p.rec.Task); label != "" {
@@ -596,14 +711,49 @@ func (e Env) resumeInPlace(ctx context.Context, key core.SessionKey, p revivePla
 		}
 	}
 	if err := e.Rex.Write(ctx, p.rec.BlockID, "/bin/sh "+shellQuote(script)+"\r"); err != nil {
-		_ = os.Remove(script)
-		return "", fmt.Errorf("type the resume of %s into %s: %w", p.rec.Handle, p.rec.BlockID, err)
+		return "", fmt.Errorf("type the resume of %s into %s (a retry tells whether it ran): %w", p.rec.Handle, p.rec.BlockID, err)
 	}
 	return "", nil
 }
 
+// respawn opens a tab of its own for p, a lead or narrator whose block was
+// closed, running its launcher, once the launch is recorded with the
+// session's blocks before it and the tab's label, which tell the tab apart
+// should Rex's reply be lost; the block is recorded once known.
+func (e Env) respawn(ctx context.Context, key core.SessionKey, p revivePlan, record func(core.Handle, store.PendingRevive) error) (string, error) {
+	blocks, err := e.Rex.ListBlocks(ctx, key.SessionID)
+	if err != nil {
+		return "", err
+	}
+	prior := make([]string, len(blocks))
+	for i, b := range blocks {
+		prior[i] = b.ID
+	}
+	script, err := e.writeLauncher(p.Cwd, p.cmd)
+	if err != nil {
+		return "", err
+	}
+	label := core.PaneLabel(p.rec.Handle, p.rec.Role, p.rec.Task)
+	pl := store.PendingRevive{AgentSessionID: p.AgentSessionID, Action: ReviveRespawned, Script: script, Label: label, PriorBlocks: prior, At: e.Now().UTC()}
+	if err := record(p.rec.Handle, pl); err != nil {
+		_ = os.Remove(script)
+		return "", err
+	}
+	block, err := e.openTab(ctx, key.SessionID, label, p.Cwd, []string{"/bin/sh", script})
+	if err != nil {
+		return "", fmt.Errorf("open a tab for %s (a retry tells whether Rex opened it): %w", p.rec.Handle, err)
+	}
+	pl.Block = block
+	if err := record(p.rec.Handle, pl); err != nil {
+		fmt.Fprintf(Diagnostics, "%v\n", err)
+	}
+	return block, nil
+}
+
 // writeLauncher writes a one-shot /bin/sh script that removes itself,
-// changes to dir, and execs cmd, and returns its path.
+// changes to dir, and execs cmd, and returns its path. The removal is the
+// launch's claim: a retry that removes the script first (cancelLaunch)
+// makes it exit at once, so a launch runs at most once.
 func (e Env) writeLauncher(dir string, cmd []string) (string, error) {
 	d := filepath.Join(e.Paths.Home, "revive")
 	if err := os.MkdirAll(d, 0o700); err != nil {
@@ -621,7 +771,7 @@ func (e Env) writeLauncher(dir string, cmd []string) (string, error) {
 	for i, a := range cmd {
 		quoted[i] = shellQuote(a)
 	}
-	body := "#!/bin/sh\n# Written by rex-amq-adapter epic revive: resumes an agent in its own pane.\nrm -f -- " + shellQuote(path) +
+	body := "#!/bin/sh\n# Written by rex-amq-adapter epic revive: resumes an agent in its own pane.\nrm -- " + shellQuote(path) + " 2>/dev/null || exit 0" +
 		"\ncd -- " + shellQuote(dir) + " || exit 1\nexec " + strings.Join(quoted, " ") + "\n"
 	if err := os.WriteFile(path, []byte(body), 0o700); err != nil {
 		return "", err

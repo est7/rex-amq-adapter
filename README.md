@@ -414,10 +414,11 @@ resume`, `agy --conversation`, `pi --session`) on the model and effort it was
 launched on, with `ME_UNATTENDED=1`, and its handle, mail, and lineage come back
 with it. The command is typed into a block only when no other agent holds it,
 its foreground is a shell, and its screen shows a fresh shell's empty prompt
-(a draft, or a command run there since the restart, shows more); otherwise
-that agent is `refused` with the reason and nothing is typed. A launch still
-starting when the wait ends is recorded, so a retry waits for it rather than
-starting the conversation twice. A lead's or narrator's block
+of a common shape (a draft, a command run there since the restart, or a custom
+prompt the adapter cannot read shows more or other); otherwise that agent is
+`refused` with the reason and nothing is typed. Every launch is recorded before
+it starts, so a retry after a timeout or a lost reply waits for it, or cancels
+it if it never ran, rather than starting the conversation twice. A lead's or narrator's block
 that was closed gets a tab of its own instead (`respawned_window`). An agent
 already live is left alone (`already_live`), so running it again resumes only
 what is still down. It waits up to `--timeout` (90s) for each to be adopted,

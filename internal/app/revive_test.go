@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -98,14 +99,35 @@ func newReviveWorld(t *testing.T) *reviveWorld {
 		go func() { defer wg.Done(); w.adopt(block, sid) }()
 	}
 	term.started = func(l launch) {
-		i := slices.Index(l.Command, "--session")
-		if i < 0 {
+		sid := launchedSession(l.Command)
+		if sid == "" {
 			return
 		}
 		wg.Add(1)
-		go func() { defer wg.Done(); w.adopt(l.Block, l.Command[i+1]) }()
+		go func() { defer wg.Done(); w.adopt(l.Block, sid) }()
 	}
 	return w
+}
+
+// launchedSession is the Pi conversation a tab's command resumes: the
+// revive's launcher it runs (`/bin/sh <script>`), read as the shell would,
+// or a bare `pi --session <id>`. It claims the launcher as running it would,
+// so a retry sees the launch started.
+func launchedSession(cmd []string) string {
+	if len(cmd) == 2 && cmd[0] == "/bin/sh" {
+		b, err := os.ReadFile(cmd[1])
+		if err != nil {
+			return ""
+		}
+		_ = os.Remove(cmd[1])
+		_, rest, _ := strings.Cut(string(b), "'--session' '")
+		sid, _, _ := strings.Cut(rest, "'")
+		return sid
+	}
+	if i := slices.Index(cmd, "--session"); i >= 0 && i+1 < len(cmd) {
+		return cmd[i+1]
+	}
+	return ""
 }
 
 // parkedFor is s parked for reason a while ago.
@@ -348,8 +370,8 @@ func TestReviveRespawnsAClosedLeadBlockInANewTab(t *testing.T) {
 	w.term.mu.Lock()
 	cmd := w.term.launches[0].Command
 	w.term.mu.Unlock()
-	if !slices.Contains(cmd, "ME_UNATTENDED=1") || !slices.Contains(cmd, orchSID) {
-		t.Errorf("the respawned command: %q", cmd)
+	if len(cmd) != 2 || cmd[0] != "/bin/sh" || !strings.HasPrefix(cmd[1], w.e.Paths.Home) {
+		t.Errorf("the respawned command runs no launcher: %q", cmd)
 	}
 	if a := got["pi-03"]; a.Action != ReviveRefused || !strings.Contains(a.Reason, "no longer in the session") {
 		t.Errorf("the worker whose block is gone: %+v", a)
@@ -382,7 +404,7 @@ func TestReviveLauncherCarriesUnattendedAndLaunchFlags(t *testing.T) {
 	}
 	body := string(b)
 	want := "exec 'env' 'ME_UNATTENDED=1' 'REX_AMQ_MODEL=anthropic/claude-opus' 'REX_AMQ_EFFORT=high' 'pi' '--model' 'anthropic/claude-opus' '--thinking' 'high' '--session' '" + orchSID + "' "
-	if !strings.Contains(body, want) || !strings.Contains(body, "cd -- '"+w.dir+"' || exit 1") || !strings.Contains(body, "rm -f -- '"+script+"'") {
+	if !strings.Contains(body, want) || !strings.Contains(body, "cd -- '"+w.dir+"' || exit 1") || !strings.Contains(body, "rm -- '"+script+"' 2>/dev/null || exit 0") {
 		t.Errorf("launcher:\n%s\nwant %s", body, want)
 	}
 	if info, err := os.Stat(script); err != nil || info.Mode().Perm() != 0o700 {
@@ -554,5 +576,152 @@ func TestReviveCarriesTheSessionTrustOfAGrantedProject(t *testing.T) {
 	cmd, _ := reviveCommand(agy, core.Launch{}, "P", true, func(argv []string) []string { return w.e.trustGate().Args(w.dir, argv) })
 	if i := slices.Index(cmd, "agy"); i < 0 || cmd[i+1] != "--settings" {
 		t.Errorf("agy: %q", cmd)
+	}
+}
+
+// An unrecognised prompt is never taken for an empty one, whatever its
+// line ends in: `app: echo pending # ` (PS1='app: ') may be a draft
+// (codex-27's round-2 S1).
+func TestReviveRefusesAnUnrecognisedPrompt(t *testing.T) {
+	w := newReviveWorld(t)
+	w.term.mu.Lock()
+	w.term.screens["block:w"] = "app: echo pending # \r\n"
+	w.term.mu.Unlock()
+	res, err := w.revive(ReviveRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a := byHandle(res)["pi-03"]; a.Action != ReviveRefused || len(w.writes("block:w")) != 0 {
+		t.Errorf("%+v, writes %q", a, w.writes("block:w"))
+	}
+}
+
+// lostReply is a Rex whose reply to a new tab is lost after the tab was
+// made, as a request that times out once the server finished it.
+type lostReply struct {
+	Terminal
+	term *fakeTerm
+}
+
+func (r lostReply) NewWindow(ctx context.Context, session, tab, label, dir string, cmd []string) (string, string, error) {
+	if _, _, err := r.term.NewWindow(ctx, session, tab, label, dir, cmd); err != nil {
+		return "", "", err
+	}
+	return "", "", errors.New("rex: request timed out")
+}
+
+// A tab whose reply was lost is found again, by its label among the blocks
+// that were not there before, and waited for: a retry under the same op id
+// opens no second tab, and its adoption makes the agent ready. Two new tabs
+// of that label cannot be told apart, and nothing more is started
+// (codex-27's round-2 S2).
+func TestReviveFindsATabWhoseReplyWasLost(t *testing.T) {
+	w := newReviveWorld(t)
+	w.term.mu.Lock()
+	delete(w.term.windows, "block:o")
+	started := w.term.started
+	w.term.started = nil
+	w.term.mu.Unlock()
+	w.e.Rex = lostReply{Terminal: w.e.Rex, term: w.term}
+	w.e.RexOn = func(string) Terminal { return w.e.Rex }
+	first, err := w.revive(ReviveRequest{OpID: "lost", Timeout: 30 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a := byHandle(first)["pi-01"]; a.Action != ReviveRefused || !strings.Contains(a.Reason, "a retry tells") {
+		t.Fatalf("first: %+v", a)
+	}
+	again, err := w.revive(ReviveRequest{OpID: "lost", Timeout: 30 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a := byHandle(again)["pi-01"]; a.Action != ReviveRespawned || a.Block != "block:launch-1" {
+		t.Fatalf("retry: %+v", a)
+	}
+	w.term.mu.Lock()
+	cmd, n := w.term.launches[0].Command, len(w.term.launches)
+	w.term.mu.Unlock()
+	if n != 1 {
+		t.Fatalf("%d tabs opened", n)
+	}
+	started(launch{Block: "block:launch-1", Command: cmd})
+	if done, err := w.revive(ReviveRequest{}); err != nil || byHandle(done)["pi-01"].Status != ReviveReady {
+		t.Fatalf("after its adoption: %+v %v", done, err)
+	}
+
+	w2 := newReviveWorld(t)
+	w2.term.mu.Lock()
+	delete(w2.term.windows, "block:o")
+	w2.term.started = nil
+	w2.term.mu.Unlock()
+	w2.e.Rex = lostReply{Terminal: w2.e.Rex, term: w2.term}
+	w2.e.RexOn = func(string) Terminal { return w2.e.Rex }
+	if _, err := w2.revive(ReviveRequest{Timeout: 30 * time.Millisecond}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := w2.term.NewWindow(context.Background(), reviveSess, "x", core.PaneLabel("pi-01", core.OrchestratorRole, ""), w2.dir, nil); err != nil {
+		t.Fatal(err)
+	}
+	res, err := w2.revive(ReviveRequest{Timeout: 30 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w2.term.mu.Lock()
+	n = len(w2.term.launches)
+	w2.term.mu.Unlock()
+	if a := byHandle(res)["pi-01"]; a.Action != ReviveRefused || !strings.Contains(a.Reason, "cannot be told apart") || n != 2 {
+		t.Errorf("two candidate tabs: %+v, %d tabs", a, n)
+	}
+}
+
+// A launch typed into its shell is waited for while its harness starts,
+// even when the pane shows a shell again before the harness execs (the
+// login shell runs the launcher); a launcher that never ran (the typed text
+// lost) is cancelled and the agent resumed once, in the same pane
+// (codex-27's round-2 S2).
+func TestReviveReconcilesAnInPlaceLaunch(t *testing.T) {
+	w := newReviveWorld(t)
+	w.term.mu.Lock()
+	w.term.wrote = nil
+	w.term.mu.Unlock()
+	if _, err := w.revive(ReviveRequest{Timeout: 30 * time.Millisecond}); err != nil {
+		t.Fatal(err)
+	}
+	p, _ := w.e.Store.PendingRevives(reviveSess)
+	script := p["pi-01"].Script
+	if _, err := os.Stat(script); err != nil || p["pi-01"].ShellPID != shellPID {
+		t.Fatalf("pending %+v: %v", p["pi-01"], err)
+	}
+	// The text was lost: its launcher never ran. A retry cancels it and types again.
+	again, err := w.revive(ReviveRequest{Timeout: 30 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(script); !os.IsNotExist(err) {
+		t.Errorf("the lost launcher was not cancelled: %v", err)
+	}
+	if a := byHandle(again)["pi-01"]; a.Action != ReviveResumedInPlace || len(w.writes("block:o")) != 2 {
+		t.Fatalf("after a lost write: %+v, %d writes", a, len(w.writes("block:o")))
+	}
+	// This time it runs: its launcher is claimed, and the pane's foreground
+	// is a shell (the launcher's) other than the one it was typed into.
+	p, _ = w.e.Store.PendingRevives(reviveSess)
+	_ = os.Remove(p["pi-01"].Script)
+	w.term.mu.Lock()
+	w.term.fgs["block:o"] = rex.Process{PID: 999, Name: "sh"}
+	w.term.mu.Unlock()
+	third, err := w.revive(ReviveRequest{Timeout: 30 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a := byHandle(third)["pi-01"]; a.Action != ReviveResumedInPlace || len(w.writes("block:o")) != 2 || !strings.Contains(a.Note, "still starting") {
+		t.Errorf("while it starts: %+v, %d writes", a, len(w.writes("block:o")))
+	}
+	// Its agent exited to the shell it was typed into: planned anew.
+	w.term.mu.Lock()
+	w.term.fgs["block:o"] = rex.Process{PID: shellPID, Name: "-fish"}
+	w.term.mu.Unlock()
+	if fourth, err := w.revive(ReviveRequest{Timeout: 30 * time.Millisecond}); err != nil || len(w.writes("block:o")) != 3 {
+		t.Errorf("after its agent left: %+v %v, %d writes", byHandle(fourth)["pi-01"], err, len(w.writes("block:o")))
 	}
 }

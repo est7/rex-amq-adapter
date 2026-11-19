@@ -775,7 +775,10 @@ func (f *fakeTerm) NewWindow(_ context.Context, session, tab, label, dir string,
 	if f.sessions == nil {
 		f.sessions = map[string]string{}
 	}
-	f.windows[id], f.tabs[w], f.sessions[w] = w, tab, session
+	if f.blockLabels == nil {
+		f.blockLabels = map[string]string{}
+	}
+	f.windows[id], f.tabs[w], f.sessions[w], f.blockLabels[id] = w, tab, session, label
 	f.newTabs = append(f.newTabs, w)
 	l := launch{Block: id, Window: w, Label: label, Dir: dir, Command: command}
 	f.launches = append(f.launches, l)
