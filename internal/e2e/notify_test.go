@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// notifyResult is notify-personal's JSON.
+// notifyResult is hub notify's data.
 type notifyResult struct {
 	Status    string `json:"status"`
 	To        string `json:"to"`
@@ -21,11 +21,11 @@ type notifyResult struct {
 
 func (w *world) notify(args ...string) (notifyResult, int, string) {
 	w.t.Helper()
-	out, code := w.adapterRun(append([]string{"notify-personal"}, args...)...)
+	out, code := w.adapterRun(append([]string{"hub", "notify"}, args...)...)
 	var res notifyResult
 	if code == 0 {
-		if err := json.Unmarshal([]byte(out), &res); err != nil {
-			w.t.Fatalf("notify-personal output %q: %v", out, err)
+		if err := envelopeData(out, &res); err != nil {
+			w.t.Fatalf("hub notify output %q: %v", out, err)
 		}
 	}
 	return res, code, out
@@ -86,7 +86,7 @@ func TestNotifyPersonalRingsOnlyTheLivePersonalAgent(t *testing.T) {
 	if code != 0 || !again.Deduped || again.MessageID != res.MessageID {
 		t.Fatalf("replay: exit %d %s", code, out)
 	}
-	if _, code, out := w.notify("--ref", "inbox:43", "--event-id", "ev-1"); code != 1 {
+	if _, code, out := w.notify("--ref", "inbox:43", "--event-id", "ev-1"); code != 5 || !strings.Contains(out, `"code":"conflict"`) {
 		t.Fatalf("event id reused for another ref: exit %d %s", code, out)
 	}
 	if left, _ := os.ReadDir(filepath.Join(w.root(), "agents", me, "inbox", "new")); len(left) != 1 {

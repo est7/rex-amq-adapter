@@ -554,3 +554,23 @@ func TestSessionViewPairEpicLeadIsTheControlPlane(t *testing.T) {
 		t.Fatalf("worker-to-worker mail is not a gap: %+v", v.CoverageGaps)
 	}
 }
+
+// epic messages caps and spills bodies itself (16 KiB, 0600 blob), so the
+// narrator's read by id returns each authorized body whole: a 20 KiB one
+// is not cut to the view's excerpt first.
+func TestSessionMessagesAreWhole(t *testing.T) {
+	e := viewWorld(t)
+	ctx := context.Background()
+	long := "BIG:" + strings.Repeat("长文本 ", 20<<10/10)
+	id := sendID(t, e, "claude-02", "--to", "codex-03", "--subject", "big", "--body", long)
+	r, err := e.ReadSessionMessages(ctx, Location{Block: "block:pi-04"}, []string{id})
+	if err != nil || len(r.Messages) != 1 {
+		t.Fatalf("%+v %v", r, err)
+	}
+	if m := r.Messages[0]; m.Truncated || strings.TrimRight(m.Body, "\n") != long {
+		t.Fatalf("read %d of %d bytes, truncated=%v", len(m.Body), len(long), m.Truncated)
+	}
+	if got := excerpt(amq.ThreadMessage{Body: long}); !got.Truncated || len([]rune(got.Body)) != viewExcerpt {
+		t.Errorf("the stored view's excerpt is no longer bounded: %d runes", len([]rune(got.Body)))
+	}
+}

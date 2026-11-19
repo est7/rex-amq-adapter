@@ -27,7 +27,7 @@ func TestClaudesFirstPromptAsksForATaskOnce(t *testing.T) {
 		t.Fatalf("SessionStart does not ask for a task: %q", n)
 	}
 	t.Cleanup(func() { _ = e.Depart(context.Background(), Location{Block: block}, HookInput{}) })
-	if n := promptNotice(t, e, core.Claude, EventPrompt, s1); !strings.Contains(n, "Pane label:") || !strings.Contains(n, e.SelfBin+` title "<task in a few words>"`) {
+	if n := promptNotice(t, e, core.Claude, EventPrompt, s1); !strings.Contains(n, "Pane label:") || !strings.Contains(n, e.SelfBin+` agent title "<task in a few words>"`) {
 		t.Errorf("the first prompt was not asked for a task: %q", n)
 	}
 	if n := promptNotice(t, e, core.Claude, EventPrompt, s1); strings.Contains(n, "Pane label:") {

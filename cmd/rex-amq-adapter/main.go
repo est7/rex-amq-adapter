@@ -1,1042 +1,132 @@
 // Command rex-amq-adapter lets coding agents in Rex terminals message each
 // other over AMQ. See docs/design.md.
+//
+// Every public command is declared once in the registry (commands.go) and
+// prints one v:2 envelope through internal/out. Four internal callbacks
+// stay outside it, byte for byte as installed hooks and amq wake call them:
+// hook, inject, __internal watch, and __internal pane-title.
 package main
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
-	"slices"
-	"strconv"
-	"strings"
 	"syscall"
-	"text/tabwriter"
 	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/app"
-	"github.com/est7/rex-amq-adapter/internal/core"
-	"github.com/est7/rex-amq-adapter/internal/crew"
-	"github.com/est7/rex-amq-adapter/internal/install"
+	"github.com/est7/rex-amq-adapter/internal/cli"
+	"github.com/est7/rex-amq-adapter/internal/fault"
+	"github.com/est7/rex-amq-adapter/internal/out"
 	"github.com/est7/rex-amq-adapter/internal/store"
-	"github.com/est7/rex-amq-adapter/internal/trust"
 )
 
-const usage = `rex-amq-adapter: AMQ messaging between coding agents in Rex terminals
-
-Agent and user commands:
-  env                       print the AMQ identity of the agent running it, and its
-                            Rex pane when REX_BLOCK names another (eval it)
-  title [TASK...]           show TASK after your role and handle in this pane's
-                            label ("<role>(<handle>) | <task>"); no TASK clears it
-  who [--all] [--json]      list agents in this Rex session only, with their roles
-                            and tabs (--json: {"agents": [...]}, as events' snapshot);
-                            --all adds this session's departed agents reserved for a resume
-                            and the narrator and personal agents ordinary views leave out
-  events --json [--session S | --tab | --all]
-                            stream this Rex session's agents and mail as NDJSON
-                            (snapshot, then upsert/remove/event/heartbeat
-                            frames); read-only. --tab: this tab only; --all:
-                            every agent of the server
-  panel --json [--session S]
-                            the human's panel: events --json of this Rex session (or
-                            S) plus a panel field on the snapshot (session_label,
-                            crew, attention, view, and in a personal agent's session
-                            cockpit) and a panel upsert when it changes; read-only.
-                            Refused under any agent of any role, ME_UNATTENDED=1 included
-  await <block> [--timeout D]
-                            wait for the agent started in a block, then print
-                            its outcome as JSON; exits 0 only when adopted.
-                            D is a duration (90s, 2m) or seconds (60)
-  collect                   reconcile records with Rex now
-  join [CREW] [--role R]    take role R where you stand, relabel your pane, and
-                            print the briefing; with CREW, claim it for this Rex
-                            session (refused when the session is another crew's
-                            and other agents are in it) and, without --role, take
-                            the crew's lead
-  crews [--json] [dir]      list the crews (claimed by a Rex session), their lead and
-                            members, and the roles (named by a pane label) that
-                            brief agents working in dir; --json adds each one's
-                            purpose
-  crews show [CREW] [--role R] [-c DIR]
-                            print, changing nothing, the briefing an agent taking
-                            role R in crew CREW gets: the crew's conventions,
-                            the role's prompt, and the harnesses, models and
-                            efforts it starts on (routing.toml, and from which
-                            layer); without --role, the crew's lead
-  summon <handle|role> --subject S --body B [--kind K] [--grant FILE | --asked "WORDS"] [--harness H | --council] [--cwd DIR] [--split]
-                            send to a peer by handle or role: a live one gets the
-                            mail; a departed one of this session is resumed in a
-                            tab of its own, then gets it; none starts one for the
-                            role (its brief is the message), awaits its adoption,
-                            then delivers. --split opens it in a pane beside you
-                            instead, when the human asked (never a narrator). Guards: never from a personal agent (it runs epic), a request kind only, no cycle,
-                            depth 2 at most, 6 live agents per session at most, and
-                            a new agent only with the user's words or grant file.
-                            --council (reviewer, editor, qa): one seat per harness
-                            of the role's routing, each asked for SCORE: <n>/10;
-                            live seats get the mail, the rest resume or start, and
-                            when any seat cannot, none is mailed or launched
-  send|reply|read|drain|thread|trace|dlq|list [AMQ FLAGS...]
-                            amq's mail commands, run as you on the adapter's
-                            root after the gateway allows them: Epics do not
-                            mail each other, a narrator takes no member mail,
-                            and mail addressed to you before you moved to
-                            another session stays fenced. --me, --root,
-                            --session, and --project are the adapter's to set.
-                            send --control ID: (a narrator) relay a user-control
-                            directive to its orchestrator under request id ID
-  link [EPIC_SESSION]       (a personal agent) let this session and the
-                            narrator of Epic session EPIC_SESSION exchange
-                            mail; without one, list your links
-  unlink EPIC_SESSION       revoke such a link; both take effect at once
-  epic <name> [-c DIR] [--goal FILE|-] [--asked "WORDS"] [--crew C] [--harness H] [--timeout D] [--op-id ID]
-                            (a personal agent) open an Epic: a Rex session named
-                            <name> with its orchestrator (briefed with the goal
-                            contract, or the user's words) and its narrator,
-                            linked to you, working as crew C when given (with
-                            --crew pair an implementer leads in the
-                            orchestrator's place); prints one JSON line and
-                            exits 0 only when both are adopted and linked.
-                            Needs --goal, --asked, or both: --goal - reads the
-                            contract from stdin and keeps it as the Epic's
-                            goal.md, and the user's words and the contract are
-                            notarized read-only in its grant.md (goal_path and
-                            grant_path in the JSON and the view; the lead's
-                            start notice names both).
-                            --op-id ID makes a retry reconcile the Epic the
-                            first run started (replayed: true) instead of
-                            starting another; ID reused for another request is
-                            refused
-  epic close <session_id> --asked "WORDS" [--force] [--op-id ID]
-                            (a personal agent, on the user's words) close a linked
-                            Epic: kill its Rex session, park its agents (their
-                            handles stay reserved for a resume), and unlink it;
-                            refused while one of its agents is not at rest or
-                            holds unread mail, unless --force. --op-id ID makes a
-                            retry finish the close, even once the link is gone
-  notify-personal --ref inbox:<id>|timer:<id> --event-id ID [--hub DIR] [--personal H] [--summary TEXT]
-                            (an outside producer: an Inbox entry, a Timer tick) ring
-                            the live personal agent, mailed in its own name by the
-                            adapter, the summary quoted as untrusted data; never
-                            starts an agent. Prints {"status":"notified",...} or
-                            {"status":"no_live_personal",...} (exit 0); a repeated
-                            event id is not sent again (deduped), one reused with
-                            another ref, --hub, or --personal is refused, and so
-                            is more than one live personal agent that --hub or
-                            --personal leaves
-  retire <handle> [--force] close a finished peer of this Rex session: mark it
-                            departed (depart_reason "retired"), retire its waker,
-                            and close its pane, telling nobody it left; a pane that
-                            no longer shows it stays open. Prints one JSON line
-                            (action retired or already_departed; pane closed,
-                            gone, or left_open). Never
-                            a narrator, personal, or orchestrator agent, nor
-                            yourself; refused while it works or holds unread
-                            mail, unless --force. Use it, not rex block close
-  view [--session S]        print a session's view (view.json): its members, open
-                            obligations, recent mail, what it could not cover, the
-                            hand-back, and the Epic's lifecycle; the narrator's,
-                            orchestrator's, or a linked personal agent's to read
-  view --cockpit [--session S] [--personal H] [--hub DIR]
-                            read-only, for the human or a personal agent: the Epics
-                            linked to one live personal agent (its lifecycle, hand-
-                            back, and whether a view exists), or one of them with
-                            --session. From outside its pane, name the agent with
-                            --personal or the directory it works in with --hub.
-                            Refused under any other agent, ME_UNATTENDED=1 included
-  hand-back TEXT|@FILE|-     (an orchestrator, when its run ends) record its whole final
-                            report (review queue, PR links, Blocked on me, Decided for
-                            you, Changed, Found) as the session's hand-back; view shows
-                            it as hand_back, whole, and the narrator is woken once it
-                            is stored. - reads it from stdin; a new one replaces the last
-  view refresh [--summary TEXT|@FILE]
-                            (the narrator) rebuild the view without moving mail or
-                            writing a receipt, keeping or replacing its narrative
-  view read --ids ID[,ID...]
-                            (the narrator) read messages of its session by id,
-                            receipt-free; mail from elsewhere is a coverage gap
-  trust <dir>               derive, for a linked worktree of a repository the user
-                            already trusts in Antigravity, that trust for DIR, so a
-                            peer started there meets no folder dialog; writes
-                            nothing for any other directory (tab runs it for -c)
-  trust grant <dir>...      the user's "yes, I trust this folder" for every harness
-                            at once: Claude's and Codex's stores get the project's
-                            key, Antigravity and Pi sessions get it per launch;
-                            logged in logs/trust.log
-  trust root add|rm <dir>... | trust root ls
-                            declare the roots whose projects an Epic or a summon
-                            grants on first need (never / or the home directory)
-
-Installation:
-  setup|status|remove       install, inspect, or remove the skill, hooks, and
-                            harness settings (agy title, shared supervisors off,
-                            native task tools on)
-
-Internal (run by installed hooks and by amq wake):
-  hook <event> --agent K    session-start | user-prompt-submit | post-tool-use | pre-invocation | stop | stop-failure | session-end | mail | settle
-  inject <handle> <root> <payload>
-  __internal skill          print the agent guide
-  version, --version
-`
-
 func main() {
-	os.Exit(run(os.Args[1:]))
+	os.Exit(run(os.Args[1:], out.OS(), os.Getenv, os.Stdin))
 }
 
-func run(args []string) int {
-	if len(args) == 0 {
-		fmt.Fprint(os.Stderr, usage)
-		return 2
-	}
-	cmd, rest := args[0], args[1:]
-	switch cmd {
-	case "hook":
-		return runHook(rest)
-	case "inject":
-		return runInject(rest)
-	case "env":
-		return runEnv()
-	case "title":
-		return runTitle(rest)
-	case "who":
-		return runWho(rest)
-	case "events":
-		return runEvents(rest)
-	case "panel":
-		return runPanel(rest)
-	case "await":
-		return runAwait(rest)
-	case "collect":
-		return runCollect()
-	case "crews":
-		return runCrews(rest)
-	case "trust":
-		return runTrust(rest)
-	case "summon":
-		return runSummon(rest)
-	case "send", "reply", "read", "drain", "thread", "trace", "dlq", "list":
-		return runManaged(cmd, rest)
-	case "link", "unlink":
-		return runLink(cmd == "link", rest)
-	case "epic":
-		return runEpic(rest, os.Stdin)
-	case "notify-personal":
-		return runNotifyPersonal(rest)
-	case "retire":
-		return runRetire(rest)
-	case "view":
-		return runView(rest)
-	case "hand-back":
-		return runHandBack(rest, os.Stdin)
-	case "join":
-		return runJoin(rest)
-	case "setup", "status", "remove":
-		return runInstall(cmd, rest)
-	case "__internal":
-		return runInternal(rest)
-	case "version", "--version":
-		fmt.Println(version())
-		return 0
-	case "help", "-h", "--help":
-		fmt.Print(usage)
-		return 0
-	}
-	fmt.Fprintf(os.Stderr, "rex-amq-adapter: unknown command %q\n\n%s", cmd, usage)
-	return 2
-}
-
-func fail(err error) int {
-	fmt.Fprintf(os.Stderr, "rex-amq-adapter: %v\n", err)
-	return 1
-}
-
-func runHook(args []string) int {
-	if len(args) == 0 {
-		return fail(errors.New("hook: missing event"))
-	}
-	event := args[0]
-	log := openHookLog(event)
-	defer log.Close()
-	app.Diagnostics = log
-	budget, ok := install.Budget(event)
-	if !ok {
-		return hookFail(log, fmt.Errorf("unknown event %q", event))
-	}
-	fs := flag.NewFlagSet("hook", flag.ContinueOnError)
-	fs.SetOutput(log)
-	agent := fs.String("agent", "", "agent kind: claude, codex, agy, or pi")
-	if err := fs.Parse(args[1:]); err != nil {
-		return hookFail(log, err)
-	}
-	kind, err := core.ParseKind(*agent)
-	if err != nil {
-		return hookFail(log, err)
-	}
-	// Every exit prints a reply in the harness's format: Antigravity reads a
-	// JSON object even when the adapter has nothing to say or failed.
-	reply := func(r app.Reply) {
-		if out, err := app.Render(kind, event, r); err == nil {
-			fmt.Print(out)
-		}
-	}
-	in, err := app.ReadHookInput(os.Stdin)
-	if err != nil {
-		reply(app.Reply{})
-		return hookFail(log, err)
-	}
-	in.SummonToken = os.Getenv(app.SummonEnv)
-	in.Launch = app.LaunchFromEnv(os.LookupEnv)
-	in.Unattended = os.Getenv(app.UnattendedEnv) == "1"
-	loc, err := app.Here()
-	if errors.Is(err, app.ErrNotInRex) {
-		reply(app.Reply{})
-		return 0 // outside Rex the adapter does nothing
-	}
-	env, err := app.NewEnv(loc.Server)
-	if err != nil {
-		reply(app.Reply{})
-		return hookFail(log, err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), budget)
-	defer cancel()
-	if kind == core.Claude && in.AgentPID <= 0 {
-		// The harness process, which is not the pane's foreground when Claude
-		// Code's supervisor runs the session in the background.
-		in.AgentPID, _ = strconv.Atoi(os.Getenv("CLAUDE_PID"))
-	}
-	r, err := env.Hook(ctx, event, kind, loc, in)
-	if err != nil {
-		reply(app.Reply{})
-		return hookFail(log, err)
-	}
-	reply(r)
-	return 0
-}
-
-// hookLog appends timestamped lines to logs/hooks.log, opened on first use
-// so a healthy hook touches no file. Hooks run with stderr discarded; this
-// log is the only place their problems can be read.
-type hookLog struct {
-	prefix string
-	f      *os.File
-}
-
-func openHookLog(event string) *hookLog {
-	return &hookLog{prefix: event + " block=" + os.Getenv("REX_BLOCK")}
-}
-
-func (l *hookLog) Write(p []byte) (int, error) {
-	if l.f == nil {
-		paths, err := store.DefaultPaths()
-		if err != nil {
-			return 0, err
-		}
-		if err := os.MkdirAll(paths.Logs(), 0o700); err != nil {
-			return 0, err
-		}
-		if l.f, err = os.OpenFile(filepath.Join(paths.Logs(), "hooks.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); err != nil {
-			return 0, err
-		}
-	}
-	if _, err := fmt.Fprintf(l.f, "%s %s: %s", time.Now().Format(time.RFC3339), l.prefix, p); err != nil {
-		return 0, err
-	}
-	return len(p), nil
-}
-
-func (l *hookLog) Close() error {
-	if l.f == nil {
-		return nil
-	}
-	return l.f.Close()
-}
-
-func hookFail(log *hookLog, err error) int {
-	fmt.Fprintf(log, "%v\n", err)
-	return fail(err)
-}
-
-func runInject(args []string) int {
-	if len(args) != 3 {
-		fmt.Fprintln(os.Stderr, "AMQ_INJECT_PROGRESS=failed")
-		return fail(errors.New("inject: want <handle> <root> <payload>"))
-	}
-	// The third argument is amq's notification payload, deliberately unused:
-	// it previews the sender's subject (see core.Doorbell). The Rex server and
-	// block are the handle's lease's, read when the doorbell fires.
-	handle, root := args[0], args[1]
-	report := func(o core.Outcome) int {
-		fmt.Fprintf(os.Stderr, "AMQ_INJECT_PROGRESS=%s\n", o.Progress)
-		if o.Code != "" {
-			fmt.Fprintf(os.Stderr, "rex-amq-adapter: %s: %s\n", o.Code, o.Note)
-		}
-		return o.ExitCode()
-	}
-	h, err := core.ParseHandle(handle)
-	if err != nil {
-		return report(core.Outcome{Progress: core.Failed, Code: "usage", Note: err.Error()})
-	}
-	paths, err := store.PathsForRoot(root)
-	if err != nil {
-		return report(core.Outcome{Progress: core.Failed, Code: "usage", Note: err.Error()})
-	}
-	env, err := app.NewEnvAt("", paths)
-	if err != nil {
-		return report(core.Outcome{Progress: core.Deferred, Code: "environment", Note: err.Error()})
-	}
-	// amq wake runs the injector with --inject-timeout 10s. Observation before
-	// the write gets 5 s; confirming after it has its own app.ConfirmBudget.
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	return report(env.Inject(ctx, app.InjectRequest{Handle: h, Root: root}))
-}
-
-// caller resolves the Rex location of the agent running a command (see
-// app.Env.Caller) and an Env that talks to its server.
-func caller() (app.Env, app.Location, error) {
-	env, err := app.NewEnv(os.Getenv("REX_SERVER"))
-	if err != nil {
-		return app.Env{}, app.Location{}, err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	loc, err := env.Caller(ctx, os.Getenv)
-	if err != nil {
-		return app.Env{}, app.Location{}, err
-	}
-	if loc.Server != "" && loc.Server != os.Getenv("REX_SERVER") {
-		env.Rex = env.RexOn(loc.Server)
-	}
-	return env, loc, nil
-}
-
-// runEnv prints the shell text agents eval. A failure prints `false` as well,
-// because `eval ""` succeeds and `eval "$(… env)" && …` would carry on. A
-// caller located by its session, whose REX_BLOCK names another pane or
-// nothing, also gets the Rex location of its own pane; a background job no
-// pane shows has the inherited one unset, because it names another agent's
-// pane.
-func runEnv() int {
-	failEnv := func(err error) int {
-		if errors.Is(err, app.ErrJobNotShown) {
-			fmt.Print("unset AM_ROOT AM_ME REX_BLOCK REX_SESSION; ")
-		}
-		fmt.Println("false")
-		return fail(err)
-	}
-	env, loc, err := caller()
-	if err != nil {
-		return failEnv(err)
-	}
-	out, err := env.Exports(loc)
-	if err != nil {
-		return failEnv(err)
-	}
-	if loc.Block != os.Getenv("REX_BLOCK") || os.Getenv("REX_SESSION") == "" {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		rexOut, err := env.RexExports(ctx, loc.Block)
-		if err != nil {
-			return failEnv(err)
-		}
-		out += rexOut
-	}
-	fmt.Print(out)
-	return 0
-}
-
-const titleUsage = "usage: rex-amq-adapter title [TASK...]   (no TASK clears it; `--` before a task that starts with a dash)"
-
-func runTitle(args []string) int {
-	if len(args) > 0 {
-		switch a := args[0]; {
-		case a == "-h" || a == "--help":
-			fmt.Println(titleUsage)
-			return 0
-		case a == "--":
-			args = args[1:]
-		case strings.HasPrefix(a, "-"):
-			fmt.Fprintln(os.Stderr, titleUsage)
-			return 2
-		}
-	}
-	env, loc, err := caller()
-	if err != nil {
-		return fail(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	label, err := env.SetTask(ctx, loc, strings.Join(args, " "))
-	if err != nil {
-		return fail(err)
-	}
-	fmt.Println(label)
-	return 0
-}
-
-func runWho(args []string) int {
-	fs := flag.NewFlagSet("who", flag.ContinueOnError)
-	all := fs.Bool("all", false, "also list this session's departed agents still reserved for a resume, and its narrator and personal agents")
-	asJSON := fs.Bool("json", false, `print {"agents": [...]}, each agent as in events' snapshot`)
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	if fs.NArg() > 0 {
-		fmt.Fprintln(os.Stderr, "usage: rex-amq-adapter who [--all] [--json]")
-		return 2
-	}
-	env, loc, err := caller()
-	if err != nil {
-		return fail(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	session, err := env.FindSession(ctx, loc.Block)
-	if err != nil {
-		return fail(err)
-	}
-	// Reconcile first, so an agent whose pane closed is listed as departed.
-	// Collection is housekeeping; the listing must still happen.
-	if err := env.CollectSession(ctx, session); err != nil {
-		fmt.Fprintf(os.Stderr, "rex-amq-adapter: collect: %v\n", err)
-	}
-	if err := env.SuperviseSession(ctx, session); err != nil {
-		fmt.Fprintf(os.Stderr, "rex-amq-adapter: supervise: %v\n", err)
-	}
-	agents, err := env.SessionAgents(session, *all)
-	if err != nil {
-		return fail(err)
-	}
-	if *asJSON {
-		if agents == nil {
-			agents = []core.Agent{}
-		}
-		return printJSON(map[string]any{"agents": agents})
-	}
-	now := env.Now()
-	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "HANDLE\tKIND\tROLE\tTAB\tSTATE\tUNREAD\tLAST DOORBELL\tBLOCK")
-	for _, a := range agents {
-		state := "live"
-		if d := a.Lifecycle.DepartedAt; d != nil {
-			state = "departed " + d.Local().Format("01-02 15:04")
-		}
-		role := a.Role
-		if role == "" {
-			role = "-"
-		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n", a.Handle, a.Kind, role, a.Tab, state, a.Delivery.Unread, a.DoorbellSummary(now), a.BlockID)
-	}
-	if err := tw.Flush(); err != nil {
-		return fail(err)
-	}
-	return 0
-}
-
-// runEvents streams the projection of a scope. It only reads: it takes no
-// adapter lock and writes nothing but its frames, so watching changes nothing.
-func runEvents(args []string) int {
-	fs := flag.NewFlagSet("events", flag.ContinueOnError)
-	asJSON := fs.Bool("json", false, "write NDJSON frames (the only format)")
-	session := fs.String("session", "", "watch Rex session S")
-	tab := fs.Bool("tab", false, "watch the caller's tab only")
-	all := fs.Bool("all", false, "watch every agent of the Rex server")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	picked := 0
-	for _, set := range []bool{*session != "", *tab, *all} {
-		if set {
-			picked++
-		}
-	}
-	if !*asJSON || picked > 1 || fs.NArg() > 0 {
-		fmt.Fprintln(os.Stderr, "usage: rex-amq-adapter events --json [--session S | --tab | --all]")
-		return 2
-	}
-	kind := app.ScopeSession
-	switch {
-	case *tab:
-		kind = app.ScopeTab
-	case *all:
-		kind = app.ScopeAll
-	}
-	var env app.Env
-	var loc app.Location
-	var err error
-	if kind == app.ScopeAll || *session != "" {
-		env, err = app.NewEnv(os.Getenv("REX_SERVER"))
-	} else {
-		env, loc, err = caller()
-	}
-	if err != nil {
-		return fail(err)
-	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	rctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	sc, err := env.ResolveScope(rctx, kind, loc, *session)
-	cancel()
-	if err != nil {
-		return fail(err)
-	}
-	if err := env.Stream(ctx, os.Stdout, sc, app.StreamTicks{}); err != nil {
-		return fail(err)
-	}
-	return 0
-}
-
-// runPanel streams the human's panel of a Rex session (app.Env.Panel). Like
-// events it only reads; unlike events it refuses any agent's caller before it
-// resolves the session.
-func runPanel(args []string) int {
-	fs := flag.NewFlagSet("panel", flag.ContinueOnError)
-	asJSON := fs.Bool("json", false, "write NDJSON frames (the only format)")
-	session := fs.String("session", "", "watch Rex session S")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	if !*asJSON || fs.NArg() > 0 {
-		fmt.Fprintln(os.Stderr, "usage: rex-amq-adapter panel --json [--session S]")
-		return 2
-	}
-	env, err := app.NewEnv(os.Getenv("REX_SERVER"))
-	if err != nil {
-		return fail(err)
-	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	if err := env.Panel(ctx, os.Stdout, os.Getenv, *session, app.StreamTicks{}); err != nil {
-		return fail(err)
-	}
-	return 0
-}
-
-// runWatch is a session's watcher, started by the hooks of its orchestrator
-// or narrator. It ends when the session has neither.
-func runWatch(server, session string) int {
-	if server == "" || session == "" {
-		return fail(errors.New("__internal watch: want <server> <session>"))
-	}
-	env, err := app.NewEnv(server)
-	if err != nil {
-		return fail(err)
-	}
-	if err := env.WatchSession(context.Background(), core.SessionKey{Server: server, SessionID: session}); err != nil {
-		return fail(err)
-	}
-	return 0
-}
-
-func runAwait(args []string) int {
-	fs := flag.NewFlagSet("await", flag.ContinueOnError)
-	timeout := timeoutFlag(30 * time.Second)
-	fs.Var(&timeout, "timeout", "how long to wait: a duration (90s, 2m) or seconds (60)")
-	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		fmt.Fprintln(os.Stderr, "usage: rex-amq-adapter await <block> [--timeout D]")
-		return 2
-	}
-	if err := fs.Parse(args[1:]); err != nil {
-		return 2
-	}
-	env, err := app.NewEnv("")
-	if err != nil {
-		return fail(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout))
-	defer cancel()
-	s, err := env.AwaitStartup(ctx, args[0])
-	if err != nil {
-		return fail(err)
-	}
-	out, err := json.Marshal(s)
-	if err != nil {
-		return fail(err)
-	}
-	fmt.Println(string(out))
-	if s.Status != core.StartupAdopted {
-		return 1
-	}
-	return 0
-}
-
-// summonOutput is the JSON line summon prints before any await: what it did,
-// and for a start the harness it launched and each default it passed over.
-func summonOutput(res app.SummonResult) map[string]any {
-	out := map[string]any{"action": res.Action, "handles": res.Handles, "block": res.Block, "reason": res.Reason, "parent": res.Parent, "depth": res.Depth, "mailed": res.Mailed}
-	if res.Harness != "" {
-		out["harness"] = res.Harness
-	}
-	if len(res.Passed) > 0 {
-		out["passed_over"] = res.Passed
-	}
-	if res.AgentSessionID != "" {
-		out["agent_session_id"] = res.AgentSessionID
-	}
-	if res.Cwd != "" {
-		out["cwd"] = res.Cwd
-	}
-	return out
-}
-
-func runSummon(args []string) int {
-	fs := flag.NewFlagSet("summon", flag.ContinueOnError)
-	subject := fs.String("subject", "", "the message's subject (a started peer's task label)")
-	body := fs.String("body", "", "the message (a started peer's brief); @file reads it")
-	kind := fs.String("kind", "question", "amq kind: question, review_request, todo, brainstorm summon; others deliver only")
-	grant := fs.String("grant", "", "the user's grant file the brief cites (allows a start)")
-	asked := fs.String("asked", "", "the user's own words asking for a new agent, quoted (allows a start)")
-	harness := fs.String("harness", "", "claude, codex, agy, or pi for a start (default: by role; a review role takes the first ready family other than yours)")
-	cwd := fs.String("cwd", "", "the working directory of a started agent, such as its Slice worktree (default: yours)")
-	split := fs.Bool("split", false, "open a launched agent in a pane beside yours, when the human asked for one (default: a tab of its own)")
-	council := fs.Bool("council", false, "a review role only: one seat per harness of its routing, each asked for a score; refused, with nothing mailed or launched, when any seat cannot be seated")
-	timeout := fs.Duration("timeout", 45*time.Second, "how long to wait for a launched agent's adoption")
-	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		fmt.Fprintln(os.Stderr, "usage: rex-amq-adapter summon <handle|role> --subject S --body B [--kind K] [--grant FILE | --asked WORDS] [--harness H | --council] [--cwd DIR] [--split]")
-		if len(args) > 0 && (args[0] == "-h" || args[0] == "--help") {
-			fs.SetOutput(os.Stderr)
-			fs.PrintDefaults()
-		}
-		return 2
-	}
-	target := args[0]
-	if err := fs.Parse(args[1:]); err != nil {
-		return 2
-	}
-	if *council {
-		// Settled before the caller is: a usage error is one anywhere.
-		if err := app.CouncilUsage(target, *harness); err != nil {
-			fmt.Fprintf(os.Stderr, "rex-amq-adapter: %v\n", err)
-			return 2
-		}
-	}
-	if strings.HasPrefix(*body, "@") {
-		b, err := os.ReadFile((*body)[1:])
-		if err != nil {
-			return fail(err)
-		}
-		*body = string(b)
-	}
-	if *subject == "" || *body == "" {
-		return fail(errors.New("summon needs --subject and --body"))
-	}
-	env, loc, err := caller()
-	if err != nil {
-		return fail(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	req := app.SummonRequest{Target: target, Kind: *kind, Subject: *subject, Body: *body, Grant: *grant, Asked: *asked, Harness: *harness, Cwd: *cwd, Split: *split, Council: *council}
-	res, err := env.Summon(ctx, loc, req)
-	cancel()
-	if errors.Is(err, app.ErrUsage) {
-		fmt.Fprintf(os.Stderr, "rex-amq-adapter: %v\n", err)
-		return 2
-	}
-	if err != nil {
-		if len(res.Seats) > 0 {
-			// A council that failed midway: say which seats were mailed or launched.
-			out := summonOutput(res)
-			out["seats"] = res.Seats
-			b, _ := json.Marshal(out)
-			fmt.Println(string(b))
-		}
-		return fail(err)
-	}
-	if *council {
-		return summonCouncil(env, loc, req, res, *timeout)
-	}
-	out := summonOutput(res)
-	if res.Block != "" {
-		wctx, wcancel := context.WithTimeout(context.Background(), *timeout)
-		st, err := env.AwaitStartup(wctx, res.Block)
-		wcancel()
-		if err != nil {
-			return fail(err)
-		}
-		if st.Handle != "" {
-			// The brief first: reading the adopted identity back only adds
-			// its session and directory to the result.
-			if !res.Mailed {
-				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-				err = env.Deliver(ctx, loc, st.Handle, *kind, *subject, *body)
-				cancel()
-				if err != nil {
-					return fail(err)
-				}
-				res.Mailed = true
-			}
-			if res, err = env.Adopted(res, st.Handle); err != nil {
-				return fail(err)
-			}
-			out = summonOutput(res)
-		}
-		out["startup"] = st.Status
-	}
-	b, _ := json.Marshal(out)
-	fmt.Println(string(b))
-	if res.Action == "refused" {
-		return 3
-	}
-	if st, ok := out["startup"].(core.StartupStatus); ok && st != core.StartupAdopted {
-		return 1 // launched, not adopted: the mail waits, the user must look at the pane
-	}
-	return 0
-}
-
-// summonCouncil awaits the seats a council launched, prints one JSON line
-// with every seat's outcome, and exits 3 when refused, 1 when a launched
-// seat was not adopted (its pane needs the user), else 0.
-func summonCouncil(env app.Env, loc app.Location, req app.SummonRequest, res app.SummonResult, timeout time.Duration) int {
-	code := 0
-	if res.Action == "refused" {
-		code = 3
-	} else {
-		ctx, cancel := context.WithTimeout(context.Background(), timeout+20*time.Second)
-		err := env.AwaitCouncil(ctx, loc, req, &res, timeout)
-		cancel()
-		if err != nil {
-			return fail(err)
-		}
-		for _, st := range res.Seats {
-			if st.Block != "" && st.Startup != core.StartupAdopted {
-				code = 1
-			}
-		}
-	}
-	out := summonOutput(res)
-	out["seats"] = res.Seats
-	b, _ := json.Marshal(out)
-	fmt.Println(string(b))
-	return code
-}
-
-const trustUsage = `usage: rex-amq-adapter trust <dir>          (prints agy's --settings value for dir; exit 1 when there is none)
-       rex-amq-adapter trust grant <dir>...  (trust each project for every harness)
-       rex-amq-adapter trust root add|rm <dir>... | trust root ls`
-
-func runTrust(args []string) int {
+// run runs one invocation and returns its exit status. A panic in a public
+// command is caught here: it answers with an internal error (exit 1) and a
+// redacted crash dump under <state>/logs. The hook callback catches its own
+// (runHook), because a harness waits for a reply on every exit.
+func run(args []string, s out.Streams, getenv func(string) string, stdin io.Reader) int {
 	if len(args) > 0 {
 		switch args[0] {
-		case "grant":
-			return runTrustGrant(args[1:])
-		case "root":
-			return runTrustRoot(args[1:])
+		case "hook":
+			return runHook(args[1:], s, getenv, stdin)
+		case "inject":
+			return runInject(args[1:], s)
+		case "__internal":
+			return runInternal(args[1:], s, getenv, stdin)
 		}
 	}
-	if len(args) != 1 || strings.HasPrefix(args[0], "-") {
-		fmt.Fprintln(os.Stderr, trustUsage)
-		return 2
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return fail(err)
-	}
-	r, err := trust.Derive(home, args[0])
-	if err != nil {
-		return fail(err)
-	}
-	// stdout is the --settings value alone, so a hand-started peer can take
-	// it: agy --settings "$(rex-amq-adapter trust <dir>)" …
-	fmt.Fprintf(os.Stderr, "%s: %s\n", r.Harness, r.Note)
-	if r.Settings == "" {
-		return 1
-	}
-	fmt.Println(r.Settings)
-	return 0
+	p := registry().Printer(args, s, getenv)
+	c := &cli.Ctx{Getenv: getenv, Stdin: stdin, Out: p}
+	return protect(c, func() int { return execute(c, args) })
 }
 
-// trustGate is the user's own trust stores and the adapter's book.
-func trustGate() (trust.Gate, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return trust.Gate{}, err
+// protect runs f and turns a panic in it into the invocation's answer: an
+// internal error (exit 1) in the output mode the caller asked for, naming
+// a redacted crash dump under <state>/logs.
+func protect(c *cli.Ctx, f func() int) (code int) {
+	defer func() {
+		if r := recover(); r != nil {
+			p := c.Out
+			if c.Cmd != nil {
+				p.Verb = c.Cmd.Name()
+			}
+			path := writeCrash(p.Verb, p.TraceID, r, debug.Stack())
+			code = p.Fail(fault.New(fault.Internal, "rex-amq-adapter crashed: %v", r).With("crash_dump", path))
+		}
+	}()
+	return f()
+}
+
+// execute runs a public command with signal handling: SIGINT or SIGTERM
+// cancels its context with the signal's error (signalError), and once the
+// command has cleaned up the registry answers with it: interrupted (130)
+// or terminated (143).
+func execute(c *cli.Ctx, args []string) int {
+	p := c.Out
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sig)
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case s := <-sig:
+			cancel(signalError(s))
+		case <-done:
+		}
+	}()
+	c.Context = ctx
+	c.Warn = out.NewWarnings(p)
+	restore := divertDiagnostics(c.Warn)
+	defer restore()
+	return registry().Execute(c, args)
+}
+
+// signalError is the closed map's error for a signal: terminated for
+// SIGTERM, interrupted for SIGINT.
+func signalError(sig os.Signal) *fault.Error {
+	if sig == syscall.SIGTERM {
+		return fault.New(fault.Terminated, "terminated by SIGTERM, after cleanup")
 	}
+	return fault.New(fault.Interrupted, "interrupted by SIGINT, after cleanup")
+}
+
+// divertDiagnostics sends the app's housekeeping lines to the run's
+// warnings, so a machine caller's stderr stays empty.
+func divertDiagnostics(w io.Writer) func() {
+	before := app.Diagnostics
+	app.Diagnostics = w
+	return func() { app.Diagnostics = before }
+}
+
+// writeCrash writes a redacted crash dump under <state>/logs and returns
+// its path, "" when it could not be written.
+func writeCrash(verb, trace string, r any, stack []byte) string {
 	paths, err := store.DefaultPaths()
 	if err != nil {
-		return trust.Gate{}, err
+		return ""
 	}
-	return trust.Gate{Stores: trust.StoresFor(home, os.Getenv), State: paths.Home}, nil
-}
-
-func dirArgs(args []string) bool {
-	return len(args) > 0 && !slices.ContainsFunc(args, func(a string) bool { return strings.HasPrefix(a, "-") })
-}
-
-// runTrustGrant prints one JSON line per directory, what the grant did, and
-// exits 1 when any directory could not be granted.
-func runTrustGrant(args []string) int {
-	if !dirArgs(args) {
-		fmt.Fprintln(os.Stderr, trustUsage)
-		return 2
+	if err := os.MkdirAll(paths.Logs(), 0o700); err != nil {
+		return ""
 	}
-	g, err := trustGate()
-	if err != nil {
-		return fail(err)
+	now := time.Now().UTC()
+	path := filepath.Join(paths.Logs(), "crash-"+now.Format("20060102T150405.000000000Z")+".txt")
+	body := fmt.Sprintf("time: %s\nversion: %s\nverb: %s\ntrace_id: %s\npanic: %v\n\n%s", now.Format(time.RFC3339Nano), version(), verb, trace, r, stack)
+	if err := os.WriteFile(path, []byte(out.Redact(body)), 0o600); err != nil {
+		return ""
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	code := 0
-	for _, d := range args {
-		r, err := g.Grant(ctx, d, "explicit")
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "rex-amq-adapter: trust grant %s: %v\n", d, err)
-			code = 1
-			continue
-		}
-		b, _ := json.Marshal(r)
-		fmt.Println(string(b))
-	}
-	return code
-}
-
-// runTrustRoot adds, removes, or lists the declared trust roots, printing
-// the roots one per line afterwards.
-func runTrustRoot(args []string) int {
-	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, trustUsage)
-		return 2
-	}
-	g, err := trustGate()
-	if err != nil {
-		return fail(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	var roots []trust.Root
-	switch op, dirs := args[0], args[1:]; {
-	case op == "ls" && len(dirs) == 0:
-		roots, err = g.Roots()
-	case op == "add" && dirArgs(dirs):
-		roots, err = g.AddRoots(ctx, dirs...)
-	case op == "rm" && dirArgs(dirs):
-		roots, err = g.RemoveRoots(ctx, dirs...)
-	default:
-		fmt.Fprintln(os.Stderr, trustUsage)
-		return 2
-	}
-	if err != nil {
-		return fail(err)
-	}
-	for _, r := range roots {
-		fmt.Println(r.Path)
-	}
-	return 0
-}
-
-func runJoin(args []string) int {
-	fs := flag.NewFlagSet("join", flag.ContinueOnError)
-	role := fs.String("role", "", "the role to take (default: the crew's lead)")
-	crewName := ""
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		crewName, args = args[0], args[1:]
-	}
-	if err := fs.Parse(args); err != nil || fs.NArg() > 0 || crewName == "" && *role == "" {
-		fmt.Fprintln(os.Stderr, "usage: rex-amq-adapter join [CREW] [--role R]")
-		return 2
-	}
-	env, loc, err := caller()
-	if err != nil {
-		return fail(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	j, err := env.Join(ctx, loc, crewName, *role)
-	if err != nil {
-		return fail(err)
-	}
-	fmt.Printf("Your pane shows %s", j.Label)
-	if j.Crew.Name != "" {
-		fmt.Printf("; this Rex session is crew %s", j.Crew.Name)
-	}
-	fmt.Println(".")
-	if j.Briefing != "" {
-		fmt.Println()
-		fmt.Println(j.Briefing)
-	}
-	return 0
-}
-
-const crewsUsage = "usage: rex-amq-adapter crews [--json] [DIR]\n       rex-amq-adapter crews show [CREW] [--role R] [-c DIR]"
-
-func runCrews(args []string) int {
-	if len(args) > 0 && args[0] == "show" {
-		return runCrewsShow(args[1:])
-	}
-	asJSON := false
-	if len(args) > 0 && args[0] == "--json" {
-		asJSON, args = true, args[1:]
-	}
-	if len(args) > 1 || len(args) == 1 && strings.HasPrefix(args[0], "-") {
-		if len(args) == 1 && (args[0] == "-h" || args[0] == "--help") {
-			fmt.Println(crewsUsage)
-			return 0
-		}
-		fmt.Fprintln(os.Stderr, crewsUsage)
-		return 2
-	}
-	dir, err := os.Getwd()
-	if len(args) > 0 {
-		dir, err = args[0], nil
-	}
-	if err != nil {
-		return fail(err)
-	}
-	lib := crew.Load(dir)
-	entries, err := lib.List()
-	if err != nil {
-		return fail(err)
-	}
-	if asJSON {
-		return printCrewsJSON(lib, entries)
-	}
-	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "CREW\tCONVENTIONS\tLEAD\tROLES\tFROM")
-	for _, e := range entries {
-		name, conv, lead := e.Crew, "-", e.Lead
-		if name == "" {
-			name = "(any session)"
-		}
-		if e.Conventions {
-			conv = "yes"
-		}
-		if lead == "" {
-			lead = "-"
-		}
-		// A crew's roles are its members; one that declares none has the
-		// role prompts of its own directory.
-		roles := strings.Join(e.Members, ", ")
-		if roles == "" {
-			roles = strings.Join(e.Roles, ", ")
-		}
-		if roles == "" {
-			roles = "-"
-		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", name, conv, lead, roles, e.Layer)
-	}
-	if err := tw.Flush(); err != nil {
-		return fail(err)
-	}
-	return 0
-}
-
-func runCollect() int {
-	env, err := app.NewEnv("")
-	if err != nil {
-		return fail(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if err := env.Collect(ctx); err != nil {
-		return fail(err)
-	}
-	return 0
+	return path
 }
 
 // buildVersion is set at release builds: -ldflags "-X main.buildVersion=v0.1.0".
@@ -1071,426 +161,26 @@ func version() string {
 	return rev
 }
 
-// runManaged runs a managed mail command as the agent running it.
-func runManaged(verb string, args []string) int {
-	env, loc, err := caller()
+// caller resolves the Rex location of the agent running a command (see
+// app.Env.Caller) and an Env that talks to its server.
+func caller(c *cli.Ctx) (app.Env, app.Location, error) {
+	env, err := app.NewEnv(c.Getenv("REX_SERVER"))
 	if err != nil {
-		return fail(err)
+		return app.Env{}, app.Location{}, err
 	}
-	return managedMail(env, loc, verb, args, os.Stdin, os.Stdout, os.Stderr)
-}
-
-func managedMail(env app.Env, loc app.Location, verb string, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	code, err := env.ManagedMail(ctx, loc, verb, args, stdin, stdout, stderr)
-	if err != nil {
-		fmt.Fprintf(stderr, "rex-amq-adapter: %s: %v\n", verb, err)
-		if errors.Is(err, app.ErrUsage) {
-			return 2
-		}
-		if code == 0 {
-			code = 1
-		}
-	}
-	return code
-}
-
-func runLink(link bool, args []string) int {
-	if len(args) > 1 || len(args) == 1 && strings.HasPrefix(args[0], "-") || !link && len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: rex-amq-adapter link [EPIC_SESSION] | unlink EPIC_SESSION")
-		return 2
-	}
-	env, loc, err := caller()
-	if err != nil {
-		return fail(err)
-	}
-	if len(args) == 0 {
-		links, err := env.LinksOf(loc)
-		if err != nil {
-			return fail(err)
-		}
-		for _, l := range links {
-			fmt.Println(l.Epic.SessionID)
-		}
-		return 0
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(c, 10*time.Second)
 	defer cancel()
-	l, changed, err := env.Link(ctx, loc, args[0], link)
+	loc, err := env.Caller(ctx, c.Getenv)
 	if err != nil {
-		return fail(err)
+		return app.Env{}, app.Location{}, err
 	}
-	switch {
-	case link:
-		fmt.Printf("linked %s with the narrator of %s\n", l.Personal.SessionID, l.Epic.SessionID)
-	case changed:
-		fmt.Printf("unlinked %s from %s\n", l.Personal.SessionID, l.Epic.SessionID)
-	default:
-		fmt.Printf("%s was not linked with %s\n", l.Personal.SessionID, l.Epic.SessionID)
+	if loc.Server != "" && loc.Server != c.Getenv("REX_SERVER") {
+		env.Rex = env.RexOn(loc.Server)
 	}
-	return 0
+	return env, loc, nil
 }
 
-// runCrewsShow prints, without changing anything, the briefing an agent
-// would get taking role R in crew CREW where it works (dir): the crew's
-// team conventions and the role's prompt. Without --role it shows the
-// crew's lead, as join does; without CREW, the role in a session of no crew.
-func runCrewsShow(args []string) int {
-	name := ""
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		name, args = args[0], args[1:]
-	}
-	fs := flag.NewFlagSet("crews show", flag.ContinueOnError)
-	role := fs.String("role", "", "the role (default: the crew's lead)")
-	dir := fs.String("c", "", "the directory whose crews apply (default: the current one)")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	if fs.NArg() > 0 || name == "" && *role == "" {
-		fmt.Fprintln(os.Stderr, crewsUsage)
-		return 2
-	}
-	if *dir == "" {
-		wd, err := os.Getwd()
-		if err != nil {
-			return fail(err)
-		}
-		*dir = wd
-	}
-	lib := crew.Load(*dir)
-	r := crew.Name(*role)
-	if name != "" {
-		c, ok, err := lib.Crew(name)
-		if err != nil {
-			return fail(err)
-		}
-		if !ok {
-			return fail(fmt.Errorf("no crew %q: `rex-amq-adapter crews` lists them", name))
-		}
-		if r == "" {
-			if r = c.Lead; r == "" {
-				return fail(fmt.Errorf("crew %s names no lead: pass --role", name))
-			}
-		}
-		fmt.Printf("crew %s (%s): lead %s; members %s\n", name, from(c.Conventions), orDash(c.Lead), orDash(strings.Join(c.Members, ", ")))
-		fmt.Printf("\n## Team conventions of crew %s\n\n%s\n", name, c.Conventions.Text)
-	}
-	p, ok, err := lib.Role(name, r)
-	if err != nil {
-		return fail(err)
-	}
-	if !ok {
-		if name == "" {
-			return fail(fmt.Errorf("no prompt for role %q: `rex-amq-adapter crews` lists the roles", r))
-		}
-		fmt.Printf("\n## Role %s\n\nno prompt: an agent in this role works from the conventions and its brief\n", r)
-	} else {
-		fmt.Printf("\n## Role %s (%s)\n\n%s\n", r, from(p), p.Text)
-	}
-	if err := printRouting(lib, r); err != nil {
-		return fail(err)
-	}
-	return 0
-}
-
-// printRouting prints the harnesses, models, and efforts role starts on,
-// and the routing.toml table they come from.
-func printRouting(lib crew.Library, role string) error {
-	route, err := lib.Routing(role)
-	if err != nil {
-		return err
-	}
-	source := route.Layer
-	if route.Path != "" {
-		source += " " + route.Path
-	}
-	fmt.Printf("\n## Routing of role %s ([role.%q], %s)\n\n", role, route.Role, source)
-	for _, k := range route.Harnesses {
-		l := route.Launch(k)
-		fmt.Printf("- %s: model %s, effort %s\n", k, orDefault(l.Model), orDefault(l.Effort))
-	}
-	return nil
-}
-
-func orDefault(s string) string {
-	if s == "" {
-		return "(the CLI's default)"
-	}
-	return s
-}
-
-func from(p crew.Prompt) string {
-	if p.Path == "" {
-		return "built-in"
-	}
-	return p.Path
-}
-
-func orDash(s string) string {
-	if s == "" {
-		return "-"
-	}
-	return s
-}
-
-// timeoutFlag is a positive duration flag that also takes bare seconds
-// ("60"), the form briefs and the guide write.
-type timeoutFlag time.Duration
-
-func (d *timeoutFlag) Set(s string) error {
-	v, err := time.ParseDuration(s)
-	if err != nil {
-		secs, perr := strconv.ParseFloat(s, 64)
-		if perr != nil {
-			return fmt.Errorf("%q is neither a duration (90s, 2m) nor seconds", s)
-		}
-		v = time.Duration(secs * float64(time.Second))
-	}
-	if v <= 0 {
-		return fmt.Errorf("%q: the timeout must be positive", s)
-	}
-	*d = timeoutFlag(v)
-	return nil
-}
-
-func (d *timeoutFlag) String() string { return time.Duration(*d).String() }
-
-func printJSON(v any) int {
-	b, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return fail(err)
-	}
-	fmt.Println(string(b))
-	return 0
-}
-
-// printCrewsJSON prints the crews and the roles of a session of no crew, each
-// with the first sentence of its prompt as its purpose.
-func printCrewsJSON(lib crew.Library, entries []crew.Entry) int {
-	type crewOut struct {
-		Name        string   `json:"name"`
-		Lead        string   `json:"lead"`
-		Members     []string `json:"members"`
-		Roles       []string `json:"roles"` // role prompts of the crew's own
-		Layer       string   `json:"layer"`
-		Conventions bool     `json:"conventions"`
-		Purpose     string   `json:"purpose"`
-	}
-	type roleOut struct {
-		Name    string `json:"name"`
-		Layer   string `json:"layer"`
-		Purpose string `json:"purpose"`
-	}
-	out := struct {
-		Crews []crewOut `json:"crews"`
-		Roles []roleOut `json:"roles"`
-	}{Crews: []crewOut{}, Roles: []roleOut{}}
-	for _, e := range entries {
-		if e.Crew == "" {
-			for _, r := range e.Roles {
-				p, _, err := lib.Role("", r)
-				if err != nil {
-					return fail(err)
-				}
-				out.Roles = append(out.Roles, roleOut{Name: r, Layer: e.Layer, Purpose: crew.Purpose(p.Text)})
-			}
-			continue
-		}
-		c := crewOut{Name: e.Crew, Lead: e.Lead, Members: e.Members, Roles: e.Roles, Layer: e.Layer, Conventions: e.Conventions}
-		if c.Members == nil {
-			c.Members = []string{}
-		}
-		if c.Roles == nil {
-			c.Roles = []string{}
-		}
-		if e.Conventions {
-			conv, _, err := lib.Conventions(e.Crew)
-			if err != nil {
-				return fail(err)
-			}
-			c.Purpose = crew.Purpose(conv.Text)
-		}
-		out.Crews = append(out.Crews, c)
-	}
-	return printJSON(out)
-}
-
-const epicUsage = `usage: rex-amq-adapter epic <name> [-c DIR] [--goal FILE|-] [--asked "WORDS"] [--crew C] [--harness H] [--timeout D] [--op-id ID]
-       (at least one of --goal and --asked; both are allowed, and --goal - reads the contract from stdin)
-       rex-amq-adapter epic close <session_id> --asked "WORDS" [--force] [--op-id ID]`
-
-// runEpic opens an Epic for the personal agent running it (app.OpenEpic)
-// and prints what was started, even when part of it failed.
-func runEpic(args []string, stdin io.Reader) int {
-	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		fmt.Fprintln(os.Stderr, epicUsage)
-		return 2
-	}
-	if args[0] == "close" {
-		return runEpicClose(args[1:])
-	}
-	name := args[0]
-	fs := flag.NewFlagSet("epic", flag.ContinueOnError)
-	dir := fs.String("c", "", "the repository the Epic's agents work in (default: the current directory)")
-	goal := fs.String("goal", "", "the goal contract the lead runs, its grant: a file, or - to read it from stdin")
-	asked := fs.String("asked", "", "the user's own words asking for the Epic: notarized in its grant, and the lead's brief when there is no contract")
-	harness := fs.String("harness", "", "the orchestrator's CLI (with --crew pair, the implementer's): claude (default), codex, agy, or pi")
-	crewName := fs.String("crew", "", "the crew the Epic's session works as (rex-amq-adapter crews lists them)")
-	opID := fs.String("op-id", "", "names this request: a retry with the same id reconciles the Epic the first run started instead of starting another")
-	timeout := timeoutFlag(90 * time.Second)
-	fs.Var(&timeout, "timeout", "how long to wait for both agents: a duration (2m) or seconds (120)")
-	if err := fs.Parse(args[1:]); err != nil {
-		return 2
-	}
-	if fs.NArg() > 0 {
-		fmt.Fprintln(os.Stderr, epicUsage)
-		return 2
-	}
-	if err := app.ValidOpID(*opID); err != nil {
-		fmt.Fprintf(os.Stderr, "rex-amq-adapter: %v\n", err)
-		return 2
-	}
-	goalFile, goalText, err := epicGoal(*goal, stdin)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "rex-amq-adapter: %v\n", err)
-		return 2
-	}
-	if *dir == "" {
-		wd, err := os.Getwd()
-		if err != nil {
-			return fail(err)
-		}
-		*dir = wd
-	}
-	env, loc, err := caller()
-	if err != nil {
-		return fail(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout))
-	defer cancel()
-	res, err := env.OpenEpic(ctx, loc, app.EpicRequest{Name: name, Dir: *dir, Goal: goalFile, GoalText: goalText, Asked: *asked, Harness: *harness, Crew: *crewName, OpID: *opID})
-	if res.SessionID != "" {
-		out, merr := json.Marshal(res)
-		if merr != nil {
-			return fail(merr)
-		}
-		fmt.Println(string(out))
-	}
-	switch {
-	case errors.Is(err, app.ErrUsage):
-		fmt.Fprintf(os.Stderr, "rex-amq-adapter: %v\n", err)
-		return 2
-	case err != nil:
-		return fail(err)
-	case !res.Ready():
-		return 1
-	}
-	return 0
-}
-
-// epicGoal is the goal contract --goal names: a file's path as given, or
-// with "-" the text piped in on stdin, read to one byte past app.EpicGoalMax
-// so OpenEpic refuses an oversized one whole rather than a cut one. Empty
-// stdin is refused here: it would leave the Epic with no contract.
-func epicGoal(goal string, stdin io.Reader) (file, text string, err error) {
-	if goal != "-" {
-		return goal, "", nil
-	}
-	b, err := io.ReadAll(io.LimitReader(stdin, app.EpicGoalMax+1))
-	if err != nil {
-		return "", "", fmt.Errorf("read the goal contract from stdin: %w", err)
-	}
-	if len(b) == 0 {
-		return "", "", errors.New("--goal - read no goal contract on stdin")
-	}
-	return "", string(b), nil
-}
-
-// runEpicClose closes a linked Epic for the personal agent running it
-// (app.CloseEpic) and prints what was closed.
-func runEpicClose(args []string) int {
-	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		fmt.Fprintln(os.Stderr, epicUsage)
-		return 2
-	}
-	session := args[0]
-	fs := flag.NewFlagSet("epic close", flag.ContinueOnError)
-	asked := fs.String("asked", "", "the user's own words asking to close the Epic: its grant")
-	force := fs.Bool("force", false, "close even while an agent of the Epic is not at rest or holds unread mail")
-	opID := fs.String("op-id", "", "names this request: a retry with the same id finishes the close the first run started, even once the link is gone")
-	if err := fs.Parse(args[1:]); err != nil {
-		return 2
-	}
-	if fs.NArg() > 0 {
-		fmt.Fprintln(os.Stderr, epicUsage)
-		return 2
-	}
-	if err := app.ValidOpID(*opID); err != nil {
-		fmt.Fprintf(os.Stderr, "rex-amq-adapter: %v\n", err)
-		return 2
-	}
-	env, loc, err := caller()
-	if err != nil {
-		return fail(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	res, err := env.CloseEpic(ctx, loc, app.CloseRequest{Session: session, Asked: *asked, Force: *force, OpID: *opID})
-	if errors.Is(err, app.ErrUsage) {
-		fmt.Fprintf(os.Stderr, "rex-amq-adapter: %v\n", err)
-		return 2
-	}
-	if err != nil {
-		return fail(err)
-	}
-	out, err := json.Marshal(res)
-	if err != nil {
-		return fail(err)
-	}
-	fmt.Println(string(out))
-	return 0
-}
-
-const retireUsage = `usage: rex-amq-adapter retire <handle> [--force]`
-
-// runRetire retires a finished peer of the caller's Rex session
-// (app.Retire) and prints what was done, also when its pane did not close.
-func runRetire(args []string) int {
-	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		fmt.Fprintln(os.Stderr, retireUsage)
-		return 2
-	}
-	handle := args[0]
-	fs := flag.NewFlagSet("retire", flag.ContinueOnError)
-	force := fs.Bool("force", false, "retire even while the agent works, waits on a dialog, or holds unread mail")
-	if err := fs.Parse(args[1:]); err != nil {
-		return 2
-	}
-	if fs.NArg() > 0 {
-		fmt.Fprintln(os.Stderr, retireUsage)
-		return 2
-	}
-	env, loc, err := caller()
-	if err != nil {
-		return fail(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	res, err := env.Retire(ctx, loc, app.RetireRequest{Handle: core.Handle(handle), Force: *force})
-	if errors.Is(err, app.ErrUsage) {
-		fmt.Fprintf(os.Stderr, "rex-amq-adapter: %v\n", err)
-		return 2
-	}
-	if res.Action != "" {
-		out, merr := json.Marshal(res)
-		if merr != nil {
-			return fail(merr)
-		}
-		fmt.Println(string(out))
-	}
-	if err != nil {
-		return fail(err)
-	}
-	return 0
+// within is c's context bounded by d.
+func within(c *cli.Ctx, d time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(c, d)
 }

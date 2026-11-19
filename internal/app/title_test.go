@@ -94,7 +94,7 @@ func TestIdentityNoticeNamesTheTitleCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = e.Depart(ctx, loc, HookInput{}) })
-	if !strings.Contains(r.Notice, e.SelfBin+` title "<task in a few words>"`) {
+	if !strings.Contains(r.Notice, e.SelfBin+` agent title "<task in a few words>"`) {
 		t.Errorf("identity notice does not name the title command: %q", r.Notice)
 	}
 }

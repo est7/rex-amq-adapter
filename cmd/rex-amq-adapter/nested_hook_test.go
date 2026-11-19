@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/est7/rex-amq-adapter/internal/app"
 	"github.com/est7/rex-amq-adapter/internal/core"
+	"github.com/est7/rex-amq-adapter/internal/out"
 	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
@@ -58,10 +60,8 @@ func TestNestedHarnessHookExitsZeroAndLeavesTheOwner(t *testing.T) {
 		if _, err := stdin.Seek(0, 0); err != nil {
 			t.Fatal(err)
 		}
-		saved := os.Stdin
-		os.Stdin = stdin
-		code := runHook([]string{event, "--agent", "codex"})
-		os.Stdin = saved
+		var reply bytes.Buffer
+		code := runHook([]string{event, "--agent", "codex"}, out.Streams{Stdout: &reply, Stderr: &reply}, os.Getenv, stdin)
 		stdin.Close()
 		if code != 0 {
 			log, _ := os.ReadFile(filepath.Join(dir, "logs", "hooks.log"))

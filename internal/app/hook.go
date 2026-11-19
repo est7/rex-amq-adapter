@@ -381,7 +381,7 @@ func (e Env) identityNotice(ctx context.Context, a Adoption, unread int) string 
 		mates = ""
 	}
 	head := joinNotices(core.SessionNotice(a.Agent.Handle, a.Agent.Role, e.SelfBin, unread), mates) +
-		"\n" + core.TaskNotice(a.Agent.Handle, a.Agent.Role, e.SelfBin+" title", a.Agent.Task)
+		"\n" + core.TaskNotice(a.Agent.Handle, a.Agent.Role, e.SelfBin+" agent title", a.Agent.Task)
 	// After the briefing, so it reads as the word on whom "the human" means;
 	// an orchestrator hears this from its own role prompt.
 	tail := ""

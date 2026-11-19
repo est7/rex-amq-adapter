@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,6 +24,8 @@ var (
 	ErrNotFound = errors.New("rex target not found")
 	// ErrUnreachable: the server could not be reached (rex exit status 4).
 	ErrUnreachable = errors.New("rex server unreachable")
+	// ErrNoBinary: no rex binary could be found.
+	ErrNoBinary = errors.New("rex not found")
 )
 
 // Client runs rex against one server.
@@ -43,12 +46,12 @@ func ResolveBin() (string, error) {
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", fmt.Errorf("rex not on PATH and no home directory: %w", err)
+		return "", fmt.Errorf("%w: not on PATH and no home directory: %w", ErrNoBinary, err)
 	}
 	pattern := filepath.Join(home, "Library", "Application Support", "com.superlogical.rex", "RexServer", "Versions", "*", "Rex Server.app", "Contents", "MacOS", "rex")
 	matches, _ := filepath.Glob(pattern) // only ErrBadPattern, impossible for a constant pattern
 	if len(matches) == 0 {
-		return "", errors.New("rex not found: not on PATH and no bundled Rex server; set REX_AMQ_REX")
+		return "", fmt.Errorf("%w: not on PATH and no bundled Rex server; set REX_AMQ_REX", ErrNoBinary)
 	}
 	sort.Slice(matches, func(i, j int) bool { return versionOf(matches[i]) > versionOf(matches[j]) })
 	return matches[0], nil
@@ -74,6 +77,8 @@ func (c Client) run(ctx context.Context, stdin []byte, args ...string) ([]byte, 
 	}
 	full = append(full, args...)
 	cmd := exec.CommandContext(ctx, c.Bin, full...)
+	// A cancelled call waits at most this long for rex's output to close.
+	cmd.WaitDelay = 2 * time.Second
 	// rex resolves a block within $REX_SESSION when it is set, and the hook
 	// inherits the calling agent's session. Every call here names its target
 	// by id, which is unique on the server, so look it up server-wide.
@@ -97,6 +102,10 @@ func (c Client) run(ctx context.Context, stdin []byte, args ...string) ([]byte, 
 			return nil, fmt.Errorf("%w: %s", ErrUnreachable, msg)
 		}
 		return nil, fmt.Errorf("rex %s: exit %d: %s", strings.Join(args, " "), ee.ExitCode(), msg)
+	}
+	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrPermission) {
+		// The binary itself cannot be started: as unavailable as no binary.
+		return nil, fmt.Errorf("rex %s: %w: %w", strings.Join(args, " "), ErrNoBinary, err)
 	}
 	return nil, fmt.Errorf("rex %s: %w", strings.Join(args, " "), err)
 }

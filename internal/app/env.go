@@ -102,6 +102,9 @@ type Env struct {
 	// LookPath finds a harness's CLI, so a default harness that is not
 	// installed is passed over; nil finds every one.
 	LookPath func(string) (string, error)
+	// preview makes the trust preflight read-only: a summon's --dry-run
+	// runs the real selection on a copy of the Env with it set.
+	preview bool
 }
 
 // harnessDirs is where each harness keeps its files, under TranscriptHome.

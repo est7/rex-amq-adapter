@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
+	"github.com/est7/rex-amq-adapter/internal/fault"
 	"github.com/est7/rex-amq-adapter/internal/rex"
 	"github.com/est7/rex-amq-adapter/internal/store"
 )
@@ -77,7 +78,7 @@ type closeIdentity struct {
 
 // errOpConflict refuses an op id already used for another request.
 func errOpConflict(kind, opID string) error {
-	return fmt.Errorf("%w: --op-id %q already names another epic %s request; a new request needs a new op id", ErrRefused, opID, kind)
+	return refusal(fault.Conflict, "op_id_reused", "--op-id %q already names another epic %s request; a new request needs a new op id", opID, kind)
 }
 
 // advanceEpic moves session seed.SessionID's lifecycle to state, starting it
@@ -146,7 +147,7 @@ func (e Env) reconcileOpen(ctx context.Context, loc Location, op store.EpicOpRec
 		res.LifecycleState = lc.State
 	}
 	if lc.State == store.EpicClosed {
-		return res, fmt.Errorf("%w: --op-id %q opened the Epic %s, which was closed; a new Epic needs a new op id", ErrRefused, op.OpID, op.SessionID)
+		return res, refusal(fault.Conflict, "op_id_reused", "--op-id %q opened the Epic %s, which was closed; a new Epic needs a new op id", op.OpID, op.SessionID)
 	}
 	if _, err := e.Rex.InspectSession(ctx, op.SessionID); errors.Is(err, rex.ErrNotFound) {
 		return res, fmt.Errorf("--op-id %q opened the Epic session %s, which Rex no longer has; nothing was started again (a new Epic needs a new op id)", op.OpID, op.SessionID)
@@ -262,7 +263,7 @@ func (e Env) adoptCreated(ctx context.Context, op *store.EpicOpRecord, seed stor
 	}
 	for _, o := range others {
 		if o.State == store.EpicCreating && (o.Name == "" || o.Name == name) && (o.Server == "" || op.Server == "" || o.Server == op.Server) && !slices.Contains(o.PriorSessions, fresh[0]) {
-			return false, fmt.Errorf("%w: --op-id %q cannot tell whether session %s (labelled %q) is its own or unfinished --op-id %q's; nothing was started", ErrRefused, op.OpID, fresh[0], name, o.OpID)
+			return false, refusal(fault.Conflict, "op_id_ambiguous", "--op-id %q cannot tell whether session %s (labelled %q) is its own or unfinished --op-id %q's; nothing was started", op.OpID, fresh[0], name, o.OpID)
 		}
 	}
 	blocks, err := e.Rex.ListBlocks(ctx, fresh[0])

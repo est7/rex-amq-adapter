@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"github.com/est7/rex-amq-adapter/internal/fault"
 	"os"
 	"path/filepath"
 	"slices"
@@ -158,7 +159,7 @@ func TestCloseEpicWaitsForItsAgentsToRestUnlessForced(t *testing.T) {
 	} {
 		c.setup()
 		_, err := closeEpic(e, loc, CloseRequest{Session: "session:epic", Asked: "close it"})
-		if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), c.want) || !strings.Contains(err.Error(), "--force") {
+		if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), c.want) || !forceOnlyInNextAction(err) {
 			t.Errorf("%s: %v, want a refusal naming %q", c.name, err, c.want)
 		}
 		if len(term.killed) != 0 {
@@ -207,4 +208,12 @@ func TestCloseEpicFinishesWhenRunAgain(t *testing.T) {
 	if !slices.Equal(term.killed, []string{"session:epic"}) {
 		t.Errorf("killed %v, want one kill", term.killed)
 	}
+}
+
+// forceOnlyInNextAction reports whether err is a busy refusal that names
+// --force only as its next action, never in its message: an agent reads the
+// message, and only the user authorizes forcing.
+func forceOnlyInNextAction(err error) bool {
+	f, ok := fault.As(err)
+	return ok && f.Code == fault.Busy && strings.Contains(f.NextAction, "--force") && !strings.Contains(f.Message, "--force")
 }

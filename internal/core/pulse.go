@@ -32,7 +32,7 @@ type PulseMember struct {
 	// is on disk.
 	HandBack string `json:"hand_back,omitempty"`
 	// Retired marks a departed agent that a session-mate retired as finished
-	// (rex-amq-adapter retire): its leaving is routine, not attention.
+	// (rex-amq-adapter agent retire): its leaving is routine, not attention.
 	Retired bool `json:"retired,omitempty"`
 }
 

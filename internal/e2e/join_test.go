@@ -50,7 +50,7 @@ func TestAnAgentAloneInItsTabJoinsACrew(t *testing.T) {
 	w := newWorld(t)
 	tb := w.newTab("lead", "")
 	w.ready("lead")
-	w.typeInto(tb.first, "join pair")
+	w.typeInto(tb.first, "agent join pair")
 	w.until("the join to finish", 10*time.Second, func() bool { return strings.Contains(w.joined("lead"), "exit=") })
 	out := w.joined("lead")
 	h := w.handleOf("lead")
@@ -58,8 +58,8 @@ func TestAnAgentAloneInItsTabJoinsACrew(t *testing.T) {
 		t.Fatalf("join:\n%s\n%s", out, w.dump())
 	}
 	w.until("the tab to follow its agent", 5*time.Second, func() bool { return w.tabLabel(tb, tb.first) == "implementer("+h+")" })
-	if out, code := w.who(tb.first); code != 0 || !strings.Contains(out, "implementer") {
-		t.Errorf("who after join: %d\n%s", code, out)
+	if out, code := w.adapterIn(tb.first, "agent", "list"); code != 0 || !strings.Contains(out, "implementer") {
+		t.Errorf("agent list after join: %d\n%s", code, out)
 	}
 }
 
@@ -73,7 +73,7 @@ func TestJoinClaimsTheSessionAndRefusesASecondCrew(t *testing.T) {
 	mate := tb.split("mate", "")
 	w.ready("mate")
 	before := w.tabLabel(tb, tb.first)
-	w.typeInto(tb.first, "join pair")
+	w.typeInto(tb.first, "agent join pair")
 	w.until("the join to finish", 10*time.Second, func() bool { return strings.Contains(w.joined("lead"), "exit=") })
 	if out := w.joined("lead"); !strings.Contains(out, "exit=0") {
 		t.Fatalf("join beside another agent:\n%s\n%s", out, w.dump())
@@ -81,7 +81,7 @@ func TestJoinClaimsTheSessionAndRefusesASecondCrew(t *testing.T) {
 	if got := w.tabLabel(tb, tb.first); got == "pair" || got != before {
 		t.Errorf("tab renamed to %q, was %q", got, before)
 	}
-	w.typeInto(mate, "join ship")
+	w.typeInto(mate, "agent join ship")
 	w.until("the mate's join to finish", 10*time.Second, func() bool { return strings.Contains(w.joined("mate"), "exit=") })
 	out := w.joined("mate")
 	if strings.Contains(out, "exit=0") || !strings.Contains(out, "another crew (pair") || !strings.Contains(out, w.handleOf("lead")) {
@@ -112,7 +112,7 @@ func TestASummonedPeerGetsATabOfItsOwn(t *testing.T) {
 		return out
 	}
 	before, tabs := w.tabLabel(tb, tb.first), len(labels())
-	w.typeInto(tb.first, "summon implementer --subject fix --body do-it --kind todo --asked go --harness claude --cwd "+w.project("app"))
+	w.typeInto(tb.first, "agent summon implementer --subject fix --body do-it --kind todo --asked go --harness claude --cwd "+w.project("app"))
 	w.until("the summon to finish", 40*time.Second, func() bool { return strings.Contains(w.joined("lead"), "exit=") })
 	if out := w.joined("lead"); !strings.Contains(out, "exit=0") {
 		t.Fatalf("summon:\n%s\n%s", out, w.dump())

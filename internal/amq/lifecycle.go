@@ -274,11 +274,14 @@ func messageIDs(dir string) ([]string, error) {
 	return ids, nil
 }
 
+// ErrNoBinary is no amq binary found.
+var ErrNoBinary = errors.New("amq not found")
+
 // ResolveBin finds amq on PATH, then in ~/.local/bin and Homebrew.
 func ResolveBin() (string, error) {
 	if p := os.Getenv("REX_AMQ_AMQ"); p != "" {
 		if st, err := os.Stat(p); err != nil || st.IsDir() {
-			return "", fmt.Errorf("REX_AMQ_AMQ=%q names no amq binary", p)
+			return "", fmt.Errorf("%w: REX_AMQ_AMQ=%q names no amq binary", ErrNoBinary, p)
 		}
 		return p, nil
 	}
@@ -291,7 +294,7 @@ func ResolveBin() (string, error) {
 			return p, nil
 		}
 	}
-	return "", errors.New("amq not found on PATH, ~/.local/bin, or Homebrew; set REX_AMQ_AMQ")
+	return "", fmt.Errorf("%w on PATH, ~/.local/bin, or Homebrew; set REX_AMQ_AMQ", ErrNoBinary)
 }
 
 // Poster sends mail (amq send or reply): CLI and Fake are Posters.
@@ -329,7 +332,8 @@ type Sent struct {
 // that failed after delivering (a --wait-for that timed out) returns its id
 // with the error.
 func Post(ctx context.Context, amqBin, root, verb string, args ...string) (Sent, []byte, error) {
-	out, err := runAmq(ctx, amqBin, append([]string{verb, "--root", root, "--json"}, args...)...)
+	args, body := literalBody(args)
+	out, err := runAmqIn(ctx, amqBin, body, append([]string{verb, "--root", root, "--json"}, args...)...)
 	var s Sent
 	_ = json.Unmarshal(out, &s)
 	if err != nil {
@@ -352,8 +356,36 @@ func Run(ctx context.Context, amqBin string, stdin io.Reader, stdout, stderr io.
 	if errors.As(err, &ee) {
 		return ee.ExitCode(), nil
 	}
+	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrPermission) {
+		// The binary itself cannot be started: as unavailable as no binary.
+		return 1, fmt.Errorf("%w: %w", ErrNoBinary, err)
+	}
 	if err != nil {
 		return 1, err
 	}
 	return 0, nil
+}
+
+// literalBody moves the --body value out of args, to go on stdin under
+// --body -: amq reads its value as @FILE or - for stdin, and a body here is
+// already the text to send, so a body starting with "@" must never make
+// amq read that file. The body's bytes travel as they are.
+func literalBody(args []string) ([]string, io.Reader) {
+	out := make([]string, 0, len(args))
+	var body io.Reader
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--body" && i+1 < len(args):
+			body = strings.NewReader(args[i+1])
+			i++
+		case strings.HasPrefix(a, "--body="):
+			body = strings.NewReader(strings.TrimPrefix(a, "--body="))
+		default:
+			out = append(out, a)
+			continue
+		}
+		out = append(out, "--body=-")
+	}
+	return out, body
 }

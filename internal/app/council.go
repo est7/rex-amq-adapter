@@ -58,7 +58,8 @@ func (e Env) council(ctx context.Context, loc Location, caller agent, r SummonRe
 	if err := CouncilUsage(r.Target, r.Harness); err != nil {
 		return SummonResult{}, err
 	}
-	res := SummonResult{Action: "council", Parent: caller.Handle, Depth: caller.Depth + 1}
+	res := SummonResult{Action: "council", Parent: caller.Handle, Depth: caller.Depth + 1, DryRun: r.DryRun}
+	e.preview = r.DryRun
 	refuse := func(reason string) (SummonResult, error) {
 		res.Action, res.Reason = "refused", reason
 		e.summonLog(caller, r, res)
@@ -146,7 +147,7 @@ func (e Env) council(ctx context.Context, loc Location, caller agent, r SummonRe
 		if !complete {
 			return refuse("your summon chain cannot be checked: an agent that summoned you is no longer recorded, so no seat was mailed or launched")
 		}
-		if tokens, err = e.reserve(ctx, caller, s, r.Kind, chain, role, launches); err != nil {
+		if tokens, err = e.reserve(ctx, caller, s, r.Kind, chain, role, launches, r.DryRun); err != nil {
 			var refusal core.SummonCheck
 			if errors.As(err, &refusal) {
 				return refuse(refusal.Reason + "; no seat was mailed or launched")
@@ -155,17 +156,17 @@ func (e Env) council(ctx context.Context, loc Location, caller agent, r SummonRe
 		}
 	}
 
+	if r.DryRun {
+		// Every seat planned, authorized, and within the cap: what the
+		// council would do, with nothing mailed or launched.
+		for _, st := range seats {
+			res.Seats = append(res.Seats, plannedSeat(st))
+		}
+		return res, nil
+	}
 	// Mail first, as a single summon does: a resumed seat drains it.
 	for _, st := range seats {
-		out := SeatResult{Harness: st.kind}
-		switch {
-		case st.live != nil:
-			out.Action, out.Handle = "deliver", st.live.Handle
-		case st.plan.departed != nil:
-			out.Action, out.Handle, out.Label = "resume", st.plan.departed.Handle, st.plan.label
-		default:
-			out.Action, out.Label = "start", st.plan.label
-		}
+		out := plannedSeat(st)
 		if out.Handle != "" {
 			if err := e.mailAs(ctx, caller.Handle, out.Handle, r.Kind, r.Subject, res.brief); err != nil {
 				e.release(tokens)
@@ -283,4 +284,19 @@ func (e Env) AwaitCouncil(ctx context.Context, loc Location, r SummonRequest, re
 		res.Handles = append(res.Handles, st.Handle)
 	}
 	return nil
+}
+
+// plannedSeat is what a seat would do: deliver to its live agent, resume
+// its departed one, or start one.
+func plannedSeat(st seat) SeatResult {
+	out := SeatResult{Harness: st.kind}
+	switch {
+	case st.live != nil:
+		out.Action, out.Handle = "deliver", st.live.Handle
+	case st.plan.departed != nil:
+		out.Action, out.Handle, out.Label = "resume", st.plan.departed.Handle, st.plan.label
+	default:
+		out.Action, out.Label = "start", st.plan.label
+	}
+	return out
 }

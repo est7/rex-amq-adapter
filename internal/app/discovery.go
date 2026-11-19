@@ -9,8 +9,8 @@ import (
 )
 
 // Session is a Rex session as its layout stands now, the boundary of
-// discovery: the agents of one task, in any of its tabs. FindSession is the
-// only way to get one.
+// discovery: the agents of one task, in any of its tabs. FindSession and
+// SessionByID are the only ways to get one.
 type Session struct {
 	server string
 	id     string
@@ -40,6 +40,21 @@ func (e Env) FindSession(ctx context.Context, block string) (Session, error) {
 	}
 	return e.loadSession(ctx, srv.Endpoint, blk.SessionID)
 }
+
+// SessionByID resolves Rex session id on the Env's server.
+func (e Env) SessionByID(ctx context.Context, id string) (Session, error) {
+	srv, err := e.Rex.Whoami(ctx)
+	if err != nil {
+		return Session{}, err
+	}
+	if srv.Endpoint == "" {
+		return Session{}, errors.New("the Rex server reports no endpoint")
+	}
+	return e.loadSession(ctx, srv.Endpoint, id)
+}
+
+// ID is the session's Rex id.
+func (s Session) ID() string { return s.id }
 
 // loadSession reads the layout of session id on server.
 func (e Env) loadSession(ctx context.Context, server, id string) (Session, error) {

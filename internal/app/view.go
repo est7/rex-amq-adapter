@@ -159,7 +159,7 @@ type ViewLimits struct {
 }
 
 // ErrNoView is a read of a session whose narrator has not written its view.
-var ErrNoView = errors.New("no view yet: the session's narrator writes it with `rex-amq-adapter view refresh`")
+var ErrNoView = errors.New("no view yet: the session's narrator writes it with `rex-amq-adapter epic refresh`")
 
 // narratorOf is the live narrator in loc, which alone writes its session's
 // view and reads bodies for it.
@@ -498,13 +498,13 @@ func (e Env) buildView(ctx context.Context, narr agent, key core.SessionKey) (Se
 		case controlPlane(p):
 			control = append(control, h)
 		default:
-			g.add(GapPeerBody, "peer mail that bypassed the orchestrator; read it with `rex-amq-adapter view read --ids`", m.ID)
+			g.add(GapPeerBody, "peer mail that bypassed the orchestrator; read it with `rex-amq-adapter epic messages --ids`", m.ID)
 		}
 		v.Activity = append(v.Activity, ViewMessage{Ref: m.ID, From: m.From, To: m.To, Thread: m.Thread, Subject: m.Subject, Created: m.Created, Kind: h.Kind, Priority: h.Priority})
 	}
 
 	// Tier 2: the orchestrator's control-plane bodies.
-	read, missing := e.readBodies(ctx, narr.Handle, agents, control)
+	read, missing := e.readBodies(ctx, narr.Handle, agents, control, false)
 	v.ControlPlane = read
 	if len(missing) > 0 {
 		g.add(GapNotFound, "amq could not read these", missing...)
@@ -516,7 +516,9 @@ func (e Env) buildView(ctx context.Context, narr agent, key core.SessionKey) (Se
 // readBodies reads the bodies of hs by exact id, thread by thread, from the
 // copies agents hold, newest first. A thread whose read fails is read id by
 // id, so one missing message costs only itself.
-func (e Env) readBodies(ctx context.Context, me core.Handle, agents []string, hs []amq.Header) (read []ViewMessage, missing []string) {
+// readBodies reads hs's bodies: excerpted for a stored view, or whole
+// (epic messages, which caps and spills them itself).
+func (e Env) readBodies(ctx context.Context, me core.Handle, agents []string, hs []amq.Header, whole bool) (read []ViewMessage, missing []string) {
 	byThread := map[string][]string{}
 	var threads []string
 	for _, h := range hs {
@@ -542,6 +544,10 @@ func (e Env) readBodies(ctx context.Context, me core.Handle, agents []string, hs
 		got := map[string]bool{}
 		for _, m := range msgs {
 			got[m.ID] = true
+			if whole {
+				read = append(read, ViewMessage{Ref: m.ID, From: m.From, To: m.To, Thread: m.Thread, Subject: m.Subject, Created: m.Created, Kind: m.Kind, Priority: m.Priority, Body: m.Body})
+				continue
+			}
 			read = append(read, excerpt(m))
 		}
 		for _, id := range ids {
@@ -612,7 +618,7 @@ func (e Env) ReadSessionMessages(ctx context.Context, loc Location, ids []string
 			authorized = append(authorized, h)
 		}
 	}
-	read, missing := e.readBodies(ctx, narr.Handle, agents, authorized)
+	read, missing := e.readBodies(ctx, narr.Handle, agents, authorized, true)
 	out.Messages = read
 	if len(missing) > 0 {
 		g.add(GapNotFound, "amq could not read these", missing...)

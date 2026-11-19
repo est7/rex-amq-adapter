@@ -101,7 +101,7 @@ func TestAnEpicsAgentsRunUnattendedButNotPersonal(t *testing.T) {
 		}
 	}
 
-	w.typeInto(tb.first, "epic e2e-unattended -c "+w.project("app")+" --asked open-it --timeout 40")
+	w.typeInto(tb.first, "epic open e2e-unattended --cwd "+w.project("app")+" --asked open-it --timeout 40")
 	w.until("the epic command to finish", 50*time.Second, func() bool { return strings.Contains(w.joined("me"), "exit=") })
 	out := w.joined("me")
 	if !strings.Contains(out, "exit=0") {
@@ -111,7 +111,7 @@ func TestAnEpicsAgentsRunUnattendedButNotPersonal(t *testing.T) {
 		Orchestrator struct{ Block string } `json:"orchestrator"`
 	}
 	line, _, _ := strings.Cut(out, "\n")
-	if err := json.Unmarshal([]byte(line), &res); err != nil || res.Orchestrator.Block == "" {
+	if err := envelopeData(line, &res); err != nil || res.Orchestrator.Block == "" {
 		t.Fatalf("output %q: %v", out, err)
 	}
 	// Adoption, which epic awaits, comes before the probes.
@@ -121,7 +121,7 @@ func TestAnEpicsAgentsRunUnattendedButNotPersonal(t *testing.T) {
 	w.wantProbe("narrator", "1")
 
 	summons := func() int { return strings.Count(w.joined("orchestrator"), "exit=") }
-	w.typeInto(res.Orchestrator.Block, "summon implementer --harness claude --asked start-a-worker --subject work --body e2e-worker")
+	w.typeInto(res.Orchestrator.Block, "agent summon implementer --harness claude --asked start-a-worker --subject work --body e2e-worker")
 	w.until("the summon to finish", 60*time.Second, func() bool { return summons() == 1 })
 	if got := w.joined("orchestrator"); !strings.Contains(got, "exit=0") {
 		t.Fatalf("summon:\n%s\n%s", got, w.dump())
@@ -142,7 +142,7 @@ func TestAnEpicsAgentsRunUnattendedButNotPersonal(t *testing.T) {
 		_, gone := w.record("worker")["departed_at"]
 		return gone
 	})
-	w.typeInto(res.Orchestrator.Block, "summon "+worker+" --subject again --body again")
+	w.typeInto(res.Orchestrator.Block, "agent summon "+worker+" --subject again --body again")
 	w.until("the resume to finish", 60*time.Second, func() bool { return summons() == 2 })
 	if got := w.joined("orchestrator"); strings.Count(got, "exit=0") != 2 || !strings.Contains(got, `"action":"resume"`) {
 		t.Fatalf("resume:\n%s\n%s", got, w.dump())

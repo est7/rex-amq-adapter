@@ -54,6 +54,10 @@ type SummonRequest struct {
 	// Council fans a review role out to one seat per harness in its
 	// routing (council.go): only for a review role, never with Harness.
 	Council bool
+	// DryRun resolves the target and runs the guards, then reports what
+	// would happen: no mail, no reservation, no pane. The trust preflight,
+	// which may grant a project under a declared root, does not run.
+	DryRun bool
 }
 
 // SummonResult is what happened. Block is set when an agent was launched
@@ -80,6 +84,8 @@ type SummonResult struct {
 	Passed  []string  `json:"passed_over,omitempty"`
 	// Seats is a council's outcome, one per harness of the role's routing.
 	Seats []SeatResult `json:"seats,omitempty"`
+	// DryRun marks a preview: Action is what would happen, nothing did.
+	DryRun bool `json:"dry_run,omitempty"`
 	// brief is the body a council mailed, which AwaitCouncil mails again to
 	// each seat adopted after its start.
 	brief string
@@ -110,6 +116,10 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 			return SummonResult{}, fmt.Errorf("%q is neither a handle (<kind>-<NN>) nor a role", r.Target)
 		}
 	}
+	// A dry run takes every real decision on this copy of the Env, whose
+	// trust preflight only reads, and stops before it reserves, mails, or
+	// launches.
+	e.preview = r.DryRun
 	if r.Council {
 		return e.council(ctx, loc, caller, r, target)
 	}
@@ -142,7 +152,7 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 			departed = &recs[i]
 		}
 	}
-	res := SummonResult{Parent: caller.Handle, Depth: caller.Depth + 1}
+	res := SummonResult{Parent: caller.Handle, Depth: caller.Depth + 1, DryRun: r.DryRun}
 	if r.Split && stealthTarget(recs, target, isHandle) {
 		res.Action, res.Reason = "refused", "a narrator or personal agent never shares a worker's tab: it runs in a tab of its own, so summon it without --split"
 		e.summonLog(caller, r, res)
@@ -193,22 +203,29 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 	}
 	if len(live) > 0 {
 		for _, rec := range live {
-			if err := e.mailAs(ctx, caller.Handle, rec.Handle, r.Kind, r.Subject, r.Body); err != nil {
-				return res, err
+			if !r.DryRun {
+				if err := e.mailAs(ctx, caller.Handle, rec.Handle, r.Kind, r.Subject, r.Body); err != nil {
+					return res, err
+				}
 			}
 			res.Handles = append(res.Handles, rec.Handle)
 			res.AgentSessionID, res.Cwd = rec.Session(), rec.Cwd
 		}
-		res.Action, res.Mailed = "deliver", true
+		res.Action, res.Mailed = "deliver", !r.DryRun
+		if r.DryRun {
+			return res, nil
+		}
 		e.summonLog(caller, r, res)
 		return res, nil
 	}
 	if departed != nil {
 		// Its mailbox waits for a resume whatever the guards say.
-		if err := e.mailAs(ctx, caller.Handle, departed.Handle, r.Kind, r.Subject, r.Body); err != nil {
-			return res, err
+		if !r.DryRun {
+			if err := e.mailAs(ctx, caller.Handle, departed.Handle, r.Kind, r.Subject, r.Body); err != nil {
+				return res, err
+			}
 		}
-		res.Mailed = true
+		res.Mailed = !r.DryRun
 		res.Handles = []core.Handle{departed.Handle}
 		res.AgentSessionID, res.Cwd = departed.Session(), departed.Cwd
 	}
@@ -219,7 +236,7 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 	}
 	// The guards and the reservation, together under the lifecycle lock:
 	// two summoners racing the cap both see the other's reservation.
-	tokens, err := e.reserve(ctx, caller, s, r.Kind, chain, target, []*agent{departed})
+	tokens, err := e.reserve(ctx, caller, s, r.Kind, chain, target, []*agent{departed}, r.DryRun)
 	if err != nil {
 		var refusal core.SummonCheck
 		if errors.As(err, &refusal) {
@@ -228,7 +245,9 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 		}
 		return res, err
 	}
-	res.Token = tokens[0]
+	if !r.DryRun {
+		res.Token = tokens[0]
+	}
 	if departed != nil {
 		return e.resume(ctx, caller, s, r, *departed, res)
 	}
@@ -236,7 +255,7 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 }
 
 func (e Env) refused(caller agent, r SummonRequest, res SummonResult, departed *agent) (SummonResult, error) {
-	if departed != nil {
+	if departed != nil && !r.DryRun {
 		res.Reason += "; the message waits in " + string(departed.Handle) + "'s mailbox for a resume"
 	}
 	e.summonLog(caller, r, res)
@@ -294,7 +313,7 @@ func (e Env) chain(recs []agent, rec agent) (chain []core.Peer, complete bool) {
 // fresh token, which reserves a place until adoption consumes it or it
 // expires. Each launch is a resume of the departed agent it names, or a
 // start (nil); either all of them fit the cap or none is reserved.
-func (e Env) reserve(ctx context.Context, caller agent, s Session, kind string, chain []core.Peer, target string, launches []*agent) ([]string, error) {
+func (e Env) reserve(ctx context.Context, caller agent, s Session, kind string, chain []core.Peer, target string, launches []*agent, dry bool) ([]string, error) {
 	unlock, err := e.Store.LockLifecycle(ctx)
 	if err != nil {
 		return nil, err
@@ -327,6 +346,9 @@ func (e Env) reserve(ctx context.Context, caller agent, s Session, kind string, 
 	if live+pending+len(launches) > core.SummonCap {
 		return nil, core.SummonCheck{Refused: true, Reason: fmt.Sprintf("%d new agents would take the session past its cap of %d: it already holds %d live agents and pending launches; deliver to the live ones or wait for one to finish", len(launches), core.SummonCap, live+pending)}
 	}
+	if dry {
+		return nil, nil
+	}
 	var tokens []string
 	for _, departed := range launches {
 		token, err := newToken()
@@ -345,6 +367,13 @@ func (e Env) reserve(ctx context.Context, caller agent, s Session, kind string, 
 		tokens = append(tokens, token)
 	}
 	return tokens, nil
+}
+
+// dropToken gives back the reservation a summon took; a dry run took none.
+func (e Env) dropToken(token string) {
+	if token != "" {
+		_ = e.Store.DeleteSummon(token)
+	}
 }
 
 // release gives back reservations whose launches will not happen.
@@ -370,12 +399,20 @@ func newToken() (string, error) {
 func (e Env) resume(ctx context.Context, caller agent, s Session, r SummonRequest, departed agent, res SummonResult) (SummonResult, error) {
 	p, refusal, err := e.planResume(ctx, caller, departed)
 	if err != nil || refusal != "" {
-		_ = e.Store.DeleteSummon(res.Token)
+		e.dropToken(res.Token)
 		if err != nil {
 			return res, err
 		}
-		res.Action, res.Reason = "refused", refusal+"; the message waits in "+string(departed.Handle)+"'s mailbox"
+		res.Action, res.Reason = "refused", refusal
+		if !r.DryRun {
+			res.Reason += "; the message waits in " + string(departed.Handle) + "'s mailbox"
+		}
 		e.summonLog(caller, r, res)
+		return res, nil
+	}
+	res.Harness = p.kind
+	if r.DryRun {
+		res.Action, res.Label, res.Cwd = "resume", p.label, p.cwd
 		return res, nil
 	}
 	block, err := e.launchPlanned(ctx, caller, s, r.Split, p, res.Token)
@@ -410,7 +447,7 @@ func (e Env) planResume(ctx context.Context, caller agent, departed agent) (p la
 	if cwd == "" {
 		return p, fmt.Sprintf("%s cannot be resumed: its working directory is not recorded and its transcript does not name one", departed.Handle), nil
 	}
-	bootstrap := fmt.Sprintf("Resumed by %s (summon on send): mail waits for you. Run %s drain --include-body and act on it.", caller.Handle, e.SelfBin)
+	bootstrap := fmt.Sprintf("Resumed by %s (summon on send): mail waits for you. Run %s mail drain --include-body and act on it.", caller.Handle, e.SelfBin)
 	cmd, ok := resumeCommand(departed.Kind, departed.Session(), bootstrap)
 	if !ok {
 		return p, fmt.Sprintf("%s (%s) cannot be resumed from outside", departed.Handle, departed.Kind), nil
@@ -438,7 +475,7 @@ func (e Env) launchPlanned(ctx context.Context, caller agent, s Session, split b
 // as its brief. A handle that names no agent cannot be started.
 func (e Env) start(ctx context.Context, caller agent, s Session, r SummonRequest, role string, busy []core.Kind, res SummonResult) (SummonResult, error) {
 	refuse := func(reason string) (SummonResult, error) {
-		_ = e.Store.DeleteSummon(res.Token)
+		e.dropToken(res.Token)
 		res.Action, res.Reason = "refused", reason
 		e.summonLog(caller, r, res)
 		return res, nil
@@ -489,7 +526,7 @@ func (e Env) start(ctx context.Context, caller agent, s Session, r SummonRequest
 	}
 	kind, passed, refusal, err := e.pickHarness(ctx, cwd, kinds, r.Harness == "" && core.ReviewRole(role))
 	if err != nil {
-		_ = e.Store.DeleteSummon(res.Token)
+		e.dropToken(res.Token)
 		return res, err
 	} else if refusal != "" {
 		res.Passed = passed
@@ -499,6 +536,10 @@ func (e Env) start(ctx context.Context, caller agent, s Session, r SummonRequest
 	p, ok := e.planStart(caller, route, kind, role, r.Subject, r.Body, cwd)
 	if !ok {
 		return refuse(fmt.Sprintf("unsupported harness %q; no agent was started", kind))
+	}
+	if r.DryRun {
+		res.Action, res.Label, res.Cwd = "start", p.label, p.cwd
+		return res, nil
 	}
 	block, err := e.launchPlanned(ctx, caller, s, r.Split, p, res.Token)
 	if err != nil {
@@ -549,7 +590,7 @@ func startAuthorized(r SummonRequest) string {
 // planStart is the launch of a new agent for role on kind in cwd, with body
 // as its brief; false for a harness the adapter cannot start.
 func (e Env) planStart(caller agent, route crew.Route, kind core.Kind, role, subject, body, cwd string) (launchPlan, bool) {
-	brief := body + "\n\nYou were started by " + string(caller.Handle) + " (summon on send). Report back with `" + e.SelfBin + " send --to " + string(caller.Handle) + " --subject \"…\" --body \"…\"`; the same request waits in your mailbox once you are adopted, so you can `" + e.SelfBin + " reply` to it."
+	brief := body + "\n\nYou were started by " + string(caller.Handle) + " (summon on send). Report back with `" + e.SelfBin + " mail send --to " + string(caller.Handle) + " --subject \"…\" --body \"…\"`; the same request waits in your mailbox once you are adopted, so you can `" + e.SelfBin + " mail reply` to it."
 	cmd := startCommand(kind, brief)
 	if len(cmd) == 0 {
 		return launchPlan{}, false
@@ -624,7 +665,11 @@ func (e Env) preflight(ctx context.Context, cwd string, kind core.Kind) (refusal
 	if info, err := os.Stat(cwd); err != nil || !info.IsDir() {
 		return fmt.Sprintf("the working directory %s does not exist (a removed worktree?), so no agent was started; name another with --cwd", cwd), nil
 	}
-	err = e.trustGate().Preflight(ctx, cwd, kind)
+	if e.preview {
+		err = e.trustGate().PreviewPreflight(cwd, kind)
+	} else {
+		err = e.trustGate().Preflight(ctx, cwd, kind)
+	}
 	if trust.Refusal(err) {
 		return err.Error(), nil
 	}
@@ -799,6 +844,9 @@ func (e Env) Deliver(ctx context.Context, loc Location, h core.Handle, kind, sub
 // audit trail: a failure is reported to Diagnostics and never fails the
 // summon, whose mail or pane already exists.
 func (e Env) summonLog(caller agent, r SummonRequest, res SummonResult) {
+	if r.DryRun {
+		return // a preview leaves no trace
+	}
 	entry := map[string]any{"at": e.Now().UTC().Format(time.RFC3339), "summoner": caller.Handle, "parent": caller.Parent, "depth": caller.Depth, "target": r.Target, "kind": r.Kind, "subject": r.Subject, "action": res.Action, "handles": res.Handles, "block": res.Block, "reason": res.Reason, "grant": r.Grant, "asked": r.Asked}
 	if res.Harness != "" {
 		entry["harness"] = res.Harness

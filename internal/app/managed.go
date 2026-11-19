@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/est7/rex-amq-adapter/internal/fault"
 	"io"
 	"os"
 	"path/filepath"
@@ -33,7 +34,7 @@ func (e Env) ManagedMail(ctx context.Context, loc Location, verb string, args []
 		return 1, err
 	}
 	if !ok || !rec.Live() {
-		return 1, errors.New("no AMQ identity for this pane")
+		return 1, fault.New(fault.NoIdentity, "no AMQ identity for this pane")
 	}
 	m := managed{e: e, rec: rec, root: e.Paths.Root(), stdin: stdin, stdout: stdout, stderr: stderr}
 	switch verb {
@@ -170,6 +171,7 @@ func (m managed) post(ctx context.Context, verb string, args []string) (int, err
 		}
 		return 1, err
 	}
+	m.e.repairWakers(ctx, sent.To)
 	if *asJSON {
 		_, err = m.stdout.Write(out)
 		return 0, err
@@ -177,6 +179,30 @@ func (m managed) post(ctx context.Context, verb string, args []string) (int, err
 	past := map[string]string{"send": "Sent", "reply": "Replied"}[verb]
 	_, err = fmt.Fprintf(m.stdout, "%s %s to %s\n", past, sent.ID, strings.Join(sent.To, ","))
 	return 0, err
+}
+
+// repairWakers brings back the dead wakers of the live recipients of a
+// delivered message. An idle agent runs no hooks, so a waker that died
+// would leave this mail unseen until its next turn; listing agents no
+// longer repairs it (it only reads), so the send that needs the doorbell
+// does. A waker that will not come up is reported, never a failed send:
+// the mail is in the inbox and the agent's next hook or collection tells it.
+func (e Env) repairWakers(ctx context.Context, to []string) {
+	ctx, cancel := context.WithTimeout(ctx, superviseFor)
+	defer cancel()
+	for _, h := range to {
+		rec, ok, err := e.agentOf(core.Handle(h))
+		if err != nil {
+			fmt.Fprintf(Diagnostics, "the waker of %s: %v\n", h, err)
+			continue
+		}
+		if !ok || !rec.Live() {
+			continue
+		}
+		if err := e.ensureWaker(ctx, rec); err != nil {
+			fmt.Fprintf(Diagnostics, "the waker of %s: %v\n", h, err)
+		}
+	}
 }
 
 // readable finds message id in the caller's mailbox and lets the gateway
@@ -190,7 +216,7 @@ func (m managed) readable(id string) (located, error) {
 		return located{}, err
 	}
 	if !ok {
-		return located{}, fmt.Errorf("no message %s in the mailbox of %s (quarantined mail is not readable)", id, m.me())
+		return located{}, fault.New(fault.NotFound, "no message %s in the mailbox of %s (quarantined mail is not readable)", id, m.me()).With("kind", "message")
 	}
 	return msg, m.e.exposed(m.rec.Handle, msg)
 }
@@ -430,7 +456,7 @@ func (m managed) thread(ctx context.Context, args []string) (int, error) {
 		}
 	}
 	if len(ids) == 0 {
-		return 3, fmt.Errorf("no message of thread %s that %s may read", *thread, m.me())
+		return 3, fault.New(fault.NotFound, "no message of thread %s that %s may read", *thread, m.me()).With("kind", "thread")
 	}
 	return m.run(ctx, "thread", "--me", m.me(), "--id", *thread, "--agents", m.me(), "--message-ids", strings.Join(ids, ","), mailFlagArgs(fs, "limit", "include-body", "json", "strict"))
 }
@@ -557,4 +583,80 @@ func (m managed) list(ctx context.Context, args []string) (int, error) {
 	}
 	_, err = fmt.Fprintf(m.stdout, "%s\n", b)
 	return 0, err
+}
+
+// PostPreview is what a send or reply would do: from whom, to whom, and the
+// gateway's decision on each recipient. Nothing is sent or recorded.
+type PostPreview struct {
+	Verb       string              `json:"verb"`
+	From       core.Handle         `json:"from"`
+	ReplyTo    string              `json:"reply_to,omitempty"`
+	Recipients []RecipientDecision `json:"recipients"`
+}
+
+// RecipientDecision is the gateway's decision on one recipient.
+type RecipientDecision struct {
+	Handle core.Handle `json:"handle"`
+	Allow  bool        `json:"allow"`
+	Reason string      `json:"reason"`
+}
+
+// PreviewPost judges, as a send (to) or a reply (replyTo) by the agent in
+// loc would be judged, every recipient, and sends nothing: `mail send
+// --dry-run` and `mail reply --dry-run`. A refusal is the error the send
+// would return, with the preview.
+func (e Env) PreviewPost(loc Location, to []core.Handle, replyTo, control string) (PostPreview, error) {
+	rec, ok, err := e.agentIn(loc)
+	if err != nil {
+		return PostPreview{}, err
+	}
+	if !ok || !rec.Live() {
+		return PostPreview{}, fault.New(fault.NoIdentity, "no AMQ identity for this pane")
+	}
+	p := PostPreview{Verb: "send", From: rec.Handle, Recipients: []RecipientDecision{}}
+	op := core.Operation{Kind: core.OpSend}
+	if control != "" {
+		if rec.Role != core.NarratorRole {
+			return p, fmt.Errorf("%w: only a narrator relays a control directive, and %s is %q", ErrRefused, rec.Handle, rec.Role)
+		}
+		op = core.Operation{Kind: core.OpControl, ControlRequestID: control}
+	}
+	from, err := e.endpointOf(rec.Handle)
+	if err != nil {
+		return p, err
+	}
+	if replyTo != "" {
+		p.Verb, p.ReplyTo, op.Kind = "reply", replyTo, core.OpReply
+		orig, ok, err := e.findMessage(rec.Handle, replyTo)
+		if err != nil {
+			return p, err
+		}
+		if !ok {
+			return p, fault.New(fault.NotFound, "no message %s in the mailbox of %s", replyTo, rec.Handle).With("kind", "message")
+		}
+		if err := e.exposed(rec.Handle, orig); err != nil {
+			return p, err
+		}
+		to = []core.Handle{core.Handle(orig.header.From)}
+		if orig.box == amq.BoxSent {
+			to = handles(orig.header.To)
+		}
+	}
+	links, err := e.Store.Links()
+	if err != nil {
+		return p, err
+	}
+	var refusal error
+	for _, h := range to {
+		ep, err := e.endpointOf(h)
+		if err != nil {
+			return p, err
+		}
+		d := core.CanExchange(from, ep, op, links)
+		p.Recipients = append(p.Recipients, RecipientDecision{Handle: h, Allow: d.Allow, Reason: d.Reason})
+		if !d.Allow && refusal == nil {
+			refusal = refusedSend(from, ep, d)
+		}
+	}
+	return p, refusal
 }

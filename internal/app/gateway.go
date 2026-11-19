@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"slices"
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/core"
+	"github.com/est7/rex-amq-adapter/internal/fault"
 	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
@@ -129,7 +131,14 @@ func (e Env) admit(rec agent) ([]string, error) {
 var ErrRefused = errors.New("refused by the gateway")
 
 func refused(what string, d core.Decision) error {
-	return fmt.Errorf("%w: %s (%s)", ErrRefused, what, d.Reason)
+	return refusal(fault.PermissionDenied, string(d.Reason), "%s (%s)", what, d.Reason)
+}
+
+// refusal is a refusal carrying its code and details.reason from where it
+// is decided, its message the same "refused by the gateway: …" text, and
+// still matching ErrRefused.
+func refusal(code fault.Code, reason, format string, a ...any) *fault.Error {
+	return fault.New(code, "%s: %s", ErrRefused, fmt.Sprintf(format, a...)).WithCause(ErrRefused).With("reason", reason)
 }
 
 // refusedSend is refused for from's send to to, pointing a member that tried
@@ -138,7 +147,7 @@ func refused(what string, d core.Decision) error {
 func refusedSend(from, to core.Endpoint, d core.Decision) error {
 	err := refused(fmt.Sprintf("%s to %s", from.Handle, to.Handle), d)
 	if d.Reason == core.ReasonPersonalOnly && to.Role == core.PersonalRole && from.Role != core.PersonalRole {
-		return fmt.Errorf(`%w: report with "rex-amq-adapter hand-back @<file>" (an Epic lead's path; the Epic's narrator relays it to the personal agent)`, err)
+		return fmt.Errorf(`%w: report with "rex-amq-adapter epic handback @<file>" (an Epic lead's path; the Epic's narrator relays it to the personal agent)`, err)
 	}
 	return err
 }
@@ -176,7 +185,7 @@ func (e Env) post(ctx context.Context, o Outgoing) (amq.Sent, []byte, error) {
 			return amq.Sent{}, nil, err
 		}
 		if !ok {
-			return amq.Sent{}, nil, fmt.Errorf("no message %s in the mailbox of %s", o.ReplyTo, o.From)
+			return amq.Sent{}, nil, fault.New(fault.NotFound, "no message %s in the mailbox of %s", o.ReplyTo, o.From).With("kind", "message")
 		}
 		if o.Check {
 			if err := e.exposed(o.From, orig); err != nil {
@@ -369,6 +378,16 @@ func joinHandles(hs []core.Handle) string {
 // (link false) revokes it. Either takes effect on the next decision, for
 // running wakers and hooks too. changed is false when nothing changed.
 func (e Env) Link(ctx context.Context, loc Location, epic string, link bool) (l core.Link, changed bool, err error) {
+	return e.link(ctx, loc, epic, link, false)
+}
+
+// PreviewLink is Link's every check with nothing written: changed says
+// whether Link would change the record.
+func (e Env) PreviewLink(ctx context.Context, loc Location, epic string, link bool) (core.Link, bool, error) {
+	return e.link(ctx, loc, epic, link, true)
+}
+
+func (e Env) link(ctx context.Context, loc Location, epic string, link, dryRun bool) (l core.Link, changed bool, err error) {
 	rec, ok, err := e.agentIn(loc)
 	if err != nil {
 		return l, false, err
@@ -384,13 +403,25 @@ func (e Env) Link(ctx context.Context, loc Location, epic string, link bool) (l 
 	}
 	l = core.Link{Personal: rec.Endpoint().Session(), Epic: core.SessionKey{Server: rec.Server, SessionID: epic}}
 	if !link {
+		if dryRun {
+			return l, e.hasLink(l), nil
+		}
 		changed, err = e.Store.DeleteLink(l)
 		return l, changed, err
 	}
 	if _, err := e.Rex.InspectSession(ctx, epic); err != nil {
 		return l, false, fmt.Errorf("Epic session %s: %w", epic, err)
 	}
+	if dryRun {
+		return l, !e.hasLink(l), nil
+	}
 	return l, true, e.Store.PutLink(l)
+}
+
+// hasLink reports whether l is recorded; an unreadable store counts as no.
+func (e Env) hasLink(l core.Link) bool {
+	all, err := e.Store.Links()
+	return err == nil && slices.Contains(all, l)
 }
 
 // LinksOf lists the links of the Personal agent in loc.
