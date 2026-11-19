@@ -53,11 +53,16 @@ func (e Env) observeStartup(ctx context.Context, block string) (core.StartupObse
 	if err != nil {
 		return o, err
 	}
-	o.State, o.BlockedKind = core.AgentState(status.State), status.Kind
 	vt, err := e.Rex.CaptureVT(ctx, block)
 	if err != nil {
 		return o, err
 	}
+	var kind core.Kind // "" before adoption
+	if ok {
+		kind = rec.Kind
+	}
+	status = normalizeProgramStatus(kind, status, vt)
+	o.State, o.BlockedKind = core.AgentState(status.State), status.Kind
 	// The kind is unknown before adoption: any agent's dialog counts.
 	o.TrustPhrase, _ = screen.TrustScreen("", vt)
 	return o, nil

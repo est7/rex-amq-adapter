@@ -321,6 +321,11 @@ func (e Env) unrest(ctx context.Context, on Terminal, rec agent) (string, error)
 		case !ok:
 			return fmt.Sprintf("%s: reports no state", rec.Handle), nil
 		}
+		if isAgyApprovePlan(rec.Kind, st) {
+			if vt, err := on.CaptureVT(ctx, rec.BlockID); err == nil {
+				st = normalizeProgramStatus(rec.Kind, st, vt)
+			}
+		}
 	}
 	if !core.AgentState(st.State).AtRest() {
 		return fmt.Sprintf("%s: %s", rec.Handle, st.State), nil

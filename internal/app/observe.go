@@ -186,6 +186,12 @@ func (e Env) observeActivity(ctx context.Context, recs []agent) map[core.Handle]
 		case err != nil:
 			a.Err = true
 		case ok:
+			// Only agy's "Approve plan" needs the screen: other polls capture nothing.
+			if isAgyApprovePlan(r.Kind, st) {
+				if vt, err := e.RexOn(r.Server).CaptureVT(ctx, r.BlockID); err == nil {
+					st = normalizeProgramStatus(r.Kind, st, vt)
+				}
+			}
 			a.State, a.Kind = core.AgentState(st.State), st.Kind
 		}
 		out[r.Handle] = a
