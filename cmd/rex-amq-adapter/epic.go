@@ -108,6 +108,39 @@ func epicClose(c *cli.Ctx, in cli.Input) (cli.Result, error) {
 	return cli.Result{Data: res}, nil
 }
 
+// epicRevive resumes an Epic's agents in place after a Rex restart, for a
+// personal agent of a Hub it is linked to or for the user; what it began is
+// in data even when part of it failed, which exits 7 (partial_start).
+func epicRevive(c *cli.Ctx, in cli.Input) (cli.Result, error) {
+	asked, err := readText(in.Str("asked"), c.Stdin)
+	if err != nil {
+		return cli.Result{}, err
+	}
+	env, _, err := caller(c)
+	if errors.Is(err, app.ErrNotInRex) {
+		if env, err = app.NewEnv(c.Getenv("REX_SERVER")); err != nil {
+			return cli.Result{}, err
+		}
+	} else if err != nil {
+		return cli.Result{}, err
+	}
+	timeout := in.Duration("timeout", 90*time.Second)
+	ctx, cancel := within(c, timeout)
+	defer cancel()
+	res, err := env.ReviveEpic(ctx, c.Getenv, app.ReviveRequest{Session: in.Arg("session"), Asked: strings.TrimSpace(asked),
+		OpID: in.Str("op-id"), Timeout: timeout, DryRun: in.DryRun()})
+	switch {
+	case err != nil && !res.Touched():
+		return cli.Result{}, err
+	case err != nil:
+		return cli.Result{Data: res}, fault.New(fault.PartialStart, "part of the Epic %s was revived, then: %v", res.SessionID, app.Classify(err).Message).
+			With("cause", app.Classify(err).Code)
+	case !res.DryRun && !res.Ready():
+		return cli.Result{Data: res}, fault.New(fault.PartialStart, "the Epic %s was revived, but not every agent was adopted within %s; data says what each one's startup showed", res.SessionID, timeout)
+	}
+	return cli.Result{Data: res}, nil
+}
+
 // epicList lists the Epics linked to a Hub: the caller's, or from outside a
 // personal agent's pane the one --hub names, the Hub of the personal agent
 // --personal names (a filter too), or the default Hub (app.ReadCockpitView).

@@ -1642,7 +1642,7 @@ Overridable with `REX_AMQ_ADAPTER_HOME` (tests use a temporary directory).
 │       ├── sessions/<session_id>/goal.md     a goal contract piped in with epic open --goal - (0444, written once)
 │       ├── sessions/<session_id>/grant.json  the Epic's notarized grant: asked, relayed_by, relayed_at, contract, contract_sha256 (0444, written once)
 │       ├── sessions/<session_id>/grant.md    the same grant for agents to read, the user's words quoted verbatim (0444)
-│       └── epic-ops/<open|close>-<sha256(op_id)>.json  one epic open or epic close --op-id request and how far it got
+│       └── epic-ops/<open|close|revive>-<sha256(op_id)>.json  one epic open, close, or revive --op-id request and how far it got
 ├── bin/inject                the wrapper amq wake runs as --inject-via
 ├── identities/<handle>.json  who each handle is: kind, role, sessions, cwd, fence, last placement
 ├── activity/<handle>         touched at each prompt a personal agent submits: when the user last spoke to it
@@ -1656,6 +1656,8 @@ Overridable with `REX_AMQ_ADAPTER_HOME` (tests use a temporary directory).
 ├── logs/watch-<session>.log  a session watcher's stdout/stderr
 ├── logs/hooks.log            hook failures
 ├── logs/summon.log           summon launches and self-attested grants
+├── logs/revive.log           one JSON line per epic revive: who, the user's --asked words, each agent's action
+├── revive/<token>.sh         a one-shot launcher epic revive types into a restored shell; it removes itself
 ├── logs/trust.log            every folder-trust grant (trust grant, a trust root's first need)
 ├── logs/crash-<time>.txt     a redacted dump of a crash
 ├── cache/blobs/<sha256>.txt  a message body past a read's cap, in full (0600)
@@ -2010,6 +2012,83 @@ op id.
 
 The session's watcher, with no orchestrator or narrator live, exits on its
 own. A direct session the user started is never an Epic to close.
+
+### Reviving an Epic after a Rex restart
+
+A Rex server restart, or a reboot after which Rex restores its sessions, keeps
+an Epic's session, windows, and block ids and kills every process in them:
+each block comes back as an idle login shell, and `rex whoami` reports a new
+`instance_id`. The adapter's state survives whole: `lifecycle.json`,
+`policy.json`, `crew.json`, `grant.json`, each handle's identity (kind, role,
+task, `sessions` with the current conversation last, model, effort,
+`unattended`, `cwd`, fence, last placement), and the dead agents' leases,
+which still name the old `server_instance`. `rex-amq-adapter epic revive
+<session_id> [--asked "WORDS"] [--timeout 90s] [--op-id ID] [--dry-run]`
+(`app.Env.ReviveEpic`, `internal/app/revive.go`) puts those conversations back
+in their own blocks:
+
+1. Guards, before any effect. The caller is the user (outside Rex, or a pane
+   with no live agent, past `HumanGate`) or a live `personal` agent of a Hub
+   the Epic is linked to (`personalLinked`); anyone else is refused. The
+   session has a lifecycle (`not_found` otherwise) that is not `closed`
+   (`conflict`, `reason: epic_closed`: a closed Epic is never revived), and Rex
+   still has it (`not_found`, `kind: session`). An op id already recorded for
+   another request (another session or caller) is `conflict`. A live run
+   holds `epic-lifecycle.lock` from this check until every pane is written, so
+   a concurrent close cannot kill the session in between.
+2. Reconcile. A live run collects the Epic's records first, so a lease whose
+   process died or whose server instance changed is released as the watcher
+   would (`agent_gone`); a dry run writes nothing and reads each such lease as
+   the departure collection would record (`wouldPark`).
+3. Select (`reviveCandidate`). The session's lead (its `lead_role` and
+   `lead_handle`, `leadRule`) and its narrator always; a personal agent never;
+   any other agent that is live or was parked `agent_gone` or
+   `agent_left_pane`, the reasons a restart leaves. One that departed
+   `retired`, `session_end`, `epic_closed`, `replaced`, or `block_gone` stays
+   down. An agent live on the current instance is left alone and reported
+   `already_live`, `ready`, which makes a retry resume only what is still down.
+4. Plan, per departed agent (`planReviveAgent`). Its latest conversation id
+   (`Identity.Session()`) must look like one (`core.ValidateResumeSessionID`:
+   letters, digits, dashes, never a leading `-`); its directory is its
+   recorded `cwd`, else its transcript's; its model and effort are re-parsed
+   (`resumeLaunch`) and its folder trust preflighted. The command is
+   `resumeCommand` with `core.Launch.Args` placing the flags as `summon` does,
+   the `REX_AMQ_MODEL`/`REX_AMQ_EFFORT` env adoption records, and
+   `ME_UNATTENDED=1` (`launchUnattended`: always for a lead, a narrator, or an
+   agent recorded unattended). Its first prompt names who revived it and
+   tells it to drain its mail.
+5. Place. When the agent's block is still in the session, `paneFree` decides
+   whether it may be typed into: no other handle leases it, its foreground is
+   a shell (`isShell`), and its screen ends at an empty prompt
+   (`screen.ShellPromptEmpty`: the last non-blank line ends in a prompt glyph,
+   failing closed on anything else). It is checked again under the lifecycle
+   lock just before the write (`resumeInPlace`). The command goes into a
+   `0700` one-shot script under `<state>/revive/` that removes itself, `cd`s,
+   and `exec`s the argv, and the shell is sent `/bin/sh '<script>'`: the
+   user's login shell may be fish, whose quoting differs from sh's, and a
+   failed `cd` leaves the shell and the block as they were. A pane that fails
+   the check is that agent's refusal (`action: refused`, its reason), never a
+   clobbered draft. A lead or narrator whose block is gone from the session
+   gets a tab of its own instead (`openTab`, `respawned_window`); another
+   agent whose block is gone is refused.
+6. Await and settle. It waits, up to `--timeout`, for each resumed block to be
+   adopted as the same handle (`AwaitStartup`); the resumed conversation's
+   first hook takes its handle back by lineage, under the next lease epoch,
+   with the new `server_instance`. Then it starts the session's watcher if
+   none runs and rebuilds the narrator's view. The JSON lists each agent's
+   `handle`, `kind`, `role`, `block`, `agent_session_id`, `cwd`, `action`, and
+   `status` (`ready`, or how its startup ended); it exits 0 when every agent is
+   `ready`, else 7 (`partial_start`) with all of it in `data`.
+
+`--op-id` keeps an `epic-ops/revive-<sha256(ID)>.json` record (state
+`revived`) whose `request_hash` covers the session and the caller (a personal
+agent's session key, or the user); a retry prints `"replayed":true` and, since
+revive is idempotent by `already_live`, resumes only what is still down.
+Every live revive appends a line, the user's `--asked` words included, to
+`logs/revive.log`. A server that started without restoring its sessions keeps
+no block to revive in: that is `not_found`, and the handles come back only as
+their conversations are started again by hand (the rebuild case of
+`internal/e2e/restart_test.go`).
 
 ### Retiring a peer
 

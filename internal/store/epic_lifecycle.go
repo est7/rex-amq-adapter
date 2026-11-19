@@ -203,8 +203,9 @@ func (s Store) PutEpicLifecycle(l EpicLifecycle) error {
 
 // Epic operation kinds.
 const (
-	EpicOpOpen  = "open"
-	EpicOpClose = "close"
+	EpicOpOpen   = "open"
+	EpicOpClose  = "close"
+	EpicOpRevive = "revive"
 )
 
 // Epic operation states, besides the lifecycle's own (EpicPartialStart,
@@ -215,9 +216,12 @@ const (
 const (
 	EpicCreating = "creating"
 	EpicClosing  = "closing"
+	// EpicRevived is an `epic revive --op-id` that resumed what it found:
+	// a retry replays its record and resumes again only what is not live.
+	EpicRevived = "revived"
 )
 
-// EpicOpRecord is one `epic --op-id` or `epic close --op-id` request and how
+// EpicOpRecord is one `epic open`, `epic close`, or `epic revive --op-id` request and how
 // far it got. RequestHash identifies the request (who asked for what), so
 // the same op id reused for another request is told apart from a retry.
 type EpicOpRecord struct {
@@ -243,8 +247,9 @@ type EpicOpRecord struct {
 
 // opRank orders the states of each kind of operation.
 var opRank = map[string]map[string]int{
-	EpicOpOpen:  {EpicCreating: 1, EpicPartialStart: 2, EpicOpened: 3},
-	EpicOpClose: {EpicClosing: 1, EpicClosed: 2},
+	EpicOpOpen:   {EpicCreating: 1, EpicPartialStart: 2, EpicOpened: 3},
+	EpicOpClose:  {EpicClosing: 1, EpicClosed: 2},
+	EpicOpRevive: {EpicRevived: 1},
 }
 
 // Advance moves the operation to state at, unless it is already as far or

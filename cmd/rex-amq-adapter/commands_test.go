@@ -292,6 +292,36 @@ func TestEpicRejectsBadUsage(t *testing.T) {
 	})
 }
 
+// epic revive takes the Epic's session and nothing else, is the user's
+// from outside Rex (the human gate, before any Rex call), and refuses a
+// session with no Epic lifecycle as not_found, live or as a dry run; its
+// --op-id and --timeout are checked before any I/O.
+func TestEpicReviveCommands(t *testing.T) {
+	isolate(t)
+	stubTools(t)
+	s := "session:01a1eac4-f222-7d79-9291-9a8a86d39ec3"
+	check(t, []want{
+		{[]string{"epic", "revive"}, 2, "usage"},
+		{[]string{"epic", "revive", "s"}, 2, "invalid_input"},
+		{[]string{"epic", "revive", s, "extra"}, 2, "usage"},
+		{[]string{"epic", "revive", s, "--nope"}, 2, "usage"},
+		{[]string{"epic", "revive", s, "--timeout", "soon"}, 2, "invalid_input"},
+		{[]string{"epic", "revive", s, "--op-id", "a\tb"}, 2, "invalid_input"},
+		{[]string{"epic", "revive", s}, 4, "not_found"},
+		{[]string{"epic", "revive", s, "--dry-run", "--asked", "bring it back"}, 4, "not_found"},
+	})
+	spec := registry().Find("epic", "revive")
+	if spec == nil {
+		t.Fatal("epic revive is not registered")
+	}
+	if spec.Tier != cli.TierLaunch || !spec.Mutating || !spec.Idempotent || !spec.DryRun || spec.Audience != cli.AudienceAgent ||
+		spec.Guard != cli.GuardHumanOutsideRex || !slices.Equal(spec.Roles, []string{"personal", "human"}) {
+		t.Errorf("epic revive's spec: %+v", spec)
+	}
+	t.Setenv("ME_UNATTENDED", "1")
+	check(t, []want{{[]string{"epic", "revive", s}, 6, "guard_denied"}})
+}
+
 // epic open --goal - pipes the contract in on stdin, whole up to one byte
 // past the limit (so the open refuses an oversized one rather than a cut
 // one), as text, never a path; empty stdin is usage. A file stays a path.

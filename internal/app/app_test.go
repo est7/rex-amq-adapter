@@ -71,6 +71,9 @@ type fakeTerm struct {
 	statusGone     bool                                  // ProgramStatus of a block not in windows is ErrNotFound, as Rex's
 	started        func(launch)                          // runs as NewWindow returns: the launched agent's first hook racing its caller
 	sessionStarted func(session string, blocks []string) // runs as NewSession returns: its agents' first hooks racing the caller
+	screens        map[string]string                     // block -> its VT screen, overriding the Codex box
+	writesTo       []string                              // "block<-data", every Write in order
+	wrote          func(block, data string)              // runs after a Write: a command typed into a shell starting an agent
 }
 
 func (f *fakeTerm) Whoami(context.Context) (rex.Server, error) {
@@ -107,9 +110,12 @@ func (f *fakeTerm) ProgramStatus(_ context.Context, block string) (rex.Status, b
 	return rex.Status{State: f.state}, f.state != "", nil
 }
 
-func (f *fakeTerm) CaptureVT(context.Context, string) (string, error) {
+func (f *fakeTerm) CaptureVT(_ context.Context, block string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if vt, ok := f.screens[block]; ok {
+		return vt, nil
+	}
 	box := "\x1b[2mAsk Codex to do anything\x1b[0m"
 	if f.box != "" {
 		box = f.box
@@ -117,8 +123,14 @@ func (f *fakeTerm) CaptureVT(context.Context, string) (string, error) {
 	return "  >_ OpenAI Codex\n\n› " + box + "\n\n  gpt · Context 0% used\n", nil
 }
 
-func (f *fakeTerm) Write(_ context.Context, _ string, data string) error {
+func (f *fakeTerm) Write(_ context.Context, block string, data string) error {
 	f.mu.Lock()
+	f.writesTo = append(f.writesTo, block+"<-"+data)
+	if wrote := f.wrote; wrote != nil {
+		f.mu.Unlock()
+		defer wrote(block, data)
+		f.mu.Lock()
+	}
 	defer f.mu.Unlock()
 	f.writes = append(f.writes, data)
 	if f.submit {
