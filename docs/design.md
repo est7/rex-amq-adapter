@@ -1376,7 +1376,9 @@ coalesce or drop events. Its peers start with `pi "<brief>"`.
 agent's own stop hook as it ends, from the harness's own reason and never from
 wording: Claude Code `StopFailure`; Antigravity's `terminationReason`
 (`MAX_INVOCATIONS`, `MAX_TOKEN_BUDGET_EXCEEDED`, and `MAX_FORCED_INVOCATIONS`
-are `turn_limit`, any other but `NO_TOOL_CALL` is `turn_error`); Pi's settle
+are `turn_limit`; `NO_TOOL_CALL`, `TERMINAL_STEP_TYPE`,
+`TERMINAL_CUSTOM_HOOK`, and `INJECTED_RESPONSE` end normally; any other is
+`turn_error`); Pi's settle
 `outcome: error`; Codex a `Stop` whose rollout's last row is the turn's own
 error, so a stream error it recovered from is not reported. A cancelled turn
 (`USER_CANCELED`, Pi's `aborted`) reports nothing. Only the pane's own agent

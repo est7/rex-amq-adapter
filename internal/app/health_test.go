@@ -847,3 +847,79 @@ func TestTurnErrorHooksNamingNoSessionFromAnotherProcessAreIgnored(t *testing.T)
 		t.Fatal("a hook naming no session cleared claude-04's error mark")
 	}
 }
+
+// Antigravity's controlled non-error terminationReason values (such as
+// TERMINAL_CUSTOM_HOOK when yielding on swarm_wait or a custom hook,
+// TERMINAL_STEP_TYPE, and INJECTED_RESPONSE) must run the normal stop path for
+// a personal Stealth agent without writing a turn-error record or emitting a
+// desktop notification, while ERROR still marks turn-error and notifies the
+// desktop.
+func TestAgyPersonalStealthNonErrorStopProducesNoTurnErrorOrDesktopNotice(t *testing.T) {
+	e, _, _, _, now, desktop := healthWorld(t)
+	e.Rex.(*fakeTerm).windows["block:personal"] = "window:2"
+	rec := seed{
+		Handle: "agy-18", Kind: core.Agy, Role: core.PersonalRole, Server: "unix:///fake.sock",
+		BlockID: "block:personal", SessionID: "session:s", WindowID: "window:2",
+		AgentPID: os.Getpid(), AgentSessionID: "conv-18", AdoptedAt: *now, FirstAdoptedAt: *now,
+	}
+	if !core.Stealth(rec.Role) {
+		t.Fatalf("expected %q to be a Stealth role", rec.Role)
+	}
+	planted := plant(t, e, rec)
+	if err := e.AMQ.EnsureMailbox(context.Background(), e.Paths.Root(), "agy-18"); err != nil {
+		t.Fatal(err)
+	}
+	loc := Location{Server: "unix:///fake.sock", Block: "block:personal"}
+
+	for _, reason := range []string{"TERMINAL_CUSTOM_HOOK", "TERMINAL_STEP_TYPE", "INJECTED_RESPONSE"} {
+		r, err := e.Hook(context.Background(), EventStop, core.Agy, loc, HookInput{
+			ConversationID:    "conv-18",
+			TerminationReason: reason,
+		})
+		if err != nil {
+			t.Fatalf("%s: unexpected error: %v", reason, err)
+		}
+		if r.Notice != "" {
+			t.Fatalf("%s with empty inbox: unexpected notice %q", reason, r.Notice)
+		}
+		if m, ok, err := e.Store.TurnError("agy-18"); err != nil || ok {
+			t.Fatalf("%s wrote turn-error record: %+v err=%v", reason, m, err)
+		}
+		if len(*desktop) != 0 {
+			t.Fatalf("%s emitted desktop notifications: %v", reason, *desktop)
+		}
+		if len(inboxOf(t, e, "orch-01")) != 0 || len(inboxOf(t, e, "codex")) != 0 {
+			t.Fatalf("%s sent error mail: orch=%v codex=%v", reason, inboxOf(t, e, "orch-01"), inboxOf(t, e, "codex"))
+		}
+	}
+
+	// Positive control: a real ERROR on the same personal Stealth agent marks
+	// turn-error and notifies the desktop, and a subsequent TERMINAL_CUSTOM_HOOK
+	// normal stop clears that mark without emitting another notification.
+	if r, err := e.Hook(context.Background(), EventStop, core.Agy, loc, HookInput{
+		ConversationID:    "conv-18",
+		TerminationReason: "ERROR",
+		Error:             "DEADLINE_EXCEEDED",
+	}); err != nil || r.Notice != "" {
+		t.Fatalf("ERROR: r=%+v err=%v", r, err)
+	}
+	if !e.flagged(planted) {
+		t.Fatal("ERROR did not mark personal Stealth agent turn-error")
+	}
+	if len(*desktop) != 1 || !strings.Contains((*desktop)[0], "agy-18: turn_error: ERROR") {
+		t.Fatalf("ERROR desktop notifications = %v, want 1 turn_error notice", *desktop)
+	}
+
+	if _, err := e.Hook(context.Background(), EventStop, core.Agy, loc, HookInput{
+		ConversationID:    "conv-18",
+		TerminationReason: "TERMINAL_CUSTOM_HOOK",
+	}); err != nil {
+		t.Fatalf("TERMINAL_CUSTOM_HOOK after ERROR: %v", err)
+	}
+	if m, ok, err := e.Store.TurnError("agy-18"); err != nil || ok {
+		t.Fatalf("TERMINAL_CUSTOM_HOOK did not clear turn-error mark: %+v err=%v", m, err)
+	}
+	if len(*desktop) != 1 {
+		t.Fatalf("TERMINAL_CUSTOM_HOOK after ERROR emitted extra desktop notice: %v", *desktop)
+	}
+}
