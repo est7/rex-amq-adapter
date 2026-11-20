@@ -292,6 +292,14 @@ const (
 	StopError
 )
 
+// Antigravity's terminationReason values for a normal or controlled non-error end.
+var agyNormalStops = map[string]bool{
+	"NO_TOOL_CALL":         true,
+	"TERMINAL_STEP_TYPE":   true,
+	"TERMINAL_CUSTOM_HOOK": true,
+	"INJECTED_RESPONSE":    true,
+}
+
 // Antigravity's terminationReason values for a turn that hit a limit.
 var agyTurnLimits = map[string]bool{
 	"MAX_INVOCATIONS":           true,
@@ -300,17 +308,18 @@ var agyTurnLimits = map[string]bool{
 }
 
 // ClassifyStop reads a Stop or settle: Antigravity's terminationReason
-// (NO_TOOL_CALL is its normal end) and Pi's settle outcome (completed,
-// error, aborted). An outcome this does not know ends normally, so a future
-// Pi value never produces error mail; any other terminationReason is an
-// error. Claude Code and Codex send neither field.
+// (NO_TOOL_CALL, TERMINAL_STEP_TYPE, TERMINAL_CUSTOM_HOOK, and
+// INJECTED_RESPONSE are its normal/non-error ends) and Pi's settle outcome
+// (completed, error, aborted). An outcome this does not know ends normally,
+// so a future Pi value never produces error mail; any other
+// terminationReason is an error. Claude Code and Codex send neither field.
 func ClassifyStop(terminationReason, outcome string) StopClass {
 	switch {
 	case terminationReason == "USER_CANCELED" || outcome == "aborted":
 		return StopCancelled
 	case agyTurnLimits[terminationReason]:
 		return StopLimit
-	case terminationReason != "" && terminationReason != "NO_TOOL_CALL", outcome == "error":
+	case terminationReason != "" && !agyNormalStops[terminationReason], outcome == "error":
 		return StopError
 	default:
 		return StopNormal
