@@ -593,6 +593,38 @@ func TestFlagValuesAreNotGlobals(t *testing.T) {
 	})
 }
 
+// A send to more than one distinct handle with no --thread is a usage error
+// naming --thread, decided from the arguments alone: in dry-run and
+// execution, from flags and --input, before the caller is resolved (here
+// there is none, which would exit 5). Repeated or empty handles count once,
+// and a named thread passes, so those reach the caller check.
+func TestMailSendRefusesBareMultiRecipient(t *testing.T) {
+	isolate(t)
+	stubTools(t)
+	refused := func(t *testing.T, stdin string, args ...string) {
+		t.Helper()
+		r := invoke(t, stdin, args...)
+		env := decode(t, args, r)
+		if r.code != 2 || env.code() != "usage" || !strings.Contains(env.Error.Message, "--thread") {
+			t.Errorf("%q: exit %d, %+v; want 2 usage naming --thread", args, r.code, env.Error)
+		}
+	}
+	for _, dry := range [][]string{{"--dry-run"}, nil} {
+		refused(t, "", append([]string{"mail", "send", "--to", "codex-01,agy-03", "--subject", "s", "--body", "b"}, dry...)...)
+		refused(t, "", append([]string{"mail", "send", "--to", "codex-01, agy-03,codex-01", "--subject", "s", "--body", "b"}, dry...)...)
+		refused(t, `{"to":"codex-01,agy-03","subject":"s","body":"b"}`, append([]string{"mail", "send", "--input", "-"}, dry...)...)
+	}
+	refused(t, `{"to":"codex-01,agy-03","subject":"s","body":"b","dry-run":true}`, "mail", "send", "--input", "-")
+
+	for _, dry := range [][]string{{"--dry-run"}, nil} {
+		check(t, []want{
+			{append([]string{"mail", "send", "--to", "codex-01,codex-01", "--subject", "s", "--body", "b"}, dry...), 5, "failed_precondition"},
+			{append([]string{"mail", "send", "--to", "codex-01,", "--subject", "s", "--body", "b"}, dry...), 5, "failed_precondition"},
+			{append([]string{"mail", "send", "--to", "codex-01,agy-03", "--thread", "design/x", "--subject", "s", "--body", "b"}, dry...), 5, "failed_precondition"},
+		})
+	}
+}
+
 // trust root add|remove --dry-run makes the real update's checks: an
 // unbounded root, a root that is not declared, and a path that does not
 // resolve fail as they would, and nothing is written.

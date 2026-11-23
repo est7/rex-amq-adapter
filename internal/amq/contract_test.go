@@ -186,6 +186,54 @@ func TestQueueContract(t *testing.T) {
 	}
 }
 
+// amq refuses a send to more than one distinct recipient that names no
+// thread, and delivers it to every recipient under the thread it names.
+// Repeated or empty handles count once, so they need no thread.
+func TestQueueContractMultiRecipient(t *testing.T) {
+	for _, tc := range targets(t) {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			root := filepath.Join(t.TempDir(), "root")
+			for _, h := range []string{"alice", "bob", "carol"} {
+				if err := tc.q.EnsureMailbox(ctx, root, h); err != nil {
+					t.Fatalf("mailbox %s: %v", h, err)
+				}
+			}
+
+			if sent, _, err := tc.q.Post(ctx, root, "send", "--me", "alice", "--to", "bob,carol", "--subject", "s", "--body", "b"); err == nil {
+				t.Fatalf("a send to bob,carol with no thread was accepted: %+v", sent)
+			}
+			for _, h := range []string{"bob", "carol"} {
+				if ids, err := Unread(root, h); err != nil || len(ids) != 0 {
+					t.Fatalf("the refused send reached %s: %v %v", h, ids, err)
+				}
+			}
+
+			for _, to := range []string{"bob,bob", "bob,"} {
+				sent, _, err := tc.q.Post(ctx, root, "send", "--me", "alice", "--to", to, "--subject", "s", "--body", "b")
+				if err != nil || !slices.Equal(sent.To, []string{"bob"}) || sent.Thread != "p2p/alice__bob" {
+					t.Fatalf("--to %s is one recipient on the p2p thread: %+v %v", to, sent, err)
+				}
+			}
+			if ids, _ := Unread(root, "bob"); len(ids) != 2 {
+				t.Fatalf("bob holds one copy of each single-recipient send: %v", ids)
+			}
+
+			sent, _, err := tc.q.Post(ctx, root, "send", "--me", "alice", "--to", "bob,carol", "--thread", "design/x", "--subject", "ledger", "--body", "b")
+			if err != nil || !slices.Equal(sent.To, []string{"bob", "carol"}) || sent.Thread != "design/x" {
+				t.Fatalf("named-thread multicast: %+v %v", sent, err)
+			}
+			for _, h := range []string{"bob", "carol"} {
+				hd, err := ReadHeader(root, h, BoxUnread, sent.ID)
+				if err != nil || hd.Thread != "design/x" || hd.From != "alice" || !slices.Equal(hd.To, []string{"bob", "carol"}) {
+					t.Fatalf("%s's copy of the multicast: %+v %v", h, hd, err)
+				}
+			}
+		})
+	}
+}
+
 // An override that names no binary is an error, so a run without amq skips
 // its real-amq tests instead of failing each one on a missing executable.
 func TestResolveBinRejectsAMissingOverride(t *testing.T) {

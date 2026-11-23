@@ -150,6 +150,56 @@ func TestManagedMailReadDrainAndThread(t *testing.T) {
 	}
 }
 
+// A send to one member keeps amq's p2p thread; a send to several members of
+// the caller's Epic under a named thread reaches each of them on that thread.
+// The adapter names no thread itself, so the bare multicast stays refused.
+func TestManagedMailMultiRecipientThread(t *testing.T) {
+	e, ctx := managedWorld(t)
+	put(t, e, seed{Handle: "agy-03", Role: "architect", SessionID: "session:a"})
+	if err := e.AMQ.EnsureMailbox(ctx, e.Paths.Root(), "agy-03"); err != nil {
+		t.Fatal(err)
+	}
+	send := func(args ...string) amq.Sent {
+		t.Helper()
+		out, code, err := run(t, e, ctx, "claude-02", "send", append(args, "--subject", "ledger", "--body", "round 1", "--kind", "status", "--json")...)
+		if err != nil || code != 0 {
+			t.Fatalf("send %q: %d %v %s", args, code, err, out)
+		}
+		var sent amq.Sent
+		if err := json.Unmarshal([]byte(out), &sent); err != nil || sent.ID == "" {
+			t.Fatalf("send %q output %q", args, out)
+		}
+		return sent
+	}
+
+	one := send("--to", "codex-01")
+	if one.Thread != "p2p/claude-02__codex-01" || strings.Join(one.To, ",") != "codex-01" {
+		t.Fatalf("a single recipient left the p2p default: %+v", one)
+	}
+
+	if _, _, err := run(t, e, ctx, "claude-02", "send", "--to", "codex-01,agy-03", "--subject", "s", "--body", "b"); err == nil {
+		t.Fatal("a multicast with no thread was sent")
+	}
+
+	many := send("--to", "codex-01,agy-03", "--thread", "design/board")
+	if many.Thread != "design/board" || strings.Join(many.To, ",") != "codex-01,agy-03" {
+		t.Fatalf("named-thread multicast: %+v", many)
+	}
+	for _, h := range []string{"codex-01", "agy-03"} {
+		ids, _ := amq.Unread(e.Paths.Root(), h)
+		if len(ids) == 0 || ids[len(ids)-1] != many.ID {
+			t.Fatalf("%s did not get the multicast: %v", h, ids)
+		}
+		hd, err := amq.ReadHeader(e.Paths.Root(), h, amq.BoxUnread, many.ID)
+		if err != nil || hd.Thread != "design/board" || hd.From != "claude-02" {
+			t.Fatalf("%s's copy: %+v %v", h, hd, err)
+		}
+	}
+	if ids, _ := amq.Unread(e.Paths.Root(), "agy-03"); len(ids) != 1 {
+		t.Fatalf("agy-03 holds only the named-thread multicast: %v", ids)
+	}
+}
+
 // A managed reply goes to the original's sender, as a reply, under the same
 // gateway.
 func TestManagedMailReply(t *testing.T) {
