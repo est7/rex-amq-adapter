@@ -3,8 +3,8 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
-	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
 )
@@ -77,16 +77,17 @@ func TestOnlyHarnessesThatTakeATitleAreGivenOne(t *testing.T) {
 	}
 }
 
-// A hook that is not the record's agent, waiting out a failed adoption, is
-// never given the record's title. Pi's mail hook takes a title and waits out
-// the back-off.
+// A hook that is not the record's agent, whose own adoption fails, is never
+// given the record's title. Pi's mail hook takes a title.
 func TestAnotherAgentWaitingToBeAdoptedIsGivenNoTitle(t *testing.T) {
-	e := fixture(t, &fakeTerm{state: "working"}) // a codex record in block
-	if err := e.Store.SetAdoptFailed(block, time.Now()); err != nil {
-		t.Fatal(err)
+	term := &fakeTerm{state: "working", inspectErr: errors.New("rex timed out")}
+	e := fixture(t, term) // a codex record in block
+	r, err := e.Hook(context.Background(), EventMail, core.Pi, Location{Block: block}, HookInput{SessionID: "p1"})
+	if err == nil {
+		t.Fatal("setup: the Pi agent's adoption should fail")
 	}
-	if got := hookTitle(t, e, core.Pi, EventMail, HookInput{SessionID: "p1"}); got != "" {
-		t.Errorf("another agent was given the record's title %q", got)
+	if r.Title != "" {
+		t.Errorf("another agent was given the record's title %q", r.Title)
 	}
 }
 

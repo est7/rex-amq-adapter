@@ -166,11 +166,11 @@ func TestCodexNewProcessCanReplaceSessionInSamePane(t *testing.T) {
 	}
 }
 
-// A failed adoption (two agents starting at once can run SessionStart out of
-// time) holds back only the hooks that run on every tool call. A hook that
-// runs once a turn retries at once: an agent whose first turn ends before the
-// back-off would otherwise idle with no mailbox.
-func TestOncePerTurnHooksRetryAFailedAdoption(t *testing.T) {
+// A failed adoption (Rex could not be read) is retried by the next hook,
+// whatever it is: adoption holds the lifecycle lock for local I/O only, so
+// there is no back-off to wait out, and an agent whose first turn ends at
+// once does not idle with no mailbox.
+func TestTheNextHookRetriesAFailedAdoption(t *testing.T) {
 	term := &fakeTerm{state: "idle", gone: true}
 	e := realAmqEnv(t, term)
 	ctx := context.Background()
@@ -184,15 +184,9 @@ func TestOncePerTurnHooksRetryAFailedAdoption(t *testing.T) {
 	term.mu.Unlock()
 	t.Cleanup(func() { _ = e.Depart(ctx, loc, HookInput{}) })
 
-	if _, err := e.Hook(ctx, EventPostTool, core.Codex, loc, in); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok, _ := e.agentAt(block); ok {
-		t.Fatal("a tool call retried the failed adoption inside the back-off")
-	}
-	r, err := e.Hook(ctx, EventPrompt, core.Codex, loc, in)
+	r, err := e.Hook(ctx, EventPostTool, core.Codex, loc, in)
 	if rec, ok, _ := e.agentAt(block); err != nil || !ok || !rec.Live() || !strings.Contains(r.Notice, "you are codex-01") {
-		t.Fatalf("the next prompt must adopt: %+v %v %q", rec, err, r.Notice)
+		t.Fatalf("the next tool call must adopt: %+v %v %q", rec, err, r.Notice)
 	}
 }
 

@@ -136,9 +136,9 @@ func TestADepartureWithoutAnOrchestratorFinishesAtOnce(t *testing.T) {
 	}
 }
 
-// An adoption that fails after its record is written is finished by a later
-// hook: the agent still learns who it is.
-func TestAnInterruptedAdoptionFinishesOnTheNextPrompt(t *testing.T) {
+// An adoption that fails after its record is written is finished by the next
+// hook, a tool call included: the agent still learns who it is.
+func TestAnInterruptedAdoptionFinishesOnTheNextHook(t *testing.T) {
 	term := &fakeTerm{state: "idle", label: "reviewer"}
 	e := realAmqEnv(t, term)
 	mate := windowAgent(t, e, "claude-01", core.Claude, "")
@@ -167,13 +167,9 @@ func TestAnInterruptedAdoptionFinishesOnTheNextPrompt(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = e.Depart(ctx, loc, HookInput{}) })
 
-	// The hook on every tool call waits out the back-off.
-	if r, err := e.Hook(ctx, EventPostTool, core.Codex, loc, in); err != nil || r.Notice != "" {
-		t.Fatalf("a tool call retried inside the back-off: %q %v", r.Notice, err)
-	}
-	r, err := e.Hook(ctx, EventPrompt, core.Codex, loc, in)
+	r, err := e.Hook(ctx, EventPostTool, core.Codex, loc, in)
 	if err != nil || !strings.Contains(r.Notice, "you are "+string(rec.Handle)) {
-		t.Fatalf("the next prompt must finish the adoption: %q %v", r.Notice, err)
+		t.Fatalf("the next hook must finish the adoption: %q %v", r.Notice, err)
 	}
 	if got := recordNamed(t, e, rec.Handle); got.unfinished() != "" {
 		t.Fatalf("the adoption stayed unfinished: %q", got.unfinished())

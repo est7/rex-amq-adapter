@@ -348,21 +348,32 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 // newEpicSession creates the Epic's session, records its unattended Epic
 // policy (every Epic's, whoever asked for it: Claim C23), with crewName
 // records it as the session's crew, and notarizes grant (notarize). The
-// panes' agents start as the session is created, so the steps run under the
-// lifecycle lock that adoption takes: neither agent is adopted, and briefed,
-// before its crew and the grant its start notice names are recorded.
-// policyErr, crewErr, and notaryErr are what could not be recorded; the
-// session stands.
+// panes' agents start as the session is created, before its id is known
+// here, so the steps run under the Epic-opening lock, which an adoption in a
+// session of no policy waits for (awaitEpicPolicy): neither agent is adopted,
+// and briefed, before its crew and the grant its start notice names are
+// recorded. The lifecycle lock is taken only for the records, after Rex
+// created the session. policyErr, crewErr, and notaryErr are what could not
+// be recorded; the session stands.
 func (e Env) newEpicSession(ctx context.Context, name string, panes []rex.Pane, crewName string, by agent, grant epicGrant) (session string, blocks []string, policyErr, crewErr, notaryErr, err error) {
-	unlock, err := e.Store.LockLifecycle(ctx)
+	unlockOpening, err := e.Store.LockEpicOpening(ctx)
 	if err != nil {
 		return "", nil, nil, nil, nil, err
 	}
-	defer unlock()
+	defer unlockOpening()
 	session, _, blocks, err = e.Rex.NewSession(ctx, name, panes)
 	if err != nil {
 		return session, blocks, nil, nil, nil, err
 	}
+	unlock, err := e.Store.LockLifecycle(ctx)
+	if err != nil {
+		err = fmt.Errorf("the session was created, but its records were not: %w", err)
+		if crewName != "" {
+			crewErr = err
+		}
+		return session, blocks, err, crewErr, err, nil
+	}
+	defer unlock()
 	now := e.Now().UTC()
 	policyErr = e.Store.PutSessionPolicy(epicPolicy(session, by.Server, crewName, by.Handle, now))
 	if crewName != "" {

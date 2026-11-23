@@ -71,9 +71,6 @@ func TestNestedHarnessHookExitsZeroAndLeavesTheOwner(t *testing.T) {
 	if ids, leases := snapshot(); !reflect.DeepEqual(ids, beforeIDs) || !reflect.DeepEqual(leases, beforeLeases) || len(ids) != 1 || len(leases) != 1 {
 		t.Errorf("the owner's identity or lease changed, or another appeared:\nbefore %+v %+v\nafter  %+v %+v", beforeIDs, beforeLeases, ids, leases)
 	}
-	if _, failed, _ := s.AdoptFailedAt("block:pane"); failed {
-		t.Error("the nested hook marked the pane's adoption failed")
-	}
 	if b, err := os.ReadFile(calls); err == nil && strings.TrimSpace(string(b)) != "" {
 		t.Errorf("the nested hook asked Rex:\n%s", b)
 	}

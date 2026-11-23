@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -166,6 +167,30 @@ func (e Env) WatchSession(ctx context.Context, key core.SessionKey) error {
 	}
 }
 
+// superviseWatched brings back the wakers no hook would: an idle lead's or
+// narrator's (keepers), which runs no hook until mail wakes it, and that of
+// any agent of the session whose adoption ran out of its hook's time before
+// its waker came up, which only its next hook would finish. A failure is
+// logged; the next look tries again.
+func (e Env) superviseWatched(ctx context.Context, key core.SessionKey, keepers []agent) {
+	recs, err := e.agents()
+	if err != nil {
+		fmt.Fprintf(Diagnostics, "supervise the wakers of %s: %v\n", key.SessionID, err)
+		return
+	}
+	for _, r := range recs {
+		if !r.Live() || r.Server != key.Server || r.SessionID != key.SessionID {
+			continue
+		}
+		if r.Adopted() && !slices.ContainsFunc(keepers, func(k agent) bool { return k.Handle == r.Handle }) {
+			continue
+		}
+		if err := e.ensureWaker(ctx, r); err != nil {
+			fmt.Fprintf(Diagnostics, "supervise the waker of %s: %v\n", r.Handle, err)
+		}
+	}
+}
+
 // watchOnce looks at session key once: it reconciles the session, runs the
 // watchdog for its live lead (among keepers), and tells each live narrator
 // what changed.
@@ -187,6 +212,7 @@ func (e Env) watchOnce(ctx context.Context, key core.SessionKey, keepers []agent
 	if err := e.CollectSession(ctx, s); err != nil {
 		return err
 	}
+	e.superviseWatched(ctx, key, keepers)
 	for _, r := range keepers {
 		// The watchdog's own failures are logged, never counted against the
 		// watcher: a layout call that times out must not end the session's watch.

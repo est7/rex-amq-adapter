@@ -341,9 +341,6 @@ func TestDuplicateNoBackoffTakesOverAtTheNextToolCall(t *testing.T) {
 	if l := leaseOf(t, w.e, original); l.BlockID != sbDuplicateBlock || l.Incarnation.PID != w.duplicate.Process.Pid {
 		t.Fatalf("AC3: the tool call after the incumbent closed left %s at %+v; want it in %s", original, l, sbDuplicateBlock)
 	}
-	if _, failed, err := w.e.Store.AdoptFailedAt(sbDuplicateBlock); err != nil || failed {
-		t.Fatalf("a refused duplicate was recorded as a failed adoption: failed=%v err=%v", failed, err)
-	}
 }
 
 // A block id is one server's (I3 is per server and block): two servers'

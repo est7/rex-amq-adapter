@@ -369,6 +369,13 @@ func (e Env) parkClosed(ctx context.Context, epic core.SessionKey) ([]core.Handl
 // tells nobody. The departure is left finished (it owes no notices), so collection
 // and a later SessionEnd find nothing to do. A failure leaves the record live.
 func (e Env) departQuietly(ctx context.Context, rec agent, reason string) error {
+	// Held until the lease is released, so a supervisor that would bring the
+	// waker back reads the released lease and does not (reconcileWaker).
+	unlock, err := e.Store.LockHandle(ctx, rec.Handle)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	if !rec.Kind.InProcess() {
 		if err := e.prepareInjector(); err != nil {
 			return err
@@ -380,6 +387,6 @@ func (e Env) departQuietly(ctx context.Context, rec agent, reason string) error 
 	if err := e.clearWindowNotes(ctx, rec.Handle); err != nil {
 		return err
 	}
-	_, err := e.releaseLease(rec, store.Departure{Reason: reason, At: e.Now().UTC()})
+	_, err = e.releaseLease(rec, store.Departure{Reason: reason, At: e.Now().UTC()})
 	return err
 }

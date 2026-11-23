@@ -62,12 +62,8 @@ func (e Env) checkableSent(ctx context.Context, rec agent) []string {
 func (e Env) settleRecipients(ctx context.Context, rec agent, sent []string) bool {
 	ctx, cancel := context.WithTimeout(ctx, superviseFor)
 	defer cancel()
-	unlock, err := e.Store.LockLifecycle(ctx)
-	if err != nil {
-		fmt.Fprintf(Diagnostics, "check the agents %s mailed: %v\n", rec.Handle, err)
-		return false
-	}
-	defer unlock()
+	// Rex is asked with no lock held: park releases a lease only if it is
+	// still the one observed.
 	recs, err := e.agents()
 	if err != nil {
 		fmt.Fprintf(Diagnostics, "check the agents %s mailed: %v\n", rec.Handle, err)

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -38,33 +39,93 @@ type Adoption struct {
 // adopting an agent already adopted keeps everything as is. A session another
 // pane's live agent runs is refused with a *DuplicateSessionError, before
 // anything changes.
+//
+// It runs in three phases so that the lifecycle lock, which every hook on the
+// host waits for, holds local file I/O only: Probe asks Rex (and reads the
+// process table) with no lock; Commit decides and writes the records under
+// the lock; Reconcile makes the mailbox, the waker, the labels, and the
+// notes follow, with no lock. Commit marks the lease adopting, so a hook cut
+// short in Reconcile leaves the next hook to finish it. A probe the records
+// moved away from while it ran (errStaleProbe) is taken again.
 func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInput) (Adoption, error) {
-	unlock, err := e.Store.LockLifecycle(ctx)
-	if err != nil {
-		return Adoption{}, err
+	for attempt := 1; ; attempt++ {
+		p, err := e.probeAdoption(ctx, loc, kind, in)
+		if err != nil {
+			return Adoption{}, err
+		}
+		c, err := e.commitAdoption(ctx, p, kind, in)
+		if errors.Is(err, errStaleProbe) && attempt < adoptProbes {
+			continue
+		}
+		if err != nil {
+			return Adoption{}, err
+		}
+		return e.reconcileAdoption(ctx, p, c)
 	}
-	defer unlock()
+}
 
+// adoptProbes bounds how often an adoption probes Rex again because the
+// records changed under it.
+const adoptProbes = 3
+
+// errStaleProbe is a Commit that found the records no longer those its
+// probe judged: another adoption or departure of the same handle ran in
+// between.
+var errStaleProbe = errors.New("the records changed while this adoption asked Rex; probe again")
+
+// adoptionProbe is what Rex and the process table said about the agent in
+// loc, gathered with no lock held.
+type adoptionProbe struct {
+	loc      Location
+	srv      rex.Server
+	server   string
+	agentPID int
+	inc      store.Incarnation
+	cwd      string
+	blk      rex.Block
+	// holder judges the lease the conversation's handle had when probed, held
+	// by another process; nil when it was not.
+	holder *holderVerdict
+	// jobShown is, for a background job, whether loc's block shows it, as
+	// judged with the record of jobOf ("" for none).
+	jobShown bool
+	jobOf    core.Handle
+}
+
+// holderVerdict is holderGone's answer about one lease.
+type holderVerdict struct {
+	lease  store.Lease
+	reason string
+	gone   bool
+}
+
+// probeAdoption asks Rex where the agent of loc runs and what holds its
+// conversation, without the lifecycle lock: each question can take seconds
+// on a loaded server.
+func (e Env) probeAdoption(ctx context.Context, loc Location, kind core.Kind, in HookInput) (adoptionProbe, error) {
+	p := adoptionProbe{loc: loc}
 	srv, err := e.Rex.Whoami(ctx)
 	if err != nil {
-		return Adoption{}, err
+		return p, err
 	}
+	p.srv = srv
 	// The agent is the block's foreground process. Claude Code reports its
 	// own pid (CLAUDE_PID), which must be that process: a `claude -p` that
 	// another program in the pane runs is not the pane's agent. A background
 	// job is the exception: a terminal client is its pane's foreground, and
-	// its title placed it (jobLocation).
+	// its title placed it (jobLocation). The same answer gives the directory
+	// it works in, for admission and a later resume.
+	fg, fgOK, fgErr := e.Rex.Foreground(ctx, loc.Block)
 	agentPID := in.AgentPID
 	if agentPID <= 0 || kind == core.Claude && !in.Job {
-		fg, ok, err := e.Rex.Foreground(ctx, loc.Block)
-		if err != nil {
-			return Adoption{}, err
+		if fgErr != nil {
+			return p, fgErr
 		}
-		if !ok {
-			return Adoption{}, fmt.Errorf("block %s reports no foreground process", loc.Block)
+		if !fgOK {
+			return p, fmt.Errorf("block %s reports no foreground process", loc.Block)
 		}
 		if kind == core.Claude && agentPID > 0 && fg.PID != agentPID {
-			return Adoption{}, fmt.Errorf("the hook's agent (pid %d) is not the foreground of block %s (pid %d), so it is not that pane's agent", agentPID, loc.Block, fg.PID)
+			return p, fmt.Errorf("the hook's agent (pid %d) is not the foreground of block %s (pid %d), so it is not that pane's agent", agentPID, loc.Block, fg.PID)
 		}
 		agentPID = fg.PID
 		// A Codex hook reports no pid, and the block is the one its harness
@@ -84,71 +145,138 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 				// the pane's agy without mail (descendsFrom).
 				fmt.Fprintf(Diagnostics, "read this hook's process ancestry: %v\n", err)
 			case err != nil:
-				return Adoption{}, fmt.Errorf("read this hook's process ancestry: %w", err)
+				return p, fmt.Errorf("read this hook's process ancestry: %w", err)
 			default:
 				if err := runsUnder(kind, ancestors, agentPID); err != nil {
-					return Adoption{}, fmt.Errorf("block %s: its foreground (pid %d) is not this hook's agent: %w", loc.Block, agentPID, err)
+					return p, fmt.Errorf("block %s: its foreground (pid %d) is not this hook's agent: %w", loc.Block, agentPID, err)
 				}
 			}
 		}
 	}
-	blk, err := e.Rex.InspectBlock(ctx, loc.Block)
-	if err != nil {
-		return Adoption{}, err
+	if fgErr == nil && fgOK {
+		p.cwd = fg.Cwd
 	}
+	if p.blk, err = e.Rex.InspectBlock(ctx, loc.Block); err != nil {
+		return p, err
+	}
+	if err := e.awaitEpicPolicy(ctx, p.blk.SessionID); err != nil {
+		return p, err
+	}
+	p.server = serverOf(srv, loc)
+	p.agentPID = agentPID
+	p.inc = incarnation(p.server, agentPID)
+	// The records as they are now, to know whose lease to judge; Commit
+	// reads them again under the lock.
 	recs, err := e.agents()
 	if err != nil {
-		return Adoption{}, err
+		return p, err
 	}
-	server := serverOf(srv, loc)
-	inc := incarnation(server, agentPID)
-	own, hasOwn := resolveIdentity(recs, server, loc.Block, inc, kind, lineage(recs, kind, in))
-	// Who speaks for the conversation is settled before anything changes: a
-	// refused pane parks no agent, names no handle, and makes no mailbox.
-	if hasOwn && heldElsewhere(own, server, loc.Block, inc) {
+	own, hasOwn := resolveIdentity(recs, p.server, loc.Block, p.inc, kind, lineage(recs, kind, in))
+	if hasOwn && heldElsewhere(own, p.server, loc.Block, p.inc) {
 		reason, gone := e.holderGone(ctx, own)
-		if !gone {
-			return Adoption{}, duplicateOf(in.SessionID, own)
-		}
-		// The lease is taken over below: AcquireLease gives this process the
-		// next epoch, so a late release by the old one is a no-op (I4).
-		fmt.Fprintf(Diagnostics, "%s takes over %s from pid %d in %s (%s)\n", loc.Block, own.Handle, own.pid(), own.BlockID, reason)
+		p.holder = &holderVerdict{lease: *own.lease, reason: reason, gone: gone}
 	}
-	// The lease follows the agent to this block: a background job shown in
-	// another pane than its lease's (jobLocation), or a takeover from a
-	// process gone from another pane. It keeps its handle and is not
-	// departing anywhere.
-	moved := hasOwn && own.Live() && own.BlockID != loc.Block
 	// A background job is adopted only into a pane that shows it: a hook on
 	// every tool call trusts the block of the job's record, and that record
 	// may be stale or an older adapter's.
 	if in.Job {
 		job, _, err := e.claudeJob(in.SessionID)
 		if err != nil {
-			return Adoption{}, err
+			return p, err
 		}
-		shown, err := e.showsJob(ctx, loc.Block, own, job)
-		if err != nil {
-			return Adoption{}, err
+		if p.jobShown, err = e.showsJob(ctx, loc.Block, own, job); err != nil {
+			return p, err
 		}
-		if !shown {
-			return Adoption{}, fmt.Errorf("%w: block %s shows something else", ErrJobNotShown, loc.Block)
+		p.jobOf = own.Handle
+	}
+	return p, nil
+}
+
+// awaitEpicPolicy waits, when session has no policy, until no Epic is being
+// opened: its agents start as Rex creates its session, and one adopted
+// before the Epic's policy, crew, and grant are recorded would be briefed
+// without them and never lead (newEpicSession).
+func (e Env) awaitEpicPolicy(ctx context.Context, session string) error {
+	if session == "" {
+		return nil
+	}
+	if _, ok, err := e.Store.SessionPolicy(session); err != nil || ok {
+		return err
+	}
+	return e.Store.AwaitEpicOpenings(ctx)
+}
+
+// adoptionCommit is what Commit recorded, for Reconcile to make follow.
+type adoptionCommit struct {
+	rec      agent
+	own      agent
+	hasOwn   bool
+	recs     []agent // the records Commit decided on, before its writes
+	epoch    int64
+	adopting bool
+	arrived  bool
+	known    bool
+	// leftOwn: the agent moved here from a session it is no longer in.
+	leftOwn bool
+	// replaced are the agents this one replaced in its block, departed.
+	replaced []agent
+}
+
+// commitAdoption decides the adoption and writes it, under the lifecycle
+// lock, reading and writing local files only. The probe's verdicts count
+// only for the records they were made about: a takeover verdict about
+// another lease than the one held now, or a job judged with another record,
+// is errStaleProbe.
+func (e Env) commitAdoption(ctx context.Context, p adoptionProbe, kind core.Kind, in HookInput) (adoptionCommit, error) {
+	var c adoptionCommit
+	unlock, err := e.Store.LockLifecycle(ctx)
+	if err != nil {
+		return c, err
+	}
+	defer unlock()
+	loc, blk, server, inc := p.loc, p.blk, p.server, p.inc
+	recs, err := e.agents()
+	if err != nil {
+		return c, err
+	}
+	own, hasOwn := resolveIdentity(recs, server, loc.Block, inc, kind, lineage(recs, kind, in))
+	// Who speaks for the conversation is settled before anything changes: a
+	// refused pane parks no agent, names no handle, and makes no mailbox.
+	if hasOwn && heldElsewhere(own, server, loc.Block, inc) {
+		if p.holder == nil || !sameLease(p.holder.lease, *own.lease) {
+			return c, errStaleProbe
+		}
+		if !p.holder.gone {
+			return c, duplicateOf(in.SessionID, own)
+		}
+		// The lease is taken over below: AcquireLease gives this process the
+		// next epoch, so a late release by the old one is a no-op (I4).
+		fmt.Fprintf(Diagnostics, "%s takes over %s from pid %d in %s (%s)\n", loc.Block, own.Handle, own.pid(), own.BlockID, p.holder.reason)
+	}
+	if in.Job {
+		if p.jobOf != own.Handle {
+			return c, errStaleProbe
+		}
+		if !p.jobShown {
+			return c, fmt.Errorf("%w: block %s shows something else", ErrJobNotShown, loc.Block)
 		}
 	}
+	// The lease follows the agent to this block: a background job shown in
+	// another pane than its lease's (jobLocation), or a takeover from a
+	// process gone from another pane. It keeps its handle and is not
+	// departing anywhere.
+	moved := hasOwn && own.Live() && own.BlockID != loc.Block
 	handle := own.Handle
 	if !hasOwn {
 		taken, err := e.takenHandles(recs)
 		if err != nil {
-			return Adoption{}, err
+			return c, err
 		}
 		handle = core.NameHandle(kind, taken)
 	}
 	// Where it runs, for admission and a later resume; and who summoned it,
 	// for admission and the guards.
-	cwd := ""
-	if fg, ok, err := e.Rex.Foreground(ctx, loc.Block); err == nil && ok {
-		cwd = fg.Cwd
-	}
+	cwd := p.cwd
 	if cwd == "" && hasOwn {
 		cwd = own.Cwd
 	}
@@ -174,28 +302,25 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	hubKey := core.HubKey("")
 	if admits {
 		if role, hubKey, err = e.admitAdoption(recs, server, blk.SessionID, handle, own, hasOwn, role, cwd, summoned || in.SummonToken != "", in.Unattended); err != nil {
-			return Adoption{}, err
+			return c, err
 		}
 	}
+	now := e.Now().UTC()
 	// Any other live record of this block is an agent this one replaced, or
 	// the session this process switched away from: it keeps its handle as a
-	// reservation for a resume.
+	// reservation for a resume. Reconcile retires its waker and tells its
+	// session.
 	for _, r := range recs {
 		if r.BlockID == loc.Block && r.Server == server && r.Live() && r.Handle != handle {
-			if err := e.park(ctx, r, store.DepartReplaced); err != nil {
-				return Adoption{}, fmt.Errorf("park %s, replaced in this block: %w", r.Handle, err)
+			left, err := e.releaseLease(r, store.Departure{Reason: store.DepartReplaced, At: now, Unfinished: true})
+			if err != nil {
+				return c, fmt.Errorf("release %s, replaced in this block: %w", r.Handle, err)
 			}
+			c.replaced = append(c.replaced, left)
 		}
 	}
-	// The moved agent keeps its waker: the waker names the handle, and finds
-	// the block from the lease when it rings (amq.Ensure below keeps it).
 	shownAt := agent{SessionID: blk.SessionID}
-	if moved && !together(own, shownAt) {
-		e.leaveSession(ctx, own)
-	}
-	if err := e.AMQ.EnsureMailbox(ctx, e.Paths.Root(), string(handle)); err != nil {
-		return Adoption{}, err
-	}
+	c.leftOwn = moved && !together(own, shownAt)
 	if !hasOwn {
 		e.seedSentCursor(handle)
 	}
@@ -207,12 +332,11 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	// lease) was never told either.
 	again := hasOwn && own.Live() && own.BlockID == loc.Block
 	unfinished := hasOwn && !own.Adopted() && own.departure() == nil
-	arrived := !again || unfinished
+	c.arrived = !again || unfinished
 	if moved {
-		arrived = !together(own, shownAt) || unfinished // a move within the session is no news
+		c.arrived = !together(own, shownAt) || unfinished // a move within the session is no news
 	}
-	known := hasOwn && in.SessionID != "" && own.Session() == in.SessionID && !unfinished
-	now := e.Now().UTC()
+	c.known = hasOwn && in.SessionID != "" && own.Session() == in.SessionID && !unfinished
 	// A resumed agent keeps who it is: its task and role, in any pane, and
 	// the sessions and placements it ran as. One without a role takes the one
 	// its launcher wrote in the label; a label the adapter wrote is an earlier
@@ -231,14 +355,14 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	lease := store.Lease{
 		Handle:         handle,
 		Place:          store.Place{Server: server, SessionID: blk.SessionID, WindowID: blk.WindowID, BlockID: loc.Block},
-		ServerInstance: srv.InstanceID,
+		ServerInstance: p.srv.InstanceID,
 		Incarnation:    inc,
 		AcquiredAt:     now,
 		// Unfinished until the waker and label follow: a move within the tab
 		// tells no one but is a transition all the same.
 		Adopting: !again || unfinished,
 	}
-	if again && own.pid() == agentPID {
+	if again && own.pid() == p.agentPID {
 		lease.AcquiredAt = own.adoptedAt()
 	}
 	if cwd != "" {
@@ -250,7 +374,7 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 		id.Launched, id.Model, id.Effort = true, in.Launch.Model, in.Launch.Effort
 	}
 	if id.Unattended, err = e.adoptUnattended(id.Role, blk.SessionID, in, hasOwn && own.Unattended); err != nil {
-		return Adoption{}, err
+		return c, err
 	}
 	if summoned && !again {
 		id.Parent, id.Depth, id.SummonedFor = sm.Parent, sm.Depth, sm.For
@@ -259,7 +383,7 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	// no admission ever sees it in a session of no policy.
 	if id.Role == core.PersonalRole && admits {
 		if err := e.ensureHubPolicy(blk.SessionID, server, hubKey, handle); err != nil {
-			return Adoption{}, err
+			return c, err
 		}
 	}
 	// Leased before the waker starts: whatever happens next, departure and
@@ -267,55 +391,70 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 	// identifies by the handle its saved target names, and a later hook
 	// finishes the adoption.
 	if err := e.Store.PutIdentity(id); err != nil {
-		return Adoption{}, err
+		return c, err
 	}
 	if lease, err = e.Store.AcquireLease(lease, now); err != nil {
-		return Adoption{}, err
+		return c, err
 	}
 	rec, _, err := e.agentOf(handle)
 	if err != nil {
-		return Adoption{}, err
+		return c, err
 	}
 	// The first agent of the Epic's lead role nobody summoned becomes its
 	// lead, before anything reads who leads (its watcher, its notice).
 	if err := e.claimLead(rec); err != nil {
-		return Adoption{}, err
+		return c, err
 	}
 	// The committed identity preserves lineage if token cleanup fails or the
 	// process exits here; a retry keeps that lineage and finishes cleanup.
 	if summoned {
 		if err := e.Store.DeleteSummon(in.SummonToken); err != nil {
-			return Adoption{}, fmt.Errorf("consume committed summon %s: %w", in.SummonToken, err)
+			return c, fmt.Errorf("consume committed summon %s: %w", in.SummonToken, err)
 		}
 	}
-	// Before the waker starts, so it reads them from the start.
-	e.alignHolds(ctx, rec, own.Role)
-	var decision amq.WakeDecision
-	if kind.InProcess() {
-		// The agent's own extension delivers. A waker left for this handle
-		// would type doorbells into it: remove it.
-		if _, err := e.AMQ.RetireHandle(ctx, e.Paths.Root(), string(handle)); err != nil {
-			return Adoption{}, err
-		}
-	} else {
-		if err := e.prepareInjector(); err != nil {
-			return Adoption{}, err
-		}
-		if _, decision, err = e.AMQ.Ensure(ctx, e.waker(rec), e.Paths.Logs()); err != nil {
-			return Adoption{}, err
-		}
-	}
+	c.rec, c.own, c.hasOwn, c.recs = rec, own, hasOwn, recs
+	c.epoch, c.adopting = lease.Epoch, lease.Adopting
+	return c, nil
+}
 
+// reconcileAdoption makes everything that follows the committed records
+// follow them, with no lifecycle lock: the replaced agents' departures, the
+// mailbox, the doorbell holds, the waker, the session watcher, the mates'
+// notes, the labels, and the arrival gate; then it marks the lease adopted.
+func (e Env) reconcileAdoption(ctx context.Context, p adoptionProbe, c adoptionCommit) (Adoption, error) {
+	rec, blk, handle := c.rec, p.blk, c.rec.Handle
+	for _, r := range c.replaced {
+		e.settleDeparture(ctx, r)
+	}
+	if c.leftOwn {
+		e.leaveSession(ctx, c.own)
+	}
+	// Before the mailbox and the waker, which can run out of the hook's
+	// time: a lead's or narrator's watcher then finishes its waker
+	// (superviseWatched) though the idle agent runs no further hook.
 	if err := e.ensureSessionWatcher(rec); err != nil {
 		fmt.Fprintf(Diagnostics, "%v\n", err)
+	}
+	if err := e.AMQ.EnsureMailbox(ctx, e.Paths.Root(), string(handle)); err != nil {
+		return Adoption{}, err
+	}
+	// Before the waker starts, so it reads them from the start.
+	e.alignHolds(ctx, rec, c.own.Role)
+	// The moved agent keeps its waker: the waker names the handle, and finds
+	// the block from the lease when it rings. An in-process agent's own
+	// extension delivers, and a waker left for its handle would type
+	// doorbells into it: reconcileWaker removes it.
+	decision, err := e.reconcileWaker(ctx, handle)
+	if err != nil {
+		return Adoption{}, err
 	}
 	// The identity carries the role, so briefing and orchestrator behaviour read one
 	// fact: the label is overwritten below, and a resumed agent may land in
 	// any pane.
-	out := Adoption{Decision: decision, Known: known, Role: rec.Role, Window: blk.WindowID, Session: blk.SessionID}
-	out.Mates = e.joinSession(ctx, rec, blk, recs, arrived)
+	out := Adoption{Decision: decision, Known: c.known, Role: rec.Role, Window: blk.WindowID, Session: blk.SessionID}
+	out.Mates = e.joinSession(ctx, rec, blk, c.recs, c.arrived)
 	if label := core.PaneLabel(handle, rec.Role, rec.Task); blk.Label != label {
-		out.LabelErr = e.Rex.RenameBlock(ctx, loc.Block, label)
+		out.LabelErr = e.Rex.RenameBlock(ctx, p.loc.Block, label)
 	}
 	// The tab follows even when the pane label was right already: Rex names
 	// a new tab "Window <8-hex>", and a summoned agent's tab its launch label.
@@ -327,18 +466,29 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 		return Adoption{}, err
 	}
 	out.Unread = len(unread)
-	if lease.Adopting {
-		if err := e.Store.FinishAdoption(handle, lease.Epoch); err != nil {
+	if c.adopting {
+		if err := e.finishAdoption(ctx, handle, c.epoch); err != nil {
 			return Adoption{}, err
 		}
 		rec.lease.Adopting = false
 	}
-	if rec.Role == core.PersonalRole && arrived {
+	if rec.Role == core.PersonalRole && c.arrived {
 		// Mail its Hub's departed personal agents left pending (C26).
 		e.redeliverPending(ctx, rec)
 	}
 	out.Agent = rec
 	return out, nil
+}
+
+// finishAdoption marks h's lease of epoch adopted, under the lifecycle lock;
+// a lease another adoption took since is left as it is (I4).
+func (e Env) finishAdoption(ctx context.Context, h core.Handle, epoch int64) error {
+	unlock, err := e.Store.LockLifecycle(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return e.Store.FinishAdoption(h, epoch)
 }
 
 // admitAdoption decides, under the lifecycle lock, the role of an agent
