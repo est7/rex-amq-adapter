@@ -130,7 +130,11 @@ func mailSend(c *cli.Ctx, in cli.Input) (cli.Result, error) {
 		return cli.Result{Data: map[string]any{"dry_run": true, "would": p, "subject": in.Str("subject"), "body_bytes": len(body)}}, err
 	}
 	var sent map[string]any
-	if err := m.runIn("send", append([]string{"--to", in.Str("to")}, postArgs(in)...), body, &sent); err != nil {
+	names := make([]string, len(to))
+	for i, h := range to {
+		names[i] = string(h)
+	}
+	if err := m.runIn("send", append([]string{"--to", strings.Join(names, ",")}, postArgs(in)...), body, &sent); err != nil {
 		return cli.Result{}, err
 	}
 	return cli.Result{Data: sent, Human: line(fmt.Sprintf("Sent %v to %v", sent["id"], sent["to"]))}, nil

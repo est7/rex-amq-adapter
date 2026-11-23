@@ -6,11 +6,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/core"
+	"github.com/est7/rex-amq-adapter/internal/rex"
 	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
@@ -53,6 +55,37 @@ func routeWorld(t *testing.T) Env {
 		t.Fatal(err)
 	}
 	return e
+}
+
+// closingPane is a terminal whose block closes after its first inspection,
+// as a pane the user closes while a send is being routed.
+type closingPane struct {
+	*fakeTerm
+	block string
+	seen  atomic.Int32
+}
+
+func (c *closingPane) InspectBlock(ctx context.Context, id string) (rex.Block, error) {
+	if id == c.block && c.seen.Add(1) > 1 {
+		return rex.Block{}, rex.ErrNotFound
+	}
+	return c.fakeTerm.InspectBlock(ctx, id)
+}
+
+// A recipient named twice is one recipient: routed once, so a pane that
+// closes mid-send cannot split it into two recipients with no thread.
+func TestNarratorRoutesARepeatedRecipientOnce(t *testing.T) {
+	e := routeWorld(t)
+	e.touchActivity(recordNamed(t, e, "claude-03"))
+	pane := &closingPane{fakeTerm: e.Rex.(*fakeTerm), block: "block:claude-02"}
+	e.Rex, e.RexOn = pane, func(string) Terminal { return pane }
+	sent, err := managedSend(t, e, "block:agy-05", "send", "--to", "personal,personal", "--kind", "status", "--subject", "progress", "--body", "b")
+	if err != nil {
+		t.Fatalf("--to personal,personal: %v", err)
+	}
+	if to, _ := sent["to"].([]any); len(to) != 1 {
+		t.Fatalf("a repeated recipient reached %v", sent["to"])
+	}
 }
 
 // A narrator mails its Hub's personal agent as `--to personal`: the
