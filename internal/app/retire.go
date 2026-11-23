@@ -80,10 +80,17 @@ func (e Env) Retire(ctx context.Context, loc Location, r RetireRequest) (RetireR
 		return res, fmt.Errorf("%w: name the agent to retire", ErrUsage)
 	}
 	target, on, err := e.retireLocked(ctx, loc, r, &res)
-	// A retire that departed its target now, or found it departed by an
-	// earlier one whose finish failed, finishes the quiet departure.
-	if (res.Action == RetireRetired || res.Action == RetireAlreadyDeparted) && !res.DryRun {
-		err = errors.Join(err, e.finishQuietly(ctx, []core.Handle{r.Handle}))
+	// A retire that departed its target now, or found it retired by an
+	// earlier one whose finish failed, finishes that retirement: only a
+	// departure for retired, as the record was read, never a preview's.
+	if !r.DryRun && (res.Action == RetireRetired || res.Action == RetireAlreadyDeparted) {
+		settle := target // already_departed: the departure as the guards read it
+		if res.Action == RetireRetired {
+			settle, _, _ = e.agentOf(r.Handle) // the departure this retire made
+		}
+		if settle.departReason() == store.DepartRetired {
+			err = errors.Join(err, e.finishQuietly(ctx, []agent{settle}))
+		}
 	}
 	if err != nil || (res.Pane != PaneClosed && res.Pane != PaneGone) {
 		return res, err
