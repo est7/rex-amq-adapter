@@ -303,16 +303,18 @@ func (e Env) adoptOnce(ctx context.Context, kind core.Kind, loc Location, in Hoo
 // none), its queued window notes when window is set, and its mail notice,
 // within budget (withWindowNotes).
 func (e Env) announceMail(ctx context.Context, rec agent, in HookInput, event core.HookEvent, identity *core.StartParts, window bool, sent []string, budget int) (Reply, error) {
+	// The gate before the ledger lock: its quarantines take the lifecycle
+	// lock, which `agent join` holds while it takes a ledger lock.
+	unread, err := e.admit(ctx, rec)
+	if err != nil {
+		return Reply{}, err
+	}
 	unlock, err := e.Store.LockLedger(ctx, rec.Handle)
 	if err != nil {
 		return Reply{}, err
 	}
 	defer unlock()
 	ledger, err := e.Store.Announced(rec.Handle)
-	if err != nil {
-		return Reply{}, err
-	}
-	unread, err := e.admit(rec)
 	if err != nil {
 		return Reply{}, err
 	}
