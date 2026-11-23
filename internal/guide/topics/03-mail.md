@@ -64,6 +64,11 @@ read it from, and `-` reads it from stdin. Send only to a handle
 `rex-amq-adapter agent list` shows (see the `peers` topic). `--dry-run` runs
 every check and sends nothing.
 
+A request kind (`question`, `review_request`, `todo`) sent to several
+recipients opens one obligation per recipient: each one owes you an answer.
+Send an FYI as `status` or `decision`. `--refs <id>,...` names related messages
+and gives no one the right to read them.
+
 After you send, end your turn: the reply arrives as a notice, so never sleep or
 poll for it. The only waits inside a turn are bounded ones a check itself
 needs, such as watching CI.
@@ -81,6 +86,21 @@ Use the id `mail send` printed to trace one message. Its receipts show who
 drained it and its thread shows any reply. Each step is evidence of that step
 only: a drained message may still be unanswered, and a reply is not finished
 work until you read it.
+
+## Relay a message exactly
+
+Each agent reads only its own mail, so pass on what another agent wrote by
+copying its body byte for byte, never by retyping it:
+
+```bash
+set -o pipefail
+rex-amq-adapter mail read --id <id> --max-body-bytes 262144 --json \
+  | jq -e -j 'if .ok and (.data.truncated | not) then .data.body else error("unreadable or truncated") end' > <file>
+```
+
+The pipeline fails on a failed read, an error, a body over 256 KiB, or a failed
+write. Send the file with `--body @<file>` only when it exits 0: a failure can
+leave a partial file behind.
 
 ## Delivery state
 
