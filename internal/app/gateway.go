@@ -86,8 +86,10 @@ func (e Env) judge(reader core.Endpoint, h amq.Header, links []core.Link) (core.
 // left. For an agent in a session it fails closed: a file whose header
 // cannot be read (corrupt, unclosed, of another schema) names no sender to
 // judge, and is quarantined too. amq renames whole files into place, so none
-// is read mid-write.
-func (e Env) admit(rec agent) ([]string, error) {
+// is read mid-write. The caller holds no lock the lifecycle lock is taken
+// under (a handle's, an injector's, or a consumer's may be held; the ledger's
+// may not: `agent join` takes it under the lifecycle lock).
+func (e Env) admit(ctx context.Context, rec agent) ([]string, error) {
 	root, h := e.Paths.Root(), string(rec.Handle)
 	ids, err := amq.Unread(root, h)
 	if err != nil || len(ids) == 0 {
@@ -104,6 +106,7 @@ func (e Env) admit(rec agent) ([]string, error) {
 	var kept []string
 	for _, id := range ids {
 		var d core.Decision
+		var from core.Endpoint
 		hdr, err := amq.ReadHeader(root, h, amq.BoxUnread, id)
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
@@ -116,7 +119,7 @@ func (e Env) admit(rec agent) ([]string, error) {
 		case err != nil:
 			d = core.Decision{Reason: core.ReasonUnreadableHeader}
 		default:
-			if d, _, err = e.judge(reader, hdr, links); err != nil {
+			if d, from, err = e.judge(reader, hdr, links); err != nil {
 				return nil, err
 			}
 		}
@@ -124,7 +127,7 @@ func (e Env) admit(rec agent) ([]string, error) {
 			kept = append(kept, id)
 			continue
 		}
-		quarantined, err := e.quarantineFenced(rec, id, hdr, d)
+		quarantined, err := e.quarantineFenced(ctx, rec, id, hdr, from, d)
 		if err != nil {
 			return nil, err
 		}
@@ -145,17 +148,17 @@ var errReaderMoved = errors.New("the reader's placement changed during the arriv
 // every placement writer holds, only while rec is still placed as it was
 // read, and after a readable message is judged again there by the endpoints
 // and links as they are then: one they allow is kept, its reason dropped.
-func (e Env) quarantineFenced(rec agent, id string, hdr amq.Header, d core.Decision) (bool, error) {
+func (e Env) quarantineFenced(ctx context.Context, rec agent, id string, hdr amq.Header, from core.Endpoint, d core.Decision) (bool, error) {
 	root, h := e.Paths.Root(), string(rec.Handle)
 	reader, err := e.gatewayEndpoint(rec)
 	if err != nil {
 		return false, err
 	}
-	q := store.Quarantined{ID: id, Handle: rec.Handle, To: reader, Decision: d, At: e.Now().UTC()}
+	q := store.Quarantined{ID: id, Handle: rec.Handle, From: from, To: reader, Decision: d, At: e.Now().UTC()}
 	if err := e.Store.PrepareQuarantine(q); err != nil {
 		return false, fmt.Errorf("quarantine %s for %s: %w", id, h, err)
 	}
-	unlock, err := e.Store.LockLifecycle(context.Background())
+	unlock, err := e.Store.LockLifecycle(ctx)
 	if err != nil {
 		return false, err
 	}
@@ -173,16 +176,16 @@ func (e Env) quarantineFenced(rec agent, id string, hdr amq.Header, d core.Decis
 		if err != nil {
 			return false, err
 		}
-		again, from, err := e.judge(reader, hdr, links)
+		again, now, err := e.judge(reader, hdr, links)
 		if err != nil {
 			return false, err
 		}
 		if again.Allow {
 			return false, e.Store.DropQuarantineReason(rec.Handle, id)
 		}
-		if q.From = from; again != d {
-			// The links changed meanwhile: the reason says what decided.
-			q.Decision = again
+		if again != d || now != from {
+			// What decided changed meanwhile: the reason says what did.
+			q.Decision, q.From = again, now
 			if err := e.Store.PrepareQuarantine(q); err != nil {
 				return false, err
 			}

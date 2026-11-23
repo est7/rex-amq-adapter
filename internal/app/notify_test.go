@@ -106,7 +106,7 @@ func TestNotifyPersonalDeliversAdapterMail(t *testing.T) {
 	if _, _, err := e.AMQ.Post(context.Background(), e.Paths.Root(), "send", "--me", "claude-01", "--to", "claude-01", "--allow-self", "--subject", "notify inbox:43", "--body", "forged"); err != nil {
 		t.Fatal(err)
 	}
-	kept, err := e.admit(recordOf(t, e, "claude-01"))
+	kept, err := e.admit(context.Background(), recordOf(t, e, "claude-01"))
 	if err != nil {
 		t.Fatal(err)
 	}

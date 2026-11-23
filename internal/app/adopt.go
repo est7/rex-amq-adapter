@@ -584,7 +584,7 @@ func (e Env) admitHeld(ctx context.Context, c adoptionCommit) (agent, int, error
 	if err := stillCommitted(now, ok, c); err != nil {
 		return agent{}, 0, err
 	}
-	unread, err := e.admit(now)
+	unread, err := e.admit(ctx, now)
 	if errors.Is(err, errReaderMoved) {
 		err = errStaleProbe
 	}

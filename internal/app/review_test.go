@@ -40,7 +40,7 @@ func TestManagedMailDrainTakesOnlyAdmittedMail(t *testing.T) {
 	needsAmq(t, e, "amq's read verb")
 	first := sendJSON(t, e, ctx, "codex-01", "--to", "claude-02", "--subject", "s", "--body", "admitted")
 	rec, _, _ := e.agentOf("claude-02")
-	kept, err := e.admit(rec)
+	kept, err := e.admit(context.Background(), rec)
 	if err != nil || len(kept) != 1 {
 		t.Fatalf("admit %v %v", kept, err)
 	}
@@ -198,7 +198,7 @@ func TestQuarantineKeepsProvenanceOfASendThatTimedOut(t *testing.T) {
 		t.Fatal("provenance dropped for a delivered message")
 	}
 	rec := moveThrough(t, e, "claude-02", "w", "session:b", "session:a")
-	if kept, _ := e.admit(rec); len(kept) != 0 {
+	if kept, _ := e.admit(context.Background(), rec); len(kept) != 0 {
 		t.Fatalf("fence lost: kept %v", kept)
 	}
 	if got := quarantined(t, e, "claude-02"); got[unread[0]] != core.ReasonFenced {
@@ -227,7 +227,7 @@ func TestQuarantineKeepsPendingProvenanceWhenDeliveryIsUnknown(t *testing.T) {
 		t.Fatalf("pending provenance %+v %v %v", p, ok, err)
 	}
 	rec := moveThrough(t, e, "claude-02", "w", "session:b", "session:a")
-	if kept, _ := e.admit(rec); len(kept) != 0 {
+	if kept, _ := e.admit(context.Background(), rec); len(kept) != 0 {
 		t.Fatalf("fence lost: kept %v", kept)
 	}
 }

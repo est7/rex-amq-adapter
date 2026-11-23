@@ -745,3 +745,97 @@ func TestAConflictingCloseOpIDSettlesNothing(t *testing.T) {
 		t.Fatalf("a conflicting close was authorized to settle %+v", settle.key)
 	}
 }
+
+// adoptedWithBadMail adopts codex-01 in a placed block and leaves a
+// malformed file in its inbox, which the arrival gate quarantines.
+func adoptedWithBadMail(t *testing.T) Env {
+	t.Helper()
+	term := &fakeTerm{state: "idle", windows: map[string]string{block: "window:1"}, sessions: map[string]string{"window:1": "session:s"}}
+	e := realAmqEnv(t, term)
+	if _, err := e.Adopt(context.Background(), Location{Block: block}, core.Codex, HookInput{SessionID: "s1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(amq.Inbox(e.Paths.Root(), "codex-01"), "0000-bad.md"), []byte("not a message"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return e
+}
+
+// A hook's arrival gate, whose quarantines take the lifecycle lock, runs
+// before the hook takes its ledger lock: `agent join` takes a ledger lock
+// under the lifecycle lock, so the other order could deadlock them.
+func TestTheHookGateHoldsNoLedgerLockWhileItWaitsForTheLifecycleLock(t *testing.T) {
+	e := adoptedWithBadMail(t)
+	ctx := context.Background()
+	unlock, err := e.Store.LockLifecycle(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := e.Hook(ctx, EventPrompt, core.Codex, Location{Block: block}, HookInput{SessionID: "s1"})
+		done <- err
+	}()
+	time.Sleep(200 * time.Millisecond) // the hook now waits in its gate
+	lctx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	ledger, lerr := e.Store.LockLedger(lctx, "codex-01")
+	cancel()
+	if lerr == nil {
+		ledger()
+	}
+	unlock()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if lerr != nil {
+		t.Fatalf("the hook held its ledger lock while it waited for the lifecycle lock: %v", lerr)
+	}
+}
+
+// A gate that cannot take the lifecycle lock gives up when its caller's
+// time runs out, as a hook's does.
+func TestTheGateWaitsForTheLifecycleLockOnlyAsLongAsItsCaller(t *testing.T) {
+	e := adoptedWithBadMail(t)
+	unlock, err := e.Store.LockLifecycle(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { _, err := e.admit(ctx, recordOf(t, e, "codex-01")); done <- err }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("the gate quarantined while the lifecycle lock was held")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the gate kept waiting after its caller's time ran out")
+	}
+}
+
+// A quarantine's reason names the sender it was judged by.
+func TestAQuarantineReasonNamesItsSender(t *testing.T) {
+	term := &fakeTerm{state: "idle", windows: map[string]string{block: "window:1"}, sessions: map[string]string{"window:1": "session:s"}}
+	e := realAmqEnv(t, term)
+	ctx := context.Background()
+	if _, err := e.Adopt(ctx, Location{Block: block}, core.Codex, HookInput{SessionID: "s1"}); err != nil {
+		t.Fatal(err)
+	}
+	put(t, e, seed{Handle: "codex-02", Kind: core.Codex, BlockID: "block:far", SessionID: "session:far", WindowID: "window:far", AgentPID: os.Getppid(), AdoptedAt: time.Now()})
+	if err := e.AMQ.EnsureMailbox(ctx, e.Paths.Root(), "codex-02"); err != nil {
+		t.Fatal(err)
+	}
+	sent, _, err := e.AMQ.Post(ctx, e.Paths.Root(), "send", "--me", "codex-02", "--to", "codex-01", "--subject", "s", "--body", "b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.admit(ctx, recordOf(t, e, "codex-01")); err != nil {
+		t.Fatal(err)
+	}
+	q, err := e.Store.QuarantineReason("codex-01", sent.ID)
+	if err != nil || q.Decision.Allow || q.From.Handle != "codex-02" {
+		t.Fatalf("quarantine reason %+v %v, want one naming codex-02", q, err)
+	}
+}

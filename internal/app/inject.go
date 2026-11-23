@@ -121,7 +121,7 @@ func (e Env) inject(ctx context.Context, r InjectRequest, rec agent) core.Outcom
 	}); !ok {
 		return o
 	}
-	unread, err := e.admit(rec)
+	unread, err := e.admit(ctx, rec)
 	if err != nil {
 		return deferredErr("inbox_unreadable", err)
 	}
