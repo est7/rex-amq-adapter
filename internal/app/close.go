@@ -73,6 +73,13 @@ type CloseResult struct {
 // refused. Without one, a retry before the lifecycle is closed finishes
 // what is left: a session already gone is not an error.
 func (e Env) CloseEpic(ctx context.Context, loc Location, r CloseRequest) (CloseResult, error) {
+	res, err := e.closeEpic(ctx, loc, r)
+	return res, errors.Join(err, e.finishQuietly(ctx, res.Parked))
+}
+
+// closeEpic is CloseEpic up to the agents' quiet departures, which it
+// leaves to finish with no lock held.
+func (e Env) closeEpic(ctx context.Context, loc Location, r CloseRequest) (CloseResult, error) {
 	res := CloseResult{SessionID: r.Session, OpID: r.OpID}
 	caller, ok, err := e.agentIn(loc)
 	if err != nil {
@@ -355,7 +362,7 @@ func (e Env) parkClosed(ctx context.Context, epic core.SessionKey) ([]core.Handl
 		if !rec.Live() || rec.Server != epic.Server || rec.SessionID != epic.SessionID {
 			continue
 		}
-		if err := e.departQuietly(ctx, rec, store.DepartEpicClosed); err != nil {
+		if _, err := e.departQuietly(rec, store.DepartEpicClosed); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", rec.Handle, err))
 			continue
 		}
@@ -364,29 +371,33 @@ func (e Env) parkClosed(ctx context.Context, epic core.SessionKey) ([]core.Handl
 	return parked, errors.Join(errs...)
 }
 
-// departQuietly marks rec's agent departed for reason, the caller holding the
-// lifecycle lock: it retires the handle's waker, clears its window notes, and
-// tells nobody. The departure is left finished (it owes no notices), so collection
-// and a later SessionEnd find nothing to do. A failure leaves the record live.
-func (e Env) departQuietly(ctx context.Context, rec agent, reason string) error {
-	// Held until the lease is released, so a supervisor that would bring the
-	// waker back reads the released lease and does not (reconcileWaker).
-	unlock, err := e.Store.LockHandle(ctx, rec.Handle)
-	if err != nil {
-		return err
-	}
-	defer unlock()
-	if !rec.Kind.InProcess() {
-		if err := e.prepareInjector(); err != nil {
-			return err
+// departQuietly releases rec's lease as departed for reason, the caller
+// holding the lifecycle lock, as unfinished: the caller, once it has released
+// the lock, finishes it quietly (finishQuietly), retiring the waker and
+// clearing the window notes, and telling nobody (quietDeparture). Waiting
+// here for the handle's lock or for amq would make every hook on the host
+// wait behind a waker. A departure left unfinished is finished by collection.
+func (e Env) departQuietly(rec agent, reason string) (agent, error) {
+	return e.releaseLease(rec, store.Departure{Reason: reason, At: e.Now().UTC(), Unfinished: true})
+}
+
+// finishQuietly finishes the quiet departures of hs (departQuietly), with no
+// lock held. The departures stand whatever happens here: one it cannot finish
+// (its waker would not retire) stays unfinished, collection finishes it, and
+// the error says so.
+func (e Env) finishQuietly(ctx context.Context, hs []core.Handle) error {
+	var errs []error
+	for _, h := range hs {
+		rec, ok, err := e.agentOf(h)
+		if err == nil && (!ok || rec.Live()) {
+			continue
+		}
+		if err == nil {
+			err = e.finishDeparture(ctx, rec)
+		}
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s departed, but finishing its departure failed (collection finishes it): %w", h, err))
 		}
 	}
-	if _, err := e.AMQ.RetireHandle(ctx, e.Paths.Root(), string(rec.Handle)); err != nil {
-		return err
-	}
-	if err := e.clearWindowNotes(ctx, rec.Handle); err != nil {
-		return err
-	}
-	_, err = e.releaseLease(rec, store.Departure{Reason: reason, At: e.Now().UTC()})
-	return err
+	return errors.Join(errs...)
 }

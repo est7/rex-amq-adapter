@@ -73,12 +73,30 @@ const adoptProbes = 3
 // between.
 var errStaleProbe = errors.New("the records changed while this adoption asked Rex; probe again")
 
+// errSuperseded is a Reconcile whose binding another adoption or a
+// departure replaced before it finished: it neither labels the pane nor
+// reports the agent adopted.
+var errSuperseded = errors.New("another adoption or a departure replaced this adoption's binding before it finished")
+
+// liveIn is the agent live in block of server among recs (I3: at most one).
+func liveIn(recs []agent, server, block string) (agent, bool) {
+	for _, r := range recs {
+		if r.Live() && r.Server == server && r.BlockID == block {
+			return r, true
+		}
+	}
+	return agent{}, false
+}
+
 // adoptionProbe is what Rex and the process table said about the agent in
 // loc, gathered with no lock held.
 type adoptionProbe struct {
-	loc      Location
-	srv      rex.Server
-	server   string
+	loc    Location
+	srv    rex.Server
+	server string
+	// occupant is the agent live in the block before Rex was asked; nil
+	// when none was.
+	occupant *agent
 	agentPID int
 	inc      store.Incarnation
 	cwd      string
@@ -108,7 +126,18 @@ func (e Env) probeAdoption(ctx context.Context, loc Location, kind core.Kind, in
 	if err != nil {
 		return p, err
 	}
-	p.srv = srv
+	p.srv, p.server = srv, serverOf(srv, loc)
+	// The records as they are before Rex is asked about the block: Commit
+	// reads them again under the lock, and what changed in between (the
+	// block taken by another agent, the conversation's lease moved) makes
+	// this probe stale.
+	recs, err := e.agents()
+	if err != nil {
+		return p, err
+	}
+	if r, ok := liveIn(recs, p.server, loc.Block); ok {
+		p.occupant = &r
+	}
 	// The agent is the block's foreground process. Claude Code reports its
 	// own pid (CLAUDE_PID), which must be that process: a `claude -p` that
 	// another program in the pane runs is not the pane's agent. A background
@@ -162,15 +191,8 @@ func (e Env) probeAdoption(ctx context.Context, loc Location, kind core.Kind, in
 	if err := e.awaitEpicPolicy(ctx, p.blk.SessionID); err != nil {
 		return p, err
 	}
-	p.server = serverOf(srv, loc)
 	p.agentPID = agentPID
 	p.inc = incarnation(p.server, agentPID)
-	// The records as they are now, to know whose lease to judge; Commit
-	// reads them again under the lock.
-	recs, err := e.agents()
-	if err != nil {
-		return p, err
-	}
 	own, hasOwn := resolveIdentity(recs, p.server, loc.Block, p.inc, kind, lineage(recs, kind, in))
 	if hasOwn && heldElsewhere(own, p.server, loc.Block, p.inc) {
 		reason, gone := e.holderGone(ctx, own)
@@ -184,7 +206,7 @@ func (e Env) probeAdoption(ctx context.Context, loc Location, kind core.Kind, in
 		if err != nil {
 			return p, err
 		}
-		if p.jobShown, err = e.showsJob(ctx, loc.Block, own, job); err != nil {
+		if p.jobShown, err = e.showsJobWith(ctx, loc.Block, fg, fgErr == nil && fgOK, own, job); err != nil {
 			return p, err
 		}
 		p.jobOf = own.Handle
@@ -238,6 +260,11 @@ func (e Env) commitAdoption(ctx context.Context, p adoptionProbe, kind core.Kind
 	recs, err := e.agents()
 	if err != nil {
 		return c, err
+	}
+	// The block's agent changed since the probe began: what the probe saw
+	// of the block's foreground may be that agent's, not this hook's.
+	if occupant, ok := liveIn(recs, server, loc.Block); ok != (p.occupant != nil) || ok && (occupant.Handle != p.occupant.Handle || !sameBinding(occupant, *p.occupant)) {
+		return c, errStaleProbe
 	}
 	own, hasOwn := resolveIdentity(recs, server, loc.Block, inc, kind, lineage(recs, kind, in))
 	// Who speaks for the conversation is settled before anything changes: a
@@ -453,12 +480,18 @@ func (e Env) reconcileAdoption(ctx context.Context, p adoptionProbe, c adoptionC
 	// any pane.
 	out := Adoption{Decision: decision, Known: c.known, Role: rec.Role, Window: blk.WindowID, Session: blk.SessionID}
 	out.Mates = e.joinSession(ctx, rec, blk, c.recs, c.arrived)
-	if label := core.PaneLabel(handle, rec.Role, rec.Task); blk.Label != label {
-		out.LabelErr = e.Rex.RenameBlock(ctx, p.loc.Block, label)
+	if out.LabelErr, err = e.labelPane(ctx, c, p.loc.Block, blk.Label); err != nil {
+		return Adoption{}, err
 	}
 	// The tab follows even when the pane label was right already: Rex names
 	// a new tab "Window <8-hex>", and a summoned agent's tab its launch label.
 	e.followTab(ctx, blk.SessionID, blk.WindowID)
+	// Marked adopted only while the binding is still this adoption's; a
+	// superseded one reports failure, so its hook tells nobody of anything.
+	if err := e.finishAdoption(ctx, c); err != nil {
+		return Adoption{}, err
+	}
+	rec.lease.Adopting = false
 	// The gate runs before the agent is told of its mail, and before a Pi
 	// extension, handed the inbox, reads it.
 	unread, err := e.admit(rec)
@@ -466,12 +499,6 @@ func (e Env) reconcileAdoption(ctx context.Context, p adoptionProbe, c adoptionC
 		return Adoption{}, err
 	}
 	out.Unread = len(unread)
-	if c.adopting {
-		if err := e.finishAdoption(ctx, handle, c.epoch); err != nil {
-			return Adoption{}, err
-		}
-		rec.lease.Adopting = false
-	}
 	if rec.Role == core.PersonalRole && c.arrived {
 		// Mail its Hub's departed personal agents left pending (C26).
 		e.redeliverPending(ctx, rec)
@@ -480,15 +507,50 @@ func (e Env) reconcileAdoption(ctx context.Context, p adoptionProbe, c adoptionC
 	return out, nil
 }
 
-// finishAdoption marks h's lease of epoch adopted, under the lifecycle lock;
-// a lease another adoption took since is left as it is (I4).
-func (e Env) finishAdoption(ctx context.Context, h core.Handle, epoch int64) error {
+// labelPane shows c's handle as block's label (shown is what it shows),
+// under the block's pane lock and only while c's binding holds the block: a
+// replacement's own label, set under the same lock after its commit, is
+// never overwritten by a superseded adoption. The first error is Rex's,
+// reported, never fatal; the second is errSuperseded.
+func (e Env) labelPane(ctx context.Context, c adoptionCommit, block, shown string) (error, error) {
+	label := core.PaneLabel(c.rec.Handle, c.rec.Role, c.rec.Task)
+	if shown == label {
+		return nil, nil
+	}
+	unlock, err := e.Store.LockPane(ctx, block)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	if now, ok, err := e.agentOf(c.rec.Handle); err != nil || !ok || !sameBinding(now, c.rec) {
+		if err == nil {
+			err = errSuperseded
+		}
+		return nil, err
+	}
+	return e.Rex.RenameBlock(ctx, block, label), nil
+}
+
+// finishAdoption marks c's lease adopted, under the lifecycle lock, while
+// c's binding still holds it; errSuperseded when another adoption or a
+// departure replaced it (I4).
+func (e Env) finishAdoption(ctx context.Context, c adoptionCommit) error {
 	unlock, err := e.Store.LockLifecycle(ctx)
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	return e.Store.FinishAdoption(h, epoch)
+	now, ok, err := e.agentOf(c.rec.Handle)
+	if err != nil {
+		return err
+	}
+	if !ok || !sameBinding(now, c.rec) {
+		return errSuperseded
+	}
+	if !c.adopting {
+		return nil
+	}
+	return e.Store.FinishAdoption(c.rec.Handle, c.epoch)
 }
 
 // admitAdoption decides, under the lifecycle lock, the role of an agent

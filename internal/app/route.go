@@ -311,8 +311,8 @@ type reroutedContext struct {
 // message in the narrator's name, on the same thread and subject, whose
 // context and refs name the original (rerouted_from). One delivered again
 // already is skipped. With no live personal agent of the Hub the mail
-// stays in left's mailbox, pending, for redeliverPending. The caller holds
-// LockLifecycle. An error leaves the rest for the next try (the departure
+// stays in left's mailbox, pending, for redeliverPending. Each message is
+// delivered again under its own lock (LockRedelivery). An error leaves the rest for the next try (the departure
 // stays unfinished, so collection retries it).
 func (e Env) redeliverFrom(ctx context.Context, left agent) error {
 	if left.Role != core.PersonalRole || left.Live() {
@@ -341,6 +341,13 @@ func (e Env) redeliverFrom(ctx context.Context, left agent) error {
 }
 
 func (e Env) redeliverOne(ctx context.Context, left agent, id string, links []core.Link) error {
+	// A departure's finisher and a personal agent's adoption may both try
+	// it, with no lifecycle lock held.
+	unlock, err := e.Store.LockRedelivery(ctx, id)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	root, h := e.Paths.Root(), string(left.Handle)
 	if _, done, err := e.Store.Redelivered(id); err != nil || done {
 		return err
@@ -402,8 +409,8 @@ func (e Env) redeliverOne(ctx context.Context, left agent, id string, links []co
 
 // redeliverPending delivers again the narrators' mail that departed
 // personal agents of rec's Hub (or session) left unread while no personal
-// agent of it was live: rec, just adopted there, is one now. The caller
-// holds LockLifecycle; a failure is reported, and the mail stays pending.
+// agent of it was live: rec, just adopted there, is one now. A failure is
+// reported, and the mail stays pending.
 func (e Env) redeliverPending(ctx context.Context, rec agent) {
 	me, err := e.gatewayEndpoint(rec)
 	if err != nil {

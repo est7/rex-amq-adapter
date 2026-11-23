@@ -1336,7 +1336,7 @@ with a timeout (both harnesses run hook commands through a shell). Outside Rex
 | `UserPromptSubmit`, `PostToolUse` | Announce new ids from the ledger; `UserPromptSubmit` also delivers queued window notes. Filesystem only, no subprocess, unless the agent must be adopted first or has just sent mail (measured p50 6.8 ms, max 16.7 ms over 30 runs, before the outbox check) | 3 s / 2.5 s |
 | `Stop` | Block once per section 3, then supervise the waker: one `amq wake check` (about 60 ms), and `Ensure` when it is dead or runs an older binary; an orchestrator's missing watcher is started here too. A turn that ended in an error or a limit is never held: it is reported instead (below) | 3 s / 2.5 s (supervision bounded to 1.5 s) |
 | `StopFailure` (Claude Code only) | Report the turn error (below), then supervise the waker | 3 s / 2.5 s |
-| `SessionEnd` | Only from the process that holds the session's lease: retire the handle's waker, release the lease at its epoch into `last_placement` with `depart_reason` `session_end`, drop the agent's undelivered window notes, queue "left" notes for its session-mates, and mail the orchestrator if the session has one; nothing for a handle that holds no lease, as a retired peer or a pane refused as a duplicate does (Retiring a peer) | 3 s / 2.5 s (Codex clamps to 3 s) |
+| `SessionEnd` | Only from the process that holds the session's lease, and only while that lease still runs the conversation that ended: retire the handle's waker, release the lease at its epoch into `last_placement` with `depart_reason` `session_end`, drop the agent's undelivered window notes, queue "left" notes for its session-mates, and mail the orchestrator if the session has one; nothing for a handle that holds no lease, as a retired peer or a pane refused as a duplicate does (Retiring a peer) | 3 s / 2.5 s (Codex clamps to 3 s) |
 
 **Antigravity** has no `SessionEnd` hook and no `stop_hook_active`. Its agents
 depart through collection, and its Stop hook blocks only for mail never
@@ -1454,17 +1454,53 @@ on the host waits for, never covers a `rex`, `amq`, or `ps` call:
    still holds it. The crew and role briefing is read after that.
 
 The waker is derived from the lease. `reconcileWaker` takes the handle's own
-lock (`handles/<handle>.lock`, never held with the lifecycle lock taken
-inside it), reads the lease, and leaves one live waker (herdr's `check` →
-keep / start / repair / replace, until `amq wake check` reports the expected
-target, `inject <handle> <root>`, live) when the lease is live and the agent
-is not in-process, and none otherwise. Every writer of a lease reconciles
-after its write, so of an adoption and a departure that race, the one that
-reconciles last leaves the waker matching the lease (executed in
-`TestReconcileWakerFollowsTheLease`). The lock-instrumented fakes of
-`lockwatch_test.go` fail any adoption, departure, collection, supervision, or
-Epic open that calls Rex or amq under the lifecycle lock (executed: each
-failed before this change).
+lock (`handles/<handle>.lock`), reads the lease, and leaves one live waker
+(herdr's `check` → keep / start / repair / replace, until `amq wake check`
+reports the expected target, `inject <handle> <root>`, live) when the lease
+is live and the agent is not in-process, and none otherwise. Every writer of
+a lease reconciles after its write, so of an adoption and a departure that
+race, the one that reconciles last leaves the waker matching the lease.
+
+The locks are taken in one order: `epic-lifecycle.lock`, `epic-opening.lock`,
+`handles/<handle>.lock`, `lifecycle.lock`, then the ledger, pane, and
+redelivery locks. A holder of the lifecycle lock never waits for a handle's
+lock or for amq. With the lock no longer held across Rex, what one operation
+read can change before it acts, so each acts only on what it read:
+
+- **Binding.** A lease is acted on (parked, marked adopted, labelled) only
+  while it is still the binding it was read with (`sameBinding`): the same
+  epoch, server, block, and process, and the same conversation, since a
+  process keeps its epoch across `/clear`. A late `SessionEnd` of the old
+  conversation therefore does not park the new one.
+- **Pane.** Commit refuses a probe when the block's live agent changed after
+  the probe began (`errStaleProbe`), so a hook that saw an older foreground
+  does not evict the agent adopted there since. A superseded Reconcile
+  neither relabels the pane (the label is set under `panes/<block>.lock`,
+  after a check of the binding) nor reports the agent adopted
+  (`errSuperseded`), so its hook tells nobody anything.
+- **Departure.** A park retires the waker and releases the lease under the
+  handle's lock; a release that then cannot happen (the binding changed, or
+  the lock could not be had) brings the waker back within a bound of its
+  own. A departure is finished, under the handle's lock, only for the
+  placement it read: epoch, start, and departure time, since a handle
+  forgotten and named afresh starts its epochs over. Collection forgets an
+  identity only if the record read under the lock is still past its
+  reservation.
+- **Redelivery.** Each narrator message is delivered again under its own
+  lock (`redelivering/<id>.lock`), so two finishers send it once.
+- **Epic records.** Once Rex created an Epic's session, its policy, crew,
+  and grant are written within a bound of their own, even if the opener's
+  context ended.
+
+Evidence (executed): `lockwatch_test.go` fails any adoption, departure,
+collection, supervision, `agent title`, or Epic open that calls Rex or amq
+under the lifecycle lock (each failed before this change); the scheduled
+tests in `lockfree_race_test.go` and `adopt_phases_test.go` run one
+operation inside another at each point above, and each was seen failing
+with its fence removed (mutation runs in the S1 review). They cover the
+interleavings named here, not every schedule. The probe reads the block's
+foreground once for the hook's agent; judging an incumbent elsewhere
+(`holderGone`) reads that incumbent's block.
 
 **Transitions.** Adoption and departure each commit their state partway
 through, and a hook can run out of time or die at any step. Each marks the
@@ -1701,7 +1737,9 @@ Overridable with `REX_AMQ_ADAPTER_HOME` (tests use a temporary directory).
 ├── task-asked/<handle>       the last Claude Code or Pi session asked for a task at its first prompt
 ├── summons/<token>.json      pending summon launches reserving a place in the session's cap
 ├── pending/<block>           a doorbell written and not yet known to be submitted
-├── handles/<handle>.lock     serialises the handle's waker against its lease (reconcileWaker)
+├── handles/<handle>.lock     serialises the handle's waker and departure finishing against its lease (reconcileWaker)
+├── panes/<block>.lock        serialises the adapter's labels of a block (a superseded adoption does not relabel)
+├── redelivering/<id>.lock    serialises delivering one narrator message again
 ├── watch/<server|session>.lock  held by a session's watcher
 ├── watchdog/<block>.json     the watchdog's recovery episode for a block
 ├── watchdog/<block>.health.json  findings already told, the blocked episode, the last turn error
@@ -1977,9 +2015,11 @@ words it runs `rex-amq-adapter epic close <session_id> --asked "WORDS"
    kill that fails leaves every agent live with its waker; a session already
    gone is not an error. The lock keeps the session's watcher and the dying
    agents' `SessionEnd` hooks from parking them first under another reason.
-3. Each live record of the session is parked: its waker retired, its window
-   notes cleared, `DepartReason` `epic_closed`. No departure notes or mail
-   are sent: everyone they would reach was in the session just killed. The
+3. Each live record of the session is released, `DepartReason`
+   `epic_closed`, unfinished; once the locks are released its waker is
+   retired, its window notes cleared, and the departure finished
+   (`finishQuietly`). No departure notes or mail are sent: everyone they
+   would reach was in the session just killed. The
    records stay reserved (`ReserveFor`, 7 days), so a resume in a new Epic
    gets its handle back, and `sessions/<id>/view.json` stays.
 4. The link is removed, so a close that failed before this is finished by
@@ -2176,9 +2216,15 @@ crashed, or its pane closed", and the narrator's pulse raises an urgent
    check as an Epic's close (`unrest`); a local Claude Code background job
    is judged by its supervisor's state, since the client showing it reports
    none of its own or a stale one.
-2. It departs quietly, as an Epic's close parks its agents: waker retired,
-   window notes cleared, `DepartReason` `retired`, `Unfinished` empty, and
-   no departure notes or mail.
+2. It departs quietly, as an Epic's close parks its agents: the lease is
+   released under the lock with `DepartReason` `retired`, marked unfinished,
+   and once the lock is released (`finishQuietly`) the waker is retired, the
+   window notes cleared, and the departure marked finished, with no
+   departure notes or mail (`quietDeparture`). Waiting for the handle's lock
+   or for amq under the lifecycle lock would make every hook on the host
+   wait behind a waker (executed in
+   `TestRetireDoesNotHoldTheLifecycleLockWhileItsWakerIsBusy`); a finish that
+   fails leaves the departure unfinished, and collection finishes it.
 3. Its block is looked at on the record's server (`observeBinding`). A block
    that no longer shows the agent stays open (`"pane":"left_open"` with a
    `pane_note`), since closing it would close another program's pane: the

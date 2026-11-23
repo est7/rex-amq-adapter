@@ -365,7 +365,12 @@ func (e Env) newEpicSession(ctx context.Context, name string, panes []rex.Pane, 
 	if err != nil {
 		return session, blocks, nil, nil, nil, err
 	}
-	unlock, err := e.Store.LockLifecycle(ctx)
+	// The session runs now: its records are written even when the caller's
+	// context ends meanwhile, within a bound, since its agents' adoptions
+	// stop waiting for them once the opening lock is released.
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), epicRecordFor)
+	defer cancel()
+	unlock, err := e.Store.LockLifecycle(rctx)
 	if err != nil {
 		err = fmt.Errorf("the session was created, but its records were not: %w", err)
 		if crewName != "" {
@@ -381,6 +386,10 @@ func (e Env) newEpicSession(ctx context.Context, name string, panes []rex.Pane, 
 	}
 	return session, blocks, policyErr, crewErr, e.notarize(session, by.Handle, grant), nil
 }
+
+// epicRecordFor bounds recording a created Epic session's policy, crew, and
+// grant: the lifecycle lock is held for local file I/O only.
+const epicRecordFor = 10 * time.Second
 
 // epicPolicy is the policy of an Epic's session: unattended, led by its
 // crew's lead role (epicLead).

@@ -97,6 +97,18 @@ func (s Store) LockHandle(ctx context.Context, h core.Handle) (func(), error) {
 	return fsutil.Flock(ctx, filepath.Join(s.P.Home, "handles", fileKey(string(h))+".lock"))
 }
 
+// LockPane serialises the adapter's labels of one block: an adoption sets
+// the label under it only while its binding still holds the block.
+func (s Store) LockPane(ctx context.Context, block string) (func(), error) {
+	return fsutil.Flock(ctx, filepath.Join(s.P.Home, "panes", fileKey(block)+".lock"))
+}
+
+// LockRedelivery serialises delivering message id again, so the check that
+// it was not, the send, and the record that it was are one step.
+func (s Store) LockRedelivery(ctx context.Context, id string) (func(), error) {
+	return fsutil.Flock(ctx, filepath.Join(s.P.Home, "redelivering", fileKey(id)+".lock"))
+}
+
 // LockEpicOpening is held, exclusively, while an Epic's session is created
 // and its policy, crew, and grant recorded: its agents start as Rex creates
 // the session, before the adapter knows the session's id.

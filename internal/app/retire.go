@@ -80,6 +80,9 @@ func (e Env) Retire(ctx context.Context, loc Location, r RetireRequest) (RetireR
 		return res, fmt.Errorf("%w: name the agent to retire", ErrUsage)
 	}
 	target, on, err := e.retireLocked(ctx, loc, r, &res)
+	if res.Action == RetireRetired && !res.DryRun {
+		err = errors.Join(err, e.finishQuietly(ctx, []core.Handle{r.Handle}))
+	}
 	if err != nil || (res.Pane != PaneClosed && res.Pane != PaneGone) {
 		return res, err
 	}
@@ -141,7 +144,7 @@ func (e Env) retireLocked(ctx context.Context, loc Location, r RetireRequest, re
 		res.Action, res.DryRun = RetireRetired, true
 		return target, on, nil
 	}
-	if err := e.departQuietly(ctx, target, store.DepartRetired); err != nil {
+	if _, err := e.departQuietly(target, store.DepartRetired); err != nil {
 		return target, on, fmt.Errorf("retire %s: %w", r.Handle, err)
 	}
 	res.Action, res.DepartReason = RetireRetired, store.DepartRetired

@@ -93,13 +93,21 @@ func (e Env) ensureWaker(ctx context.Context, rec agent) error {
 // the lease under it, so of an adoption and a departure that race, the one
 // that reconciles last leaves the waker matching the lease they both wrote
 // (each writer reconciles after its write). The lifecycle lock is never held
-// here: amq wake check and start take seconds under load.
+// while waiting for it: amq wake check and start take seconds under load.
+//
+// Lock order: epic-lifecycle, epic-opening, handles/<h>, lifecycle, ledger.
+// A holder of the lifecycle lock never waits for a handle's lock.
 func (e Env) reconcileWaker(ctx context.Context, h core.Handle) (amq.WakeDecision, error) {
 	unlock, err := e.Store.LockHandle(ctx, h)
 	if err != nil {
 		return 0, err
 	}
 	defer unlock()
+	return e.reconcileWakerHeld(ctx, h)
+}
+
+// reconcileWakerHeld is reconcileWaker for a caller holding h's lock.
+func (e Env) reconcileWakerHeld(ctx context.Context, h core.Handle) (amq.WakeDecision, error) {
 	rec, ok, err := e.agentOf(h)
 	if err != nil {
 		return 0, err
@@ -142,19 +150,16 @@ func (e Env) Depart(ctx context.Context, loc Location, in HookInput) error {
 }
 
 // park retires rec's waker and ends its lease for reason
-// (store.Placement.DepartReason), if rec still holds the lease as it was
-// read, and settles the departure. A waker that cannot be retired fails the
+// (store.Placement.DepartReason), if rec still holds the binding it was read
+// with, and settles the departure. A waker that cannot be retired fails the
 // park, and the record stays live for the next hook or collection to try
 // again. The release is the departure: what follows can fail without undoing
-// it, and the departure stays unfinished for collection to finish (its
-// finishing retires a waker a supervisor brought back in between). A lease
-// that changed since rec was read (a takeover, a move, a new process) is left
-// alone: whatever rec's reader observed was about another lease.
+// it, and the departure stays unfinished for collection to finish. A binding
+// that changed since rec was read (a takeover, a move, a new process, a new
+// conversation in the same process) is left alone: whatever rec's reader
+// observed was about another one.
 func (e Env) park(ctx context.Context, rec agent, reason string) error {
-	if err := e.retireHeldWaker(ctx, rec); err != nil {
-		return err
-	}
-	left, released, err := e.releaseHeld(ctx, rec, store.Departure{Reason: reason, At: e.Now().UTC(), Unfinished: true})
+	left, released, err := e.departHeld(ctx, rec, reason)
 	if err != nil || !released {
 		return err
 	}
@@ -162,41 +167,65 @@ func (e Env) park(ctx context.Context, rec agent, reason string) error {
 	return nil
 }
 
-// retireHeldWaker retires rec's waker, under rec's handle lock, while rec
-// still holds the lease it was read with; a newer lease keeps its waker.
-func (e Env) retireHeldWaker(ctx context.Context, rec agent) error {
-	unlock, err := e.Store.LockHandle(ctx, rec.Handle)
+// departHeld, under rec's handle lock so no waker comes back in between,
+// retires rec's waker and then, under the lifecycle lock, releases its lease
+// as unfinished, each only while rec still holds the binding it was read
+// with (sameBinding). A retire that succeeds before a binding that changed
+// meanwhile is left to the newer binding's adoption, which reconciles its
+// waker after this lock is released.
+func (e Env) departHeld(ctx context.Context, rec agent, reason string) (agent, bool, error) {
+	unlockHandle, err := e.Store.LockHandle(ctx, rec.Handle)
 	if err != nil {
-		return err
+		return rec, false, err
 	}
-	defer unlock()
-	now, ok, err := e.agentOf(rec.Handle)
-	if err != nil || !ok || !now.Live() || rec.lease == nil || !sameLease(*now.lease, *rec.lease) {
-		return err
+	defer unlockHandle()
+	if now, ok, err := e.agentOf(rec.Handle); err != nil || !ok || !sameBinding(now, rec) {
+		return rec, false, err
 	}
 	if !rec.Kind.InProcess() {
 		if err := e.prepareInjector(); err != nil {
-			return fmt.Errorf("restore the injector wrapper to retire %s's waker: %w", rec.Handle, err)
+			return rec, false, fmt.Errorf("restore the injector wrapper to retire %s's waker: %w", rec.Handle, err)
 		}
 	}
-	_, err = e.AMQ.RetireHandle(ctx, e.Paths.Root(), string(rec.Handle))
-	return err
+	if _, err := e.AMQ.RetireHandle(ctx, e.Paths.Root(), string(rec.Handle)); err != nil {
+		return rec, false, err
+	}
+	left, released, err := e.releaseBound(ctx, rec, reason)
+	if !released {
+		// The lease stays live (its binding changed, or the lock could not be
+		// had): its waker follows it again, within a bound of its own, since
+		// the caller's context may be what ended.
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), superviseFor)
+		defer cancel()
+		if _, rerr := e.reconcileWakerHeld(rctx, rec.Handle); rerr != nil {
+			fmt.Fprintf(Diagnostics, "bring back the waker of %s, whose lease stays: %v\n", rec.Handle, rerr)
+		}
+	}
+	return left, released, err
 }
 
-// releaseHeld releases rec's lease under the lifecycle lock when it is still
-// the lease rec was read with: same epoch, place, and process.
-func (e Env) releaseHeld(ctx context.Context, rec agent, d store.Departure) (agent, bool, error) {
+// releaseBound releases rec's lease as departed for reason, unfinished,
+// under the lifecycle lock, while rec still holds its binding.
+func (e Env) releaseBound(ctx context.Context, rec agent, reason string) (agent, bool, error) {
 	unlock, err := e.Store.LockLifecycle(ctx)
 	if err != nil {
 		return rec, false, err
 	}
 	defer unlock()
 	now, ok, err := e.agentOf(rec.Handle)
-	if err != nil || !ok || !now.Live() || rec.lease == nil || !sameLease(*now.lease, *rec.lease) {
+	if err != nil || !ok || !sameBinding(now, rec) {
 		return rec, false, err
 	}
-	left, err := e.releaseLease(now, d)
+	left, err := e.releaseLease(now, store.Departure{Reason: reason, At: e.Now().UTC(), Unfinished: true})
 	return left, err == nil, err
+}
+
+// sameBinding reports whether now, read again, is still live in the binding
+// rec was read with: the same lease and the same conversation. A process
+// keeps its lease's epoch across a new conversation (/clear), so the lease
+// alone does not tell the old conversation's SessionEnd from the new one.
+func sameBinding(now, rec agent) bool {
+	return now.Live() && rec.lease != nil && sameLease(*now.lease, *rec.lease) && now.Session() == rec.Session()
 }
 
 // sameLease reports whether a and b are one lease: one epoch, in one block,
@@ -222,12 +251,21 @@ func (e Env) settleDeparture(ctx context.Context, left agent) {
 }
 
 // finishDeparture does what a departure must not lose: its waker retired,
-// its window notes cleared, an idle orchestrator told. Nothing else would
-// ever tell an idle orchestrator, so this runs until it succeeds, which may
-// tell it twice. Notes about leaving are advice and are not repeated here.
-// A handle taken back since (a resume) owes nothing for this departure.
+// its window notes cleared, and, unless it was quiet (quietDeparture), an
+// idle orchestrator told and a personal agent's narrator mail delivered
+// again. Nothing else would ever tell an idle orchestrator, so this runs
+// until it succeeds, which may tell it twice. Notes about leaving are advice
+// and are not repeated here. It runs under the handle's lock, so two
+// finishers of one departure do not interleave, and only for the departure
+// rec read (sameDeparture): a handle taken back, or forgotten and named
+// afresh, since owes nothing for it.
 func (e Env) finishDeparture(ctx context.Context, rec agent) error {
-	if _, err := e.reconcileWaker(ctx, rec.Handle); err != nil {
+	unlockHandle, err := e.Store.LockHandle(ctx, rec.Handle)
+	if err != nil {
+		return err
+	}
+	defer unlockHandle()
+	if _, err := e.reconcileWakerHeld(ctx, rec.Handle); err != nil {
 		return fmt.Errorf("retire the waker: %w", err)
 	}
 	if now, ok, err := e.agentOf(rec.Handle); err != nil || !ok || !sameDeparture(now, rec) {
@@ -238,13 +276,15 @@ func (e Env) finishDeparture(ctx context.Context, rec agent) error {
 	if err := e.clearWindowNotes(ctx, rec.Handle); err != nil {
 		return err
 	}
-	if err := e.wakeForDeparture(ctx, rec); err != nil {
-		return err
-	}
-	// A personal agent's unread narrator mail goes to the Hub's personal
-	// agent that is live, or waits for the next one (C26).
-	if err := e.redeliverFrom(ctx, rec); err != nil {
-		return err
+	if !quietDeparture(rec.departReason()) {
+		if err := e.wakeForDeparture(ctx, rec); err != nil {
+			return err
+		}
+		// A personal agent's unread narrator mail goes to the Hub's personal
+		// agent that is live, or waits for the next one (C26).
+		if err := e.redeliverFrom(ctx, rec); err != nil {
+			return err
+		}
 	}
 	unlock, err := e.Store.LockLifecycle(ctx)
 	if err != nil {
@@ -257,11 +297,19 @@ func (e Env) finishDeparture(ctx context.Context, rec agent) error {
 	return e.Store.FinishDeparture(rec.Handle)
 }
 
+// quietDeparture reports whether a departure for reason tells nobody: an
+// Epic closed (everyone it would tell was in the session just killed) or a
+// peer retired as finished (Retiring a peer).
+func quietDeparture(reason string) bool {
+	return reason == store.DepartEpicClosed || reason == store.DepartRetired
+}
+
 // sameDeparture reports whether now is still departed from the placement
-// rec departed from.
+// rec departed from. A handle forgotten and named afresh starts its epochs
+// over, so the placement's start and the departure's time tell them apart.
 func sameDeparture(now, rec agent) bool {
 	a, b := now.departure(), rec.departure()
-	return a != nil && b != nil && a.Epoch == b.Epoch
+	return a != nil && b != nil && a.Epoch == b.Epoch && a.AcquiredAt.Equal(b.AcquiredAt) && a.DepartedAt.Equal(b.DepartedAt)
 }
 
 func (e Env) clearWindowNotes(ctx context.Context, h core.Handle) error {
