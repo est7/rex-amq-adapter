@@ -1469,11 +1469,15 @@ on the host waits for, never covers a `rex`, `amq`, or `ps` call:
    the handle is registered and its mailbox exists, as it is for every agent
    the adapter launches (below); the doorbell holds; the
    waker (`reconcileWaker`, below); then list the session's blocks to find
-   the session-mates and queue join notes; the labels; and last, under the
-   lifecycle lock again (both are local file I/O), the arrival gate and then
-   the lease marked adopted, only while the binding still holds: a gate that
-   fails leaves the lease adopting for the next hook. The crew and role
-   briefing is read after that.
+   the session-mates and queue join notes; the labels; the arrival gate,
+   under the handle's lock (it reads, and may quarantine, every unread
+   message, so it holds no lock every hook waits for); and last, under the
+   lifecycle lock again, the lease marked adopted. Both run only while the
+   record is the one Commit wrote, placement included: a gate that fails
+   leaves the lease adopting for the next hook, a superseded adoption
+   reports `errSuperseded`, and one a session reconciliation moved meanwhile
+   is adopted again from a new probe, so the result's session and window are
+   always the record's. The crew and role briefing is read after that.
 
 The waker is derived from the lease. `reconcileWaker` takes the handle's own
 lock (`handles/<handle>.lock`), reads the lease, and leaves one live waker
@@ -1501,8 +1505,9 @@ read can change before it acts, so each acts only on what it read:
   not evict the agent adopted there since, and a probe older than a session
   reconciliation's move does not write the older placement back.
 - **Pane.** Every adapter label of a pane (an adoption's, `agent title`'s)
-  is set under `panes/<block>.lock` from the record read under it, so the
-  last writer shows the latest handle and task. A superseded Reconcile
+  is written under `panes/<block>.lock` from the record read under it,
+  whatever the pane showed before, so the last writer shows the latest
+  handle and task. A superseded Reconcile
   neither relabels the pane nor reports the agent adopted
   (`errSuperseded`), so its hook tells nobody anything.
 - **Departure.** A park retires the waker and releases the lease under the
@@ -1513,7 +1518,10 @@ read can change before it acts, so each acts only on what it read:
   forgotten and named afresh starts its epochs over, and only while it is
   still unfinished, so a second collector of one snapshot tells nobody
   again. Retire and Epic close, replays included, finish any quiet
-  departure of theirs left unfinished. Collection forgets an
+  departure of theirs left unfinished, and only once their guards passed:
+  a close finishes the `epic_closed` departures of the Epic it was
+  authorized for (server and session), a retire the `retired` departure of
+  its target, never in a preview. Collection forgets an
   identity only if the record read under the lock is still past its
   reservation.
 - **Redelivery.** Each narrator message is delivered again under its own
