@@ -650,20 +650,8 @@ func (e Env) takenHandles(recs []agent) (map[core.Handle]bool, error) {
 // The record is the source: adoption draws the label from it again, so a
 // resumed agent shows its task in whichever pane it lands.
 func (e Env) SetTask(ctx context.Context, loc Location, task string) (string, error) {
-	unlock, err := e.Store.LockLifecycle(ctx)
+	rec, err := e.recordTask(ctx, loc, task)
 	if err != nil {
-		return "", err
-	}
-	defer unlock()
-	rec, ok, err := e.agentIn(loc)
-	if err != nil {
-		return "", err
-	}
-	if !ok || !rec.Live() {
-		return "", fmt.Errorf("no AMQ identity for this Rex block (%s), so there is no pane label to set", loc.Block)
-	}
-	rec.Task = core.Task(task)
-	if err := e.Store.PutIdentity(rec.Identity); err != nil {
 		return "", err
 	}
 	e.refreshTitle(ctx, rec)
@@ -673,6 +661,25 @@ func (e Env) SetTask(ctx context.Context, loc Location, task string) (string, er
 	}
 	e.followBlockTab(ctx, loc.Block)
 	return label, nil
+}
+
+// recordTask records task for the live agent in loc, under the lifecycle
+// lock, and returns its record.
+func (e Env) recordTask(ctx context.Context, loc Location, task string) (agent, error) {
+	unlock, err := e.Store.LockLifecycle(ctx)
+	if err != nil {
+		return agent{}, err
+	}
+	defer unlock()
+	rec, ok, err := e.agentIn(loc)
+	if err != nil {
+		return agent{}, err
+	}
+	if !ok || !rec.Live() {
+		return agent{}, fmt.Errorf("no AMQ identity for this Rex block (%s), so there is no pane label to set", loc.Block)
+	}
+	rec.Task = core.Task(task)
+	return rec, e.Store.PutIdentity(rec.Identity)
 }
 
 // Exports is the shell text `rex-amq-adapter agent env --sh` prints for the agent in loc.

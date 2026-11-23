@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -110,4 +111,20 @@ func TestOpenEpicCreatesItsSessionOutsideTheLifecycleLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertNoCallsUnderLock(t, w, "opening an Epic")
+}
+
+func TestSetTaskRenamesThePaneOutsideTheLifecycleLock(t *testing.T) {
+	term := &fakeTerm{state: "idle"}
+	e := realAmqEnv(t, term)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if _, err := e.Adopt(ctx, Location{Block: block}, core.Codex, HookInput{SessionID: "s1"}); err != nil {
+		t.Fatal(err)
+	}
+	w := watchLocks(&e)
+	label, err := e.SetTask(ctx, Location{Block: block}, "fix login")
+	if err != nil || term.renamed[block] != label || !strings.Contains(label, "fix login") {
+		t.Fatalf("label %q (pane shows %q): %v", label, term.renamed[block], err)
+	}
+	assertNoCallsUnderLock(t, w, "agent title")
 }
