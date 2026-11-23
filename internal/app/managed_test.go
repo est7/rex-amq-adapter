@@ -277,7 +277,7 @@ func TestManagedMailNarratorControlReachesOnlyTheOrchestrator(t *testing.T) {
 		t.Fatalf("provenance %+v %v %v", p, ok, err)
 	}
 	orch, _, _ := e.agentAt("block:claude-03")
-	kept, err := e.admit(orch)
+	kept, err := e.admit(context.Background(), orch)
 	if err != nil || len(kept) != 1 || kept[0] != sent.ID {
 		t.Fatalf("the orchestrator's gate kept %v (%v), want %s", kept, err, sent.ID)
 	}

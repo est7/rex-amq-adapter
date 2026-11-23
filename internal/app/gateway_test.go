@@ -246,7 +246,7 @@ func TestQuarantineFencesMailAddressedBeforeAMove(t *testing.T) {
 	if err := amq.Send(ctx, e.AMQ, e.Paths.Root(), "codex-01", "claude-02", "after", "raw, sent after the return"); err != nil {
 		t.Fatal(err)
 	}
-	kept, err := e.admit(rec)
+	kept, err := e.admit(context.Background(), rec)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,13 +291,13 @@ func TestLinkTakesEffectAtOnce(t *testing.T) {
 	if err := send(); err != nil {
 		t.Fatalf("linked send: %v", err)
 	}
-	if kept, err := e.admit(narr); err != nil || len(kept) != 1 {
+	if kept, err := e.admit(context.Background(), narr); err != nil || len(kept) != 1 {
 		t.Fatalf("linked arrival: %v %v", kept, err)
 	}
 	if _, changed, err := e.Link(ctx, Location{Block: "block:p"}, "session:a", false); err != nil || !changed {
 		t.Fatalf("unlink: %v %v", changed, err)
 	}
-	if kept, err := e.admit(narr); err != nil || len(kept) != 0 {
+	if kept, err := e.admit(context.Background(), narr); err != nil || len(kept) != 0 {
 		t.Fatalf("after unlink: %v %v", kept, err)
 	}
 	if got := quarantined(t, e, "agy-02"); len(got) != 1 {
@@ -338,7 +338,7 @@ func TestLinkedNarratorSendsToItsPersonalAgentUnasked(t *testing.T) {
 	if err := send(); err != nil {
 		t.Fatalf("a linked narrator's send: %v", err)
 	}
-	if kept, err := e.admit(me); err != nil || len(kept) != 1 {
+	if kept, err := e.admit(context.Background(), me); err != nil || len(kept) != 1 {
 		t.Fatalf("the personal agent admitted %v %v", kept, err)
 	}
 }
@@ -370,7 +370,7 @@ func TestGatewayQuarantinesUnverifiedMailToPersonalAndNarrator(t *testing.T) {
 		"codex-03":  {},
 	} {
 		rec := recordOf(t, e, h)
-		if _, err := e.admit(rec); err != nil {
+		if _, err := e.admit(context.Background(), rec); err != nil {
 			t.Fatal(err)
 		}
 		if got := quarantined(t, e, h); !maps.Equal(got, want) {

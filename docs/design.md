@@ -1471,9 +1471,11 @@ a lease reconciles after its write, so of an adoption and a departure that
 race, the one that reconciles last leaves the waker matching the lease.
 
 The locks are taken in one order: `epic-lifecycle.lock`, `epic-opening.lock`,
-`handles/<handle>.lock`, `lifecycle.lock`, then the ledger, pane, and
-redelivery locks. A holder of the lifecycle lock never waits for a handle's
-lock or for amq. With the lock no longer held across Rex, what one operation
+`handles/<handle>.lock` (or an injector's or a consumer's lock),
+`lifecycle.lock`, then the ledger, pane, and redelivery locks. A holder of
+the lifecycle lock never waits for a handle's lock or for amq, and the
+arrival gate, whose quarantines take the lifecycle lock (with its caller's
+deadline), runs before a hook takes its ledger lock. With the lock no longer held across Rex, what one operation
 read can change before it acts, so each acts only on what it read:
 
 - **Binding.** A lease is acted on (parked, marked adopted, labelled) only

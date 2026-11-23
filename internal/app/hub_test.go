@@ -343,7 +343,7 @@ func TestHubLinkAcrossSessions(t *testing.T) {
 		if err := send("agy-05", to); err != nil {
 			t.Errorf("the narrator to %s of its Hub: %v", to, err)
 		}
-		if kept, err := e.admit(recordNamed(t, e, core.Handle(to))); err != nil || len(kept) != 1 {
+		if kept, err := e.admit(context.Background(), recordNamed(t, e, core.Handle(to))); err != nil || len(kept) != 1 {
 			t.Errorf("%s admitted %v %v", to, kept, err)
 		}
 	}

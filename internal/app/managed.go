@@ -219,8 +219,8 @@ func (e Env) repairWakers(ctx context.Context, to []string) {
 
 // readable finds message id in the caller's mailbox and lets the gateway
 // decide on it. Mail still unread meets the arrival gate first.
-func (m managed) readable(id string) (located, error) {
-	if _, err := m.e.admit(m.rec); err != nil {
+func (m managed) readable(ctx context.Context, id string) (located, error) {
+	if _, err := m.e.admit(ctx, m.rec); err != nil {
 		return located{}, err
 	}
 	msg, ok, err := m.e.findMessage(m.rec.Handle, id)
@@ -247,7 +247,7 @@ func (m managed) read(ctx context.Context, args []string) (int, error) {
 	if *id == "" {
 		return 2, fmt.Errorf("%w: read needs --id", ErrUsage)
 	}
-	if _, err := m.readable(*id); err != nil {
+	if _, err := m.readable(ctx, *id); err != nil {
 		return 1, err
 	}
 	return m.run(ctx, "read", "--me", m.me(), "--id", *id, mailFlagArgs(fs, "json", "strict"))
@@ -277,7 +277,7 @@ func (m managed) drain(ctx context.Context, args []string) (int, error) {
 		return 1, err
 	}
 	defer unlock()
-	kept, err := m.e.admit(m.rec)
+	kept, err := m.e.admit(ctx, m.rec)
 	if err != nil {
 		return 1, err
 	}
@@ -392,7 +392,7 @@ func (m managed) trace(ctx context.Context, args []string) (int, error) {
 	if id == "" {
 		return 2, fmt.Errorf("%w: trace needs a message id first", ErrUsage)
 	}
-	msg, err := m.readable(id)
+	msg, err := m.readable(ctx, id)
 	if err != nil {
 		return 1, err
 	}
@@ -445,7 +445,7 @@ func (m managed) thread(ctx context.Context, args []string) (int, error) {
 	for _, id := range strings.Split(*only, ",") {
 		want[strings.TrimSpace(id)] = true
 	}
-	if _, err := m.e.admit(m.rec); err != nil {
+	if _, err := m.e.admit(ctx, m.rec); err != nil {
 		return 1, err
 	}
 	var ids []string
@@ -563,7 +563,7 @@ func (m managed) list(ctx context.Context, args []string) (int, error) {
 	for _, label := range labels {
 		forwarded = append(forwarded, "--label="+label)
 	}
-	if _, err := m.e.admit(m.rec); err != nil {
+	if _, err := m.e.admit(ctx, m.rec); err != nil {
 		return 1, err
 	}
 	var out, errb bytes.Buffer

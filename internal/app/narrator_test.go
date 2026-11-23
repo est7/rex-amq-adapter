@@ -285,7 +285,7 @@ func TestSessionWatcherTellsTheNarrator(t *testing.T) {
 	if err != nil || !ok || !p.System {
 		t.Fatalf("the notice carries no system provenance: %+v %v %v", p, ok, err)
 	}
-	if kept, err := e.admit(recordOf(t, e, "codex-02")); err != nil || len(kept) != 1 {
+	if kept, err := e.admit(context.Background(), recordOf(t, e, "codex-02")); err != nil || len(kept) != 1 {
 		t.Fatalf("the narrator's gate refused the watcher's notice: %v %v", kept, err)
 	}
 	if err := amq.Send(ctx, e.AMQ, e.Paths.Root(), "codex-01", "codex-03", "next", "do more"); err != nil {
