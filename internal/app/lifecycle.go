@@ -330,13 +330,10 @@ func (e Env) collect(ctx context.Context, covers func(agent) bool) error {
 
 func (e Env) collectOne(ctx context.Context, rec agent) error {
 	if !rec.Live() {
-		p := rec.departure()
-		// An adoption that died between writing the identity and acquiring
-		// its lease (p == nil) was never placed anywhere.
-		if p == nil && e.Now().Sub(rec.FirstAdoptedAt) > ReserveFor || p != nil && e.Now().Sub(p.DepartedAt) > ReserveFor {
-			return e.forgetUnchanged(ctx, rec)
+		if e.reservationOver(rec) {
+			return e.forgetIfOver(ctx, rec.Handle)
 		}
-		if p != nil && p.Unfinished {
+		if p := rec.departure(); p != nil && p.Unfinished {
 			ctx, cancel := context.WithTimeout(ctx, finishDepartureFor)
 			defer cancel()
 			return e.finishDeparture(ctx, rec)
@@ -347,22 +344,34 @@ func (e Env) collectOne(ctx context.Context, rec agent) error {
 	return err
 }
 
-// forgetUnchanged deletes rec's identity, under the lifecycle lock, when it is
-// still departed as rec was read: a resume since keeps it.
-func (e Env) forgetUnchanged(ctx context.Context, rec agent) error {
+// reservationOver reports whether the departed rec's handle is no longer
+// reserved for a resume: ReserveFor after it departed, or after it was first
+// adopted when an adoption died between writing the identity and acquiring
+// its lease (it was never placed anywhere).
+func (e Env) reservationOver(rec agent) bool {
+	if rec.Live() {
+		return false
+	}
+	if p := rec.departure(); p != nil {
+		return e.Now().Sub(p.DepartedAt) > ReserveFor
+	}
+	return e.Now().Sub(rec.FirstAdoptedAt) > ReserveFor
+}
+
+// forgetIfOver deletes h's identity, under the lifecycle lock, when its
+// record read there is still past its reservation: a resume, or a new
+// identity of the same name, since the unlocked read keeps it.
+func (e Env) forgetIfOver(ctx context.Context, h core.Handle) error {
 	unlock, err := e.Store.LockLifecycle(ctx)
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	now, ok, err := e.agentOf(rec.Handle)
-	if err != nil || !ok || now.Live() {
+	now, ok, err := e.agentOf(h)
+	if err != nil || !ok || !e.reservationOver(now) {
 		return err
 	}
-	if a, b := now.departure(), rec.departure(); (a == nil) != (b == nil) || a != nil && a.Epoch != b.Epoch {
-		return nil
-	}
-	return e.Store.ForgetIdentity(rec.Handle)
+	return e.Store.ForgetIdentity(h)
 }
 
 // parkIfGone parks the live agent of rec if Rex shows it is gone. observed is

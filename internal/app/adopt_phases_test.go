@@ -123,3 +123,42 @@ func TestTheSessionWatcherKeepsTheWakersNoHookWould(t *testing.T) {
 		}
 	}
 }
+
+// Collection reads the records with no lock held. What it found past its
+// reservation is forgotten only if the record read again under the lock is
+// still past it: a handle resumed, or named afresh for a new identity, since
+// the unlocked read is kept.
+func TestCollectionForgetsOnlyWhatIsStillPastItsReservation(t *testing.T) {
+	e := realAmqEnv(t, &fakeTerm{state: "idle"})
+	ctx := context.Background()
+	old := time.Now().Add(-ReserveFor - time.Hour)
+	if err := e.Store.PutIdentity(store.Identity{Handle: "codex-09", Kind: core.Codex, FirstAdoptedAt: old}); err != nil {
+		t.Fatal(err)
+	}
+	stale, _, _ := e.agentOf("codex-09")
+	if !e.reservationOver(stale) {
+		t.Fatal("setup: a never-placed identity adopted ReserveFor ago is past its reservation")
+	}
+	// The handle is named afresh before collection takes the lock.
+	if err := e.Store.ForgetIdentity("codex-09"); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Store.PutIdentity(store.Identity{Handle: "codex-09", Kind: core.Codex, FirstAdoptedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.forgetIfOver(ctx, stale.Handle); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := e.agentOf("codex-09"); !ok {
+		t.Fatal("the new identity of the handle was forgotten on a stale read")
+	}
+	if err := e.Store.PutIdentity(store.Identity{Handle: "codex-09", Kind: core.Codex, FirstAdoptedAt: old}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.forgetIfOver(ctx, "codex-09"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := e.agentOf("codex-09"); ok {
+		t.Fatal("an identity past its reservation was kept")
+	}
+}
