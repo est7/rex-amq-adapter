@@ -159,7 +159,7 @@ func TestAHandleTakenBackAfterItLeftTheRosterGetsItsMailboxAgain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := e.finishQuietly(ctx, []core.Handle{"codex-01"}); err != nil {
+	if err := e.finishQuietly(ctx, []agent{recordOf(t, e, "codex-01")}); err != nil {
 		t.Fatal(err)
 	}
 	if rep, err := e.retireRoster(ctx, []core.Handle{"codex-01"}, nil); err != nil || !slices.Contains(rep.Pruned, "codex-01") {
@@ -216,7 +216,7 @@ func TestASweepRacingAResumeLeavesTheResumedAgentItsMailbox(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := e.finishQuietly(ctx, []core.Handle{"codex-01"}); err != nil {
+	if err := e.finishQuietly(ctx, []agent{recordOf(t, e, "codex-01")}); err != nil {
 		t.Fatal(err)
 	}
 	fake := e.AMQ.(*amq.Fake)

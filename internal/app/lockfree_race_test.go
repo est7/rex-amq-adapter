@@ -93,7 +93,7 @@ func TestASupersededReconcileLeavesTheReplacementAlone(t *testing.T) {
 		t.Fatal("the superseded handle kept a waker")
 	}
 	// Its last step alone refuses too, however far the rest got.
-	if _, _, err := e.finishAdoption(ctx, c); !errors.Is(err, errSuperseded) {
+	if _, err := e.finishAdoption(ctx, c.rec); !errors.Is(err, errSuperseded) {
 		t.Fatalf("finishing the superseded adoption: %v, want errSuperseded", err)
 	}
 }
@@ -478,5 +478,272 @@ func TestOverlappingTaskWritesLeaveTheLatestLabel(t *testing.T) {
 	}
 	if rec, got := recordOf(t, e, "codex-01"), term.renamed[block]; rec.Task != "newer task" || !strings.Contains(got, "newer task") {
 		t.Fatal(fmt.Sprintf("recorded task %q, pane shows %q", rec.Task, got))
+	}
+}
+
+// The arrival gate reads and may quarantine every unread message: however
+// many there are, it holds no lock every hook on the host waits for.
+func TestAnArrivalBacklogDoesNotHoldTheLifecycleLock(t *testing.T) {
+	term := &fakeTerm{state: "idle", windows: map[string]string{block: "window:1"}}
+	e := realAmqEnv(t, term)
+	ctx := context.Background()
+	in := HookInput{SessionID: "s1"}
+	p, err := e.probeAdoption(ctx, Location{Block: block}, core.Codex, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := e.commitAdoption(ctx, p, core.Codex, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.AMQ.EnsureMailbox(ctx, e.Paths.Root(), string(c.rec.Handle)); err != nil {
+		t.Fatal(err)
+	}
+	inbox := amq.Inbox(e.Paths.Root(), string(c.rec.Handle))
+	for i := 0; i < 600; i++ {
+		if err := os.WriteFile(filepath.Join(inbox, fmt.Sprintf("m%05d.md", i)), []byte("not a message"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	done := make(chan error, 1)
+	go func() { _, err := e.reconcileAdoption(ctx, p, c); done <- err }()
+	var longest time.Duration
+	for {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+			if longest > time.Second {
+				t.Fatalf("the lifecycle lock was held %v while the gate read the backlog", longest)
+			}
+			return
+		default:
+		}
+		start := time.Now()
+		lctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		unlock, err := e.Store.LockLifecycle(lctx)
+		cancel()
+		if err != nil {
+			t.Fatalf("the lifecycle lock was held through the backlog: %v", err)
+		}
+		unlock()
+		longest = max(longest, time.Since(start))
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// An adoption whose record a session reconciliation moved while it
+// reconciled is adopted again from a new probe, never reported with the old
+// placement beside the new record.
+func TestAnAdoptionMovedWhileItReconcilesIsTakenAgain(t *testing.T) {
+	e := realAmqEnv(t, &fakeTerm{state: "idle"})
+	ctx := context.Background()
+	in := HookInput{SessionID: "s1"}
+	p, err := e.probeAdoption(ctx, Location{Block: block}, core.Codex, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := e.commitAdoption(ctx, p, core.Codex, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlock, _ := e.Store.LockLifecycle(ctx)
+	err = e.Store.Moved(c.rec.Handle, "session:moved", "window:moved", time.Now())
+	unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.reconcileAdoption(ctx, p, c); !errors.Is(err, errStaleProbe) {
+		t.Fatalf("reconciling a moved adoption: %v, want errStaleProbe", err)
+	}
+	a, err := e.Adopt(ctx, Location{Block: block}, core.Codex, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Session != a.Agent.SessionID || a.Window != a.Agent.WindowID {
+		t.Fatalf("the result mixes placements: adoption %s/%s, record %s/%s", a.Session, a.Window, a.Agent.SessionID, a.Agent.WindowID)
+	}
+}
+
+// A replacement whose probe saw the pane already showing its label still
+// writes it under the pane lock: a superseded adoption's late write cannot
+// leave the pane showing the old handle.
+func TestAReplacementRelabelsAPaneASupersededAdoptionWroteLate(t *testing.T) {
+	term := &fakeTerm{state: "idle"}
+	e := realAmqEnv(t, term)
+	ctx := context.Background()
+	oldPID, newPID := os.Getpid(), os.Getppid()
+	claudePane(term, block, oldPID)
+	old := HookInput{SessionID: "old", AgentPID: oldPID}
+	p, err := e.probeAdoption(ctx, Location{Block: block}, core.Claude, old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := e.commitAdoption(ctx, p, core.Claude, old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replaced := make(chan error, 1)
+	var once sync.Once
+	term.renaming = func(_, label string) {
+		if !strings.HasPrefix(label, string(c.rec.Handle)) {
+			return
+		}
+		once.Do(func() {
+			// While the old write waits, the pane shows the replacement's
+			// label and its agent starts.
+			claudePane(term, block, newPID)
+			term.mu.Lock()
+			term.label = core.PaneLabel("claude-02", "", "")
+			term.mu.Unlock()
+			go func() {
+				_, err := e.Adopt(ctx, Location{Block: block}, core.Claude, HookInput{SessionID: "new", AgentPID: newPID})
+				replaced <- err
+			}()
+			time.Sleep(300 * time.Millisecond)
+		})
+	}
+	if _, err := e.reconcileAdoption(ctx, p, c); !errors.Is(err, errSuperseded) {
+		t.Fatalf("the old reconcile: %v, want errSuperseded", err)
+	}
+	if err := <-replaced; err != nil {
+		t.Fatal(err)
+	}
+	if got := term.renamed[block]; got != core.PaneLabel("claude-02", "", "") {
+		t.Fatalf("the pane shows %q, want the replacement's", got)
+	}
+}
+
+// A close the guards refuse finishes nothing, not even a departure of the
+// Epic it named.
+func TestARefusedCloseFinishesNoDeparture(t *testing.T) {
+	e, _, _ := closeWorld(t)
+	worker := handleIn(t, e, "block:w")
+	if _, err := e.releaseLease(recordOf(t, e, worker), store.Departure{Reason: store.DepartEpicClosed, At: time.Now(), Unfinished: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := closeEpic(e, Location{Block: "block:x"}, CloseRequest{Session: "session:epic", Asked: "close it"}); err == nil {
+		t.Fatal("setup: a worker of another session should be refused")
+	}
+	if p := recordOf(t, e, worker).departure(); !p.Unfinished {
+		t.Fatal("a refused close finished a departure of the Epic it named")
+	}
+}
+
+// A retire's preview changes nothing, and a retire finishes only a
+// retirement: another kind of pending departure is collection's to finish.
+func TestRetireFinishesOnlyARetirementAndNeverInAPreview(t *testing.T) {
+	e, _, _, _ := retireWorld(t)
+	ctx := context.Background()
+	for h, reason := range map[core.Handle]string{"codex-03": store.DepartRetired, "codex-04": store.DepartSessionEnd} {
+		if _, err := e.releaseLease(recordOf(t, e, h), store.Departure{Reason: reason, At: time.Now(), Unfinished: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	res, err := e.Retire(ctx, Location{Block: "block:o"}, RetireRequest{Handle: "codex-03", DryRun: true})
+	if err != nil || res.Action != RetireAlreadyDeparted {
+		t.Fatalf("preview: %+v %v", res, err)
+	}
+	if !recordOf(t, e, "codex-03").departure().Unfinished || !wakerLive(t, e, "codex-03") {
+		t.Fatal("a preview finished the retirement")
+	}
+	told, _ := amq.Unread(e.Paths.Root(), "codex-01")
+	if _, err := e.Retire(ctx, Location{Block: "block:o"}, RetireRequest{Handle: "codex-04"}); err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := amq.Unread(e.Paths.Root(), "codex-01"); !recordOf(t, e, "codex-04").departure().Unfinished || len(again) != len(told) {
+		t.Fatalf("a retire finished a session_end departure: unfinished=%v notices %d -> %d", recordOf(t, e, "codex-04").departure().Unfinished, len(told), len(again))
+	}
+	if _, err := e.Retire(ctx, Location{Block: "block:o"}, RetireRequest{Handle: "codex-03"}); err != nil {
+		t.Fatal(err)
+	}
+	if recordOf(t, e, "codex-03").departure().Unfinished || wakerLive(t, e, "codex-03") {
+		t.Fatal("a retire did not finish the earlier retirement")
+	}
+}
+
+// A reader moved while its arrival gate runs loses no mail it may read: each
+// quarantine is decided again, under the lock placement writers hold, by the
+// placements as they are then, and the gate stops once the reader moved.
+func TestAReaderMovedDuringItsArrivalGateLosesNoMail(t *testing.T) {
+	term := &fakeTerm{state: "idle", windows: map[string]string{block: "window:1"}, sessions: map[string]string{"window:1": "session:s"}}
+	e := realAmqEnv(t, term)
+	ctx := context.Background()
+	in := HookInput{SessionID: "s1"}
+	p, err := e.probeAdoption(ctx, Location{Block: block}, core.Codex, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := e.commitAdoption(ctx, p, core.Codex, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := c.rec.Handle
+	put(t, e, seed{Handle: "codex-09", Kind: core.Codex, BlockID: "block:s", SessionID: c.rec.SessionID, WindowID: "window:2", AgentPID: os.Getppid(), AdoptedAt: time.Now()})
+	for _, h := range []string{string(reader), "codex-09"} {
+		if err := e.AMQ.EnsureMailbox(ctx, e.Paths.Root(), h); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(amq.Inbox(e.Paths.Root(), string(reader)), "0000-bad.md"), []byte("not a message"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const peerMail = 300
+	for i := 0; i < peerMail; i++ {
+		if _, _, err := e.AMQ.Post(ctx, e.Paths.Root(), "send", "--me", "codex-09", "--to", string(reader), "--subject", "s", "--body", "b"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// As the gate denies the malformed file, both agents move to another
+	// session, as a session reconciliation records it.
+	var once sync.Once
+	now := e.Now
+	e.Now = func() time.Time {
+		once.Do(func() {
+			go func() {
+				unlock, err := e.Store.LockLifecycle(context.Background())
+				if err != nil {
+					return
+				}
+				defer unlock()
+				_ = e.Store.Moved(reader, "session:new", "window:n1", time.Now())
+				_ = e.Store.Moved("codex-09", "session:new", "window:n2", time.Now())
+			}()
+		})
+		return now()
+	}
+	_, _, _ = e.admitHeld(ctx, c)
+	ids, _ := e.Store.QuarantinedIDs(reader)
+	for _, id := range ids {
+		if q, _ := e.Store.QuarantineReason(reader, id); q.Decision.Reason != core.ReasonUnreadableHeader {
+			t.Fatalf("peer mail %s was quarantined (%s) across the move", id, q.Decision.Reason)
+		}
+	}
+	unread, _ := amq.Unread(e.Paths.Root(), string(reader))
+	if n := len(slices.DeleteFunc(unread, func(id string) bool { return id == "0000-bad" })); n != peerMail {
+		t.Fatalf("%d of %d peer messages left unread", n, peerMail)
+	}
+}
+
+// A close whose op id another request claimed meanwhile is refused, and its
+// refusal settles nothing.
+func TestAConflictingCloseOpIDSettlesNothing(t *testing.T) {
+	e, _, loc := closeWorld(t)
+	if _, err := closeEpic(e, loc, CloseRequest{Session: "session:epic", Asked: "close it", OpID: "me:close#1"}); err != nil {
+		t.Fatal(err)
+	}
+	caller := recordOf(t, e, "claude-01")
+	me, err := e.gatewayEndpoint(caller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var settle closeSettle
+	var res CloseResult
+	if _, err := e.closedAlready(caller, me, CloseRequest{Session: "session:epic", Asked: "close it", OpID: "me:close#1", Force: true}, "another-hash", &res, &settle); err == nil {
+		t.Fatal("setup: the reused op id should conflict")
+	}
+	if settle.key != (core.SessionKey{}) {
+		t.Fatalf("a conflicting close was authorized to settle %+v", settle.key)
 	}
 }

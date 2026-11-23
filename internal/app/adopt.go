@@ -54,13 +54,15 @@ func (e Env) Adopt(ctx context.Context, loc Location, kind core.Kind, in HookInp
 			return Adoption{}, err
 		}
 		c, err := e.commitAdoption(ctx, p, kind, in)
-		if errors.Is(err, errStaleProbe) && attempt < adoptProbes {
-			continue
+		if err == nil {
+			var a Adoption
+			if a, err = e.reconcileAdoption(ctx, p, c); err == nil {
+				return a, nil
+			}
 		}
-		if err != nil {
+		if !errors.Is(err, errStaleProbe) || attempt >= adoptProbes {
 			return Adoption{}, err
 		}
-		return e.reconcileAdoption(ctx, p, c)
 	}
 }
 
@@ -487,24 +489,30 @@ func (e Env) reconcileAdoption(ctx context.Context, p adoptionProbe, c adoptionC
 	if err != nil {
 		return Adoption{}, err
 	}
-	// The identity carries the role, so briefing and orchestrator behaviour read one
-	// fact: the label is overwritten below, and a resumed agent may land in
-	// any pane.
-	out := Adoption{Decision: decision, Known: c.known, Role: rec.Role, Window: blk.WindowID, Session: blk.SessionID}
+	out := Adoption{Decision: decision, Known: c.known}
 	out.Mates = e.joinSession(ctx, rec, blk, c.recs, c.arrived)
-	if out.LabelErr, err = e.labelPane(ctx, c, p.loc.Block, blk.Label); err != nil {
+	if out.LabelErr, err = e.labelPane(ctx, c, p.loc.Block); err != nil {
 		return Adoption{}, err
 	}
 	// The tab follows even when the pane label was right already: Rex names
 	// a new tab "Window <8-hex>", and a summoned agent's tab its launch label.
 	e.followTab(ctx, blk.SessionID, blk.WindowID)
-	// The arrival gate, then the lease marked adopted, both while the
-	// binding is still this adoption's: a gate that fails leaves the
-	// adoption unfinished for the next hook, and a superseded one reports
-	// failure, so its hook tells nobody of anything.
-	if rec, out.Unread, err = e.finishAdoption(ctx, c); err != nil {
+	// The arrival gate, then the lease marked adopted, both only while the
+	// record is still the one this adoption committed, placement included:
+	// a gate that fails leaves the adoption unfinished for the next hook, a
+	// superseded one reports failure (its hook tells nobody of anything),
+	// and one moved meanwhile is adopted again from a new probe.
+	admitted, unread, err := e.admitHeld(ctx, c)
+	if err != nil {
 		return Adoption{}, err
 	}
+	if rec, err = e.finishAdoption(ctx, admitted); err != nil {
+		return Adoption{}, err
+	}
+	// The identity carries the role, so briefing and orchestrator behaviour
+	// read one fact: the label was overwritten above, and a resumed agent
+	// may land in any pane. Where it is comes from the same record.
+	out.Unread, out.Role, out.Window, out.Session = unread, rec.Role, rec.WindowID, rec.SessionID
 	if rec.Role == core.PersonalRole && c.arrived {
 		// Mail its Hub's departed personal agents left pending (C26).
 		e.redeliverPending(ctx, rec)
@@ -537,13 +545,13 @@ func (e Env) provisionHeld(ctx context.Context, rec agent, was string) (amq.Wake
 }
 
 // labelPane shows the handle of c's agent, with the role and task its
-// record has now, as block's label (shown is what it showed when probed),
-// under the block's pane lock and only while c's binding holds the block:
-// the last writer of the label (this adoption, a replacement's, an `agent
-// title`) reads the record under the same lock, so the pane never ends on
-// an older handle or task. The first error is Rex's, reported, never fatal;
-// the second is errSuperseded.
-func (e Env) labelPane(ctx context.Context, c adoptionCommit, block, shown string) (error, error) {
+// record has now, as block's label, under the block's pane lock and only
+// while c's binding holds the block: the last writer of the label (this
+// adoption, a replacement's, an `agent title`) reads the record under the
+// same lock and writes it whatever the pane showed before, so the pane never
+// ends on an older handle or task. The first error is Rex's, reported, never
+// fatal; the second is errSuperseded.
+func (e Env) labelPane(ctx context.Context, c adoptionCommit, block string) (error, error) {
 	unlock, err := e.Store.LockPane(ctx, block)
 	if err != nil {
 		return nil, err
@@ -556,41 +564,71 @@ func (e Env) labelPane(ctx context.Context, c adoptionCommit, block, shown strin
 	if !ok || !sameBinding(now, c.rec) {
 		return nil, errSuperseded
 	}
-	if label := core.PaneLabel(now.Handle, now.Role, now.Task); label != shown {
-		return e.Rex.RenameBlock(ctx, block, label), nil
-	}
-	return nil, nil
+	return e.Rex.RenameBlock(ctx, block, core.PaneLabel(now.Handle, now.Role, now.Task)), nil
 }
 
-// finishAdoption runs the arrival gate (admit) and marks c's lease adopted,
-// under the lifecycle lock (both are local file I/O), while c's binding still
-// holds it: errSuperseded when another adoption or a departure replaced it
-// (I4). A gate that fails leaves the lease adopting. It returns the record
-// as it is now and its unread mail after the gate.
-func (e Env) finishAdoption(ctx context.Context, c adoptionCommit) (agent, int, error) {
-	unlock, err := e.Store.LockLifecycle(ctx)
+// stillCommitted is nil when now is the record c committed, placement
+// included; errStaleProbe when the same binding moved since (a session
+// reconciliation), so the adoption is taken again; errSuperseded otherwise.
+func stillCommitted(now agent, ok bool, c adoptionCommit) error {
+	switch {
+	case ok && samePlacement(now, c.rec):
+		return nil
+	case ok && sameBinding(now, c.rec):
+		return errStaleProbe
+	}
+	return errSuperseded
+}
+
+// admitHeld runs the arrival gate (admit) on c's agent under its handle's
+// lock, so its departure cannot run meanwhile, while it is still the record
+// c committed. The gate reads every unread message and may quarantine each,
+// so it holds no lock every hook on the host waits for. It returns the record
+// the gate judged with and how much mail it left unread.
+func (e Env) admitHeld(ctx context.Context, c adoptionCommit) (agent, int, error) {
+	unlock, err := e.Store.LockHandle(ctx, c.rec.Handle)
 	if err != nil {
-		return c.rec, 0, err
+		return agent{}, 0, err
 	}
 	defer unlock()
 	now, ok, err := e.agentOf(c.rec.Handle)
 	if err != nil {
-		return c.rec, 0, err
+		return agent{}, 0, err
 	}
-	if !ok || !sameBinding(now, c.rec) {
-		return c.rec, 0, errSuperseded
+	if err := stillCommitted(now, ok, c); err != nil {
+		return agent{}, 0, err
 	}
 	unread, err := e.admit(now)
+	if errors.Is(err, errReaderMoved) {
+		err = errStaleProbe
+	}
+	return now, len(unread), err
+}
+
+// finishAdoption marks the lease of admitted (the record the arrival gate
+// judged with) adopted, under the lifecycle lock, while the record is still
+// that one, placement included; otherwise it is stillCommitted's error. It
+// returns the record as it is now.
+func (e Env) finishAdoption(ctx context.Context, admitted agent) (agent, error) {
+	unlock, err := e.Store.LockLifecycle(ctx)
 	if err != nil {
-		return now, 0, err
+		return admitted, err
+	}
+	defer unlock()
+	now, ok, err := e.agentOf(admitted.Handle)
+	if err != nil {
+		return admitted, err
+	}
+	if err := stillCommitted(now, ok, adoptionCommit{rec: admitted}); err != nil {
+		return admitted, err
 	}
 	if now.lease.Adopting {
 		if err := e.Store.FinishAdoption(now.Handle, now.lease.Epoch); err != nil {
-			return now, 0, err
+			return now, err
 		}
 		now.lease.Adopting = false
 	}
-	return now, len(unread), nil
+	return now, nil
 }
 
 // admitAdoption decides, under the lifecycle lock, the role of an agent

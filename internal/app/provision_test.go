@@ -244,3 +244,96 @@ func TestReviveMakesEachResumedMailboxFirst(t *testing.T) {
 		t.Error("the retired reviewer, not revived, got a mailbox")
 	}
 }
+
+// failInit makes e's amq fail every `amq init` (EnsureMailbox).
+func failInit(e *Env) {
+	e.AMQ = e.AMQ.(*amq.Fake).WithFail(func(op string, _ []string) error {
+		if op == "init" {
+			return errors.New("amq init: signal: killed")
+		}
+		return nil
+	})
+}
+
+// A launcher whose agent's mailbox cannot be made does not launch it: its
+// first hook would run amq init inside its budget. It says the launch can be
+// tried again, and gives the reserved name back.
+func TestALauncherThatCannotMakeTheMailboxLaunchesNothing(t *testing.T) {
+	e, term, loc := summonWorld(t)
+	add(t, e, departed(seed{Handle: "codex-02", Kind: core.Codex, Server: "unix:///fake.sock", BlockID: "block:gone", SessionID: "session:s", Role: "reviewer", AgentPID: 2, AgentSessionID: "thread-2", AdoptedAt: e.Now().Add(-time.Hour), Cwd: workDir(t, e, "app")}, e.Now().Add(-time.Minute)))
+	unregister(t, e, "codex-02")
+	failInit(&e)
+	for _, r := range []SummonRequest{
+		{Target: "writer", Kind: "question", Subject: "s", Body: "b", Asked: "start one"},
+		{Target: "reviewer", Kind: "question", Subject: "s", Body: "b"},
+	} {
+		if _, err := e.Summon(context.Background(), loc, r); !errors.Is(err, ErrNotProvisioned) {
+			t.Errorf("summon %s: %v, want ErrNotProvisioned", r.Target, err)
+		}
+	}
+	if len(term.launches) != 0 {
+		t.Fatalf("launched %d panes with no mailbox", len(term.launches))
+	}
+	if rs, _ := e.Store.Reservations(); len(rs) != 0 {
+		t.Fatalf("reservations left: %v", rs)
+	}
+}
+
+func TestAnEpicWhoseMailboxesCannotBeMadeDoesNotOpen(t *testing.T) {
+	e, term, loc, goal := openEpicWorld(t)
+	failInit(&e)
+	if _, err := e.OpenEpic(context.Background(), loc, EpicRequest{Name: "x", Dir: filepath.Dir(goal), Goal: goal}); !errors.Is(err, ErrNotProvisioned) {
+		t.Fatalf("open: %v, want ErrNotProvisioned", err)
+	}
+	if len(term.sessions_) != 0 {
+		t.Fatal("Rex was asked for the session")
+	}
+	if rs, _ := e.Store.Reservations(); len(rs) != 0 {
+		t.Fatalf("reservations left: %v", rs)
+	}
+}
+
+// A revive resumes no agent whose mailbox cannot be made; it says so for that
+// agent and resumes the others.
+func TestReviveSkipsAnAgentWhoseMailboxCannotBeMade(t *testing.T) {
+	w := newReviveWorld(t)
+	unregister(t, w.e, "pi-01", "pi-02", "pi-03")
+	w.e.AMQ = w.e.AMQ.(*amq.Fake).WithFail(func(op string, args []string) error {
+		if op == "init" && slices.Contains(args, "pi-03") {
+			return errors.New("amq init: signal: killed")
+		}
+		return nil
+	})
+	res, _ := w.revive(ReviveRequest{Asked: "把 Epic 恢复起来"})
+	got := byHandle(res)
+	if a := got["pi-03"]; a.Status != ReviveRefused || !strings.Contains(a.Reason, "mailbox") || len(w.writes("block:w")) != 0 {
+		t.Errorf("pi-03: %+v (writes %d)", a, len(w.writes("block:w")))
+	}
+	for _, h := range []core.Handle{"pi-01", "pi-02"} {
+		if got[h].Status != ReviveReady {
+			t.Errorf("%s was not resumed: %+v", h, got[h])
+		}
+	}
+}
+
+// After an ambiguous reply (Rex may have started the pane), the reservation
+// stays, so the agent Rex did start still takes its reserved name.
+func TestAnAmbiguousLaunchKeepsItsReservation(t *testing.T) {
+	e, term, loc := summonWorld(t)
+	term.launchThenFail = errors.New("rex: context deadline exceeded")
+	if _, err := e.Summon(context.Background(), loc, SummonRequest{Target: "writer", Kind: "question", Subject: "s", Body: "b", Asked: "start one"}); err == nil {
+		t.Fatal("setup: the launch should report the lost reply")
+	}
+	l := term.launches[0]
+	if _, ok, _ := e.Store.ReservationOf(cmdEnv(l.Command, ReservationEnv)); !ok {
+		t.Fatal("the reservation of a pane Rex may have started was dropped")
+	}
+	e2, term2, loc2, goal := openEpicWorld(t)
+	term2.createThenFail = errors.New("rex: context deadline exceeded")
+	_, _ = e2.OpenEpic(context.Background(), loc2, EpicRequest{Name: "x", Dir: filepath.Dir(goal), Goal: goal})
+	for _, p := range term2.sessions_[0].panes {
+		if _, ok, _ := e2.Store.ReservationOf(cmdEnv(p.Command, ReservationEnv)); !ok {
+			t.Fatal("the reservation of an Epic pane Rex may have started was dropped")
+		}
+	}
+}

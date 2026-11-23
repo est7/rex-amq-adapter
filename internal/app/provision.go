@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
@@ -15,7 +16,11 @@ import (
 // the agent's first hook finds the handle registered and its mailbox made
 // (EnsureMailbox's fast path). A resumed agent's handle is its own; a new
 // agent's is reserved (store.Reservation) under a token its launch carries
-// in ReservationEnv, which its adoption takes the handle with.
+// in ReservationEnv, which its adoption takes the handle with. A mailbox
+// that cannot be made stops the launch (ErrNotProvisioned). A reservation is
+// given back only when its launch surely did not start its agent; after an
+// ambiguous reply from Rex it stays until it expires, so a pane Rex did start
+// still takes its name.
 
 // ReservationEnv is the environment variable that names a launched agent's
 // handle reservation.
@@ -24,8 +29,9 @@ const ReservationEnv = "REX_AMQ_RESERVATION"
 // reserveHandle names a new handle of kind for an agent about to be
 // launched, under the lifecycle lock (so no adoption or other launch takes
 // the name meanwhile), records it under a fresh token, and then makes its
-// mailbox with no lock held. A mailbox that cannot be made is reported: the
-// adoption makes it then.
+// mailbox with no lock held. A mailbox that cannot be made fails it, with
+// the reservation given back: the launch must not happen, or its agent's
+// first hook would run amq init inside its budget.
 func (e Env) reserveHandle(ctx context.Context, kind core.Kind) (string, core.Handle, error) {
 	token, err := newToken()
 	if err != nil {
@@ -35,7 +41,10 @@ func (e Env) reserveHandle(ctx context.Context, kind core.Kind) (string, core.Ha
 	if err != nil {
 		return "", "", err
 	}
-	e.provisionMailbox(ctx, h)
+	if err := e.provisionMailbox(ctx, h); err != nil {
+		e.dropReservation(token)
+		return "", "", err
+	}
 	return token, h, nil
 }
 
@@ -57,12 +66,17 @@ func (e Env) recordReservation(ctx context.Context, token string, kind core.Kind
 	return h, e.Store.PutReservation(token, store.Reservation{Handle: h, Kind: kind, At: e.Now().UTC()})
 }
 
-// provisionMailbox makes h's mailbox before its agent starts. A failure is
-// reported, never fatal: the adoption makes the mailbox then.
-func (e Env) provisionMailbox(ctx context.Context, h core.Handle) {
+// ErrNotProvisioned is a launch that did not happen because its agent's
+// mailbox could not be made first: retrying it is safe.
+var ErrNotProvisioned = errors.New("the agent's mailbox could not be made, so it was not launched; try again")
+
+// provisionMailbox makes h's mailbox before its agent starts; an error is
+// ErrNotProvisioned, and the launch does not happen.
+func (e Env) provisionMailbox(ctx context.Context, h core.Handle) error {
 	if err := e.AMQ.EnsureMailbox(ctx, e.Paths.Root(), string(h)); err != nil {
-		fmt.Fprintf(Diagnostics, "make the mailbox of %s before its launch: %v\n", h, err)
+		return fmt.Errorf("%w (%s: %v)", ErrNotProvisioned, h, err)
 	}
+	return nil
 }
 
 // dropReservation gives back the reservation under token, when its launch

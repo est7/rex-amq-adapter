@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"github.com/est7/rex-amq-adapter/internal/amq"
 	"os"
 	"path/filepath"
 	"slices"
@@ -22,6 +23,8 @@ func openEpicWorld(t *testing.T) (Env, *fakeTerm, Location, string) {
 	t.Helper()
 	term := &fakeTerm{state: "idle", windows: map[string]string{"block:me": "window:me"}, tabs: map[string]string{"window:me": "me"}}
 	e := fixture(t, term)
+	// Opening an Epic makes its agents' mailboxes before Rex starts them.
+	e.AMQ = &amq.Fake{}
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	e.TranscriptHome = t.TempDir()
 	trustTemp(t, e)

@@ -205,14 +205,14 @@ func (e Env) reservedNames() (map[core.Handle]bool, error) {
 // retireEpicRoster takes the handles of the closed Epic session out of the
 // root, forgetting their identities: every agent of it that departed for
 // epic_closed or retired.
-func (e Env) retireEpicRoster(ctx context.Context, session string) (RosterReport, error) {
+func (e Env) retireEpicRoster(ctx context.Context, epic core.SessionKey) (RosterReport, error) {
 	recs, err := e.agents()
 	if err != nil {
 		return RosterReport{}, err
 	}
 	var hs []core.Handle
 	for _, r := range recs {
-		if p := r.departure(); p != nil && r.SessionID == session && quietDeparture(p.DepartReason) {
+		if p := r.departure(); p != nil && r.Server == epic.Server && r.SessionID == epic.SessionID && quietDeparture(p.DepartReason) {
 			hs = append(hs, r.Handle)
 		}
 	}
