@@ -214,6 +214,17 @@ func (e Env) ReviveEpic(ctx context.Context, getenv func(string) string, r Reviv
 		}
 		return res, nil
 	}
+	// Each resumed handle's mailbox first, outside the lifecycle lock the
+	// launches take (provision.go). An agent whose mailbox cannot be made is
+	// not resumed, and says why; the others go on.
+	for i, p := range plans {
+		if p.Action != reviveInPlacePlan && p.Action != reviveRespawnPlan {
+			continue
+		}
+		if err := e.provisionMailbox(ctx, p.rec.Handle); err != nil {
+			plans[i].Action, plans[i].Status, plans[i].Reason = ReviveRefused, ReviveRefused, err.Error()
+		}
+	}
 	launched, err := on.launchRevived(ctx, key, plans, pending, srv.InstanceID)
 	res.Agents = launched
 	if err == nil && r.OpID != "" && !res.Replayed {

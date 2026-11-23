@@ -272,24 +272,46 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 	// the session's active tab; both keep Rex's placeholder name, so each
 	// follows its agent (core.FollowTab).
 	// Both run unattended, named in their own commands (unattended.go).
+	// Each agent's handle is reserved and its mailbox made before the
+	// session starts them (provision.go).
+	narrRes, _, err := e.reserveHandle(ctx, narrator)
+	if err != nil {
+		return EpicResult{OpID: r.OpID}, fmt.Errorf("reserve the narrator's handle: %w", err)
+	}
+	leadRes, _, err := e.reserveHandle(ctx, kind)
+	if err != nil {
+		e.dropReservation(narrRes)
+		return EpicResult{OpID: r.OpID}, fmt.Errorf("reserve the %s's handle: %w", lead, err)
+	}
 	panes := []rex.Pane{
-		{Label: core.NarratorRole + core.PaneSeparator + task, Dir: dir, Command: withUnattendedEnv(withLaunchEnv(narrLaunch, e.withTrust(dir, narrLaunch.Args(narrator, startCommand(narrator, narrate)))))},
-		{Label: lead + core.PaneSeparator + task, Dir: dir, Command: withUnattendedEnv(withLaunchEnv(orchLaunch, e.withTrust(dir, orchLaunch.Args(kind, startCommand(kind, brief)))))},
+		{Label: core.NarratorRole + core.PaneSeparator + task, Dir: dir, Command: withReservation(narrRes, withUnattendedEnv(withLaunchEnv(narrLaunch, e.withTrust(dir, narrLaunch.Args(narrator, startCommand(narrator, narrate))))))},
+		{Label: lead + core.PaneSeparator + task, Dir: dir, Command: withReservation(leadRes, withUnattendedEnv(withLaunchEnv(orchLaunch, e.withTrust(dir, orchLaunch.Args(kind, startCommand(kind, brief))))))},
 	}
 	if op != nil {
 		// Recorded before Rex is asked, with the sessions it has, so a retry
 		// after any failure from here tells the session this run creates.
 		prior, err := e.Rex.ListSessions(ctx)
 		if err != nil {
+			e.dropReservation(narrRes)
+			e.dropReservation(leadRes)
 			return EpicResult{OpID: r.OpID}, fmt.Errorf("list Rex's sessions before creating the Epic's: %w", err)
 		}
 		op.State, op.PriorSessions, op.UpdatedAt = store.EpicCreating, prior, e.Now().UTC()
 		if err := e.Store.PutEpicOp(*op); err != nil {
+			e.dropReservation(narrRes)
+			e.dropReservation(leadRes)
 			return EpicResult{OpID: r.OpID}, fmt.Errorf("record --op-id %q before creating the Epic's session: %w", r.OpID, err)
 		}
 	}
 	session, blocks, policyErr, crewErr, notaryErr, err := e.newEpicSession(ctx, name, panes, crewName, caller, grant)
 	if err != nil {
+		// Rex was not asked: the names are free again. After an ambiguous
+		// reply (it may have started the panes) they stay reserved until
+		// they expire, so the panes it did start still take them.
+		if errors.Is(err, errEpicNotAsked) {
+			e.dropReservation(narrRes)
+			e.dropReservation(leadRes)
+		}
 		if op != nil {
 			e.dropUnstartedOp(ctx, *op)
 		}
@@ -358,7 +380,7 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 func (e Env) newEpicSession(ctx context.Context, name string, panes []rex.Pane, crewName string, by agent, grant epicGrant) (session string, blocks []string, policyErr, crewErr, notaryErr, err error) {
 	unlockOpening, err := e.Store.LockEpicOpening(ctx)
 	if err != nil {
-		return "", nil, nil, nil, nil, err
+		return "", nil, nil, nil, nil, fmt.Errorf("%w: %v", errEpicNotAsked, err)
 	}
 	defer unlockOpening()
 	session, _, blocks, err = e.Rex.NewSession(ctx, name, panes)
@@ -386,6 +408,9 @@ func (e Env) newEpicSession(ctx context.Context, name string, panes []rex.Pane, 
 	}
 	return session, blocks, policyErr, crewErr, e.notarize(session, by.Handle, grant), nil
 }
+
+// errEpicNotAsked is an Epic whose session Rex was never asked to create.
+var errEpicNotAsked = errors.New("Rex was not asked for the session")
 
 // epicRecordFor bounds recording a created Epic session's policy, crew, and
 // grant: the lifecycle lock is held for local file I/O only.
