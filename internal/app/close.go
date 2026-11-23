@@ -224,9 +224,14 @@ func (e Env) closedAlready(caller agent, me core.Endpoint, r CloseRequest, hash 
 		return false, nil
 	}
 	res.LifecycleState, res.Parked = lc.State, []core.Handle{}
-	settle.key = core.SessionKey{Server: lc.Server, SessionID: r.Session}
+	// The close is this caller's to settle only once its op id, if any,
+	// is its own.
+	authorized := func() { settle.key = core.SessionKey{Server: lc.Server, SessionID: r.Session} }
 	if r.DryRun || r.OpID == "" {
 		res.DryRun = r.DryRun
+		if !r.DryRun {
+			authorized()
+		}
 		return true, nil
 	}
 	prev, found, err := e.Store.EpicOp(store.EpicOpClose, r.OpID)
@@ -236,11 +241,16 @@ func (e Env) closedAlready(caller agent, me core.Endpoint, r CloseRequest, hash 
 	case found && prev.RequestHash != hash:
 		return true, errOpConflict(store.EpicOpClose, r.OpID)
 	case found:
+		authorized()
 		return true, nil
 	}
 	now := e.Now().UTC()
-	return true, e.Store.PutEpicOp(store.EpicOpRecord{Kind: store.EpicOpClose, OpID: r.OpID, RequestHash: hash, SessionID: r.Session, Server: lc.Server,
-		PersonalHandle: caller.Handle, PersonalSessionID: caller.SessionID, State: store.EpicClosed, CreatedAt: now, UpdatedAt: now})
+	if err := e.Store.PutEpicOp(store.EpicOpRecord{Kind: store.EpicOpClose, OpID: r.OpID, RequestHash: hash, SessionID: r.Session, Server: lc.Server,
+		PersonalHandle: caller.Handle, PersonalSessionID: caller.SessionID, State: store.EpicClosed, CreatedAt: now, UpdatedAt: now}); err != nil {
+		return true, err
+	}
+	authorized()
+	return true, nil
 }
 
 // replayClose finishes the close recorded under opID, when there is one: done

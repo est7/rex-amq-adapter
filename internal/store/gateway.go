@@ -255,15 +255,40 @@ func (s Store) quarantineDir(h core.Handle) string {
 // reader drained or quarantined it first. No receipt is written: the
 // recipient never consumed the message.
 func (s Store) Quarantine(src string, q Quarantined) (moved bool, err error) {
-	dir := s.quarantineDir(q.Handle)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return false, err
-	}
 	// The reason first: a crash between the two leaves a reason for a
 	// message still in the inbox, which the next check quarantines again.
-	if err := writeJSON(filepath.Join(dir, fileKey(q.ID)+".json"), q); err != nil {
+	if err := s.PrepareQuarantine(q); err != nil {
 		return false, err
 	}
+	return s.MoveToQuarantine(src, q)
+}
+
+// PrepareQuarantine writes q's reason (the durable, slow half of
+// Quarantine), so the move that follows can be made quickly under a lock. A
+// reason for a message that is then kept is for nothing and is dropped
+// (DropQuarantineReason); one left by a crash names a message still in the
+// inbox, which the next check judges again.
+func (s Store) PrepareQuarantine(q Quarantined) error {
+	dir := s.quarantineDir(q.Handle)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	return writeJSON(filepath.Join(dir, fileKey(q.ID)+".json"), q)
+}
+
+// DropQuarantineReason removes a prepared reason whose message was kept.
+func (s Store) DropQuarantineReason(h core.Handle, id string) error {
+	err := os.Remove(filepath.Join(s.quarantineDir(h), fileKey(id)+".json"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+// MoveToQuarantine moves src into the quarantine beside its prepared
+// reason; moved is false when src was gone.
+func (s Store) MoveToQuarantine(src string, q Quarantined) (moved bool, err error) {
+	dir := s.quarantineDir(q.Handle)
 	dst := filepath.Join(dir, fileKey(q.ID)+".md")
 	err = os.Rename(src, dst)
 	if errors.Is(err, fs.ErrNotExist) {

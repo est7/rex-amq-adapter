@@ -1474,7 +1474,10 @@ on the host waits for, never covers a `rex`, `amq`, or `ps` call:
    waker (`reconcileWaker`, below); then list the session's blocks to find
    the session-mates and queue join notes; the labels; the arrival gate,
    under the handle's lock (it reads, and may quarantine, every unread
-   message, so it holds no lock every hook waits for); and last, under the
+   message, so it holds no lock every hook waits for; each quarantine, which
+   cannot be undone, is decided again under the lifecycle lock by the
+   placements as they are then, and the gate stops once its reader moved,
+   leaving the rest unread for the next gate); and last, under the
    lifecycle lock again, the lease marked adopted. Both run only while the
    record is the one Commit wrote, placement included: a gate that fails
    leaves the lease adopting for the next hook, a superseded adoption
