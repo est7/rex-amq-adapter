@@ -486,3 +486,69 @@ func writeFile(path, content string) error {
 	}
 	return os.Rename(tmp, path)
 }
+
+// RemoveMailbox removes handle's mailbox as `amq cleanup --mailbox` does:
+// one holding unread or in-flight mail, a dead letter, or extension data, or
+// held by a live waker, is kept with a refusal.
+func (f *Fake) RemoveMailbox(ctx context.Context, root, handle string) (MailboxRemoval, error) {
+	if err := f.fail("cleanup", root, handle); err != nil {
+		return MailboxRemoval{}, err
+	}
+	fs := f.state()
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	dir := filepath.Join(root, "agents", handle)
+	if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
+		return MailboxRemoval{Absent: true}, nil
+	}
+	for _, d := range []string{"inbox/new", "inbox/tmp", "dlq/new", "dlq/tmp", "dlq/cur", "extensions"} {
+		if entries, err := os.ReadDir(filepath.Join(dir, d)); err == nil && len(entries) > 0 {
+			return MailboxRemoval{Refusal: "mail_present"}, nil
+		}
+	}
+	if fs.waker(root, handle).Live {
+		return MailboxRemoval{Refusal: "wake_live"}, nil
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return MailboxRemoval{}, err
+	}
+	return MailboxRemoval{Removed: true}, nil
+}
+
+// PruneAgents rewrites root's roster without drop, as `amq init --force`
+// with the remaining agents does; a roster that would be left empty stays.
+func (f *Fake) PruneAgents(ctx context.Context, root string, drop []string) ([]string, error) {
+	fs := f.state()
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	path := filepath.Join(root, "meta", "config.json")
+	b, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		return nil, fmt.Errorf("decode %s: %w", path, err)
+	}
+	agents, _ := cfg["agents"].([]any)
+	var keep, pruned []string
+	for _, a := range agents {
+		s, _ := a.(string)
+		if slices.Contains(drop, s) {
+			pruned = append(pruned, s)
+		} else {
+			keep = append(keep, s)
+		}
+	}
+	if len(pruned) == 0 || len(keep) == 0 {
+		return nil, nil
+	}
+	if err := f.fail("init", root, strings.Join(keep, ",")); err != nil {
+		return nil, err
+	}
+	cfg["agents"] = keep
+	return pruned, writeJSON(path, cfg)
+}

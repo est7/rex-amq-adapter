@@ -417,8 +417,10 @@ func TestACloseReplayFinishesItsPendingDepartures(t *testing.T) {
 	if _, err := closeEpic(e, loc, req); err != nil {
 		t.Fatal(err)
 	}
-	if p := recordOf(t, e, worker).departure(); p.Unfinished || wakerLive(t, e, string(worker)) {
-		t.Fatalf("the replay left the departure unfinished: %+v waker=%v", p, wakerLive(t, e, string(worker)))
+	// Finished, the closed Epic's handle then leaves the root with its
+	// identity (roster.go).
+	if rec, ok, _ := e.agentOf(worker); ok || wakerLive(t, e, string(worker)) {
+		t.Fatalf("the replay left the departure unfinished: %+v waker=%v", rec.departure(), wakerLive(t, e, string(worker)))
 	}
 	if !slices.Equal(term.killed, []string{"session:epic"}) {
 		t.Errorf("killed %v, want one kill", term.killed)

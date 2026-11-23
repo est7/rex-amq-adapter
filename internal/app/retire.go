@@ -94,6 +94,14 @@ func (e Env) Retire(ctx context.Context, loc Location, r RetireRequest) (RetireR
 			err = errors.Join(err, e.finishQuietly(ctx, []agent{settle}))
 		}
 	}
+	// A retired peer whose pane is closed will not take its handle back: it
+	// leaves the amq root. Its identity stays for its session's narrator
+	// until the Epic closes. A pane left open keeps it: the agent still runs.
+	if res.Action == RetireRetired && !res.DryRun && (res.Pane == PaneClosed || res.Pane == PaneGone) {
+		if rep, rerr := e.retireRoster(ctx, []core.Handle{r.Handle}, nil); rerr != nil || len(rep.Kept) > 0 {
+			fmt.Fprintf(Diagnostics, "retire %s from the roster: kept %v: %v\n", r.Handle, rep.Kept, rerr)
+		}
+	}
 	if err != nil || (res.Pane != PaneClosed && res.Pane != PaneGone) {
 		return res, err
 	}
