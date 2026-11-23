@@ -79,14 +79,16 @@ func (e Env) Retire(ctx context.Context, loc Location, r RetireRequest) (RetireR
 	if r.Handle == "" {
 		return res, fmt.Errorf("%w: name the agent to retire", ErrUsage)
 	}
-	target, on, err := e.retireLocked(ctx, loc, r, &res)
+	target, on, left, err := e.retireLocked(ctx, loc, r, &res)
 	// A retire that departed its target now, or found it retired by an
 	// earlier one whose finish failed, finishes that retirement: only a
 	// departure for retired, as the record was read, never a preview's.
 	if !r.DryRun && (res.Action == RetireRetired || res.Action == RetireAlreadyDeparted) {
-		settle := target // already_departed: the departure as the guards read it
-		if res.Action == RetireRetired {
-			settle, _, _ = e.agentOf(r.Handle) // the departure this retire made
+		// The departure this retire made, or (already_departed) the one its
+		// guards read: never whichever departure a later read finds.
+		settle := left
+		if res.Action == RetireAlreadyDeparted {
+			settle = target
 		}
 		if settle.departReason() == store.DepartRetired {
 			err = errors.Join(err, e.finishQuietly(ctx, []agent{settle}))
@@ -109,29 +111,29 @@ func (e Env) Retire(ctx context.Context, loc Location, r RetireRequest) (RetireR
 // agent's own hooks, its SessionEnd included, wait for the close and then
 // find a departed record. It returns the target and the terminal of its
 // server.
-func (e Env) retireLocked(ctx context.Context, loc Location, r RetireRequest, res *RetireResult) (agent, Terminal, error) {
+func (e Env) retireLocked(ctx context.Context, loc Location, r RetireRequest, res *RetireResult) (target agent, on Terminal, left agent, err error) {
 	unlock, err := e.Store.LockLifecycle(ctx)
 	if err != nil {
-		return agent{}, nil, err
+		return agent{}, nil, left, err
 	}
 	defer unlock()
 	caller, ok, err := e.agentIn(loc)
 	if err != nil {
-		return agent{}, nil, err
+		return agent{}, nil, left, err
 	}
 	if !ok || !caller.Adopted() {
-		return agent{}, nil, errors.New("no AMQ identity for this pane, so nothing can retire an agent")
+		return agent{}, nil, left, errors.New("no AMQ identity for this pane, so nothing can retire an agent")
 	}
-	target, err := e.retireTarget(caller, r.Handle)
+	target, err = e.retireTarget(caller, r.Handle)
 	if err != nil {
-		return agent{}, nil, err
+		return agent{}, nil, left, err
 	}
 	res.Block = target.BlockID
 	if !target.Live() {
 		res.Action, res.DepartReason = RetireAlreadyDeparted, target.departReason()
-		return target, nil, nil
+		return target, nil, left, nil
 	}
-	on := e.Rex
+	on = e.Rex
 	if e.RexOn != nil && target.Server != "" {
 		on = e.RexOn(target.Server)
 	}
@@ -140,10 +142,10 @@ func (e Env) retireLocked(ctx context.Context, loc Location, r RetireRequest, re
 		why, err := e.unrest(rctx, on, target)
 		cancel()
 		if err != nil {
-			return target, on, err
+			return target, on, left, err
 		}
 		if why != "" {
-			return target, on, fault.New(fault.Busy, "%s: %s is not at rest (%s); wait for it to finish", ErrRefused, r.Handle, why).
+			return target, on, left, fault.New(fault.Busy, "%s: %s is not at rest (%s); wait for it to finish", ErrRefused, r.Handle, why).
 				WithCause(ErrRefused).With("reason", "not_at_rest").
 				WithHint("--force retires it anyway; use it only when the user says to retire it while it works").
 				WithNext("rex-amq-adapter agent retire " + string(r.Handle) + " --force")
@@ -151,20 +153,20 @@ func (e Env) retireLocked(ctx context.Context, loc Location, r RetireRequest, re
 	}
 	if r.DryRun {
 		res.Action, res.DryRun = RetireRetired, true
-		return target, on, nil
+		return target, on, left, nil
 	}
-	if _, err := e.departQuietly(target, store.DepartRetired); err != nil {
-		return target, on, fmt.Errorf("retire %s: %w", r.Handle, err)
+	if left, err = e.departQuietly(target, store.DepartRetired); err != nil {
+		return target, on, left, fmt.Errorf("retire %s: %w", r.Handle, err)
 	}
 	res.Action, res.DepartReason = RetireRetired, store.DepartRetired
 	pane, note, err := e.paneOfRetired(ctx, on, target)
 	if err != nil {
 		res.Pane, res.PaneNote = PaneLeftOpen, fmt.Sprintf("what it shows could not be read: %v", err)
-		return target, on, fmt.Errorf("%s is retired, but its pane was not closed: what it shows could not be read (%w); look at it, then close it with `rex block close %s` if it still shows the agent", r.Handle, err, target.BlockID)
+		return target, on, left, fmt.Errorf("%s is retired, but its pane was not closed: what it shows could not be read (%w); look at it, then close it with `rex block close %s` if it still shows the agent", r.Handle, err, target.BlockID)
 	}
 	if pane != "" {
 		res.Pane, res.PaneNote = pane, note
-		return target, on, nil
+		return target, on, left, nil
 	}
 	cctx, cancel := context.WithTimeout(ctx, retireRexFor)
 	err = on.CloseBlock(cctx, target.BlockID)
@@ -176,11 +178,11 @@ func (e Env) retireLocked(ctx context.Context, loc Location, r RetireRequest, re
 		res.Pane, res.PaneNote = PaneLeftOpen, fmt.Sprintf("the close failed: %v", err)
 		// The agent still runs, and its next turn takes its handle back
 		// (a resume): then a raw close would read as a crash again.
-		return target, on, fmt.Errorf("%s is retired, but its pane did not close (%w); close it with `rex block close %s`, or, once `rex-amq-adapter agent list` lists it again, retire it again", r.Handle, err, target.BlockID)
+		return target, on, left, fmt.Errorf("%s is retired, but its pane did not close (%w); close it with `rex block close %s`, or, once `rex-amq-adapter agent list` lists it again, retire it again", r.Handle, err, target.BlockID)
 	default:
 		res.Pane = PaneClosed
 	}
-	return target, on, nil
+	return target, on, left, nil
 }
 
 // paneOfRetired says what to do with rec's block, read on its server: ""
