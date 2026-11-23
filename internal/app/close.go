@@ -79,7 +79,16 @@ func (e Env) CloseEpic(ctx context.Context, loc Location, r CloseRequest) (Close
 	}
 	// Whichever way it ended (closed now, replayed, or closed already), any
 	// quiet departure of the Epic left unfinished is finished here.
-	return res, errors.Join(err, e.finishQuietly(ctx, e.unfinishedQuietIn(r.Session)))
+	err = errors.Join(err, e.finishQuietly(ctx, e.unfinishedQuietIn(r.Session)))
+	// A closed Epic is never revived: its handles leave the amq root, and
+	// their identities go. A handle whose mailbox holds mail stays; the
+	// roster sweep tries again.
+	if res.LifecycleState == store.EpicClosed {
+		if rep, rerr := e.retireEpicRoster(ctx, r.Session); rerr != nil || len(rep.Kept) > 0 {
+			fmt.Fprintf(Diagnostics, "retire the roster of %s: pruned %v, kept %v: %v\n", r.Session, rep.Pruned, rep.Kept, rerr)
+		}
+	}
+	return res, err
 }
 
 // unfinishedQuietIn lists the handles departed quietly from session whose

@@ -16,6 +16,8 @@ import (
 // queue is what the adapter drives (app.Queue); CLI and *Fake both provide it.
 type queue interface {
 	EnsureMailbox(ctx context.Context, root, handle string) error
+	RemoveMailbox(ctx context.Context, root, handle string) (MailboxRemoval, error)
+	PruneAgents(ctx context.Context, root string, drop []string) ([]string, error)
 	Ensure(ctx context.Context, w Waker, logDir string) (WakeState, WakeDecision, error)
 	RetireHandle(ctx context.Context, root, handle string) (bool, error)
 	ConfigureHolds(ctx context.Context, root, handle string, normal, low time.Duration) error
@@ -353,6 +355,49 @@ func TestQueueContractDoesNotRecoverAWakerWithABrokenInjector(t *testing.T) {
 			}
 			if got, _ := tc.wakes(ctx, root, "bob"); got.Live {
 				t.Fatalf("a waker is live after the refused recovery: %+v", got)
+			}
+		})
+	}
+}
+
+// A handle leaves the roster in two steps amq owns: its mailbox removed
+// (kept, with amq's reason, while it holds mail), then the roster rewritten
+// without it. Neither touches another handle, and a roster is never emptied.
+func TestRosterRetirementContract(t *testing.T) {
+	for _, tc := range targets(t) {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			root := filepath.Join(t.TempDir(), "root")
+			q := tc.q
+			for _, h := range []string{"alice", "bob", "carol"} {
+				if err := q.EnsureMailbox(ctx, root, h); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, _, err := q.Post(ctx, root, "send", "--me", "alice", "--to", "bob", "--subject", "hi", "--body", "hello"); err != nil {
+				t.Fatal(err)
+			}
+			if r, err := q.RemoveMailbox(ctx, root, "carol"); err != nil || !r.Removed || mailboxPresent(root, "carol") {
+				t.Fatalf("removing carol's empty mailbox: %+v %v", r, err)
+			}
+			if r, err := q.RemoveMailbox(ctx, root, "carol"); err != nil || !r.Absent || !r.Gone() {
+				t.Fatalf("removing it again: %+v %v", r, err)
+			}
+			if r, err := q.RemoveMailbox(ctx, root, "bob"); err != nil || r.Gone() || r.Refusal == "" || !mailboxPresent(root, "bob") {
+				t.Fatalf("removing bob's mailbox, which holds mail: %+v %v", r, err)
+			}
+			if got, err := q.PruneAgents(ctx, root, []string{"carol", "zed"}); err != nil || !slices.Equal(got, []string{"carol"}) {
+				t.Fatalf("pruned %v %v, want carol", got, err)
+			}
+			if got, err := Agents(root); err != nil || strings.Join(got, ",") != "alice,bob" {
+				t.Fatalf("roster after the prune: %v %v", got, err)
+			}
+			if got, err := q.PruneAgents(ctx, root, []string{"alice", "bob"}); err != nil || len(got) != 0 {
+				t.Fatalf("a prune that would empty the roster: %v %v", got, err)
+			}
+			if got, _ := Agents(root); strings.Join(got, ",") != "alice,bob" {
+				t.Fatalf("the roster was emptied: %v", got)
 			}
 		})
 	}

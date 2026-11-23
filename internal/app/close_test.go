@@ -79,10 +79,12 @@ func TestCloseEpicKillsParksAndUnlinks(t *testing.T) {
 	if !slices.Equal(res.Parked, want) {
 		t.Errorf("parked %v, want %v", res.Parked, want)
 	}
+	// A closed Epic is never revived: its agents' handles leave the amq
+	// roster, their mailboxes go, and so do their identities.
+	roster, _ := amq.Agents(e.Paths.Root())
 	for _, h := range want {
-		r := recordOf(t, e, h)
-		if r.Live() || r.departReason() != store.DepartEpicClosed || r.unfinished() != "" {
-			t.Errorf("%s: live=%v reason=%q unfinished=%q", h, r.Live(), r.departReason(), r.unfinished())
+		if _, ok, _ := e.agentOf(h); ok || slices.Contains(roster, string(h)) || wakerLive(t, e, string(h)) {
+			t.Errorf("%s after the close: identity kept=%v in roster=%v waker=%v", h, ok, slices.Contains(roster, string(h)), wakerLive(t, e, string(h)))
 		}
 	}
 	if r := recordOf(t, e, other); !r.Live() {
@@ -97,13 +99,8 @@ func TestCloseEpicKillsParksAndUnlinks(t *testing.T) {
 	if _, ok, _ := e.Store.ReadView("session:epic"); !ok {
 		t.Error("the Epic's view was removed")
 	}
-	// A handle stays reserved: the worker's session resumed in a pane of
-	// another session gets it back.
-	term.mu.Lock()
-	term.windows["block:r"], term.sessions["window:r"], term.tabs["window:r"] = "window:r", "session:new", placeholder
-	term.mu.Unlock()
-	if h, _ := startPi(t, e, "block:r", "w1"); h != worker {
-		t.Errorf("the resumed worker is %s, want its handle %s", h, worker)
+	if r := recordOf(t, e, other); !slices.Contains(roster, string(r.Handle)) {
+		t.Errorf("an agent of another session left the roster: %v", roster)
 	}
 }
 

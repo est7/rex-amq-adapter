@@ -153,6 +153,9 @@ func (e Env) WatchSession(ctx context.Context, key core.SessionKey) error {
 		if len(keepers) == 0 {
 			return nil // nobody left to report to
 		}
+		// The roster sweep is host-wide and may take a while the first time:
+		// it runs beside the looks, one process at a time (sweepIfDue).
+		go e.sweepIfDue(ctx)
 		if err := e.watchOnce(ctx, key, keepers); err != nil {
 			fmt.Fprintf(Diagnostics, "watch %s: %v\n", key.SessionID, err)
 			if failures++; failures >= watchGiveUp {

@@ -371,7 +371,8 @@ func agentRetire(c *cli.Ctx, in cli.Input) (cli.Result, error) {
 
 // agentCollect reconciles records with Rex now and brings back the dead
 // wakers of live agents: those of the caller's session from inside Rex
-// (what listing agents used to do on the side), every record from outside.
+// (what listing agents used to do on the side), every record from outside,
+// which also sweeps the amq roster of handles never to be resumed.
 // A record that fails does not stop the rest; it is reported.
 func agentCollect(c *cli.Ctx, in cli.Input) (cli.Result, error) {
 	ctx, cancel := within(c, 30*time.Second)
@@ -384,9 +385,16 @@ func agentCollect(c *cli.Ctx, in cli.Input) (cli.Result, error) {
 		if in.DryRun() {
 			return cli.Result{Data: map[string]any{"dry_run": true, "scope": "all"}}, nil
 		}
-		res := cli.Result{Data: map[string]any{"scope": "all"}}
+		data := map[string]any{"scope": "all"}
+		res := cli.Result{Data: data}
 		if err := env.Collect(ctx); err != nil {
 			res.Warnings, res.Incomplete = []string{"collect: " + err.Error()}, true
+		}
+		// Then the handles that will never be resumed leave the amq root.
+		rep, err := env.SweepRoster(ctx)
+		data["roster"] = rep
+		if err != nil {
+			res.Warnings, res.Incomplete = append(res.Warnings, "roster: "+err.Error()), true
 		}
 		return res, nil
 	}

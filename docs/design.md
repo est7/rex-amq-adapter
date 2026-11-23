@@ -1556,6 +1556,34 @@ adoption of an agent already adopted tells nobody. A departure finishes when
 the agent's waker is retired, its notes are dropped, and any orchestrator is
 mailed. Each retry has 1 s. "Left" notes are advice and go once.
 
+**Roster retirement.** amq's roster (`meta/config.json`) lists every handle
+`amq init --force` was given, and each init rewrites it and fsyncs every
+listed mailbox's directories: a roster that only grew (366 handles on
+2026-11-23, 313 of them closed Epics' and 4 retired peers' against 15 live
+leases) is what made a new mailbox take 8-10 s under write load. A handle
+that will never be resumed leaves it: one departed `epic_closed`, and a peer
+retired as finished whose pane closed. amq stays the single owner of its
+files: `amq cleanup --mailbox <handle>` removes the mailbox (amq keeps one
+holding unread mail, dead letters, or extension data, or held by a live
+wake, and says why), and `amq init --force` with the remaining handles
+rewrites the roster (`internal/amq/roster.go`; a roster is never emptied).
+Each handle is checked and removed under its own lock (`handles/<h>.lock`),
+which an adoption holds while it makes its mailbox, so a conversation taken
+back meanwhile gets its mailbox made again after the removal (executed in
+`TestASweepRacingAResumeLeavesTheResumedAgentItsMailbox`). A handle stays
+while it runs, while its departure is unfinished, while a launch reserves
+it, while it may be resumed (any other departure: `ReserveFor`), and while
+its mailbox holds mail. It leaves on its event (an Epic's close takes its
+handles and forgets their identities; a retire takes the peer's handle and
+keeps its record) and on a sweep (`SweepRoster`): `agent collect` from
+outside Rex runs one and reports it as `roster` (`pruned`, `forgotten`,
+`kept` with each reason), and each session watcher runs one at most every
+10 minutes host-wide (`roster-swept`, `roster-sweep.lock`). The sweep also
+takes roster entries of adapter-named handles (`<kind>-<NN>`) that have no
+identity left, such as those collection forgot after `ReserveFor`, and
+forgets a retired peer's record once its Epic is closed. Other names are
+left alone.
+
 **Garbage collection** runs on `rex-amq-adapter agent collect` (and `hub
 notify`); a session watcher runs it only for its session, and it finishes
 unfinished departures. It asks Rex with no lock held, and parks a record only
@@ -1777,6 +1805,7 @@ Overridable with `REX_AMQ_ADAPTER_HOME` (tests use a temporary directory).
 ├── logs/watchdog.log         one JSON line per watchdog step
 ├── logs/blocked.log          one line per episode of an agent waiting on the user
 ├── epic-lifecycle.lock       serialises Epic opens, closes, and hand-backs (taken before lifecycle.lock)
+├── roster-swept              when a session watcher last swept the amq roster (roster-sweep.lock: one sweep at a time)
 ├── epic-opening.lock         held while an Epic's session is created and its policy recorded; a policy-less adoption waits on it
 └── lifecycle.lock            serialises the writers of identities, leases, and policies; held for local file I/O only
 
@@ -2050,9 +2079,11 @@ words it runs `rex-amq-adapter epic close <session_id> --asked "WORDS"
    `epic_closed`, unfinished; once the locks are released its waker is
    retired, its window notes cleared, and the departure finished
    (`finishQuietly`). No departure notes or mail are sent: everyone they
-   would reach was in the session just killed. The
-   records stay reserved (`ReserveFor`, 7 days), so a resume in a new Epic
-   gets its handle back, and `sessions/<id>/view.json` stays.
+   would reach was in the session just killed. A closed Epic is never
+   revived, so its handles (those departed `epic_closed`, and its peers
+   retired earlier) then leave the amq root (Roster retirement, below) and
+   their identities go: a conversation of it resumed later is a new agent.
+   `sessions/<id>/view.json` stays.
 4. The link is removed, so a close that failed before this is finished by
    running it again: its guards pass on the same link, and the agents left
    live are parked then.
@@ -2280,8 +2311,11 @@ The session pulse marks a member departed as `retired` (`PulseMember.Retired`,
 set only then, so other pulses keep their digests), and `ComparePulse` raises
 `<handle> retired` at normal priority, not the urgent `left`. A member seen
 retired and then departed again without it (a failed close, a resume, a
-crash between two looks) is an urgent `left`. The handle stays reserved
-(`ReserveFor`) like any departure. The command prints one JSON line:
+crash between two looks) is an urgent `left`. A retired peer whose pane
+closed (or was gone) leaves the amq root (Roster retirement, below); its
+record stays, departed as `retired`, for its session's narrator, until its
+Epic closes (or, in a session that is no Epic's, `ReserveFor`). A pane left
+open keeps the handle in the root: the agent still runs there. The command prints one JSON line:
 `handle`, `block`, `action` (`retired` or `already_departed`),
 `depart_reason`, and, once retired, `pane` (`closed`, `gone`, or
 `left_open`, with `pane_note`).

@@ -16,6 +16,14 @@ func (c CLI) EnsureMailbox(ctx context.Context, root, handle string) error {
 	return EnsureMailbox(ctx, c.Bin, root, handle)
 }
 
+func (c CLI) RemoveMailbox(ctx context.Context, root, handle string) (MailboxRemoval, error) {
+	return RemoveMailbox(ctx, c.Bin, root, handle)
+}
+
+func (c CLI) PruneAgents(ctx context.Context, root string, drop []string) ([]string, error) {
+	return PruneAgents(ctx, c.Bin, root, drop)
+}
+
 func (c CLI) Ensure(ctx context.Context, w Waker, logDir string) (WakeState, WakeDecision, error) {
 	return Ensure(ctx, c.Bin, w, logDir)
 }

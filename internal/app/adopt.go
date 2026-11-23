@@ -470,7 +470,7 @@ func (e Env) commitAdoption(ctx context.Context, p adoptionProbe, kind core.Kind
 // mailbox, the doorbell holds, the waker, the session watcher, the mates'
 // notes, the labels, and the arrival gate; then it marks the lease adopted.
 func (e Env) reconcileAdoption(ctx context.Context, p adoptionProbe, c adoptionCommit) (Adoption, error) {
-	rec, blk, handle := c.rec, p.blk, c.rec.Handle
+	rec, blk := c.rec, p.blk
 	for _, r := range c.replaced {
 		e.settleDeparture(ctx, r)
 	}
@@ -483,16 +483,7 @@ func (e Env) reconcileAdoption(ctx context.Context, p adoptionProbe, c adoptionC
 	if err := e.ensureSessionWatcher(rec); err != nil {
 		fmt.Fprintf(Diagnostics, "%v\n", err)
 	}
-	if err := e.AMQ.EnsureMailbox(ctx, e.Paths.Root(), string(handle)); err != nil {
-		return Adoption{}, err
-	}
-	// Before the waker starts, so it reads them from the start.
-	e.alignHolds(ctx, rec, c.own.Role)
-	// The moved agent keeps its waker: the waker names the handle, and finds
-	// the block from the lease when it rings. An in-process agent's own
-	// extension delivers, and a waker left for its handle would type
-	// doorbells into it: reconcileWaker removes it.
-	decision, err := e.reconcileWaker(ctx, handle)
+	decision, err := e.provisionHeld(ctx, rec, c.own.Role)
 	if err != nil {
 		return Adoption{}, err
 	}
@@ -520,6 +511,29 @@ func (e Env) reconcileAdoption(ctx context.Context, p adoptionProbe, c adoptionC
 	}
 	out.Agent = rec
 	return out, nil
+}
+
+// provisionHeld makes rec's mailbox, its doorbell holds (was is the role it
+// had), and its waker follow its lease, under its handle's lock: a roster
+// sweep removes a mailbox only under that lock and only while the lease is
+// not live (roster.go), so a mailbox made here after this adoption's commit
+// is never removed under the agent.
+func (e Env) provisionHeld(ctx context.Context, rec agent, was string) (amq.WakeDecision, error) {
+	unlock, err := e.Store.LockHandle(ctx, rec.Handle)
+	if err != nil {
+		return 0, err
+	}
+	defer unlock()
+	if err := e.AMQ.EnsureMailbox(ctx, e.Paths.Root(), string(rec.Handle)); err != nil {
+		return 0, err
+	}
+	// Before the waker starts, so it reads them from the start.
+	e.alignHolds(ctx, rec, was)
+	// The moved agent keeps its waker: the waker names the handle, and finds
+	// the block from the lease when it rings. An in-process agent's own
+	// extension delivers, and a waker left for its handle would type
+	// doorbells into it: the reconcile removes it.
+	return e.reconcileWakerHeld(ctx, rec.Handle)
 }
 
 // labelPane shows the handle of c's agent, with the role and task its
