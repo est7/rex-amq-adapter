@@ -526,6 +526,26 @@ func (e Env) planResume(ctx context.Context, caller agent, departed agent) (p la
 // core.SummonCheck or errCallerGone (launchRefusal); the caller gives the
 // reservation back.
 func (e Env) launchPlanned(ctx context.Context, caller agent, s Session, split bool, p launchPlan, token string) (string, error) {
+	// The mailbox first, with no lock held (provision.go): a resume's own
+	// handle, or one reserved for a start.
+	reservation := ""
+	if p.departed != nil {
+		e.provisionMailbox(ctx, p.departed.Handle)
+	} else {
+		var err error
+		if reservation, _, err = e.reserveHandle(ctx, p.kind); err != nil {
+			return "", err
+		}
+	}
+	block, err := e.launchLocked(ctx, caller, s, split, p, token, reservation)
+	if err != nil {
+		e.dropReservation(reservation)
+	}
+	return block, err
+}
+
+// launchLocked is launchPlanned's launch under the lifecycle lock.
+func (e Env) launchLocked(ctx context.Context, caller agent, s Session, split bool, p launchPlan, token, reservation string) (string, error) {
 	unlock, err := e.Store.LockLifecycle(ctx)
 	if err != nil {
 		return "", err
@@ -551,7 +571,7 @@ func (e Env) launchPlanned(ctx context.Context, caller agent, s Session, split b
 	if err != nil {
 		return "", err
 	}
-	return e.launch(ctx, caller, s, split, p.label, p.cwd, token, unattended, p.launch, p.launch.Args(p.kind, p.cmd))
+	return e.launch(ctx, caller, s, split, p.label, p.cwd, token, reservation, unattended, p.launch, p.launch.Args(p.kind, p.cmd))
 }
 
 // start launches a new agent for a role (launch), with the message
@@ -769,12 +789,13 @@ func (e Env) preflight(ctx context.Context, cwd string, kind core.Kind) (refusal
 }
 
 // launch opens a tab of its own, which follows the agent's pane label from
-// its adoption on (core.FollowTab), running cmd with the token, what it is
+// its adoption on (core.FollowTab), running cmd with the token, the handle
+// reservation of a start (ReservationEnv, "" for a resume), what it is
 // launched on (l, already in cmd's flags) and, when unattended, UnattendedEnv
 // in its environment; with split, the human's choice, a pane beside the
 // caller instead. A new tab is opened in the background, so the human's view
 // stays where it is.
-func (e Env) launch(ctx context.Context, caller agent, s Session, split bool, label, cwd, token string, unattended bool, l core.Launch, cmd []string) (string, error) {
+func (e Env) launch(ctx context.Context, caller agent, s Session, split bool, label, cwd, token, reservation string, unattended bool, l core.Launch, cmd []string) (string, error) {
 	if cwd == "" {
 		cwd, _ = os.Getwd()
 	}
@@ -784,6 +805,7 @@ func (e Env) launch(ctx context.Context, caller agent, s Session, split bool, la
 	if unattended {
 		cmd = withUnattendedEnv(cmd)
 	}
+	cmd = withReservation(reservation, cmd)
 	// The token stays the first assignment, where a reader of the command finds it.
 	cmd = append([]string{"env", SummonEnv + "=" + token}, cmd[1:]...)
 	if split {

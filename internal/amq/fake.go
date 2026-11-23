@@ -77,14 +77,19 @@ func (f *Fake) fail(op string, args ...string) error {
 }
 
 // EnsureMailbox registers handle in root's meta/config.json and creates its
-// mailbox directories, as `amq init --force` does.
+// mailbox directories, as `amq init --force` does. Like the CLI's, it runs
+// that "init" step only when the handle is unregistered or its mailbox is
+// missing.
 func (f *Fake) EnsureMailbox(ctx context.Context, root, handle string) error {
-	if err := f.fail("init", root, handle); err != nil {
-		return err
-	}
 	fs := f.state()
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
+	if agents, err := Agents(root); err == nil && slices.Contains(agents, handle) && mailboxPresent(root, handle) {
+		return nil
+	}
+	if err := f.fail("init", root, handle); err != nil {
+		return err
+	}
 	cfg := struct {
 		Agents     []string `json:"agents"`
 		CreatedUTC string   `json:"created_utc"`

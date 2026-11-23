@@ -729,3 +729,99 @@ func (s Store) PendingSummons(session string, now time.Time) (int, error) {
 	}
 	return n, nil
 }
+
+// Reservation is a handle a launcher named for the agent it is about to
+// start, keyed by the token the launch carries in its environment, so the
+// launcher can make the handle's mailbox before the agent's first hook and
+// that hook's adoption takes the handle. Until it expires it keeps the name
+// from any other new agent.
+type Reservation struct {
+	Handle core.Handle `json:"handle"`
+	Kind   core.Kind   `json:"kind"`
+	At     time.Time   `json:"at"`
+}
+
+// ReservationFor is how long a reservation keeps its name: a launch whose
+// agent was not adopted by then (its pane closed, a dialog waits for the
+// user) names its agent afresh when it is.
+const ReservationFor = 10 * time.Minute
+
+// Expired reports whether r no longer keeps its name at now.
+func (r Reservation) Expired(now time.Time) bool { return now.Sub(r.At) > ReservationFor }
+
+func (p Paths) reservations() string { return filepath.Join(p.Home, "reservations") }
+
+func (s Store) reservationPath(token string) string {
+	return filepath.Join(s.P.reservations(), fileKey(token)+".json")
+}
+
+// PutReservation records r under token.
+func (s Store) PutReservation(token string, r Reservation) error {
+	b, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	return fsutil.WriteAtomic(s.reservationPath(token), b)
+}
+
+// ReservationOf reads the reservation under token.
+func (s Store) ReservationOf(token string) (Reservation, bool, error) {
+	if token == "" {
+		return Reservation{}, false, nil
+	}
+	return readReservation(s.reservationPath(token))
+}
+
+func readReservation(path string) (Reservation, bool, error) {
+	b, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return Reservation{}, false, nil
+	}
+	if err != nil {
+		return Reservation{}, false, err
+	}
+	var r Reservation
+	if err := json.Unmarshal(b, &r); err != nil {
+		return Reservation{}, false, fmt.Errorf("%s: %w", path, err)
+	}
+	return r, true, nil
+}
+
+// DeleteReservation removes the reservation under token, if any.
+func (s Store) DeleteReservation(token string) error {
+	if token == "" {
+		return nil
+	}
+	err := os.Remove(s.reservationPath(token))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+// Reservations lists every recorded reservation by its file's token key,
+// expired ones included.
+func (s Store) Reservations() (map[string]Reservation, error) {
+	entries, err := os.ReadDir(s.P.reservations())
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]Reservation{}
+	for _, en := range entries {
+		key, ok := strings.CutSuffix(en.Name(), ".json")
+		if !ok || !en.Type().IsRegular() {
+			continue
+		}
+		r, found, err := readReservation(filepath.Join(s.P.reservations(), en.Name()))
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			out[key] = r
+		}
+	}
+	return out, nil
+}

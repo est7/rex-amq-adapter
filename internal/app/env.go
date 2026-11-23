@@ -195,6 +195,9 @@ type HookInput struct {
 	// summon launched this agent with (store.Summon), binding the launch to
 	// this adoption and no other.
 	SummonToken string `json:"-"`
+	// Reservation is ReservationEnv in the hook's environment: the token of
+	// the handle a launcher reserved for this agent (store.Reservation).
+	Reservation string `json:"-"`
 	// Launch is LaunchModelEnv and LaunchEffortEnv in the hook's
 	// environment, nil when the adapter did not launch the agent.
 	Launch *core.Launch `json:"-"`

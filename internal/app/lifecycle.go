@@ -354,7 +354,23 @@ func (e Env) leaveSession(ctx context.Context, rec agent) {
 // cannot be proven. Rex is asked with no lock held; each change is made
 // under the lifecycle lock only if the record is still what was observed.
 func (e Env) Collect(ctx context.Context) error {
-	return e.collect(ctx, func(agent) bool { return true })
+	return errors.Join(e.collect(ctx, func(agent) bool { return true }), e.dropExpiredReservations())
+}
+
+// dropExpiredReservations deletes the handle reservations whose launches
+// were not adopted in time (provision.go); they no longer keep their names.
+func (e Env) dropExpiredReservations() error {
+	rs, err := e.Store.Reservations()
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for token, r := range rs {
+		if r.Expired(e.Now()) {
+			errs = append(errs, e.Store.DeleteReservation(token))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // collect reconciles the records covers selects. A failed record does not

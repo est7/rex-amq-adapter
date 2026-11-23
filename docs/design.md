@@ -951,6 +951,25 @@ Only resume and start pass the guards, in this order, and a refusal says why:
 
 A passing launch reserves its place with a token (`summons/<token>.json`,
 parent, depth, target) that the launched agent carries as `REX_AMQ_SUMMON`.
+
+**Pre-provisioning.** Every launcher makes the agent's mailbox before the
+agent starts, so `amq init --force` (which rewrites the root's roster and
+fsyncs each mailbox's directories, 8-10 s at 370 handles under write load)
+runs outside the hook budgets and the agent's first hook takes
+`EnsureMailbox`'s fast path. A resume (`agent summon` of a departed agent,
+`epic revive`) makes its own handle's mailbox. A start (`agent summon` of a
+role, a council seat, both agents of `epic open`) first names the handle,
+under the lifecycle lock, and records it as a reservation
+(`reservations/<token>.json`: handle, kind, time) under a token the launch
+carries as `REX_AMQ_RESERVATION`; other new agents avoid the name while it
+holds (`store.ReservationFor`, 10 minutes). The launched agent's adoption
+takes the reserved handle when the reservation is unexpired, of its kind,
+and its name not taken, and consumes it either way; otherwise it names a
+handle afresh. A launch that does not happen gives its reservation back,
+and collection drops expired ones. A mailbox that cannot be made before the
+launch is logged, and the adoption makes it then (executed in
+`provision_test.go`, each test seen failing with its launcher's step
+removed).
 Its first hook commits a record with that parent and depth and only then
 deletes the token, so a failed write keeps the lineage for the retry; an
 unadopted token stops holding its place after `store.PendingSummonFor`
@@ -1447,7 +1466,8 @@ on the host waits for, never covers a `rex`, `amq`, or `ps` call:
 3. **Reconcile**, with no lifecycle lock: settle the replaced agents'
    departures; start the session watcher; `amq init --force` with the merged
    agent list under the root registry lock (port from herdr), skipped when
-   the handle is registered and its mailbox exists; the doorbell holds; the
+   the handle is registered and its mailbox exists, as it is for every agent
+   the adapter launches (below); the doorbell holds; the
    waker (`reconcileWaker`, below); then list the session's blocks to find
    the session-mates and queue join notes; the labels; the arrival gate; and
    last, under the lifecycle lock again, the lease marked adopted if its epoch
@@ -1736,6 +1756,7 @@ Overridable with `REX_AMQ_ADAPTER_HOME` (tests use a temporary directory).
 ├── title-state/<handle>      the title desired for that harness and whether its conversation was offered it
 ├── task-asked/<handle>       the last Claude Code or Pi session asked for a task at its first prompt
 ├── summons/<token>.json      pending summon launches reserving a place in the session's cap
+├── reservations/<token>.json handles launchers named for agents not yet adopted (REX_AMQ_RESERVATION)
 ├── pending/<block>           a doorbell written and not yet known to be submitted
 ├── handles/<handle>.lock     serialises the handle's waker and departure finishing against its lease (reconcileWaker)
 ├── panes/<block>.lock        serialises the adapter's labels of a block (a superseded adoption does not relabel)

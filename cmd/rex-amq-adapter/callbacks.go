@@ -81,6 +81,7 @@ func runHook(args []string, s out.Streams, getenv func(string) string, stdin io.
 		return hookFail(s, log, err)
 	}
 	in.SummonToken = getenv(app.SummonEnv)
+	in.Reservation = getenv(app.ReservationEnv)
 	in.Launch = app.LaunchFromEnv(func(k string) (string, bool) { v := getenv(k); return v, v != "" })
 	in.Unattended = getenv(app.UnattendedEnv) == "1"
 	loc, err := app.Here()

@@ -214,6 +214,13 @@ func (e Env) ReviveEpic(ctx context.Context, getenv func(string) string, r Reviv
 		}
 		return res, nil
 	}
+	// Each resumed handle's mailbox first, outside the lifecycle lock the
+	// launches take (provision.go).
+	for _, p := range plans {
+		if p.Action == reviveInPlacePlan || p.Action == reviveRespawnPlan {
+			e.provisionMailbox(ctx, p.rec.Handle)
+		}
+	}
 	launched, err := on.launchRevived(ctx, key, plans, pending, srv.InstanceID)
 	res.Agents = launched
 	if err == nil && r.OpID != "" && !res.Replayed {

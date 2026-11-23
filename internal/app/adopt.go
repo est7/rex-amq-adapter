@@ -295,11 +295,19 @@ func (e Env) commitAdoption(ctx context.Context, p adoptionProbe, kind core.Kind
 	moved := hasOwn && own.Live() && own.BlockID != loc.Block
 	handle := own.Handle
 	if !hasOwn {
-		taken, err := e.takenHandles(recs)
+		// A launcher's reservation names it, when it still holds; otherwise
+		// it is named afresh.
+		taken, err := e.takenHandles(recs, in.Reservation)
 		if err != nil {
 			return c, err
 		}
-		handle = core.NameHandle(kind, taken)
+		reserved, ok, err := e.reservedHandle(in.Reservation, kind, taken)
+		if err != nil {
+			return c, err
+		}
+		if handle = reserved; !ok {
+			handle = core.NameHandle(kind, taken)
+		}
 	}
 	// Where it runs, for admission and a later resume; and who summoned it,
 	// for admission and the guards.
@@ -431,6 +439,10 @@ func (e Env) commitAdoption(ctx context.Context, p adoptionProbe, kind core.Kind
 	// lead, before anything reads who leads (its watcher, its notice).
 	if err := e.claimLead(rec); err != nil {
 		return c, err
+	}
+	// The launch's reservation is spent, whichever handle it got.
+	if err := e.Store.DeleteReservation(in.Reservation); err != nil {
+		return c, fmt.Errorf("consume the reservation %s: %w", in.Reservation, err)
 	}
 	// The committed identity preserves lineage if token cleanup fails or the
 	// process exits here; a retry keeps that lineage and finishes cleanup.
@@ -680,12 +692,23 @@ func (e Env) noteWindow(ctx context.Context, h core.Handle, note string) error {
 }
 
 // takenHandles are the handles a new name must avoid: every record's (live,
-// or reserved for a departed session), and every mailbox holding undrained
-// mail, so a new agent never inherits someone else's unread messages.
-func (e Env) takenHandles(recs []agent) (map[core.Handle]bool, error) {
+// or reserved for a departed session), every launcher's unexpired
+// reservation but except's (the adopting agent's own), and every mailbox
+// holding undrained mail, so a new agent never inherits someone else's
+// unread messages.
+func (e Env) takenHandles(recs []agent, except string) (map[core.Handle]bool, error) {
 	taken := map[core.Handle]bool{}
 	for _, r := range recs {
 		taken[r.Handle] = true
+	}
+	reservations, err := e.Store.Reservations()
+	if err != nil {
+		return nil, err
+	}
+	for token, r := range reservations {
+		if token != except && !r.Expired(e.Now()) {
+			taken[r.Handle] = true
+		}
 	}
 	agents, err := amq.Agents(e.Paths.Root())
 	if err != nil {
