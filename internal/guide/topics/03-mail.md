@@ -98,8 +98,9 @@ rex-amq-adapter mail read --id <id> --max-body-bytes 262144 --json \
   | jq -e -j 'if .ok and (.data.truncated | not) then .data.body else error("unreadable or truncated") end' > <file>
 ```
 
-The pipeline fails on a failed read, an error, or a body over 256 KiB, so a
-partial copy never goes out. Send the file with `--body @<file>`.
+The pipeline fails on a failed read, an error, a body over 256 KiB, or a failed
+write. Send the file with `--body @<file>` only when it exits 0: a failure can
+leave a partial file behind.
 
 ## Delivery state
 
