@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -105,6 +106,17 @@ func postArgs(in cli.Input) []string {
 }
 
 func mailSend(c *cli.Ctx, in cli.Input) (cli.Result, error) {
+	var to []core.Handle
+	for _, h := range strings.Split(in.Str("to"), ",") {
+		if !slices.Contains(to, core.Handle(h)) {
+			to = append(to, core.Handle(h))
+		}
+	}
+	// amq refuses several recipients on its default p2p thread, and the
+	// adapter never invents a thread name, so say so before anything runs.
+	if len(to) > 1 && in.Str("thread") == "" {
+		return cli.Result{}, fault.New(fault.Usage, "--to names %d recipients, and a send to several needs --thread <name> (one thread they all share)", len(to))
+	}
 	body, err := cli.ReadBody(in.Str("body"), c.Stdin)
 	if err != nil {
 		return cli.Result{}, err
@@ -112,10 +124,6 @@ func mailSend(c *cli.Ctx, in cli.Input) (cli.Result, error) {
 	m, err := openMailbox(c)
 	if err != nil {
 		return cli.Result{}, err
-	}
-	var to []core.Handle
-	for _, h := range strings.Split(in.Str("to"), ",") {
-		to = append(to, core.Handle(h))
 	}
 	if in.DryRun() {
 		p, err := m.env.PreviewPost(m.loc, to, "", in.Str("control"))

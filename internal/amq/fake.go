@@ -131,7 +131,7 @@ func (f *Fake) Post(ctx context.Context, root, verb string, args ...string) (Sen
 	switch verb {
 	case "send":
 		for _, to := range strings.Split(fl["to"], ",") {
-			if to = strings.TrimSpace(to); to != "" {
+			if to = strings.TrimSpace(to); to != "" && !slices.Contains(h.To, to) {
 				if to == h.From && fl["allow-self"] != "true" {
 					return Sent{}, nil, fmt.Errorf("refusing send: recipient %q matches the sender", to)
 				}
@@ -143,6 +143,9 @@ func (f *Fake) Post(ctx context.Context, root, verb string, args ...string) (Sen
 		}
 		h.Thread = fl["thread"]
 		if h.Thread == "" {
+			if len(h.To) > 1 {
+				return Sent{}, nil, errors.New("--thread is required when sending to multiple recipients")
+			}
 			h.Thread = p2pThread(h.From, h.To)
 		}
 	case "reply":

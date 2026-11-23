@@ -57,10 +57,12 @@ rex-amq-adapter mail reply --id <message-id> --body "<answer>"
 rex-amq-adapter mail send --to codex-01 --subject "<short subject>" --body "<request>"
 ```
 
-Several recipients: `--to a,b`. For `--body` (in `mail send`, `mail reply`,
-and `agent summon`), a value that starts with `@` names a file to read it from,
-and `-` reads it from stdin. Send only to a handle `rex-amq-adapter agent list`
-shows (see the `peers` topic). `--dry-run` runs every check and sends nothing.
+Several recipients: `--to a,b --thread <topic>/<name>`, one thread they all
+share; without `--thread` the send exits 2. For `--body` (in `mail send`,
+`mail reply`, and `agent summon`), a value that starts with `@` names a file to
+read it from, and `-` reads it from stdin. Send only to a handle
+`rex-amq-adapter agent list` shows (see the `peers` topic). `--dry-run` runs
+every check and sends nothing.
 
 After you send, end your turn: the reply arrives as a notice, so never sleep or
 poll for it. The only waits inside a turn are bounded ones a check itself
