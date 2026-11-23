@@ -135,9 +135,6 @@ func TestF14NestedHarnessHooksLeaveTheLiveOwnerAlone(t *testing.T) {
 					if recs, _ := e.agents(); len(recs) != 1 {
 						t.Errorf("records %+v, want the owner's alone", recs)
 					}
-					if _, failed, _ := e.Store.AdoptFailedAt(block); failed {
-						t.Error("a nested hook marked the pane's adoption failed: the owner's hooks would back off")
-					}
 					if te, ok, _ := e.Store.TurnError(owner.Handle); !ok || te != beforeTE {
 						t.Errorf("the owner's turn-error mark changed: %+v %v", te, ok)
 					}

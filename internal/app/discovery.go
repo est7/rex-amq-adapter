@@ -166,15 +166,8 @@ func (e Env) followMoves(ctx context.Context, s Session) error {
 // Stop hook cannot: an idle agent runs no hooks, so mail to it would wait unseen
 // until the agent's next turn. `agent collect` runs it for its session.
 func (e Env) SuperviseSession(ctx context.Context, s Session) error {
-	// A waker that will not come up is waited for under the lock every
-	// adoption needs.
 	ctx, cancel := context.WithTimeout(ctx, superviseFor)
 	defer cancel()
-	unlock, err := e.Store.LockLifecycle(ctx)
-	if err != nil {
-		return err
-	}
-	defer unlock()
 	recs, err := e.agents()
 	if err != nil {
 		return err

@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/core"
@@ -235,7 +234,7 @@ func (e Env) announce(ctx context.Context, kind core.Kind, loc Location, in Hook
 		// The record's mailbox is this agent's own unless the record belongs
 		// to another agent: then a failed adoption leaves it nothing to read.
 		hasMailbox := ok && rec.Live() && f != foreign
-		a, adopted, err := e.adoptUnlessBackingOff(ctx, kind, loc, in, may)
+		a, adopted, err := e.adoptOnce(ctx, kind, loc, in)
 		switch {
 		case adopted:
 			rec = a.Agent
@@ -292,13 +291,10 @@ func (e Env) announce(ctx context.Context, kind core.Kind, loc Location, in Hook
 	return r, err
 }
 
-// adoptUnlessBackingOff adopts the agent in loc. A failing adoption is not
-// retried on every tool call: each attempt can take the hook's whole budget.
-func (e Env) adoptUnlessBackingOff(ctx context.Context, kind core.Kind, loc Location, in HookInput, may announcing) (Adoption, bool, error) {
-	at, failed, err := e.Store.AdoptFailedAt(loc.Block)
-	if err != nil || (failed && !may.retry && e.Now().Sub(at) < AdoptRetryAfter) {
-		return Adoption{}, false, err
-	}
+// adoptOnce adopts the agent in loc, reporting whether it was. Adoption
+// holds the lifecycle lock for local file I/O only and asks Rex a fixed
+// number of questions, so a failing one is tried again at the next hook.
+func (e Env) adoptOnce(ctx context.Context, kind core.Kind, loc Location, in HookInput) (Adoption, bool, error) {
 	a, err := e.adopt(ctx, loc, kind, in)
 	return a, err == nil, err
 }
@@ -307,16 +303,18 @@ func (e Env) adoptUnlessBackingOff(ctx context.Context, kind core.Kind, loc Loca
 // none), its queued window notes when window is set, and its mail notice,
 // within budget (withWindowNotes).
 func (e Env) announceMail(ctx context.Context, rec agent, in HookInput, event core.HookEvent, identity *core.StartParts, window bool, sent []string, budget int) (Reply, error) {
+	// The gate before the ledger lock: its quarantines take the lifecycle
+	// lock, which `agent join` holds while it takes a ledger lock.
+	unread, err := e.admit(ctx, rec)
+	if err != nil {
+		return Reply{}, err
+	}
 	unlock, err := e.Store.LockLedger(ctx, rec.Handle)
 	if err != nil {
 		return Reply{}, err
 	}
 	defer unlock()
 	ledger, err := e.Store.Announced(rec.Handle)
-	if err != nil {
-		return Reply{}, err
-	}
-	unread, err := e.admit(rec)
 	if err != nil {
 		return Reply{}, err
 	}
@@ -572,50 +570,28 @@ type announcing struct {
 	// window: deliver notes about agents joining or leaving the window. Set
 	// where the agent takes a prompt, so the news never interrupts a turn.
 	window bool
-	// retry: adopt again at once after a failed adoption. Set on hooks that
-	// run at most once a turn; the frequent ones wait out AdoptRetryAfter so
-	// a failing adoption cannot slow every tool call. Without it an agent
-	// whose start failed (two agents starting at once can run SessionStart
-	// out of time) and whose first turn ends quickly would idle unadopted.
-	retry bool
 	// undelivered: tell of mail the agent sent that no agent will read. Like
 	// window notes it is advice, which must not start a turn of its own.
 	undelivered bool
 }
 
 var (
-	onPrompt    = announcing{window: true, retry: true, undelivered: true}
+	onPrompt    = announcing{window: true, undelivered: true}
 	onModelCall = announcing{window: true, undelivered: true} // Antigravity's PreInvocation: every model call
 	onToolCall  = announcing{undelivered: true}               // PostToolUse
 	onMail      = announcing{}                                // Pi's mail watcher
-	onTurnEnd   = announcing{retry: true, undelivered: true}  // Stop; Pi's settle
+	onTurnEnd   = announcing{undelivered: true}               // Stop; Pi's settle
 )
 
-// AdoptRetryAfter is how long the frequent hooks wait before adopting again
-// after a failed adoption.
-const AdoptRetryAfter = time.Minute
-
-// adopt runs Adopt for a hook: it collects first, so a resumed session finds
-// the record of the pane it left parked and takes its handle back; it records
-// a failure so the fast-path hooks back off, clears it on success, and
-// reports a label that could not be set.
+// adopt runs Adopt for a hook and reports a label that could not be set.
+// Collection is not its business: the session watcher and agent collect
+// run it, and a resumed session takes its handle back from a lease whose
+// holder is gone (holderGone), so no hook waits for every record on the host.
 func (e Env) adopt(ctx context.Context, loc Location, kind core.Kind, in HookInput) (Adoption, error) {
-	if err := e.Collect(ctx); err != nil {
-		// Collection is housekeeping; adoption must still happen.
-		fmt.Fprintf(Diagnostics, "collect: %v\n", err)
-	}
 	a, err := e.Adopt(ctx, loc, kind, in)
 	if err != nil {
-		// An agy that a command in the pane started was refused, not the
-		// pane's agent: its refusal must not make the pane's agent back off.
-		// Nor does a refused duplicate, which takes the handle over at its
-		// next hook once the incumbent is gone.
-		if !errors.Is(err, ErrStartedInPane) && !errors.As(err, new(*DuplicateSessionError)) {
-			_ = e.Store.SetAdoptFailed(loc.Block, e.Now())
-		}
 		return Adoption{}, err
 	}
-	_ = e.Store.ClearAdoptFailed(loc.Block)
 	if a.LabelErr != nil {
 		fmt.Fprintf(Diagnostics, "show handle %s as the pane label: %v\n", a.Agent.Handle, a.LabelErr)
 	}

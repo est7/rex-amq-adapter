@@ -73,6 +73,41 @@ type CloseResult struct {
 // refused. Without one, a retry before the lifecycle is closed finishes
 // what is left: a session already gone is not an error.
 func (e Env) CloseEpic(ctx context.Context, loc Location, r CloseRequest) (CloseResult, error) {
+	var settle closeSettle
+	res, err := e.closeEpic(ctx, loc, r, &settle)
+	if r.DryRun || settle.key == (core.SessionKey{}) {
+		return res, err
+	}
+	// Only once the guards passed (closed now, replayed, or closed already
+	// for this caller): any departure of the Epic's close left unfinished is
+	// finished here.
+	return res, errors.Join(err, e.finishQuietly(ctx, e.closedPending(settle.key)))
+}
+
+// closeSettle is what a close may settle once its locks are released: the
+// Epic it was authorized for; zero when its guards refused it.
+type closeSettle struct{ key core.SessionKey }
+
+// closedPending is a snapshot of the departures epic's close left
+// unfinished: same server and session, departed for epic_closed.
+func (e Env) closedPending(epic core.SessionKey) []agent {
+	recs, err := e.agents()
+	if err != nil {
+		fmt.Fprintf(Diagnostics, "list the departures of %s: %v\n", epic.SessionID, err)
+		return nil
+	}
+	var out []agent
+	for _, r := range recs {
+		if p := r.departure(); p != nil && p.Unfinished && p.DepartReason == store.DepartEpicClosed && r.Server == epic.Server && r.SessionID == epic.SessionID {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// closeEpic is CloseEpic up to the agents' quiet departures, which it
+// leaves to finish with no lock held.
+func (e Env) closeEpic(ctx context.Context, loc Location, r CloseRequest, settle *closeSettle) (CloseResult, error) {
 	res := CloseResult{SessionID: r.Session, OpID: r.OpID}
 	caller, ok, err := e.agentIn(loc)
 	if err != nil {
@@ -102,7 +137,7 @@ func (e Env) CloseEpic(ctx context.Context, loc Location, r CloseRequest) (Close
 	// A recorded close is looked up before the link: the run that recorded
 	// it may have removed the link before it died.
 	if r.OpID != "" {
-		if out, done, err := e.replayClose(ctx, caller, me, r.OpID, hash); done || err != nil {
+		if out, done, err := e.replayClose(ctx, caller, me, r.OpID, hash, settle); done || err != nil {
 			return out, err
 		}
 	}
@@ -116,7 +151,7 @@ func (e Env) CloseEpic(ctx context.Context, loc Location, r CloseRequest) (Close
 		return res, err
 	}
 	defer unlock()
-	if done, err := e.closedAlready(caller, me, r, hash, &res); done || err != nil {
+	if done, err := e.closedAlready(caller, me, r, hash, &res, settle); done || err != nil {
 		return res, err
 	}
 	link, err := e.linkTo(caller, me, r.Session)
@@ -160,6 +195,7 @@ func (e Env) CloseEpic(ctx context.Context, loc Location, r CloseRequest) (Close
 			}
 		}
 	}
+	settle.key = link.Epic
 	return e.finishClose(ctx, on, link.Epic, caller, me, op)
 }
 
@@ -179,7 +215,7 @@ func closeIdentityOf(me core.Endpoint, r CloseRequest) closeIdentity {
 // recorded closed, so its replay answers the same. done is false when the
 // Epic is not closed, or the tombstone names another Hub. The caller holds
 // LockEpicLifecycle and then LockLifecycle.
-func (e Env) closedAlready(caller agent, me core.Endpoint, r CloseRequest, hash string, res *CloseResult) (bool, error) {
+func (e Env) closedAlready(caller agent, me core.Endpoint, r CloseRequest, hash string, res *CloseResult, settle *closeSettle) (bool, error) {
 	lc, ok, err := e.Store.EpicLifecycle(r.Session)
 	if err != nil || !ok || lc.State != store.EpicClosed {
 		return false, err
@@ -188,8 +224,14 @@ func (e Env) closedAlready(caller agent, me core.Endpoint, r CloseRequest, hash 
 		return false, nil
 	}
 	res.LifecycleState, res.Parked = lc.State, []core.Handle{}
+	// The close is this caller's to settle only once its op id, if any,
+	// is its own.
+	authorized := func() { settle.key = core.SessionKey{Server: lc.Server, SessionID: r.Session} }
 	if r.DryRun || r.OpID == "" {
 		res.DryRun = r.DryRun
+		if !r.DryRun {
+			authorized()
+		}
 		return true, nil
 	}
 	prev, found, err := e.Store.EpicOp(store.EpicOpClose, r.OpID)
@@ -199,18 +241,23 @@ func (e Env) closedAlready(caller agent, me core.Endpoint, r CloseRequest, hash 
 	case found && prev.RequestHash != hash:
 		return true, errOpConflict(store.EpicOpClose, r.OpID)
 	case found:
+		authorized()
 		return true, nil
 	}
 	now := e.Now().UTC()
-	return true, e.Store.PutEpicOp(store.EpicOpRecord{Kind: store.EpicOpClose, OpID: r.OpID, RequestHash: hash, SessionID: r.Session, Server: lc.Server,
-		PersonalHandle: caller.Handle, PersonalSessionID: caller.SessionID, State: store.EpicClosed, CreatedAt: now, UpdatedAt: now})
+	if err := e.Store.PutEpicOp(store.EpicOpRecord{Kind: store.EpicOpClose, OpID: r.OpID, RequestHash: hash, SessionID: r.Session, Server: lc.Server,
+		PersonalHandle: caller.Handle, PersonalSessionID: caller.SessionID, State: store.EpicClosed, CreatedAt: now, UpdatedAt: now}); err != nil {
+		return true, err
+	}
+	authorized()
+	return true, nil
 }
 
 // replayClose finishes the close recorded under opID, when there is one: done
 // is false when there is none, and the close goes on as a new one. The op id
 // of another request (another Hub, another session, another --force) is
 // refused.
-func (e Env) replayClose(ctx context.Context, caller agent, me core.Endpoint, opID, hash string) (res CloseResult, done bool, err error) {
+func (e Env) replayClose(ctx context.Context, caller agent, me core.Endpoint, opID, hash string, settle *closeSettle) (res CloseResult, done bool, err error) {
 	unlockEpic, err := e.Store.LockEpicLifecycle(ctx)
 	if err != nil {
 		return res, true, err
@@ -223,6 +270,8 @@ func (e Env) replayClose(ctx context.Context, caller agent, me core.Endpoint, op
 	if op.RequestHash != hash {
 		return CloseResult{OpID: opID}, true, errOpConflict(store.EpicOpClose, opID)
 	}
+	// The op is this caller's own close request: what it closed is settled.
+	settle.key = core.SessionKey{Server: op.Server, SessionID: op.SessionID}
 	if op.State == store.EpicClosed {
 		// Seen through already: the tombstone answers, and nothing is
 		// killed, parked, or unlinked again.
@@ -355,7 +404,7 @@ func (e Env) parkClosed(ctx context.Context, epic core.SessionKey) ([]core.Handl
 		if !rec.Live() || rec.Server != epic.Server || rec.SessionID != epic.SessionID {
 			continue
 		}
-		if err := e.departQuietly(ctx, rec, store.DepartEpicClosed); err != nil {
+		if _, err := e.departQuietly(rec, store.DepartEpicClosed); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", rec.Handle, err))
 			continue
 		}
@@ -364,22 +413,31 @@ func (e Env) parkClosed(ctx context.Context, epic core.SessionKey) ([]core.Handl
 	return parked, errors.Join(errs...)
 }
 
-// departQuietly marks rec's agent departed for reason, the caller holding the
-// lifecycle lock: it retires the handle's waker, clears its window notes, and
-// tells nobody. The departure is left finished (it owes no notices), so collection
-// and a later SessionEnd find nothing to do. A failure leaves the record live.
-func (e Env) departQuietly(ctx context.Context, rec agent, reason string) error {
-	if !rec.Kind.InProcess() {
-		if err := e.prepareInjector(); err != nil {
-			return err
+// departQuietly releases rec's lease as departed for reason, the caller
+// holding the lifecycle lock, as unfinished: the caller, once it has released
+// the lock, finishes it quietly (finishQuietly), retiring the waker and
+// clearing the window notes, and telling nobody (quietDeparture). Waiting
+// here for the handle's lock or for amq would make every hook on the host
+// wait behind a waker. A departure left unfinished is finished by collection.
+func (e Env) departQuietly(rec agent, reason string) (agent, error) {
+	return e.releaseLease(rec, store.Departure{Reason: reason, At: e.Now().UTC(), Unfinished: true})
+}
+
+// finishQuietly finishes, with no lock held, each departure of recs (as
+// they were read) that is a quiet one still unfinished (departQuietly). The
+// departures stand whatever happens here: one it cannot finish (its waker
+// would not retire) stays unfinished, collection finishes it, and the error
+// says so. finishDeparture acts only on the departure each record read.
+func (e Env) finishQuietly(ctx context.Context, recs []agent) error {
+	var errs []error
+	for _, rec := range recs {
+		p := rec.departure()
+		if p == nil || !p.Unfinished || !quietDeparture(p.DepartReason) {
+			continue
+		}
+		if err := e.finishDeparture(ctx, rec); err != nil {
+			errs = append(errs, fmt.Errorf("%s departed, but finishing its departure failed (collection finishes it): %w", rec.Handle, err))
 		}
 	}
-	if _, err := e.AMQ.RetireHandle(ctx, e.Paths.Root(), string(rec.Handle)); err != nil {
-		return err
-	}
-	if err := e.clearWindowNotes(ctx, rec.Handle); err != nil {
-		return err
-	}
-	_, err := e.releaseLease(rec, store.Departure{Reason: reason, At: e.Now().UTC()})
-	return err
+	return errors.Join(errs...)
 }

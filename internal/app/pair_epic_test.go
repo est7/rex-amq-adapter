@@ -195,7 +195,7 @@ func TestPairEpicNarratorControlReachesTheLead(t *testing.T) {
 		t.Fatalf("output %q", out)
 	}
 	lead := recordOf(t, e, "claude-10")
-	if kept, err := e.admit(lead); err != nil || len(kept) != 1 || kept[0] != sent.ID {
+	if kept, err := e.admit(context.Background(), lead); err != nil || len(kept) != 1 || kept[0] != sent.ID {
 		t.Fatalf("the pair lead's gate kept %v (%v), want %s", kept, err, sent.ID)
 	}
 	_, _, err = run(t, e, ctx, "claude-10", "send", "--to", "claude-01", "--subject", "done", "--body", "b")

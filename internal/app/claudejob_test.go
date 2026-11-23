@@ -531,9 +531,6 @@ func TestAStaleJobRecordIsMovedByAToolCall(t *testing.T) {
 	if rec, _, _ := w.e.liveRecordOf(core.Claude, jobSess); rec.BlockID != viewBlock || rec.pid() != w.jobPID || rec.Handle != "claude-old" {
 		t.Errorf("a tool call did not move the stale job to its pane: %+v", rec)
 	}
-	if _, failed, _ := w.e.Store.AdoptFailedAt(stale); failed {
-		t.Error("the job's failed adoption was recorded against another agent's pane")
-	}
 }
 
 // With no Claude config directory there is no supervisor roster to read:

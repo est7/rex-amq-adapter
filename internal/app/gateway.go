@@ -86,8 +86,10 @@ func (e Env) judge(reader core.Endpoint, h amq.Header, links []core.Link) (core.
 // left. For an agent in a session it fails closed: a file whose header
 // cannot be read (corrupt, unclosed, of another schema) names no sender to
 // judge, and is quarantined too. amq renames whole files into place, so none
-// is read mid-write.
-func (e Env) admit(rec agent) ([]string, error) {
+// is read mid-write. The caller holds no lock the lifecycle lock is taken
+// under (a handle's, an injector's, or a consumer's may be held; the ledger's
+// may not: `agent join` takes it under the lifecycle lock).
+func (e Env) admit(ctx context.Context, rec agent) ([]string, error) {
 	root, h := e.Paths.Root(), string(rec.Handle)
 	ids, err := amq.Unread(root, h)
 	if err != nil || len(ids) == 0 {
@@ -125,13 +127,85 @@ func (e Env) admit(rec agent) ([]string, error) {
 			kept = append(kept, id)
 			continue
 		}
-		q := store.Quarantined{ID: id, Handle: rec.Handle, From: from, To: reader, Decision: d, At: e.Now().UTC()}
-		if _, err := e.Store.Quarantine(filepath.Join(amq.Inbox(root, h), id+".md"), q); err != nil {
-			return nil, fmt.Errorf("quarantine %s for %s: %w", id, h, err)
+		quarantined, err := e.quarantineFenced(ctx, rec, id, hdr, from, d)
+		if err != nil {
+			return nil, err
 		}
-		fmt.Fprintf(Diagnostics, "quarantined %s for %s from %s: %s\n", id, h, hdr.From, d.Reason)
+		if !quarantined {
+			kept = append(kept, id)
+		}
 	}
 	return kept, nil
+}
+
+// errReaderMoved is an arrival gate whose reader was moved, or replaced,
+// while it judged: what is left unread is judged again by the next gate.
+var errReaderMoved = errors.New("the reader's placement changed during the arrival gate")
+
+// quarantineFenced moves message id out of rec's inbox for denial d. Its
+// reason is written first with no lock (the fsync is the slow part); the
+// move itself, which cannot be undone, happens under the lifecycle lock that
+// every placement writer holds, only while rec is still placed as it was
+// read, and after a readable message is judged again there by the endpoints
+// and links as they are then: one they allow is kept, its reason dropped.
+func (e Env) quarantineFenced(ctx context.Context, rec agent, id string, hdr amq.Header, from core.Endpoint, d core.Decision) (bool, error) {
+	root, h := e.Paths.Root(), string(rec.Handle)
+	reader, err := e.gatewayEndpoint(rec)
+	if err != nil {
+		return false, err
+	}
+	q := store.Quarantined{ID: id, Handle: rec.Handle, From: from, To: reader, Decision: d, At: e.Now().UTC()}
+	if err := e.Store.PrepareQuarantine(q); err != nil {
+		return false, fmt.Errorf("quarantine %s for %s: %w", id, h, err)
+	}
+	unlock, err := e.Store.LockLifecycle(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
+	now, ok, err := e.agentOf(rec.Handle)
+	if err != nil {
+		return false, err
+	}
+	if !ok || !placedAsRead(now, rec) {
+		_ = e.Store.DropQuarantineReason(rec.Handle, id)
+		return false, errReaderMoved
+	}
+	if d.Reason != core.ReasonUnreadableHeader {
+		links, err := e.Store.Links()
+		if err != nil {
+			return false, err
+		}
+		again, now, err := e.judge(reader, hdr, links)
+		if err != nil {
+			return false, err
+		}
+		if again.Allow {
+			return false, e.Store.DropQuarantineReason(rec.Handle, id)
+		}
+		if again != d || now != from {
+			// What decided changed meanwhile: the reason says what did.
+			q.Decision, q.From = again, now
+			if err := e.Store.PrepareQuarantine(q); err != nil {
+				return false, err
+			}
+		}
+	}
+	if _, err := e.Store.MoveToQuarantine(filepath.Join(amq.Inbox(root, h), id+".md"), q); err != nil {
+		return false, fmt.Errorf("quarantine %s for %s: %w", id, h, err)
+	}
+	fmt.Fprintf(Diagnostics, "quarantined %s for %s from %s: %s\n", id, h, hdr.From, q.Decision.Reason)
+	return true, nil
+}
+
+// placedAsRead reports whether now, read again, is placed as rec was read:
+// the same live placement (samePlacement), or for a departed record the
+// same last place.
+func placedAsRead(now, rec agent) bool {
+	if rec.Live() {
+		return samePlacement(now, rec)
+	}
+	return !now.Live() && now.Place == rec.Place && now.Fence == rec.Fence
 }
 
 // ErrRefused is a send or read the gateway refused.

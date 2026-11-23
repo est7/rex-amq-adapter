@@ -93,19 +93,6 @@ func TestPendingAndAdoptionFailures(t *testing.T) {
 	if err := s.ClearPending("block:a"); err != nil {
 		t.Fatalf("clearing twice: %v", err)
 	}
-	at := time.Date(2026, 10, 18, 3, 4, 5, 6, time.UTC)
-	if err := s.SetAdoptFailed("block:a", at); err != nil {
-		t.Fatal(err)
-	}
-	if got, ok, err := s.AdoptFailedAt("block:a"); !ok || err != nil || !got.Equal(at) {
-		t.Fatalf("failure time: %v %v %v", got, ok, err)
-	}
-	if err := s.ClearAdoptFailed("block:a"); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok, _ := s.AdoptFailedAt("block:a"); ok {
-		t.Fatal("cleared failure still present")
-	}
 }
 
 func TestPathsForRootRoundTrips(t *testing.T) {

@@ -6,9 +6,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
 )
@@ -110,8 +110,8 @@ func TestAnotherKindThatReusedThePIDIsNotTakenForTheRecordsAgent(t *testing.T) {
 	}
 }
 
-// While adoption backs off, a hook that is not the record's agent reads none
-// of the record's mail: it must not be told of it or mark it announced. The
+// A hook that is not the record's agent, and whose own adoption fails, reads
+// none of the record's mail: it must not be told of it or mark it announced. The
 // record is another agent's when it is of another kind, or when another
 // process holds another session (a crashed Codex replaced by a new one whose
 // hooks are not yet approved for SessionStart).
@@ -127,7 +127,8 @@ func TestAnotherAgentWaitingToBeAdoptedReadsNoMail(t *testing.T) {
 		{"another process and session", core.Codex, exitedPID, HookInput{SessionID: "current", TranscriptPath: []byte(`"/tmp/current.jsonl"`)}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			e := fixture(t, &fakeTerm{state: "working"}, "old-session-mail")
+			term := &fakeTerm{state: "working"}
+			e := fixture(t, term, "old-session-mail")
 			rec, _, err := e.agentAt(block)
 			if err != nil {
 				t.Fatal(err)
@@ -138,12 +139,10 @@ func TestAnotherAgentWaitingToBeAdoptedReadsNoMail(t *testing.T) {
 				t.Fatal(err)
 			}
 			rec = recordNamed(t, e, rec.Handle)
-			if err := e.Store.SetAdoptFailed(block, time.Now()); err != nil {
-				t.Fatal(err)
-			}
+			term.inspectErr = errors.New("rex timed out") // its adoption fails
 			r, err := e.Hook(context.Background(), EventPostTool, c.kind, Location{Block: block}, c.in)
-			if err != nil {
-				t.Fatal(err)
+			if err == nil {
+				t.Fatal("setup: the other agent's adoption should fail")
 			}
 			if r.Notice != "" {
 				t.Errorf("another agent was told of the record's mail: %q", r.Notice)
@@ -187,8 +186,8 @@ func TestRecordedProcessFurtherUpTheAncestryIsCurrent(t *testing.T) {
 	if !strings.Contains(r.Notice, "1 unread") {
 		t.Errorf("the hook did not announce the record's mail: %q", r.Notice)
 	}
-	if _, failed, err := e.Store.AdoptFailedAt(block); err != nil || failed {
-		t.Errorf("the hook adopted again (failed %v, err %v)", failed, err)
+	if after := recordNamed(t, e, rec.Handle); !reflect.DeepEqual(after, rec) {
+		t.Errorf("the hook adopted again: %+v, was %+v", after, rec)
 	}
 }
 

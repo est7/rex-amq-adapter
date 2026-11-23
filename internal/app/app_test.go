@@ -25,6 +25,8 @@ import (
 type fakeTerm struct {
 	mu             sync.Mutex
 	gone           bool
+	inspectErr     error                     // InspectBlock fails
+	renaming       func(block, label string) // runs as RenameBlock starts, before the label changes
 	fgPID          int
 	state          string // "" means no program status record
 	box            string
@@ -159,6 +161,9 @@ func (f *fakeTerm) SendKeys(_ context.Context, _ string, keys ...string) error {
 func (f *fakeTerm) InspectBlock(_ context.Context, id string) (rex.Block, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.inspectErr != nil {
+		return rex.Block{}, f.inspectErr
+	}
 	if f.gone || slices.Contains(f.closed, id) {
 		return rex.Block{}, rex.ErrNotFound
 	}
@@ -248,6 +253,11 @@ func (f *fakeTerm) RenameWindow(_ context.Context, window, label string) error {
 
 func (f *fakeTerm) RenameBlock(_ context.Context, block string, label string) error {
 	f.mu.Lock()
+	if renaming := f.renaming; renaming != nil {
+		f.mu.Unlock()
+		renaming(block, label)
+		f.mu.Lock()
+	}
 	defer f.mu.Unlock()
 	f.label = label
 	if f.renamed == nil {
@@ -530,26 +540,24 @@ func TestAgyHookOutputShapes(t *testing.T) {
 	}
 }
 
-func TestFailedAdoptionBacksOff(t *testing.T) {
-	f := &fakeTerm{}
-	e := fixture(t, f)
-	if err := unplant(e.Store, "codex"); err != nil {
-		t.Fatal(err)
-	}
-	if err := e.Store.SetAdoptFailed(block, time.Now()); err != nil {
-		t.Fatal(err)
-	}
-	// Adopting would need amq (AMQ is nil here); within the back-off the
-	// hook must not try.
-	r, err := e.Hook(context.Background(), EventPostTool, core.Codex, Location{Block: block}, HookInput{})
-	if err != nil || r.Notice != "" {
-		t.Fatalf("hook adopted during back-off: %+v %v", r, err)
-	}
-	if err := e.Store.SetAdoptFailed(block, time.Now().Add(-2*AdoptRetryAfter)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := e.Hook(context.Background(), EventPostTool, core.Codex, Location{Block: block}, HookInput{}); err == nil {
-		t.Fatal("after the back-off the hook must try to adopt again (and fail without amq)")
+// Adoption holds the lifecycle lock for local I/O only, so a failed one is
+// tried again by the very next hook, a tool call included: there is no
+// back-off to wait out.
+func TestAFailedAdoptionIsTriedAgainByTheNextToolCall(t *testing.T) {
+	e := realAmqEnv(t, &fakeTerm{})
+	inits := 0
+	e.AMQ = (&amq.Fake{}).WithFail(func(op string, _ []string) error {
+		if op == "init" {
+			inits++
+			return errors.New("amq init: signal: killed")
+		}
+		return nil
+	})
+	for i := 1; i <= 2; i++ {
+		_, _ = e.Hook(context.Background(), EventPostTool, core.Codex, Location{Block: block}, HookInput{SessionID: "s1"})
+		if inits != i {
+			t.Fatalf("after tool call %d the mailbox was asked for %d times, want %d: a failed adoption must be retried at once", i, inits, i)
+		}
 	}
 }
 

@@ -93,8 +93,16 @@ func titleNames(title string, rec agent, job claudeJob) bool {
 // client whose title names the job (and rec, its record, if it has one).
 func (e Env) showsJob(ctx context.Context, block string, rec agent, job claudeJob) (bool, error) {
 	fg, ok, err := e.Rex.Foreground(ctx, block)
-	if err != nil || !ok || fg.Name != "claude" {
+	if err != nil {
 		return false, err
+	}
+	return e.showsJobWith(ctx, block, fg, ok, rec, job)
+}
+
+// showsJobWith is showsJob for a caller that has read block's foreground.
+func (e Env) showsJobWith(ctx context.Context, block string, fg rex.Process, ok bool, rec agent, job claudeJob) (bool, error) {
+	if !ok || fg.Name != "claude" {
+		return false, nil
 	}
 	title, err := e.Rex.Title(ctx, block)
 	if err != nil {

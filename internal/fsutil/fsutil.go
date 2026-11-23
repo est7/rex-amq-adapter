@@ -1,5 +1,5 @@
-// Package fsutil holds the two filesystem primitives every state writer
-// shares: an exclusive lock and an atomic replace.
+// Package fsutil holds the filesystem primitives every state writer shares:
+// a lock (exclusive or shared) and an atomic replace.
 package fsutil
 
 import (
@@ -14,6 +14,16 @@ import (
 
 // Flock takes an exclusive lock on path, polling until ctx ends.
 func Flock(ctx context.Context, path string) (func(), error) {
+	return flock(ctx, path, syscall.LOCK_EX)
+}
+
+// FlockShared takes a shared lock on path, polling until ctx ends: it waits
+// for an exclusive holder and admits other shared ones.
+func FlockShared(ctx context.Context, path string) (func(), error) {
+	return flock(ctx, path, syscall.LOCK_SH)
+}
+
+func flock(ctx context.Context, path string, how int) (func(), error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
@@ -22,7 +32,7 @@ func Flock(ctx context.Context, path string) (func(), error) {
 		return nil, err
 	}
 	for {
-		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		err := syscall.Flock(int(f.Fd()), how|syscall.LOCK_NB)
 		if err == nil {
 			return func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN); f.Close() }, nil
 		}

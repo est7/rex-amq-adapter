@@ -43,8 +43,8 @@ func (p Paths) Blobs() string       { return filepath.Join(p.Home, "cache", "blo
 func (p Paths) ledgers() string     { return filepath.Join(p.Home, "ledger") }
 func (p Paths) injects() string     { return filepath.Join(p.Home, "inject") }
 func (p Paths) lifecycle() string   { return filepath.Join(p.Home, "lifecycle.lock") }
+func (p Paths) epicOpening() string { return filepath.Join(p.Home, "epic-opening.lock") }
 func (p Paths) pending() string     { return filepath.Join(p.Home, "pending") }
-func (p Paths) failures() string    { return filepath.Join(p.Home, "adopt-failed") }
 func (p Paths) window() string      { return filepath.Join(p.Home, "window") }
 func (p Paths) titles() string      { return filepath.Join(p.Home, "title") }
 func (p Paths) taskAsked() string   { return filepath.Join(p.Home, "task-asked") }
@@ -84,9 +84,48 @@ func (s Store) LockWatch(ctx context.Context, k core.SessionKey) (func(), error)
 	return fsutil.Flock(ctx, filepath.Join(s.P.Home, "watch", sessionKey(k)+".lock"))
 }
 
-// LockLifecycle serialises adoption, departure, and collection.
+// LockLifecycle serialises the writers of identities, leases, and session
+// policies. Its holders read and write local files only: a Rex or amq call
+// under it makes every hook on the host wait for that call.
 func (s Store) LockLifecycle(ctx context.Context) (func(), error) {
 	return fsutil.Flock(ctx, s.P.lifecycle())
+}
+
+// LockHandle serialises what is derived from h's lease outside the lifecycle
+// lock: its amq waker. Its holder never takes the lifecycle lock.
+func (s Store) LockHandle(ctx context.Context, h core.Handle) (func(), error) {
+	return fsutil.Flock(ctx, filepath.Join(s.P.Home, "handles", fileKey(string(h))+".lock"))
+}
+
+// LockPane serialises the adapter's labels of one block: an adoption sets
+// the label under it only while its binding still holds the block.
+func (s Store) LockPane(ctx context.Context, block string) (func(), error) {
+	return fsutil.Flock(ctx, filepath.Join(s.P.Home, "panes", fileKey(block)+".lock"))
+}
+
+// LockRedelivery serialises delivering message id again, so the check that
+// it was not, the send, and the record that it was are one step.
+func (s Store) LockRedelivery(ctx context.Context, id string) (func(), error) {
+	return fsutil.Flock(ctx, filepath.Join(s.P.Home, "redelivering", fileKey(id)+".lock"))
+}
+
+// LockEpicOpening is held, exclusively, while an Epic's session is created
+// and its policy, crew, and grant recorded: its agents start as Rex creates
+// the session, before the adapter knows the session's id.
+func (s Store) LockEpicOpening(ctx context.Context) (func(), error) {
+	return fsutil.Flock(ctx, s.P.epicOpening())
+}
+
+// AwaitEpicOpenings returns once no Epic is being opened: an agent adopted
+// in a session of no policy may be one of an opening Epic's, whose policy is
+// about to be recorded. Openings exclude only each other's waiters.
+func (s Store) AwaitEpicOpenings(ctx context.Context) error {
+	unlock, err := fsutil.FlockShared(ctx, s.P.epicOpening())
+	if err != nil {
+		return err
+	}
+	unlock()
+	return nil
 }
 
 // The inject log keeps every doorbell attempt for diagnosis; a retry ladder
@@ -314,34 +353,6 @@ func (s Store) ClearWindowNotes(h core.Handle) error {
 
 func (s Store) windowPath(h core.Handle) string {
 	return filepath.Join(s.P.window(), fileKey(string(h)))
-}
-
-// AdoptFailedAt is when adopting the agent in block last failed.
-func (s Store) AdoptFailedAt(block string) (time.Time, bool, error) {
-	b, err := os.ReadFile(filepath.Join(s.P.failures(), fileKey(block)))
-	if errors.Is(err, fs.ErrNotExist) {
-		return time.Time{}, false, nil
-	}
-	if err != nil {
-		return time.Time{}, false, err
-	}
-	t, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(string(b)))
-	if err != nil {
-		return time.Time{}, false, fmt.Errorf("decode adoption failure time for %s: %w", block, err)
-	}
-	return t, true, nil
-}
-
-func (s Store) SetAdoptFailed(block string, at time.Time) error {
-	return fsutil.WriteAtomic(filepath.Join(s.P.failures(), fileKey(block)), []byte(at.UTC().Format(time.RFC3339Nano)))
-}
-
-func (s Store) ClearAdoptFailed(block string) error {
-	err := os.Remove(filepath.Join(s.P.failures(), fileKey(block)))
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
-	}
-	return err
 }
 
 // TitlesShown are the titles the adapter last gave h's harness, by the

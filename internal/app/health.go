@@ -199,7 +199,7 @@ func (e Env) reportTurnError(ctx context.Context, kind core.Kind, loc Location, 
 		f = e.recordFit(kind, rec, in)
 	}
 	if !ok || !rec.Adopted() || f != own {
-		a, adopted, _ := e.adoptUnlessBackingOff(ctx, kind, loc, in, onTurnEnd)
+		a, adopted, _ := e.adoptOnce(ctx, kind, loc, in)
 		switch {
 		case adopted:
 			rec, ok = a.Agent, true

@@ -177,7 +177,10 @@ func TestCloseEpicWaitsForItsAgentsToRestUnlessForced(t *testing.T) {
 
 // A close that failed part way finishes when run again: a session already
 // killed is not an error, and the agents left live are parked then.
-func TestCloseEpicFinishesWhenRunAgain(t *testing.T) {
+// A waker that will not retire does not hold the close up under the lifecycle
+// lock: the close stands (killed, parked, unlinked), says which departure is
+// left unfinished, and collection finishes it once amq retires the waker.
+func TestCloseEpicLeavesAWakerThatWillNotRetireToCollection(t *testing.T) {
 	e, term, loc := closeWorld(t)
 	worker := handleIn(t, e, "block:w")
 	fake, ok := e.AMQ.(*amq.Fake)
@@ -190,20 +193,22 @@ func TestCloseEpicFinishesWhenRunAgain(t *testing.T) {
 		}
 		return nil
 	})
-	if _, err := closeEpic(e, loc, CloseRequest{Session: "session:epic", Asked: "close it"}); err == nil || !strings.Contains(err.Error(), "injected") {
-		t.Fatalf("first close: %v, want the injected failure", err)
+	res, err := closeEpic(e, loc, CloseRequest{Session: "session:epic", Asked: "close it"})
+	if err == nil || !strings.Contains(err.Error(), "injected") || !strings.Contains(err.Error(), string(worker)) {
+		t.Fatalf("first close: %v, want the injected failure, naming %s", err, worker)
 	}
-	if !recordOf(t, e, worker).Live() {
-		t.Fatal("a failed park parked the worker")
+	if !slices.Contains(res.Parked, worker) || !res.Unlinked {
+		t.Fatalf("the close did not stand: %+v", res)
 	}
-	if links, _ := e.Store.Links(); len(links) != 1 {
-		t.Fatalf("a failed close unlinked: %+v", links)
+	if p := recordOf(t, e, worker).departure(); p == nil || !p.Unfinished || p.DepartReason != store.DepartEpicClosed {
+		t.Fatalf("the worker's departure: %+v, want epic_closed and unfinished", p)
 	}
 	e.AMQ = fake.WithFail(nil)
-	// The worker's block is gone with its session, so it holds nothing up.
-	res, err := closeEpic(e, loc, CloseRequest{Session: "session:epic", Asked: "close it"})
-	if err != nil || !slices.Equal(res.Parked, []core.Handle{worker}) || !res.Unlinked {
-		t.Fatalf("second close: %+v %v", res, err)
+	if err := e.Collect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if p := recordOf(t, e, worker).departure(); p.Unfinished || wakerLive(t, e, string(worker)) {
+		t.Fatalf("collection did not finish the departure: %+v waker=%v", p, wakerLive(t, e, string(worker)))
 	}
 	if !slices.Equal(term.killed, []string{"session:epic"}) {
 		t.Errorf("killed %v, want one kill", term.killed)

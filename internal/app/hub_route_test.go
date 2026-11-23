@@ -131,7 +131,7 @@ func TestNarratorRoutesToLivePersonal(t *testing.T) {
 	if hdr.From != "agy-05" || hdr.Subject != "Re: status?" || hdr.Kind != "question" || hdr.Thread != "p2p/agy-05__claude-02" || !strings.Contains(string(raw), origID) {
 		t.Errorf("the converted reply: %+v\n%s", hdr, raw)
 	}
-	if kept, err := e.admit(recordNamed(t, e, "claude-03")); err != nil || len(kept) != 3 {
+	if kept, err := e.admit(context.Background(), recordNamed(t, e, "claude-03")); err != nil || len(kept) != 3 {
 		t.Errorf("claude-03 admitted %v %v", kept, err)
 	}
 	if again, _, _ := e.Store.ProvenanceOf(origID, "", "claude-02", []string{"agy-05"}); again.From != origProv.From || len(again.To) != 1 || again.To[0].Handle != "agy-05" {
@@ -192,7 +192,7 @@ func TestDepartedPersonalRedelivery(t *testing.T) {
 	if err != nil || hdr.From != "agy-05" || hdr.Subject != "hand-back ready" || !hdr.ContextOf("rerouted_from", &from) || from != orig {
 		t.Fatalf("redelivered message %+v %v", hdr, err)
 	}
-	if kept, err := e.admit(recordNamed(t, e, p1.Handle)); err != nil || len(kept) != 1 {
+	if kept, err := e.admit(context.Background(), recordNamed(t, e, p1.Handle)); err != nil || len(kept) != 1 {
 		t.Fatalf("p1 admitted %v %v", kept, err)
 	}
 	// Once: finishing the departure again delivers nothing more.
