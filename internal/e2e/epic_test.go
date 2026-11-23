@@ -1,6 +1,8 @@
 package e2e
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -155,9 +157,13 @@ func TestPersonalAgentClosesAnEpic(t *testing.T) {
 	if _, err := w.rexErr("session", "inspect", res.Session); err == nil {
 		t.Errorf("the Epic's session %s is still there", res.Session)
 	}
-	b, err := os.ReadFile(filepath.Join(w.home, "identities", orch+".json"))
-	if err != nil || !strings.Contains(string(b), `"depart_reason": "epic_closed"`) {
-		t.Errorf("the orchestrator's record: %s %v", b, err)
+	// A closed Epic is never revived: its agents' identities go, and their
+	// handles leave the amq roster.
+	if _, err := os.Stat(filepath.Join(w.home, "identities", orch+".json")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the closed Epic's orchestrator kept its identity: %v", err)
+	}
+	if cfg, err := os.ReadFile(filepath.Join(w.root(), "meta", "config.json")); err != nil || strings.Contains(string(cfg), `"`+orch+`"`) {
+		t.Errorf("the closed Epic's orchestrator is still in the roster (%v): %s", err, cfg)
 	}
 	if links, _ := filepath.Glob(filepath.Join(w.root(), "extensions", "rex-amq-adapter", "links", "*.json")); len(links) != 0 {
 		t.Errorf("links left: %v", links)
