@@ -78,6 +78,15 @@ var errStaleProbe = errors.New("the records changed while this adoption asked Re
 // reports the agent adopted.
 var errSuperseded = errors.New("another adoption or a departure replaced this adoption's binding before it finished")
 
+// samePlacement reports whether now is still the record probed was, as
+// placed: the same binding (sameBinding), in the same Rex session and window,
+// behind the same fence. A session reconciliation (followMoves) that moved
+// the record since makes a probe of it stale, so Commit never writes back a
+// placement older than one Rex reported later.
+func samePlacement(now, probed agent) bool {
+	return now.Handle == probed.Handle && sameBinding(now, probed) && now.Place == probed.Place && now.Fence == probed.Fence
+}
+
 // liveIn is the agent live in block of server among recs (I3: at most one).
 func liveIn(recs []agent, server, block string) (agent, bool) {
 	for _, r := range recs {
@@ -112,7 +121,7 @@ type adoptionProbe struct {
 
 // holderVerdict is holderGone's answer about one lease.
 type holderVerdict struct {
-	lease  store.Lease
+	holder agent // the record judged, its lease and placement as probed
 	reason string
 	gone   bool
 }
@@ -196,12 +205,15 @@ func (e Env) probeAdoption(ctx context.Context, loc Location, kind core.Kind, in
 	own, hasOwn := resolveIdentity(recs, p.server, loc.Block, p.inc, kind, lineage(recs, kind, in))
 	if hasOwn && heldElsewhere(own, p.server, loc.Block, p.inc) {
 		reason, gone := e.holderGone(ctx, own)
-		p.holder = &holderVerdict{lease: *own.lease, reason: reason, gone: gone}
+		p.holder = &holderVerdict{holder: own, reason: reason, gone: gone}
 	}
 	// A background job is adopted only into a pane that shows it: a hook on
 	// every tool call trusts the block of the job's record, and that record
 	// may be stale or an older adapter's.
 	if in.Job {
+		if fgErr != nil {
+			return p, fgErr
+		}
 		job, _, err := e.claudeJob(in.SessionID)
 		if err != nil {
 			return p, err
@@ -230,14 +242,12 @@ func (e Env) awaitEpicPolicy(ctx context.Context, session string) error {
 
 // adoptionCommit is what Commit recorded, for Reconcile to make follow.
 type adoptionCommit struct {
-	rec      agent
-	own      agent
-	hasOwn   bool
-	recs     []agent // the records Commit decided on, before its writes
-	epoch    int64
-	adopting bool
-	arrived  bool
-	known    bool
+	rec     agent
+	own     agent
+	hasOwn  bool
+	recs    []agent // the records Commit decided on, before its writes
+	arrived bool
+	known   bool
 	// leftOwn: the agent moved here from a session it is no longer in.
 	leftOwn bool
 	// replaced are the agents this one replaced in its block, departed.
@@ -263,14 +273,14 @@ func (e Env) commitAdoption(ctx context.Context, p adoptionProbe, kind core.Kind
 	}
 	// The block's agent changed since the probe began: what the probe saw
 	// of the block's foreground may be that agent's, not this hook's.
-	if occupant, ok := liveIn(recs, server, loc.Block); ok != (p.occupant != nil) || ok && (occupant.Handle != p.occupant.Handle || !sameBinding(occupant, *p.occupant)) {
+	if occupant, ok := liveIn(recs, server, loc.Block); ok != (p.occupant != nil) || ok && !samePlacement(occupant, *p.occupant) {
 		return c, errStaleProbe
 	}
 	own, hasOwn := resolveIdentity(recs, server, loc.Block, inc, kind, lineage(recs, kind, in))
 	// Who speaks for the conversation is settled before anything changes: a
 	// refused pane parks no agent, names no handle, and makes no mailbox.
 	if hasOwn && heldElsewhere(own, server, loc.Block, inc) {
-		if p.holder == nil || !sameLease(p.holder.lease, *own.lease) {
+		if p.holder == nil || !samePlacement(own, p.holder.holder) {
 			return c, errStaleProbe
 		}
 		if !p.holder.gone {
@@ -440,7 +450,6 @@ func (e Env) commitAdoption(ctx context.Context, p adoptionProbe, kind core.Kind
 		}
 	}
 	c.rec, c.own, c.hasOwn, c.recs = rec, own, hasOwn, recs
-	c.epoch, c.adopting = lease.Epoch, lease.Adopting
 	return c, nil
 }
 
@@ -486,19 +495,13 @@ func (e Env) reconcileAdoption(ctx context.Context, p adoptionProbe, c adoptionC
 	// The tab follows even when the pane label was right already: Rex names
 	// a new tab "Window <8-hex>", and a summoned agent's tab its launch label.
 	e.followTab(ctx, blk.SessionID, blk.WindowID)
-	// Marked adopted only while the binding is still this adoption's; a
-	// superseded one reports failure, so its hook tells nobody of anything.
-	if err := e.finishAdoption(ctx, c); err != nil {
+	// The arrival gate, then the lease marked adopted, both while the
+	// binding is still this adoption's: a gate that fails leaves the
+	// adoption unfinished for the next hook, and a superseded one reports
+	// failure, so its hook tells nobody of anything.
+	if rec, out.Unread, err = e.finishAdoption(ctx, c); err != nil {
 		return Adoption{}, err
 	}
-	rec.lease.Adopting = false
-	// The gate runs before the agent is told of its mail, and before a Pi
-	// extension, handed the inbox, reads it.
-	unread, err := e.admit(rec)
-	if err != nil {
-		return Adoption{}, err
-	}
-	out.Unread = len(unread)
 	if rec.Role == core.PersonalRole && c.arrived {
 		// Mail its Hub's departed personal agents left pending (C26).
 		e.redeliverPending(ctx, rec)
@@ -507,50 +510,61 @@ func (e Env) reconcileAdoption(ctx context.Context, p adoptionProbe, c adoptionC
 	return out, nil
 }
 
-// labelPane shows c's handle as block's label (shown is what it shows),
-// under the block's pane lock and only while c's binding holds the block: a
-// replacement's own label, set under the same lock after its commit, is
-// never overwritten by a superseded adoption. The first error is Rex's,
-// reported, never fatal; the second is errSuperseded.
+// labelPane shows the handle of c's agent, with the role and task its
+// record has now, as block's label (shown is what it showed when probed),
+// under the block's pane lock and only while c's binding holds the block:
+// the last writer of the label (this adoption, a replacement's, an `agent
+// title`) reads the record under the same lock, so the pane never ends on
+// an older handle or task. The first error is Rex's, reported, never fatal;
+// the second is errSuperseded.
 func (e Env) labelPane(ctx context.Context, c adoptionCommit, block, shown string) (error, error) {
-	label := core.PaneLabel(c.rec.Handle, c.rec.Role, c.rec.Task)
-	if shown == label {
-		return nil, nil
-	}
 	unlock, err := e.Store.LockPane(ctx, block)
 	if err != nil {
 		return nil, err
 	}
 	defer unlock()
-	if now, ok, err := e.agentOf(c.rec.Handle); err != nil || !ok || !sameBinding(now, c.rec) {
-		if err == nil {
-			err = errSuperseded
-		}
+	now, ok, err := e.agentOf(c.rec.Handle)
+	if err != nil {
 		return nil, err
 	}
-	return e.Rex.RenameBlock(ctx, block, label), nil
+	if !ok || !sameBinding(now, c.rec) {
+		return nil, errSuperseded
+	}
+	if label := core.PaneLabel(now.Handle, now.Role, now.Task); label != shown {
+		return e.Rex.RenameBlock(ctx, block, label), nil
+	}
+	return nil, nil
 }
 
-// finishAdoption marks c's lease adopted, under the lifecycle lock, while
-// c's binding still holds it; errSuperseded when another adoption or a
-// departure replaced it (I4).
-func (e Env) finishAdoption(ctx context.Context, c adoptionCommit) error {
+// finishAdoption runs the arrival gate (admit) and marks c's lease adopted,
+// under the lifecycle lock (both are local file I/O), while c's binding still
+// holds it: errSuperseded when another adoption or a departure replaced it
+// (I4). A gate that fails leaves the lease adopting. It returns the record
+// as it is now and its unread mail after the gate.
+func (e Env) finishAdoption(ctx context.Context, c adoptionCommit) (agent, int, error) {
 	unlock, err := e.Store.LockLifecycle(ctx)
 	if err != nil {
-		return err
+		return c.rec, 0, err
 	}
 	defer unlock()
 	now, ok, err := e.agentOf(c.rec.Handle)
 	if err != nil {
-		return err
+		return c.rec, 0, err
 	}
 	if !ok || !sameBinding(now, c.rec) {
-		return errSuperseded
+		return c.rec, 0, errSuperseded
 	}
-	if !c.adopting {
-		return nil
+	unread, err := e.admit(now)
+	if err != nil {
+		return now, 0, err
 	}
-	return e.Store.FinishAdoption(c.rec.Handle, c.epoch)
+	if now.lease.Adopting {
+		if err := e.Store.FinishAdoption(now.Handle, now.lease.Epoch); err != nil {
+			return now, 0, err
+		}
+		now.lease.Adopting = false
+	}
+	return now, len(unread), nil
 }
 
 // admitAdoption decides, under the lifecycle lock, the role of an agent
@@ -717,12 +731,32 @@ func (e Env) SetTask(ctx context.Context, loc Location, task string) (string, er
 		return "", err
 	}
 	e.refreshTitle(ctx, rec)
-	label := core.PaneLabel(rec.Handle, rec.Role, rec.Task)
-	if err := e.Rex.RenameBlock(ctx, loc.Block, label); err != nil {
+	label, err := e.labelCurrent(ctx, loc.Block, rec.Handle)
+	if err != nil {
 		return "", fmt.Errorf("the task is recorded, but the pane label could not be set: %w", err)
 	}
 	e.followBlockTab(ctx, loc.Block)
 	return label, nil
+}
+
+// labelCurrent sets block's label from h's record as it is under the
+// block's pane lock, so of two overlapping label writers the last one shows
+// the latest task (labelPane). It returns the label.
+func (e Env) labelCurrent(ctx context.Context, block string, h core.Handle) (string, error) {
+	unlock, err := e.Store.LockPane(ctx, block)
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
+	now, ok, err := e.agentOf(h)
+	if err != nil {
+		return "", err
+	}
+	if !ok || !now.Live() || now.BlockID != block {
+		return "", fmt.Errorf("%s no longer runs in %s", h, block)
+	}
+	label := core.PaneLabel(now.Handle, now.Role, now.Task)
+	return label, e.Rex.RenameBlock(ctx, block, label)
 }
 
 // recordTask records task for the live agent in loc, under the lifecycle

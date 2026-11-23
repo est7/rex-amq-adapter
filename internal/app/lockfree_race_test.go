@@ -3,14 +3,18 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/core"
+	"github.com/est7/rex-amq-adapter/internal/crew"
 	"github.com/est7/rex-amq-adapter/internal/rex"
 	"github.com/est7/rex-amq-adapter/internal/store"
 )
@@ -89,7 +93,7 @@ func TestASupersededReconcileLeavesTheReplacementAlone(t *testing.T) {
 		t.Fatal("the superseded handle kept a waker")
 	}
 	// Its last step alone refuses too, however far the rest got.
-	if err := e.finishAdoption(ctx, c); !errors.Is(err, errSuperseded) {
+	if _, _, err := e.finishAdoption(ctx, c); !errors.Is(err, errSuperseded) {
 		t.Fatalf("finishing the superseded adoption: %v, want errSuperseded", err)
 	}
 }
@@ -219,12 +223,19 @@ func TestAnEpicCreatedJustBeforeItsOpenerGivesUpStillGetsItsPolicy(t *testing.T)
 		close(held)
 		cancel()
 	}
-	_, _ = e.OpenEpic(ctx, loc, EpicRequest{Name: "x", Dir: filepath.Dir(goal), Goal: goal})
+	e.Crews = func(string) crew.Library { return crew.Load("") }
+	_, _ = e.OpenEpic(ctx, loc, EpicRequest{Name: "x", Dir: filepath.Dir(goal), Goal: goal, Asked: "open it", Crew: "pair"})
 	if len(term.sessions_) != 1 {
 		t.Fatalf("setup: sessions created %d", len(term.sessions_))
 	}
 	if _, ok, err := e.Store.SessionPolicy("session:epic-1"); err != nil || !ok {
 		t.Fatalf("the created Epic session has no policy: %v %v", ok, err)
+	}
+	if c, ok, err := e.Store.SessionCrew("session:epic-1"); err != nil || !ok || c.Crew != "pair" {
+		t.Fatalf("the created Epic session has no crew: %+v %v %v", c, ok, err)
+	}
+	if g, ok, err := e.Store.Grant("session:epic-1"); err != nil || !ok || g.Asked != "open it" {
+		t.Fatalf("the created Epic session has no grant: %+v %v %v", g, ok, err)
 	}
 }
 
@@ -309,5 +320,161 @@ func TestADepartureThatCannotReleaseBringsTheWakerBack(t *testing.T) {
 	release()
 	if rec, _, _ := e.agentAt(block); !rec.Live() || !wakerLive(t, e, "codex-01") {
 		t.Fatalf("after a departure that could not release: live=%v waker=%v", rec.Live(), wakerLive(t, e, "codex-01"))
+	}
+}
+
+// A probe of an agent that a session reconciliation (followMoves) moved
+// since does not write its older placement back: Commit finds it stale.
+func TestAProbeOfAMovedAgentDoesNotWriteItsOldPlaceBack(t *testing.T) {
+	term := &fakeTerm{state: "idle"}
+	e := realAmqEnv(t, term)
+	ctx := context.Background()
+	in := HookInput{SessionID: "s1"}
+	if _, err := e.Adopt(ctx, Location{Block: block}, core.Codex, in); err != nil {
+		t.Fatal(err)
+	}
+	p, err := e.probeAdoption(ctx, Location{Block: block}, core.Codex, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlock, err := e.Store.LockLifecycle(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = e.Store.Moved("codex-01", "session:moved", "window:moved", time.Now())
+	unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.commitAdoption(ctx, p, core.Codex, in); !errors.Is(err, errStaleProbe) {
+		t.Fatalf("committing a probe older than the move: %v, want errStaleProbe", err)
+	}
+	if now := recordOf(t, e, "codex-01"); now.SessionID != "session:moved" {
+		t.Fatalf("the move was undone: %+v", now.Place)
+	}
+}
+
+// The arrival gate runs before the lease is marked adopted: a gate that
+// fails leaves the adoption unfinished, so the next hook adopts again and
+// tells the agent who it is.
+func TestAFailedArrivalGateLeavesTheAdoptionToTheNextHook(t *testing.T) {
+	e := realAmqEnv(t, &fakeTerm{state: "idle"})
+	ctx := context.Background()
+	in := HookInput{SessionID: "s1"}
+	if _, err := e.Adopt(ctx, Location{Block: block}, core.Codex, in); err != nil {
+		t.Fatal(err)
+	}
+	// An adoption left unfinished (its hook ran out of time), with mail
+	// waiting and a link record the gate cannot read.
+	s := seedOf(recordOf(t, e, "codex-01"))
+	s.Adopting = true
+	if err := putSeed(e.Store, s); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(amq.Inbox(e.Paths.Root(), "codex-01"), "m1.md"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	links := filepath.Join(e.Paths.Extensions(), "links")
+	if err := os.MkdirAll(links, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	broken := filepath.Join(links, "broken.json")
+	if err := os.WriteFile(broken, []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Adopt(ctx, Location{Block: block}, core.Codex, in); err == nil {
+		t.Fatal("setup: the gate should fail on the broken link record")
+	}
+	if rec := recordOf(t, e, "codex-01"); !rec.Live() || rec.Adopted() {
+		t.Fatalf("after a failed gate: live=%v adopted=%v, want live and still adopting", rec.Live(), rec.Adopted())
+	}
+	if err := os.Remove(broken); err != nil {
+		t.Fatal(err)
+	}
+	r, err := e.Hook(ctx, EventPostTool, core.Codex, Location{Block: block}, in)
+	if err != nil || !strings.Contains(r.Notice, "you are codex-01") {
+		t.Fatalf("the next hook did not finish the adoption: %q %v", r.Notice, err)
+	}
+}
+
+// Replaying an Epic close finishes the quiet departures its first run could
+// not (a waker that would not retire), without killing the session again.
+func TestACloseReplayFinishesItsPendingDepartures(t *testing.T) {
+	e, term, loc := closeWorld(t)
+	worker := handleIn(t, e, "block:w")
+	fake := e.AMQ.(*amq.Fake)
+	e.AMQ = fake.WithFail(func(op string, args []string) error {
+		if op == "wake check" && slices.Contains(args, string(worker)) {
+			return errors.New("injected retire failure")
+		}
+		return nil
+	})
+	req := CloseRequest{Session: "session:epic", Asked: "close it", OpID: "me:close#1"}
+	if _, err := closeEpic(e, loc, req); err == nil {
+		t.Fatal("setup: the first close should report the unfinished departure")
+	}
+	e.AMQ = fake.WithFail(nil)
+	if _, err := closeEpic(e, loc, req); err != nil {
+		t.Fatal(err)
+	}
+	if p := recordOf(t, e, worker).departure(); p.Unfinished || wakerLive(t, e, string(worker)) {
+		t.Fatalf("the replay left the departure unfinished: %+v waker=%v", p, wakerLive(t, e, string(worker)))
+	}
+	if !slices.Equal(term.killed, []string{"session:epic"}) {
+		t.Errorf("killed %v, want one kill", term.killed)
+	}
+}
+
+// Two collectors that read one unfinished departure tell its orchestrator
+// once: the second finds it finished.
+func TestTwoFinishersOfOneDepartureTellTheOrchestratorOnce(t *testing.T) {
+	e, _, _ := watcherWorld(t)
+	left, err := e.releaseLease(recordOf(t, e, "codex-03"), store.Departure{Reason: "agent_gone", At: time.Now(), Unfinished: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := e.finishDeparture(ctx, left); err != nil {
+		t.Fatal(err)
+	}
+	told, _ := amq.Unread(e.Paths.Root(), "codex-01")
+	if len(told) == 0 {
+		t.Fatal("setup: the orchestrator was not told")
+	}
+	if err := e.finishDeparture(ctx, left); err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := amq.Unread(e.Paths.Root(), "codex-01"); len(again) != len(told) {
+		t.Fatalf("the orchestrator was told %d times", len(again))
+	}
+}
+
+// Two overlapping `agent title` calls leave the pane showing the task
+// recorded last.
+func TestOverlappingTaskWritesLeaveTheLatestLabel(t *testing.T) {
+	term := &fakeTerm{state: "idle"}
+	e := realAmqEnv(t, term)
+	ctx := context.Background()
+	if _, err := e.Adopt(ctx, Location{Block: block}, core.Codex, HookInput{SessionID: "s1"}); err != nil {
+		t.Fatal(err)
+	}
+	var once sync.Once
+	done := make(chan error, 1)
+	term.renaming = func(_, label string) {
+		if strings.Contains(label, "older task") {
+			once.Do(func() {
+				go func() { _, err := e.SetTask(ctx, Location{Block: block}, "newer task"); done <- err }()
+				time.Sleep(200 * time.Millisecond)
+			})
+		}
+	}
+	if _, err := e.SetTask(ctx, Location{Block: block}, "older task"); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if rec, got := recordOf(t, e, "codex-01"), term.renamed[block]; rec.Task != "newer task" || !strings.Contains(got, "newer task") {
+		t.Fatal(fmt.Sprintf("recorded task %q, pane shows %q", rec.Task, got))
 	}
 }
