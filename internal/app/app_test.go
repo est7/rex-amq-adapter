@@ -25,7 +25,8 @@ import (
 type fakeTerm struct {
 	mu             sync.Mutex
 	gone           bool
-	inspectErr     error // InspectBlock fails
+	inspectErr     error                     // InspectBlock fails
+	renaming       func(block, label string) // runs as RenameBlock starts, before the label changes
 	fgPID          int
 	state          string // "" means no program status record
 	box            string
@@ -252,6 +253,11 @@ func (f *fakeTerm) RenameWindow(_ context.Context, window, label string) error {
 
 func (f *fakeTerm) RenameBlock(_ context.Context, block string, label string) error {
 	f.mu.Lock()
+	if renaming := f.renaming; renaming != nil {
+		f.mu.Unlock()
+		renaming(block, label)
+		f.mu.Lock()
+	}
 	defer f.mu.Unlock()
 	f.label = label
 	if f.renamed == nil {

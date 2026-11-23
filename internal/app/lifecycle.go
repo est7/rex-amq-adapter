@@ -268,7 +268,9 @@ func (e Env) finishDeparture(ctx context.Context, rec agent) error {
 	if _, err := e.reconcileWakerHeld(ctx, rec.Handle); err != nil {
 		return fmt.Errorf("retire the waker: %w", err)
 	}
-	if now, ok, err := e.agentOf(rec.Handle); err != nil || !ok || !sameDeparture(now, rec) {
+	// A second finisher of the same departure (two collectors from one
+	// snapshot) finds it finished and owes nothing.
+	if now, ok, err := e.agentOf(rec.Handle); err != nil || !ok || !sameDeparture(now, rec) || !now.departure().Unfinished {
 		return err
 	}
 	// Notes about who joined are about the session it was in; a resume may

@@ -1469,9 +1469,11 @@ on the host waits for, never covers a `rex`, `amq`, or `ps` call:
    the handle is registered and its mailbox exists, as it is for every agent
    the adapter launches (below); the doorbell holds; the
    waker (`reconcileWaker`, below); then list the session's blocks to find
-   the session-mates and queue join notes; the labels; the arrival gate; and
-   last, under the lifecycle lock again, the lease marked adopted if its epoch
-   still holds it. The crew and role briefing is read after that.
+   the session-mates and queue join notes; the labels; and last, under the
+   lifecycle lock again (both are local file I/O), the arrival gate and then
+   the lease marked adopted, only while the binding still holds: a gate that
+   fails leaves the lease adopting for the next hook. The crew and role
+   briefing is read after that.
 
 The waker is derived from the lease. `reconcileWaker` takes the handle's own
 lock (`handles/<handle>.lock`), reads the lease, and leaves one live waker
@@ -1492,18 +1494,26 @@ read can change before it acts, so each acts only on what it read:
   epoch, server, block, and process, and the same conversation, since a
   process keeps its epoch across `/clear`. A late `SessionEnd` of the old
   conversation therefore does not park the new one.
-- **Pane.** Commit refuses a probe when the block's live agent changed after
-  the probe began (`errStaleProbe`), so a hook that saw an older foreground
-  does not evict the agent adopted there since. A superseded Reconcile
-  neither relabels the pane (the label is set under `panes/<block>.lock`,
-  after a check of the binding) nor reports the agent adopted
+- **Placement.** Commit refuses a probe (`errStaleProbe`) when the block's
+  live agent, or the incumbent it judged gone, is no longer the record the
+  probe read, placement included (`samePlacement`: the binding, the Rex
+  session and window, the fence). A hook that saw an older foreground does
+  not evict the agent adopted there since, and a probe older than a session
+  reconciliation's move does not write the older placement back.
+- **Pane.** Every adapter label of a pane (an adoption's, `agent title`'s)
+  is set under `panes/<block>.lock` from the record read under it, so the
+  last writer shows the latest handle and task. A superseded Reconcile
+  neither relabels the pane nor reports the agent adopted
   (`errSuperseded`), so its hook tells nobody anything.
 - **Departure.** A park retires the waker and releases the lease under the
   handle's lock; a release that then cannot happen (the binding changed, or
   the lock could not be had) brings the waker back within a bound of its
   own. A departure is finished, under the handle's lock, only for the
   placement it read: epoch, start, and departure time, since a handle
-  forgotten and named afresh starts its epochs over. Collection forgets an
+  forgotten and named afresh starts its epochs over, and only while it is
+  still unfinished, so a second collector of one snapshot tells nobody
+  again. Retire and Epic close, replays included, finish any quiet
+  departure of theirs left unfinished. Collection forgets an
   identity only if the record read under the lock is still past its
   reservation.
 - **Redelivery.** Each narrator message is delivered again under its own
@@ -1517,7 +1527,7 @@ collection, supervision, `agent title`, or Epic open that calls Rex or amq
 under the lifecycle lock (each failed before this change); the scheduled
 tests in `lockfree_race_test.go` and `adopt_phases_test.go` run one
 operation inside another at each point above, and each was seen failing
-with its fence removed (mutation runs in the S1 review). They cover the
+with its fence removed (the S1 review's mutation scripts). They cover the
 interleavings named here, not every schedule. The probe reads the block's
 foreground once for the hook's agent; judging an incumbent elsewhere
 (`holderGone`) reads that incumbent's block.

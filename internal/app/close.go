@@ -74,7 +74,29 @@ type CloseResult struct {
 // what is left: a session already gone is not an error.
 func (e Env) CloseEpic(ctx context.Context, loc Location, r CloseRequest) (CloseResult, error) {
 	res, err := e.closeEpic(ctx, loc, r)
-	return res, errors.Join(err, e.finishQuietly(ctx, res.Parked))
+	if r.DryRun || r.Session == "" {
+		return res, err
+	}
+	// Whichever way it ended (closed now, replayed, or closed already), any
+	// quiet departure of the Epic left unfinished is finished here.
+	return res, errors.Join(err, e.finishQuietly(ctx, e.unfinishedQuietIn(r.Session)))
+}
+
+// unfinishedQuietIn lists the handles departed quietly from session whose
+// departures are unfinished: their wakers may still run.
+func (e Env) unfinishedQuietIn(session string) []core.Handle {
+	recs, err := e.agents()
+	if err != nil {
+		fmt.Fprintf(Diagnostics, "list the departures of %s: %v\n", session, err)
+		return nil
+	}
+	var hs []core.Handle
+	for _, r := range recs {
+		if p := r.departure(); p != nil && p.Unfinished && r.SessionID == session && quietDeparture(p.DepartReason) {
+			hs = append(hs, r.Handle)
+		}
+	}
+	return hs
 }
 
 // closeEpic is CloseEpic up to the agents' quiet departures, which it
