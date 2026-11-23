@@ -305,8 +305,13 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 	}
 	session, blocks, policyErr, crewErr, notaryErr, err := e.newEpicSession(ctx, name, panes, crewName, caller, grant)
 	if err != nil {
-		e.dropReservation(narrRes)
-		e.dropReservation(leadRes)
+		// Rex was not asked: the names are free again. After an ambiguous
+		// reply (it may have started the panes) they stay reserved until
+		// they expire, so the panes it did start still take them.
+		if errors.Is(err, errEpicNotAsked) {
+			e.dropReservation(narrRes)
+			e.dropReservation(leadRes)
+		}
 		if op != nil {
 			e.dropUnstartedOp(ctx, *op)
 		}
@@ -375,7 +380,7 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 func (e Env) newEpicSession(ctx context.Context, name string, panes []rex.Pane, crewName string, by agent, grant epicGrant) (session string, blocks []string, policyErr, crewErr, notaryErr, err error) {
 	unlockOpening, err := e.Store.LockEpicOpening(ctx)
 	if err != nil {
-		return "", nil, nil, nil, nil, err
+		return "", nil, nil, nil, nil, fmt.Errorf("%w: %v", errEpicNotAsked, err)
 	}
 	defer unlockOpening()
 	session, _, blocks, err = e.Rex.NewSession(ctx, name, panes)
@@ -403,6 +408,9 @@ func (e Env) newEpicSession(ctx context.Context, name string, panes []rex.Pane, 
 	}
 	return session, blocks, policyErr, crewErr, e.notarize(session, by.Handle, grant), nil
 }
+
+// errEpicNotAsked is an Epic whose session Rex was never asked to create.
+var errEpicNotAsked = errors.New("Rex was not asked for the session")
 
 // epicRecordFor bounds recording a created Epic session's policy, crew, and
 // grant: the lifecycle lock is held for local file I/O only.

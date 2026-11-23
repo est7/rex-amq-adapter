@@ -965,11 +965,14 @@ carries as `REX_AMQ_RESERVATION`; other new agents avoid the name while it
 holds (`store.ReservationFor`, 10 minutes). The launched agent's adoption
 takes the reserved handle when the reservation is unexpired, of its kind,
 and its name not taken, and consumes it either way; otherwise it names a
-handle afresh. A launch that does not happen gives its reservation back,
-and collection drops expired ones. A mailbox that cannot be made before the
-launch is logged, and the adoption makes it then (executed in
-`provision_test.go`, each test seen failing with its launcher's step
-removed).
+handle afresh. A mailbox that cannot be made stops the launch before Rex is
+asked (`ErrNotProvisioned`, safe to retry; a revive skips that agent, says
+why, and resumes the others), since its first hook would otherwise run `amq
+init` inside its budget. A launch Rex was never asked for gives its
+reservation back; after an ambiguous reply (Rex may have started the pane)
+the reservation stays until it expires, so that pane still takes its name.
+Collection drops expired reservations (executed in `provision_test.go`,
+each test seen failing with its launcher's step removed).
 Its first hook commits a record with that parent and depth and only then
 deletes the token, so a failed write keeps the lineage for the retry; an
 unadopted token stops holding its place after `store.PendingSummonFor`

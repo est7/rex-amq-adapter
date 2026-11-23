@@ -530,48 +530,54 @@ func (e Env) launchPlanned(ctx context.Context, caller agent, s Session, split b
 	// handle, or one reserved for a start.
 	reservation := ""
 	if p.departed != nil {
-		e.provisionMailbox(ctx, p.departed.Handle)
+		if err := e.provisionMailbox(ctx, p.departed.Handle); err != nil {
+			return "", err
+		}
 	} else {
 		var err error
 		if reservation, _, err = e.reserveHandle(ctx, p.kind); err != nil {
 			return "", err
 		}
 	}
-	block, err := e.launchLocked(ctx, caller, s, split, p, token, reservation)
-	if err != nil {
+	block, asked, err := e.launchLocked(ctx, caller, s, split, p, token, reservation)
+	if err != nil && !asked {
+		// No pane was asked for: the name is free again. After an ambiguous
+		// reply it stays reserved until it expires.
 		e.dropReservation(reservation)
 	}
 	return block, err
 }
 
-// launchLocked is launchPlanned's launch under the lifecycle lock.
-func (e Env) launchLocked(ctx context.Context, caller agent, s Session, split bool, p launchPlan, token, reservation string) (string, error) {
+// launchLocked is launchPlanned's launch under the lifecycle lock; asked
+// says whether Rex was asked for the pane (whatever its reply).
+func (e Env) launchLocked(ctx context.Context, caller agent, s Session, split bool, p launchPlan, token, reservation string) (block string, asked bool, err error) {
 	unlock, err := e.Store.LockLifecycle(ctx)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	defer unlock()
 	fresh, ok, err := e.agentOf(caller.Handle)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if !ok || !fresh.Live() {
-		return "", fmt.Errorf("%s is %w, so nothing was launched", caller.Handle, errCallerGone)
+		return "", false, fmt.Errorf("%s is %w, so nothing was launched", caller.Handle, errCallerGone)
 	}
 	caller = fresh
 	if g, err := e.guardSummoner(caller); err != nil {
-		return "", err
+		return "", false, err
 	} else if g.Refused {
-		return "", g
+		return "", false, g
 	}
 	if s, err = e.loadSession(ctx, s.server, s.id); err != nil {
-		return "", err
+		return "", false, err
 	}
 	unattended, err := e.launchUnattended(s.id, p.role, caller, p.departed)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
-	return e.launch(ctx, caller, s, split, p.label, p.cwd, token, reservation, unattended, p.launch, p.launch.Args(p.kind, p.cmd))
+	block, err = e.launch(ctx, caller, s, split, p.label, p.cwd, token, reservation, unattended, p.launch, p.launch.Args(p.kind, p.cmd))
+	return block, true, err
 }
 
 // start launches a new agent for a role (launch), with the message

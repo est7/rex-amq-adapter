@@ -26,6 +26,7 @@ type fakeTerm struct {
 	mu             sync.Mutex
 	gone           bool
 	inspectErr     error                     // InspectBlock fails
+	launchThenFail error                     // NewWindow opens the tab, then fails, as a reply lost after Rex acted
 	renaming       func(block, label string) // runs as RenameBlock starts, before the label changes
 	fgPID          int
 	state          string // "" means no program status record
@@ -794,6 +795,9 @@ func (f *fakeTerm) NewWindow(_ context.Context, session, tab, label, dir string,
 	f.mu.Unlock()
 	if started != nil {
 		started(l)
+	}
+	if err := f.launchThenFail; err != nil {
+		return "", "", err
 	}
 	return w, id, nil
 }
