@@ -130,7 +130,7 @@ func (m managed) post(ctx context.Context, verb string, args []string) (int, err
 			o.Op = core.Operation{Kind: core.OpControl, ControlRequestID: control}
 		}
 		for _, h := range strings.Split(to, ",") {
-			if h = strings.TrimSpace(h); h != "" {
+			if h = strings.TrimSpace(h); h != "" && !slices.Contains(o.To, core.Handle(h)) {
 				o.To = append(o.To, core.Handle(h))
 			}
 		}

@@ -180,7 +180,7 @@ func commands() []*cli.Command {
 				enum("kind", mailKinds, "the amq kind"),
 				enum("priority", priorities, "the priority"),
 				f("control", cli.KindEventID, "(a narrator) relay a user-control directive under this request id"),
-				f("thread", cli.KindThreadID, "the thread; required when --to names more than one handle"),
+				f("thread", cli.KindThreadID, "the thread; required when --to names more than one distinct handle"),
 				f("refs", cli.KindMessageIDs, "related message ids"),
 			},
 			Tier: cli.TierOutward, Mutating: true, DryRun: true, Input: true, Audience: cli.AudienceAgent,
