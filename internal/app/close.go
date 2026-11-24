@@ -245,7 +245,7 @@ func (e Env) closeEpic(ctx context.Context, op Operator, r CloseRequest, settle 
 			rec = &prev // a run of the same close got here meanwhile
 		} else {
 			now := e.Now().UTC()
-			rec = &store.EpicOpRecord{Kind: store.EpicOpClose, OpID: r.OpID, RequestHash: hash, SessionID: epic.SessionID, Server: epic.Server,
+			rec = &store.EpicOpRecord{Kind: store.EpicOpClose, OpID: r.OpID, RequestHash: hash, SessionID: epic.SessionID, Server: epic.Server, HubDir: c.hubDir,
 				PersonalHandle: c.personalHandle(), PersonalSessionID: c.personalSession(), State: store.EpicClosing, CreatedAt: now, UpdatedAt: now}
 			if err := e.Store.PutEpicOp(*rec); err != nil {
 				return res, fmt.Errorf("record the close under --op-id %q: %w", r.OpID, err)
@@ -303,8 +303,8 @@ func (e Env) closeTarget(c closer, session string) (core.SessionKey, error) {
 	if err != nil {
 		return core.SessionKey{}, err
 	}
-	if c.hubDir != "" && !(hasLC && lc.Hub.Dir() == c.hubDir) && !slices.ContainsFunc(links, func(l core.Link) bool { return l.Hub.Dir() == c.hubDir }) {
-		return core.SessionKey{}, fmt.Errorf("%w: %s is not an Epic of the Hub %s (`rex-amq-adapter epic list --hub %s` lists them)", ErrRefused, session, c.hubDir, c.hubDir)
+	if c.hubDir != "" && !hubAuthorizes(lc, hasLC, links, c.hubDir) {
+		return core.SessionKey{}, notOfHub(session, c.hubDir)
 	}
 	switch {
 	case len(links) > 0:
@@ -315,6 +315,16 @@ func (e Env) closeTarget(c closer, session string) (core.SessionKey, error) {
 		return core.SessionKey{Server: p.Server, SessionID: session}, nil
 	}
 	return core.SessionKey{}, fault.New(fault.NotFound, "%s is no Epic the adapter knows: it has no lifecycle, link, or policy", session).With("kind", "session")
+}
+
+// hubAuthorizes reports whether an Epic, by its lifecycle (when hasLC) and
+// its links, is of the Hub directory dir: what --hub admits a close by.
+func hubAuthorizes(lc store.EpicLifecycle, hasLC bool, links []core.Link, dir string) bool {
+	return hasLC && lc.Hub.Dir() == dir || slices.ContainsFunc(links, func(l core.Link) bool { return l.Hub.Dir() == dir })
+}
+
+func notOfHub(session, dir string) error {
+	return fmt.Errorf("%w: %s is not an Epic of the Hub %s (`rex-amq-adapter epic list --hub %s` lists them)", ErrRefused, session, dir, dir)
 }
 
 // linksToEpic is every recorded link to the Epic session.
@@ -410,15 +420,20 @@ func (e Env) replayClose(ctx context.Context, c closer, r CloseRequest, hash, le
 	} else if !same {
 		return CloseResult{OpID: opID}, true, errOpConflict(store.EpicOpClose, opID)
 	}
-	// --hub holds for a replay too, read from what outlives the unlink: the
-	// Hub the Epic's lifecycle records.
-	if c.hubDir != "" && !c.personal() {
-		dir, err := e.epicHubDir(op.SessionID)
+	// --hub holds for a replay too: the Hub that authorized the first run,
+	// as its record keeps it past the unlink, else as a first run would
+	// decide it now (hubAuthorizes).
+	if c.hubDir != "" && !c.personal() && op.HubDir != c.hubDir {
+		lc, hasLC, err := e.Store.EpicLifecycle(op.SessionID)
 		if err != nil {
 			return CloseResult{OpID: opID}, true, err
 		}
-		if dir != c.hubDir {
-			return CloseResult{OpID: opID}, true, fmt.Errorf("%w: --op-id %q closes %s, which is not an Epic of the Hub %s", ErrRefused, opID, op.SessionID, c.hubDir)
+		links, err := e.linksToEpic(op.SessionID)
+		if err != nil {
+			return CloseResult{OpID: opID}, true, err
+		}
+		if !hubAuthorizes(lc, hasLC, links, c.hubDir) {
+			return CloseResult{OpID: opID}, true, notOfHub(op.SessionID, c.hubDir)
 		}
 	}
 	if r.DryRun {

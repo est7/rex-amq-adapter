@@ -338,3 +338,47 @@ func TestTheUserReadsAnUnlinkedEpic(t *testing.T) {
 		}
 	}
 }
+
+// The Hub that admitted a close holds its retry, whatever lets the Epic be
+// that Hub's: its link alone (no lifecycle Hub), or a second Hub's link
+// beside its lifecycle's Hub. A first run that fails at the kill is
+// finished by the same request, before the unlink and after it.
+func TestTheUsersCloseRetryKeepsTheHubThatAdmittedIt(t *testing.T) {
+	for _, lifecycleHub := range []bool{false, true} {
+		e, term, _ := closeWorld(t)
+		hub := physical(t, t.TempDir())
+		lc := store.EpicLifecycle{SessionID: "session:epic", Server: fakeServer, State: store.EpicOpened}
+		if lifecycleHub {
+			lc.Hub = core.NewHubKey(fakeServer, physical(t, t.TempDir()))
+		}
+		if err := e.Store.PutEpicLifecycle(lc); err != nil {
+			t.Fatal(err)
+		}
+		if err := e.Store.PutLink(core.Link{Hub: core.NewHubKey(fakeServer, hub), Epic: core.SessionKey{Server: fakeServer, SessionID: "session:epic"}}); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		req := CloseRequest{Session: "session:epic", Asked: "close it", Hub: hub, OpID: "close-h", Force: true}
+		term.mu.Lock()
+		term.killErr = errors.New("rex is busy")
+		term.mu.Unlock()
+		if _, err := e.CloseEpicFor(ctx, theUser, req); err == nil {
+			t.Fatalf("lifecycle Hub %v: the injected kill failure passed", lifecycleHub)
+		}
+		if op, _, _ := e.Store.EpicOp(store.EpicOpClose, "close-h"); op.HubDir != hub {
+			t.Errorf("lifecycle Hub %v: the close op recorded Hub %q, want %q", lifecycleHub, op.HubDir, hub)
+		}
+		term.mu.Lock()
+		term.killErr = nil
+		term.mu.Unlock()
+		res, err := e.CloseEpicFor(ctx, theUser, req)
+		if err != nil || !res.Replayed || res.LifecycleState != store.EpicClosed || len(term.killed) != 1 {
+			t.Errorf("lifecycle Hub %v: the retry: %+v %v (killed %v)", lifecycleHub, res, err, term.killed)
+		}
+		// After the unlink too: the record keeps the Hub.
+		if again, err := e.CloseEpicFor(ctx, theUser, req); err != nil || !again.Replayed {
+			t.Errorf("lifecycle Hub %v: a retry after the unlink: %+v %v", lifecycleHub, again, err)
+		}
+		cancel()
+	}
+}
