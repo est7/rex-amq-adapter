@@ -90,6 +90,7 @@ func (m managed) post(ctx context.Context, verb string, args []string) (int, err
 		fs.Bool("allow-self", false, "Allow an intentional send to yourself")
 		fs.String("thread", "", "Thread ID")
 		fs.String("refs", "", "Related message IDs, comma-separated")
+		fs.String("op-id", "", "(a narrator's mail to its Hub's personal agent) names this message: a retry keeps and sends it once")
 	} else {
 		fs.StringVar(&replyTo, "id", "", "Message ID to reply to")
 	}
@@ -153,16 +154,28 @@ func (m managed) post(ctx context.Context, verb string, args []string) (int, err
 	if !bodySet && terminalInput(m.stdin) {
 		return 2, fmt.Errorf("%w: %s needs --body on a terminal; use --body - to read stdin explicitly", ErrUsage, verb)
 	}
+	// Only the flag names a file (@PATH), never text read from stdin.
+	bodyFile, _ := strings.CutPrefix(*body, "@")
+	if !bodySet || !strings.HasPrefix(*body, "@") {
+		bodyFile = ""
+	}
 	if !bodySet || *body == "-" || *body == "" {
 		var b []byte
 		if m.stdin != nil {
+			in := m.stdin
+			if m.rec.Role == core.NarratorRole {
+				// What a narrator writes the Hub's inbox may keep: bounded.
+				in = io.LimitReader(in, maxNarratorBody+1)
+			}
 			var err error
-			b, err = io.ReadAll(m.stdin)
-			if err != nil {
+			if b, err = io.ReadAll(in); err != nil {
 				return 1, err
 			}
 		}
 		*body = string(b)
+	}
+	if m.rec.Role == core.NarratorRole && len(*body) > maxNarratorBody {
+		return 2, fmt.Errorf("%w: the body is more than %d bytes", ErrUsage, maxNarratorBody)
 	}
 	o.Args = append(mailFlagArgs(fs, "subject", "kind", "priority", "labels", "allow-empty", "allow-self", "strict", "thread", "refs", "wait-for", "wait-timeout"), "--body="+*body)
 	// A narrator's mail to its Hub's personal agent goes to whichever is
@@ -177,23 +190,41 @@ func (m managed) post(ctx context.Context, verb string, args []string) (int, err
 	// Mail to a Hub link's personal agent is kept in the Hub's inbox first,
 	// its body resolved and bounded once, and only after the gateway would
 	// pass it; its delivery is then best effort.
+	opID, _ := flagValue(fs, "op-id")
+	if err := ValidOpID(opID); err != nil {
+		return 2, err
+	}
 	var kept *store.HubInboxEntry
 	if route != nil && route.hub != "" {
-		text, err := narratorBody(*body)
+		text, err := narratorBody(*body, bodyFile)
 		if err != nil {
 			return 2, err
 		}
 		*body, o.Args[len(o.Args)-1] = text, "--body="+text
+		// The whole request is checked before it is kept: the gateway, and
+		// the context it carries.
 		if err := m.e.admits(o); err != nil {
 			return 1, err
 		}
+		if _, err := withToken(o.Context, "check"); err != nil {
+			return 2, err
+		}
 		subject, _ := flagValue(fs, "subject")
 		thread, _ := flagValue(fs, "thread")
-		x, err := m.e.keepNarratorMail(ctx, m.rec, route.hub, subject, thread, text)
+		x, done, err := m.e.keepNarratorMail(ctx, m.rec, route.hub, opID, subject, thread, text)
 		if err != nil {
 			return 1, err
 		}
 		kept, route.InboxSeq = &x, x.Seq
+		if done {
+			// A retry of a message kept and delivered already.
+			return 0, m.printKept(*asJSON, route)
+		}
+		if o.Context, err = withDelivery(o.Context, x.Delivery); err != nil {
+			return 1, err
+		}
+	} else if opID != "" {
+		return 2, fmt.Errorf("%w: --op-id names a narrator's mail to its Hub's personal agent, which this is not", ErrUsage)
 	}
 	var sent amq.Sent
 	var out []byte
@@ -231,7 +262,7 @@ func (m managed) post(ctx context.Context, verb string, args []string) (int, err
 		}
 	}
 	if kept != nil {
-		m.e.noteNarratorDelivery(*kept, sent)
+		m.e.noteNarratorDelivery(*kept, sent, o.ReplyTo != "" || len(o.To) > 0)
 		if !delivered {
 			return 0, m.printKept(*asJSON, route)
 		}
@@ -248,18 +279,17 @@ func (m managed) post(ctx context.Context, verb string, args []string) (int, err
 	return 0, err
 }
 
-// narratorBody is a narrator's --body as its Hub's inbox keeps it: the
-// text, or the file @PATH names, at most cli's body limit.
-func narratorBody(v string) (string, error) {
-	if path, ok := strings.CutPrefix(v, "@"); ok {
-		st, err := os.Stat(path)
+// narratorBody is a narrator's message as its Hub's inbox keeps it: the
+// text given (or read from stdin), or the file --body @PATH names (path),
+// at most cli's body limit.
+func narratorBody(v, path string) (string, error) {
+	if path != "" {
+		f, err := os.Open(path)
 		if err != nil {
-			return "", fmt.Errorf("%w: --body %s: %v", ErrUsage, v, err)
+			return "", fmt.Errorf("%w: --body @%s: %v", ErrUsage, path, err)
 		}
-		if st.Size() > maxNarratorBody {
-			return "", fmt.Errorf("%w: --body %s is %d bytes, more than %d", ErrUsage, v, st.Size(), maxNarratorBody)
-		}
-		b, err := os.ReadFile(path)
+		defer f.Close()
+		b, err := io.ReadAll(io.LimitReader(f, maxNarratorBody+1))
 		if err != nil {
 			return "", err
 		}
