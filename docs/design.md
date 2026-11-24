@@ -1966,16 +1966,19 @@ the Hub's canonical directory (not its key, which names a Rex server a reader
 outside Rex does not know), so reading it needs no Rex. Each line is one
 entry (`store.HubInboxEntry`: `schema`, `seq` from 1, `at`, `epic`,
 `hub_key`, `kind`, `msg_id`, `thread`, `subject`, `hand_back_seq`, `digest`,
-`body`, `in_reply_to`, `by`, `dedupe_key`, `delivery`), appended whole under
-`inbox.lock`, a leaf: its holder takes no other lock and does no Rex or amq
-I/O (`epic-lifecycle.lock` and the lifecycle lock come first wherever they
-are held with it). An entry whose `dedupe_key` is there already appends
+`body`, `in_reply_to`, `by`, `dedupe_key`, `request_hash`, `delivery`), appended
+whole under `inbox.lock`, a leaf: its holder takes no other lock and does no
+Rex or amq I/O (`epic-lifecycle.lock` and the lifecycle lock come first
+wherever they are held with it; per-request `ops/<hash>.lock` serialises
+`--op-id` lookup, append, amq delivery, and receipt recording outside
+`inbox.lock`). An entry whose `dedupe_key` is there already appends
 nothing. A line longer than `HubInboxMaxLine` (2 MiB) is refused before it is
 written, so every line is one a reader reads. Readers take no lock and stop
 at a trailing line with no newline; the next writer cuts such a line off.
 
 - **Hand-backs** (`handback`): under `epic-lifecycle.lock`, before a new
-  hand-back is recorded and after, the stored one is kept as `handback:<session>#<seq>`
+  hand-back is recorded and after, any stored hand-back not yet in the
+  lifecycle is backfilled into it and kept as `handback:<session>#<seq>`
   (its seq, digest, by, at; no body), not gated on whether the run changed
   it, so a retry after a failed write keeps it; a report the lifecycle lists
   but that was never stored is not kept. If the stored one cannot be kept,
@@ -1985,18 +1988,25 @@ at a trailing line with no newline; the next writer cuts such a line off.
   delivered, best effort, to a live, reachable personal agent of the Hub;
   with none, or when the delivery fails, the inbox alone keeps it and the
   send answers `routed_to: hub` (exit 0). amq gives the id only on delivery,
-  so the line holds a `delivery` token instead, carried in the message's
-  context; the id is recorded beside it (`delivered/<token>.json`) and read
-  back as `msg_id`, or found again in the narrator's sent mail by that
-  token. `--op-id` names the message, so a retry keeps and sends it once.
-  A session-keyed link stays amq-only, and an unlinked narrator is refused
-  (`personal_narrator_not_linked`).
+  so the line holds an immutable `delivery` token separate from delivery state
+  (`pending`, `attempted`, `hub_only`, `delivered`) in `delivered/<token>.json`,
+  which also saves the public amq receipt JSON; before spawning amq on an
+  `--op-id` send, `attempted` (with target recipients) must be persisted, and
+  retries reconcile sender outbox and recipient mailboxes before allowing a
+  resend, failing closed to `delivery_state: pending` when an attempt is
+  unresolved. `--op-id` is scoped by Hub and Epic (checking caller ownership
+  and hashing the normalized message-affecting request, separate from
+  amq-assigned thread or dynamically selected live recipient); settled
+  Hub-only retries replay `routed_to: hub`. On a session-keyed link without a
+  Hub, `--op-id` is accepted as amq-only (`no_hub_dedupe: true` plus warning),
+  and an unlinked narrator is refused (`personal_narrator_not_linked`).
 - **The Operator's words** (`operator`): `hub send <session>` and `hub reply
   <seq>` keep the message (`in_reply_to` the entry answered, whose Epic,
   thread, and message a reply takes), then mail it to the Epic's narrator as
   the relay above, subject `operator hub:<seq>: …`, which the narrator
   passes to the lead under `--control hub:<seq>`. Only an Epic linked to the
-  Hub with a live narrator takes one; `--op-id` sends it once.
+  Hub with a live narrator takes one; `--op-id` serialises under `ops/` and
+  reconciles the narrator's mailbox so retries send once.
 - **Replies** (`reply`): a personal agent's mail to a narrator, once
   delivered, is kept with `in_reply_to` the entry of the message it names by
   id, followed through a reply's refs and a delivery again's
@@ -2379,8 +2389,9 @@ in their own blocks:
    `ready`, else 7 (`partial_start`) with all of it in `data`.
 
 `--op-id` keeps an `epic-ops/revive-<sha256(ID)>.json` record (state
-`revived`) whose `request_hash` covers the session and the caller (a personal
-agent's session key, or the user); a retry prints `"replayed":true` and, since
+`revived`) whose `request_hash` covers the Epic's session and its lifecycle's
+Hub (accepting legacy caller-keyed hashes on replay and rewriting them); a
+retry prints `"replayed":true` and, since
 revive is idempotent by `already_live`, resumes only what is still down.
 Every live revive appends a line, the user's `--asked` words included, to
 `logs/revive.log`. A server that started without restoring its sessions keeps

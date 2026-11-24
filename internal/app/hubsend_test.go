@@ -3,7 +3,10 @@ package app
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -195,4 +198,100 @@ func readMessage(e Env, h, id string) (string, error) {
 		}
 	}
 	return "", errors.New("no such message")
+}
+
+// Concurrent hub send retries with the same --op-id serialize under
+// LockHubInboxOp (while keeping inbox.lock off AMQ I/O) so the narrator gets
+// one relay message; an unresolved DeliveryAttempted fails closed without
+// auto-resending, and a crash after inbox write reconciles without duplicating.
+func TestOperatorSendOpIDSerializesAndFailsClosedOnUnresolvedAttempt(t *testing.T) {
+	e, hub := relayWorld(t)
+	ctx := context.Background()
+	real := e.AMQ
+	bp := &blockingPost{Queue: real, entered: make(chan struct{}), release: make(chan struct{})}
+	var relOnce sync.Once
+	release := func() { relOnce.Do(func() { close(bp.release) }) }
+	t.Cleanup(release)
+	e.AMQ = bp
+	req := HubSendRequest{Hub: hub, Session: "session:e", Body: "ship it", OpID: "op-conc-1"}
+	type out struct {
+		res HubSendResult
+		err error
+	}
+	chA := make(chan out, 1)
+	go func() {
+		r, err := e.SendToNarrator(ctx, userEnv, req)
+		chA <- out{r, err}
+	}()
+	select {
+	case <-bp.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first hub send never entered AMQ Post")
+	}
+	// inbox.lock must stay off the AMQ path.
+	appendDone := make(chan error, 1)
+	go func() {
+		_, _, err := e.Store.AppendHubInbox(ctx, hub, store.HubInboxEntry{
+			Epic: "session:e", Kind: store.InboxHandBack, HandBackSeq: 1, By: "claude-01", DedupeKey: "handback:session:e#1",
+		}, time.Now())
+		appendDone <- err
+	}()
+	select {
+	case err := <-appendDone:
+		if err != nil {
+			t.Fatalf("unrelated inbox append while hub send in flight: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("inbox.lock was held across hub send AMQ I/O")
+	}
+	chB := make(chan out, 1)
+	go func() {
+		r, err := e.SendToNarrator(ctx, userEnv, req)
+		chB <- out{r, err}
+	}()
+	time.Sleep(100 * time.Millisecond)
+	if got := bp.calls.Load(); got != 1 {
+		release()
+		<-chA
+		<-chB
+		t.Fatalf("concurrent hub send posted %d times while first was in flight", got)
+	}
+	release()
+	rA, rB := <-chA, <-chB
+	if rA.err != nil || rB.err != nil || rA.res.Seq != rB.res.Seq || rA.res.MsgID == "" || rA.res.MsgID != rB.res.MsgID {
+		t.Fatalf("concurrent hub send results: A=%+v(%v) B=%+v(%v)", rA.res, rA.err, rB.res, rB.err)
+	}
+	if got := bp.calls.Load(); got != 1 {
+		t.Errorf("AMQ Post calls = %d, want 1", got)
+	}
+
+	// Unresolved DeliveryAttempted (empty narrator mailbox) fails closed
+	// without auto-resending, then reconciles once the relay appears in inbox.
+	e.AMQ = real
+	hubKey := core.NewHubKey(fakeServer, hub)
+	unres, _, err := e.Store.AppendHubInbox(ctx, hub, store.HubInboxEntry{
+		Epic: "session:e", HubKey: hubKey, Kind: store.InboxOperator, Thread: "hub/e/unres", Body: "hold on",
+		By: core.UserHandle, DedupeKey: "operator:op-unres", Delivery: "tok-op-unres",
+	}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Store.PutHubInboxDelivery(hub, "tok-op-unres", store.HubInboxDelivery{
+		State: store.DeliveryAttempted, AttemptedTo: []core.Handle{"agy-05"}, RoutedTo: "agy-05",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	unresReq := HubSendRequest{Hub: hub, Session: "session:e", Body: "hold on", OpID: "op-unres"}
+	if _, err := e.SendToNarrator(ctx, userEnv, unresReq); !isCode(err, fault.FailedPrecondition) {
+		t.Fatalf("unresolved DeliveryAttempted retry: got %v, want failed_precondition", err)
+	}
+	// Simulate the orphan AMQ child landing the relay in agy-05's inbox.
+	msg := "---json\n{\"schema\":1,\"id\":\"relay-orphan-1\",\"from\":\"agy-05\",\"to\":[\"agy-05\"],\"thread\":\"hub/e/unres\",\"subject\":\"operator hub:3: hold on\",\"created\":\"2026-11-24T00:00:00Z\",\"context\":{\"rex_amq_adapter_delivery\":{\"token\":\"tok-op-unres\"}}}\n---\nhold on\n"
+	if err := os.WriteFile(filepath.Join(amq.Inbox(e.Paths.Root(), "agy-05"), "relay-orphan-1.md"), []byte(msg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := e.SendToNarrator(ctx, userEnv, unresReq)
+	if err != nil || !got.Replayed || got.Seq != unres.Seq || got.MsgID != "relay-orphan-1" {
+		t.Fatalf("reconciled orphan relay: %+v %v", got, err)
+	}
 }

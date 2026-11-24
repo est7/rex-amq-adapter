@@ -5,7 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"slices"
 	"strconv"
 	"strings"
@@ -113,6 +115,15 @@ func (e Env) SendToNarrator(ctx context.Context, getenv func(string) string, r H
 	if r.DryRun {
 		return res, nil
 	}
+	if r.OpID != "" {
+		// Serialise lookup, append, delivery check, and AMQ relay per
+		// (Hub, opID) while keeping inbox.lock strictly a leaf lock off AMQ.
+		unlockOp, err := e.Store.LockHubInboxOp(ctx, scope.hubDir, "operator", r.OpID)
+		if err != nil {
+			return res, err
+		}
+		defer unlockOp()
+	}
 	name := r.OpID
 	if name == "" {
 		if name, err = newToken(); err != nil {
@@ -125,8 +136,12 @@ func (e Env) SendToNarrator(ctx context.Context, getenv func(string) string, r H
 		sum := sha256.Sum256([]byte(key))
 		res.Thread = "hub/" + strings.TrimPrefix(res.Epic, "session:") + "/" + hex.EncodeToString(sum[:6])
 	}
+	token, err := newToken()
+	if err != nil {
+		return res, err
+	}
 	x, added, err := e.Store.AppendHubInbox(ctx, scope.hubDir, store.HubInboxEntry{Epic: res.Epic, HubKey: link.Hub, Kind: store.InboxOperator,
-		Thread: res.Thread, Body: r.Body, InReplyTo: res.InReplyTo, By: op.By(), DedupeKey: key}, e.Now())
+		Thread: res.Thread, Body: r.Body, InReplyTo: res.InReplyTo, By: op.By(), DedupeKey: key, Delivery: token}, e.Now())
 	if err != nil {
 		return res, err
 	}
@@ -135,12 +150,40 @@ func (e Env) SendToNarrator(ctx context.Context, getenv func(string) string, r H
 	}
 	res.Seq, res.Replayed, res.Control = x.Seq, !added, "hub:"+strconv.FormatInt(x.Seq, 10)
 	if !added {
-		if id, ok, err := e.relayedAlready(narr.Handle, scope.hubDir, x.Seq); err != nil || ok {
+		d, hasSidecar, _ := e.Store.HubInboxDelivery(scope.hubDir, x.Delivery)
+		if hasSidecar && d.State == store.DeliveryDelivered && d.MsgID != "" {
+			res.MsgID = d.MsgID
+			return res, nil
+		}
+		scanHandles := uniqueHandles(d.AttemptedTo, []core.Handle{narr.Handle})
+		if id, ok, uncertain := e.relayedAlready(scanHandles, scope.hubDir, x.Seq, x.Delivery); ok {
 			res.MsgID = id
-			return res, err
+			if x.Delivery != "" {
+				_ = e.Store.PutHubInboxDelivery(scope.hubDir, x.Delivery, store.HubInboxDelivery{
+					State: store.DeliveryDelivered, MsgID: id, Thread: res.Thread, To: []string{string(narr.Handle)}, RoutedTo: narr.Handle,
+				})
+			}
+			return res, nil
+		} else if uncertain || (hasSidecar && d.State == store.DeliveryAttempted) {
+			return res, fault.New(fault.FailedPrecondition, "inbox entry %d relay to %s has an unresolved previous attempt; refusing automatic resend", x.Seq, narr.Handle).
+				With("reason", "relay_delivery_pending")
 		}
 	}
-	rc, err := json.Marshal(map[string]relayContext{relayContextKey: {Hub: scope.hubDir, Seq: x.Seq}})
+	if x.Delivery != "" {
+		if aerr := e.Store.PutHubInboxDelivery(scope.hubDir, x.Delivery, store.HubInboxDelivery{
+			State: store.DeliveryAttempted, AttemptedTo: []core.Handle{narr.Handle}, RoutedTo: narr.Handle,
+		}); aerr != nil {
+			if r.OpID != "" {
+				return res, fmt.Errorf("the message is inbox entry %d; recording relay attempt before mailing %s failed (rerun with the same --op-id): %w", x.Seq, narr.Handle, aerr)
+			}
+			fmt.Fprintf(Diagnostics, "record relay attempt for Hub inbox entry %d: %v\n", x.Seq, aerr)
+		}
+	}
+	ctxObj := map[string]any{relayContextKey: relayContext{Hub: scope.hubDir, Seq: x.Seq}}
+	if x.Delivery != "" {
+		ctxObj[deliveryContextKey] = deliveryContext{Token: x.Delivery}
+	}
+	rc, err := json.Marshal(ctxObj)
 	if err != nil {
 		return res, err
 	}
@@ -152,13 +195,27 @@ func (e Env) SendToNarrator(ctx context.Context, getenv func(string) string, r H
 	sent, _, err := e.post(ctx, Outgoing{From: narr.Handle, To: []core.Handle{narr.Handle}, Check: true, Context: rc,
 		Op: core.Operation{Kind: core.OpOperatorRelay, System: true, Hub: link.Hub}, Args: args})
 	if sent.ID == "" {
-		if err == nil {
-			err = fmt.Errorf("amq returned no message id")
+		if id, ok, uncertain := e.relayedAlready([]core.Handle{narr.Handle}, scope.hubDir, x.Seq, x.Delivery); ok {
+			sent.ID = id
+		} else {
+			if !uncertain && x.Delivery != "" {
+				_ = e.Store.ClearHubInboxAttempt(scope.hubDir, x.Delivery)
+			}
+			if err == nil {
+				err = fmt.Errorf("amq returned no message id")
+			}
+			return res, fmt.Errorf("the message is inbox entry %d; mailing it to %s failed (run the same command with the same --op-id to send it): %w", x.Seq, narr.Handle, err)
 		}
-		return res, fmt.Errorf("the message is inbox entry %d; mailing it to %s failed (run the same command with the same --op-id to send it): %w", x.Seq, narr.Handle, err)
 	}
 	if err != nil {
 		fmt.Fprintf(Diagnostics, "relay %d to %s: delivered %s, then: %v\n", x.Seq, narr.Handle, sent.ID, err)
+	}
+	if x.Delivery != "" {
+		if derr := e.Store.PutHubInboxDelivery(scope.hubDir, x.Delivery, store.HubInboxDelivery{
+			State: store.DeliveryDelivered, MsgID: sent.ID, Thread: res.Thread, To: []string{string(narr.Handle)}, RoutedTo: narr.Handle,
+		}); derr != nil {
+			fmt.Fprintf(Diagnostics, "record relay delivery for Hub inbox entry %d: %v\n", x.Seq, derr)
+		}
 	}
 	res.MsgID = sent.ID
 	if err := e.ensureWaker(ctx, narr); err != nil {
@@ -199,27 +256,67 @@ func (e Env) liveNarrator(epic core.SessionKey) (agent, error) {
 }
 
 // relayedAlready is the id of the relay of inbox entry seq of the Hub dir
-// in narrator n's mailbox, read or not: a retry that finds one sends it
-// not again.
-func (e Env) relayedAlready(n core.Handle, dir string, seq int64) (string, bool, error) {
+// in any candidate narrator's mailbox (unread, drained, sent, DLQ, or
+// quarantine): a retry that finds one sends it not again. uncertain is true
+// when any box or header read failed so absence cannot be confirmed.
+func (e Env) relayedAlready(narrators []core.Handle, dir string, seq int64, token string) (string, bool, bool) {
 	root := e.Paths.Root()
-	for _, box := range []amq.Box{amq.BoxUnread, amq.BoxDrained} {
-		ids, err := amq.IDs(root, string(n), box)
-		if err != nil {
-			return "", false, err
+	uncertain := false
+	matches := func(n core.Handle, h amq.Header) bool {
+		if h.From != string(n) {
+			return false
 		}
-		for _, id := range ids {
-			h, err := amq.ReadHeader(root, string(n), box, id)
+		var rc relayContext
+		if h.ContextOf(relayContextKey, &rc) && rc.Hub == dir && rc.Seq == seq {
+			return true
+		}
+		var dc deliveryContext
+		return token != "" && h.ContextOf(deliveryContextKey, &dc) && dc.Token == token
+	}
+	for _, n := range narrators {
+		for _, box := range []amq.Box{amq.BoxUnread, amq.BoxDrained, amq.BoxSent, amq.BoxDLQNew, amq.BoxDLQCur} {
+			ids, err := amq.IDs(root, string(n), box)
 			if err != nil {
+				uncertain = true
 				continue
 			}
-			var rc relayContext
-			if h.From == string(n) && h.ContextOf(relayContextKey, &rc) && rc.Hub == dir && rc.Seq == seq {
-				return id, true, nil
+			for _, id := range ids {
+				var h amq.Header
+				if box == amq.BoxDLQNew || box == amq.BoxDLQCur {
+					h, err = amq.ReadDLQHeader(root, string(n), box, id)
+				} else {
+					h, err = amq.ReadHeader(root, string(n), box, id)
+				}
+				if err != nil {
+					if !errors.Is(err, fs.ErrNotExist) {
+						uncertain = true
+					}
+					continue
+				}
+				if matches(n, h) {
+					return id, true, false
+				}
+			}
+		}
+		qids, err := e.Store.QuarantinedIDs(n)
+		if err != nil {
+			uncertain = true
+			continue
+		}
+		for _, qid := range qids {
+			h, err := amq.ReadFileHeader(e.Store.QuarantinedMessagePath(n, qid))
+			if err != nil {
+				if !errors.Is(err, fs.ErrNotExist) {
+					uncertain = true
+				}
+				continue
+			}
+			if matches(n, h) {
+				return h.ID, true, false
 			}
 		}
 	}
-	return "", false, nil
+	return "", false, uncertain
 }
 
 // summaryLine is the first line of body, cut for a subject.
@@ -260,7 +357,7 @@ func (e Env) mirrorPersonalMail(ctx context.Context, p agent, narrator core.Hand
 	}
 	seq, _ := e.latestHandBackSeq(n.SessionID)
 	if _, _, err := e.Store.AppendHubInbox(ctx, hub.Dir(), store.HubInboxEntry{Epic: n.SessionID, HubKey: hub, Kind: store.InboxReply, MsgID: sent.ID, Thread: sent.Thread,
-		HandBackSeq: seq, Body: body, InReplyTo: inReplyTo, By: p.Handle, DedupeKey: "reply:" + sent.ID}, e.Now()); err != nil {
+		HandBackSeq: seq, Body: body, InReplyTo: inReplyTo, By: p.Handle, DedupeKey: "reply:" + strconv.Itoa(len(n.SessionID)) + ":" + n.SessionID + ":" + sent.ID}, e.Now()); err != nil {
 		fmt.Fprintf(Diagnostics, "keep %s's reply %s in the Hub's inbox: %v\n", p.Handle, sent.ID, err)
 	}
 }

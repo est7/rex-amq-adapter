@@ -319,12 +319,15 @@ func (m managed) post(ctx context.Context, verb string, args []string) (int, err
 		if m.rec.Role == core.PersonalRole && sent.ID != "" {
 			// A personal agent's word to a narrator is the Hub's too.
 			refsFlag, _ := flagValue(fs, "refs")
-			var refs []string
-			if refsFlag != "" {
-				refs = strings.Split(refsFlag, ",")
+			refs := splitCSV(refsFlag)
+			mirrorBody := *body
+			if bodyFile != "" {
+				if resolved, berr := amq.BodyPrefix(m.root, m.me(), amq.BoxSent, sent.ID, maxNarratorBody); berr == nil {
+					mirrorBody = strings.TrimSuffix(resolved, "\n")
+				}
 			}
 			for _, h := range sent.To {
-				m.e.mirrorPersonalMail(ctx, m.rec, core.Handle(h), sent, o.ReplyTo, refs, *body)
+				m.e.mirrorPersonalMail(ctx, m.rec, core.Handle(h), sent, o.ReplyTo, refs, mirrorBody)
 			}
 		}
 	}
