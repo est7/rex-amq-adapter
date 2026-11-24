@@ -109,10 +109,10 @@ func TestALateSessionEndDoesNotParkTheProcessesNextConversation(t *testing.T) {
 	if _, err := e.Adopt(ctx, Location{Block: block}, core.Claude, HookInput{SessionID: "old", AgentPID: os.Getpid()}); err != nil {
 		t.Fatal(err)
 	}
-	fake := e.AMQ.(*amq.Fake)
 	var once sync.Once
-	e.AMQ = fake.WithFail(func(op string, _ []string) error {
-		if op == "wake retire" {
+	e.AMQ = hookQueue{
+		Queue: e.AMQ,
+		afterRetireHandle: func(_, _ string) error {
 			once.Do(func() {
 				// The new conversation's hook commits meanwhile.
 				in := HookInput{SessionID: "new", AgentPID: os.Getpid()}
@@ -124,9 +124,9 @@ func TestALateSessionEndDoesNotParkTheProcessesNextConversation(t *testing.T) {
 					t.Errorf("the new conversation's commit: %v", err)
 				}
 			})
-		}
-		return nil
-	})
+			return nil
+		},
+	}
 	if err := e.Depart(ctx, Location{Block: block}, HookInput{SessionID: "old", AgentPID: os.Getpid()}); err != nil {
 		t.Fatal(err)
 	}
@@ -268,15 +268,18 @@ func TestTwoFinishersRedeliverANarratorMessageOnce(t *testing.T) {
 	// The first send waits until the second finisher has had its chance.
 	entered, proceed := make(chan struct{}), make(chan struct{})
 	var once sync.Once
-	e.AMQ = e.AMQ.(*amq.Fake).WithFail(func(op string, _ []string) error {
-		if op == "send" {
-			once.Do(func() {
-				close(entered)
-				<-proceed
-			})
-		}
-		return nil
-	})
+	e.AMQ = hookQueue{
+		Queue: e.AMQ,
+		beforePost: func(verb string, _ []string) error {
+			if verb == "send" {
+				once.Do(func() {
+					close(entered)
+					<-proceed
+				})
+			}
+			return nil
+		},
+	}
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() { defer wg.Done(); _ = e.redeliverFrom(context.Background(), left) }()
@@ -301,19 +304,21 @@ func TestADepartureThatCannotReleaseBringsTheWakerBack(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var release func()
-	fake := e.AMQ.(*amq.Fake)
-	e.AMQ = fake.WithFail(func(op string, _ []string) error {
-		if op == "wake retire" && release == nil {
-			unlock, err := e.Store.LockLifecycle(context.Background())
-			if err != nil {
-				t.Error(err)
-				return nil
+	e.AMQ = hookQueue{
+		Queue: e.AMQ,
+		afterRetireHandle: func(_, _ string) error {
+			if release == nil {
+				unlock, err := e.Store.LockLifecycle(context.Background())
+				if err != nil {
+					t.Error(err)
+					return nil
+				}
+				release = unlock
+				cancel()
 			}
-			release = unlock
-			cancel()
-		}
-		return nil
-	})
+			return nil
+		},
+	}
 	if err := e.Depart(ctx, Location{Block: block}, HookInput{SessionID: "s1"}); err == nil {
 		t.Fatal("setup: the departure should fail to take the lock")
 	}
@@ -402,18 +407,21 @@ func TestAFailedArrivalGateLeavesTheAdoptionToTheNextHook(t *testing.T) {
 func TestACloseReplayFinishesItsPendingDepartures(t *testing.T) {
 	e, term, loc := closeWorld(t)
 	worker := handleIn(t, e, "block:w")
-	fake := e.AMQ.(*amq.Fake)
-	e.AMQ = fake.WithFail(func(op string, args []string) error {
-		if op == "wake check" && slices.Contains(args, string(worker)) {
-			return errors.New("injected retire failure")
-		}
-		return nil
-	})
+	base := e.AMQ
+	e.AMQ = hookQueue{
+		Queue: base,
+		beforeRetireHandle: func(_, handle string) error {
+			if handle == string(worker) {
+				return errors.New("injected retire failure")
+			}
+			return nil
+		},
+	}
 	req := CloseRequest{Session: "session:epic", Asked: "close it", OpID: "me:close#1"}
 	if _, err := closeEpic(e, loc, req); err == nil {
 		t.Fatal("setup: the first close should report the unfinished departure")
 	}
-	e.AMQ = fake.WithFail(nil)
+	e.AMQ = base
 	if _, err := closeEpic(e, loc, req); err != nil {
 		t.Fatal(err)
 	}

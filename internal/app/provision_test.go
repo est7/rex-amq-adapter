@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -35,16 +37,38 @@ func cmdEnv(cmd []string, name string) string {
 	return ""
 }
 
-// countInits makes e's amq count `amq init` (EnsureMailbox) calls.
-func countInits(e *Env) *int {
-	n := new(int)
-	e.AMQ = e.AMQ.(*amq.Fake).WithFail(func(op string, _ []string) error {
-		if op == "init" {
-			*n++
+// countInits makes e's amq count `amq init` executions (not fast-path
+// EnsureMailbox no-ops), under both amq.Fake and real amq.CLI.
+func countInits(t *testing.T, e *Env) func() int {
+	t.Helper()
+	if f, ok := unwrapQueue(e.AMQ).(*amq.Fake); ok {
+		var n atomic.Int64
+		e.AMQ = f.WithFail(func(op string, _ []string) error {
+			if op == "init" {
+				n.Add(1)
+			}
+			return nil
+		})
+		return func() int { return int(n.Load()) }
+	}
+	bin := realBin(t, *e)
+	logFile := filepath.Join(t.TempDir(), "init-calls")
+	script := filepath.Join(t.TempDir(), "amq-count.sh")
+	text := "#!/bin/sh\nif [ \"$1\" = \"init\" ] || [ \"$2\" = \"init\" ]; then echo 1 >> '" + logFile + "'; fi\nexec '" + bin + "' \"$@\"\n"
+	if err := os.WriteFile(script, []byte(text), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	e.AMQ = amq.CLI{Bin: script}
+	return func() int {
+		b, err := os.ReadFile(logFile)
+		if errors.Is(err, fs.ErrNotExist) {
+			return 0
 		}
-		return nil
-	})
-	return n
+		if err != nil {
+			t.Fatal(err)
+		}
+		return bytes.Count(b, []byte("\n"))
+	}
 }
 
 // mailboxMade reports whether h is registered in the root's roster and has
@@ -107,7 +131,7 @@ func TestASummonedStartFindsItsHandleAndMailboxMade(t *testing.T) {
 	if !madeAtLaunch {
 		t.Fatalf("the mailbox of %s was not made before its pane opened", h)
 	}
-	inits := countInits(&e)
+	inits := countInits(t, &e)
 	term.mu.Lock()
 	term.label = l.Label
 	term.mu.Unlock()
@@ -116,8 +140,8 @@ func TestASummonedStartFindsItsHandleAndMailboxMade(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _, _ = e.AMQ.RetireHandle(context.Background(), e.Paths.Root(), string(a.Agent.Handle)) })
-	if a.Agent.Handle != h || *inits != 0 {
-		t.Fatalf("adopted as %s with %d amq init(s); want %s and none", a.Agent.Handle, *inits, h)
+	if got := inits(); a.Agent.Handle != h || got != 0 {
+		t.Fatalf("adopted as %s with %d amq init(s); want %s and none", a.Agent.Handle, got, h)
 	}
 	if _, ok, _ := e.Store.ReservationOf(cmdEnv(l.Command, ReservationEnv)); ok {
 		t.Fatal("the adoption did not consume its reservation")
@@ -247,12 +271,12 @@ func TestReviveMakesEachResumedMailboxFirst(t *testing.T) {
 
 // failInit makes e's amq fail every `amq init` (EnsureMailbox).
 func failInit(e *Env) {
-	e.AMQ = e.AMQ.(*amq.Fake).WithFail(func(op string, _ []string) error {
-		if op == "init" {
+	e.AMQ = hookQueue{
+		Queue: e.AMQ,
+		beforeEnsureMailbox: func(_, _ string) error {
 			return errors.New("amq init: signal: killed")
-		}
-		return nil
-	})
+		},
+	}
 }
 
 // A launcher whose agent's mailbox cannot be made does not launch it: its
@@ -298,12 +322,15 @@ func TestAnEpicWhoseMailboxesCannotBeMadeDoesNotOpen(t *testing.T) {
 func TestReviveSkipsAnAgentWhoseMailboxCannotBeMade(t *testing.T) {
 	w := newReviveWorld(t)
 	unregister(t, w.e, "pi-01", "pi-02", "pi-03")
-	w.e.AMQ = w.e.AMQ.(*amq.Fake).WithFail(func(op string, args []string) error {
-		if op == "init" && slices.Contains(args, "pi-03") {
-			return errors.New("amq init: signal: killed")
-		}
-		return nil
-	})
+	w.e.AMQ = hookQueue{
+		Queue: w.e.AMQ,
+		beforeEnsureMailbox: func(_, handle string) error {
+			if handle == "pi-03" {
+				return errors.New("amq init: signal: killed")
+			}
+			return nil
+		},
+	}
 	res, _ := w.revive(ReviveRequest{Asked: "把 Epic 恢复起来"})
 	got := byHandle(res)
 	if a := got["pi-03"]; a.Status != ReviveRefused || !strings.Contains(a.Reason, "mailbox") || len(w.writes("block:w")) != 0 {
