@@ -54,7 +54,8 @@ type DeliveryState string
 
 const (
 	DeliveryNone      DeliveryState = ""          // no deferred delivery
-	DeliveryPending   DeliveryState = "pending"   // kept before delivery; not yet settled
+	DeliveryPending   DeliveryState = "pending"   // kept before delivery; no AMQ attempt recorded
+	DeliveryAttempted DeliveryState = "attempted" // AMQ send started; outcome unresolved until reconciled
 	DeliveryHubOnly   DeliveryState = "hub_only"  // settled without amq delivery (no live personal agent)
 	DeliveryDelivered DeliveryState = "delivered" // settled with amq delivery (MsgID set)
 )
@@ -264,6 +265,10 @@ func (s Store) HubInbox(dir string) ([]HubInboxEntry, error) {
 				x.DeliveryState = DeliveryHubOnly
 				x.DeliveryRoutedTo = d.RoutedTo
 				x.DeliveryReroutedFrom = d.ReroutedFrom
+			case state == DeliveryAttempted && d.MsgID == "" && len(d.AttemptedTo) > 0:
+				x.DeliveryState = DeliveryAttempted
+				x.DeliveryRoutedTo = d.RoutedTo
+				x.DeliveryReroutedFrom = d.ReroutedFrom
 			default:
 				// Corrupt or inconsistent sidecar: leave pending so the app
 				// can recover from sent mail via the durable Delivery token.
@@ -276,25 +281,40 @@ func (s Store) HubInbox(dir string) ([]HubInboxEntry, error) {
 	return entries, nil
 }
 
-// HubInboxDelivery is the settled delivery outcome of an entry kept before
-// delivery: either DeliveryDelivered (with MsgID) or DeliveryHubOnly (no
-// live personal agent took it).
+// HubInboxDelivery is the delivery record of an entry kept before delivery:
+// DeliveryAttempted (in-flight / unresolved AMQ attempt naming AttemptedTo),
+// DeliveryDelivered (with MsgID, To, Subject, and public Receipt JSON), or
+// DeliveryHubOnly (settled without AMQ because no live personal agent took it).
 type HubInboxDelivery struct {
-	State        DeliveryState `json:"state"`
-	MsgID        string        `json:"msg_id,omitempty"`
-	Thread       string        `json:"thread,omitempty"`
-	RoutedTo     core.Handle   `json:"routed_to,omitempty"`
-	ReroutedFrom core.Handle   `json:"rerouted_from,omitempty"`
+	State        DeliveryState   `json:"state"`
+	MsgID        string          `json:"msg_id,omitempty"`
+	Thread       string          `json:"thread,omitempty"`
+	To           []string        `json:"to,omitempty"`
+	Subject      string          `json:"subject,omitempty"`
+	RoutedTo     core.Handle     `json:"routed_to,omitempty"`
+	ReroutedFrom core.Handle     `json:"rerouted_from,omitempty"`
+	AttemptedTo  []core.Handle   `json:"attempted_to,omitempty"`
+	Receipt      json.RawMessage `json:"receipt,omitempty"`
 }
 
 func (s Store) hubInboxDeliveryPath(dir, delivery string) string {
 	return filepath.Join(s.P.hubInboxDir(dir), "delivered", fileKey(delivery)+".json")
 }
 
-// PutHubInboxDelivery records the settled delivery outcome d of the entry of
-// the Hub directory dir named delivery: DeliveryDelivered (with MsgID) or
-// DeliveryHubOnly (with empty MsgID). It takes no lock: each delivery is its
-// own file, written once whole.
+// HubInboxDelivery reads the delivery record for delivery in the Hub dir.
+func (s Store) HubInboxDelivery(dir, delivery string) (HubInboxDelivery, bool, error) {
+	if delivery == "" {
+		return HubInboxDelivery{}, false, nil
+	}
+	var d HubInboxDelivery
+	ok, err := readJSON(s.hubInboxDeliveryPath(dir, delivery), &d)
+	return d, ok, err
+}
+
+// PutHubInboxDelivery records delivery state d for the entry of the Hub
+// directory dir named delivery: DeliveryAttempted (with AttemptedTo),
+// DeliveryDelivered (with MsgID), or DeliveryHubOnly (with empty MsgID).
+// It takes no lock: each delivery is its own file, replaced atomically.
 func (s Store) PutHubInboxDelivery(dir, delivery string, d HubInboxDelivery) error {
 	if delivery == "" {
 		return errors.New("a Hub inbox delivery needs its entry")
@@ -308,8 +328,12 @@ func (s Store) PutHubInboxDelivery(dir, delivery string, d HubInboxDelivery) err
 		if d.MsgID != "" {
 			return errors.New("a Hub-only inbox record cannot carry an amq message id")
 		}
+	case DeliveryAttempted:
+		if d.MsgID != "" || len(d.AttemptedTo) == 0 {
+			return errors.New("an attempted Hub inbox record needs attempted recipients and no message id")
+		}
 	default:
-		return fmt.Errorf("a Hub inbox delivery record needs a settled state, not %q", d.State)
+		return fmt.Errorf("a Hub inbox delivery record needs attempted, delivered, or hub_only state, not %q", d.State)
 	}
 	path := s.hubInboxDeliveryPath(dir, delivery)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {

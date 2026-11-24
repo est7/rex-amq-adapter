@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/est7/rex-amq-adapter/internal/core"
 )
 
 // Entries are numbered from 1 in the order they are appended; one whose
@@ -135,11 +137,20 @@ func TestHubInboxDeliveryStatesKeepToken(t *testing.T) {
 	if err := s.PutHubInboxDelivery(hub, "tok-hub", HubInboxDelivery{State: DeliveryPending}); err == nil {
 		t.Error("accepted unsettled DeliveryPending sidecar")
 	}
+	if err := s.PutHubInboxDelivery(hub, "tok-hub", HubInboxDelivery{State: DeliveryAttempted}); err == nil {
+		t.Error("accepted DeliveryAttempted without attempted_to")
+	}
 	if err := s.PutHubInboxDelivery(hub, "tok-hub", HubInboxDelivery{State: DeliveryDelivered}); err == nil {
 		t.Error("accepted DeliveryDelivered without msg_id")
 	}
 	if err := s.PutHubInboxDelivery(hub, "tok-hub", HubInboxDelivery{State: DeliveryHubOnly, MsgID: "m1"}); err == nil {
 		t.Error("accepted DeliveryHubOnly with msg_id")
+	}
+	if err := s.PutHubInboxDelivery(hub, "tok-del", HubInboxDelivery{State: DeliveryAttempted, AttemptedTo: []core.Handle{"claude-02"}, RoutedTo: "claude-02"}); err != nil {
+		t.Fatal(err)
+	}
+	if mid, err := s.HubInbox(hub); err != nil || len(mid) != 2 || mid[1].DeliveryState != DeliveryAttempted || mid[1].Delivery != "tok-del" {
+		t.Fatalf("attempted entry: %+v %v", mid, err)
 	}
 	if err := s.PutHubInboxDelivery(hub, "tok-hub", HubInboxDelivery{State: DeliveryHubOnly, RoutedTo: "hub", ReroutedFrom: "claude-01"}); err != nil {
 		t.Fatal(err)

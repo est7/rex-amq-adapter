@@ -151,14 +151,19 @@ func IDs(root, handle string, box Box) ([]string, error) {
 // ReadHeader reads the header of message id in handle's box, which must be
 // of MailboxSchema.
 func ReadHeader(root, handle string, box Box, id string) (Header, error) {
-	f, err := os.Open(filepath.Join(root, "agents", handle, filepath.FromSlash(string(box)), id+".md"))
+	return ReadFileHeader(filepath.Join(root, "agents", handle, filepath.FromSlash(string(box)), id+".md"))
+}
+
+// ReadFileHeader reads a message header at path, checking MailboxSchema.
+func ReadFileHeader(path string) (Header, error) {
+	f, err := os.Open(path)
 	if err != nil {
 		return Header{}, err
 	}
 	defer f.Close()
 	h, err := readHeader(f)
 	if err == nil && h.Schema != MailboxSchema {
-		err = fmt.Errorf("message %s in %s has header schema %d; this adapter reads schema %d", id, handle, h.Schema, MailboxSchema)
+		err = fmt.Errorf("message %s has header schema %d; this adapter reads schema %d", path, h.Schema, MailboxSchema)
 	}
 	return h, err
 }

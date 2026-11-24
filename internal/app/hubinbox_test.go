@@ -778,3 +778,175 @@ func TestNarratorOpIDRequestConflictChecksAllMessageFlags(t *testing.T) {
 		t.Errorf("claude-03 received %d messages, want 1", len(ids))
 	}
 }
+
+// When amq writes the recipient's inbox and dies before writing the sender's
+// outbox (deliveredThenKilled), retrying under the same --op-id reconciles
+// the recipient's inbox by delivery token instead of posting a duplicate. When
+// an attempted recipient's mailbox cannot be read to confirm absence, retry
+// returns an explicit pending state without auto-resending.
+func TestNarratorOpIDReconcilesInboxWhenOutboxMissing(t *testing.T) {
+	e := routeWorld(t)
+	real := e.AMQ
+	e.AMQ = deliveredThenKilled{Queue: real}
+	args := []string{"--to", "personal", "--subject", "s", "--body", "b", "--op-id", "kill-1"}
+	first, err := managedSend(t, e, "block:agy-05", "send", args...)
+	if err != nil || first["inbox_seq"] != float64(1) || first["id"] != "fault-1" {
+		t.Fatalf("killed-after-delivery attempt: %v %v", first, err)
+	}
+	e.AMQ = real
+	replay, err := managedSend(t, e, "block:agy-05", "send", args...)
+	if err != nil || replay["inbox_seq"] != float64(1) || replay["id"] != "fault-1" || replay["subject"] != "s" {
+		t.Fatalf("retry after outbox-missing delivery: %v %v", replay, err)
+	}
+	if ids, _ := amq.IDs(e.Paths.Root(), "claude-02", amq.BoxUnread); !slices.Equal(ids, []string{"fault-1"}) {
+		t.Errorf("claude-02 inbox = %v, want only [fault-1]", ids)
+	}
+
+	// Simulate a hard crash that left DeliveryAttempted on disk and the
+	// recipient's inbox written with the token, with no outbox copy and no
+	// DeliveryDelivered sidecar: retry reconciles the recipient inbox before
+	// calling Post and does not resend.
+	hubKey := core.NewHubKey(fakeServer, "/hub")
+	crashReq := narratorMailRequest{To: []core.Handle{"personal"}, Subject: "crash-sub", Body: "crash-body"}
+	crashEntry, _, err := e.Store.AppendHubInbox(context.Background(), "/hub", store.HubInboxEntry{
+		Epic: "session:e", HubKey: hubKey, Kind: store.InboxNarrator, Subject: crashReq.Subject, Body: crashReq.Body,
+		By: "agy-05", DedupeKey: narratorOpKey("session:e", "kill-hard"), RequestHash: crashReq.hash(), Delivery: "tok-crash",
+	}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Store.PutHubInboxDelivery("/hub", "tok-crash", store.HubInboxDelivery{
+		State: store.DeliveryAttempted, AttemptedTo: []core.Handle{"claude-02"}, RoutedTo: "claude-02",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	crashMsg := "---json\n{\"schema\":1,\"id\":\"fault-crash\",\"from\":\"agy-05\",\"to\":[\"claude-02\"],\"thread\":\"p2p/agy-05__claude-02\",\"subject\":\"crash-sub\",\"created\":\"2026-11-24T00:00:00Z\",\"context\":{\"rex_amq_adapter_delivery\":{\"token\":\"tok-crash\"}}}\n---\ncrash-body\n"
+	if err := os.WriteFile(filepath.Join(amq.Inbox(e.Paths.Root(), "claude-02"), "fault-crash.md"), []byte(crashMsg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bp := &blockingPost{Queue: real, entered: make(chan struct{}), release: make(chan struct{})}
+	close(bp.release)
+	e.AMQ = bp
+	reconciled, err := managedSend(t, e, "block:agy-05", "send", "--to", "personal", "--subject", "crash-sub", "--body", "crash-body", "--op-id", "kill-hard")
+	if err != nil || reconciled["inbox_seq"] != float64(crashEntry.Seq) || reconciled["id"] != "fault-crash" || reconciled["subject"] != "crash-sub" {
+		t.Fatalf("hard-crash inbox reconciliation: %v %v", reconciled, err)
+	}
+	if got := bp.calls.Load(); got != 0 {
+		t.Errorf("hard-crash reconciliation called AMQ Post %d times, want 0", got)
+	}
+
+	// Uncertain outcome: DeliveryAttempted recorded for claude-03 whose inbox
+	// has an unreadable corrupt message file so absence cannot be confirmed ->
+	// retry must NOT auto-resend and returns explicit delivery_state: pending.
+	uncReq := narratorMailRequest{To: []core.Handle{"personal"}, Subject: "unc-sub", Body: "unc-body"}
+	uncEntry, _, err := e.Store.AppendHubInbox(context.Background(), "/hub", store.HubInboxEntry{
+		Epic: "session:e", HubKey: hubKey, Kind: store.InboxNarrator, Subject: uncReq.Subject, Body: uncReq.Body,
+		By: "agy-05", DedupeKey: narratorOpKey("session:e", "kill-uncertain"), RequestHash: uncReq.hash(), Delivery: "tok-uncertain",
+	}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Store.PutHubInboxDelivery("/hub", "tok-uncertain", store.HubInboxDelivery{
+		State: store.DeliveryAttempted, AttemptedTo: []core.Handle{"claude-03"}, RoutedTo: "claude-03",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(amq.Inbox(e.Paths.Root(), "claude-03"), "corrupt.md"), []byte("not a valid header"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	uncOut, err := managedSend(t, e, "block:agy-05", "send", "--to", "personal", "--subject", "unc-sub", "--body", "unc-body", "--op-id", "kill-uncertain")
+	if err != nil || uncOut["inbox_seq"] != float64(uncEntry.Seq) || uncOut["routed_to"] != "hub" || uncOut["delivery_state"] != string(store.DeliveryPending) || uncOut["id"] != nil {
+		t.Fatalf("uncertain retry: %v %v", uncOut, err)
+	}
+	if got := bp.calls.Load(); got != 0 {
+		t.Errorf("uncertain retry auto-resent %d times, want 0", got)
+	}
+}
+
+// A first hand-back stored while lifecycle.json was unwritable is backfilled
+// into the lifecycle and idempotently kept in the Hub inbox before a new
+// hand-back replaces it once lifecycle.json recovers.
+func TestHandBackRecoveredLifecycleKeepsBothInHubInbox(t *testing.T) {
+	e, _, key := watcherWorld(t)
+	ctx := context.Background()
+	hub := core.NewHubKey(fakeServer, "/hub")
+	if err := e.Store.PutLink(core.Link{Hub: hub, Epic: key}); err != nil {
+		t.Fatal(err)
+	}
+	orch := Location{Block: "block:o"}
+	lifecycle := filepath.Join(e.Paths.SessionDir(key.SessionID), "lifecycle.json")
+	if err := os.MkdirAll(lifecycle, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	first, err := e.RecordHandBack(ctx, orch, "first report")
+	if err == nil || first.Seq != 1 || !strings.Contains(err.Error(), "the hand-back is stored") {
+		t.Fatalf("first, lifecycle unwritable: %+v %v", first, err)
+	}
+	if err := os.Remove(lifecycle); err != nil {
+		t.Fatal(err)
+	}
+	second, err := e.RecordHandBack(ctx, orch, "updated report")
+	if err != nil || second.Seq != 2 {
+		t.Fatalf("second after lifecycle recovery: %+v %v", second, err)
+	}
+	x, err := e.Store.HubInbox("/hub")
+	if err != nil || len(x) != 2 || x[0].HandBackSeq != 1 || x[0].Digest != first.Digest || x[1].HandBackSeq != 2 || x[1].Digest != second.Digest {
+		t.Fatalf("Hub inbox after lifecycle recovery: %+v %v", x, err)
+	}
+}
+
+// Delivered --op-id retries preserve the full public AMQ receipt (including
+// subject and every recipient on a multi-recipient send with --thread).
+func TestNarratorOpIDReplayPreservesSubjectAndMultiTo(t *testing.T) {
+	e := routeWorld(t)
+	singleArgs := []string{"--to", "personal", "--kind", "status", "--subject", "hand-back ready", "--body", "PR #1", "--op-id", "single-1"}
+	first, err := managedSend(t, e, "block:agy-05", "send", singleArgs...)
+	if err != nil || first["id"] == nil || first["subject"] != "hand-back ready" {
+		t.Fatalf("single first: %v %v", first, err)
+	}
+	replay, err := managedSend(t, e, "block:agy-05", "send", singleArgs...)
+	if err != nil || replay["id"] != first["id"] || replay["subject"] != "hand-back ready" || replay["thread"] != first["thread"] || replay["routed_to"] != "claude-02" || replay["inbox_seq"] != float64(1) {
+		t.Fatalf("single replay: %v %v (first %v)", replay, err, first)
+	}
+	if to, _ := replay["to"].([]any); len(to) != 1 || to[0] != "claude-02" {
+		t.Errorf("single replay to = %v, want [claude-02]", replay["to"])
+	}
+
+	multiArgs := []string{"--to", "personal,claude-03", "--thread", "epic/multi", "--kind", "status", "--subject", "both see", "--body", "hello", "--op-id", "multi-1"}
+	mFirst, err := managedSend(t, e, "block:agy-05", "send", multiArgs...)
+	if err != nil || mFirst["id"] == nil || mFirst["subject"] != "both see" {
+		t.Fatalf("multi first: %v %v", mFirst, err)
+	}
+	mReplay, err := managedSend(t, e, "block:agy-05", "send", multiArgs...)
+	if err != nil || mReplay["id"] != mFirst["id"] || mReplay["subject"] != "both see" || mReplay["thread"] != "epic/multi" || mReplay["routed_to"] != "claude-02" || mReplay["inbox_seq"] != float64(2) {
+		t.Fatalf("multi replay: %v %v (first %v)", mReplay, err, mFirst)
+	}
+	if to, _ := mReplay["to"].([]any); len(to) != 2 || to[0] != "claude-02" || to[1] != "claude-03" {
+		t.Errorf("multi replay to = %v, want [claude-02 claude-03]", mReplay["to"])
+	}
+	if ids, _ := amq.IDs(e.Paths.Root(), "claude-03", amq.BoxUnread); len(ids) != 1 {
+		t.Errorf("claude-03 received %d messages for multi-1, want 1", len(ids))
+	}
+
+	// Sidecar-blocked outbox-recovered multi-recipient retry must also preserve
+	// subject and every recipient.
+	deliveredDir := filepath.Join(filepath.Dir(e.Paths.HubInboxPath("/hub")), "delivered")
+	if err := os.RemoveAll(deliveredDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(deliveredDir, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	recArgs := []string{"--to", "personal,claude-03", "--thread", "epic/multi2", "--kind", "status", "--subject", "recovered multi", "--body", "hello2", "--op-id", "multi-rec"}
+	rFirst, err := managedSend(t, e, "block:agy-05", "send", recArgs...)
+	if err != nil || rFirst["id"] == nil || rFirst["subject"] != "recovered multi" {
+		t.Fatalf("multi recovered first: %v %v", rFirst, err)
+	}
+	rReplay, err := managedSend(t, e, "block:agy-05", "send", recArgs...)
+	if err != nil || rReplay["id"] != rFirst["id"] || rReplay["subject"] != "recovered multi" || rReplay["thread"] != "epic/multi2" || rReplay["inbox_seq"] != float64(3) {
+		t.Fatalf("multi recovered replay: %v %v (first %v)", rReplay, err, rFirst)
+	}
+	if to, _ := rReplay["to"].([]any); len(to) != 2 || to[0] != "claude-02" || to[1] != "claude-03" {
+		t.Errorf("multi recovered replay to = %v, want [claude-02 claude-03]", rReplay["to"])
+	}
+}
