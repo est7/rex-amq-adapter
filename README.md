@@ -193,15 +193,27 @@ The exit status says what kind of failure it was; `error.code` names it:
 | 3 | `permission_denied`, `untrusted_folder`, `unapproved_hooks`, `no_identity` | the gateway or a policy refused (`details.reason`), the folder is not trusted, Codex has not approved the hooks, or the caller has no AMQ identity |
 | 4 | `not_found` | `details.kind` is agent, session, block, crew, role, message, thread, artifact, topic, or hub |
 | 5 | `conflict`, `busy`, `cap_reached`, `failed_precondition` | a reused op or event id, a busy agent (`--force` only when you say so), the session's agent cap, or a precondition such as `not_in_rex` |
-| 6 | `guard_denied` | a guard refused the caller; `details.reason` is `human_only`, `unattended`, `personal_role_locked`, `personal_session_pure`, or `epic_session_no_personal` |
+| 6 | `guard_denied` | a guard refused the caller; `details.reason` is `human_only`, `operator_only`, `unattended`, `personal_role_locked`, `personal_session_pure`, or `epic_session_no_personal` |
 | 7 | `partial_start`, `not_adopted`, `seat_failed` | part of a start took effect; `data` holds what did |
 | 130, 143 | `interrupted`, `terminated` | SIGINT or SIGTERM, after cleanup |
 
 The commands only you run are `install setup|remove`, `trust grant`, `trust
-root add|remove`, `hub add|remove`, `stream panel`, and `epic list|show|grant|artifacts|materialize`
-from outside Rex. Run by an agent, by a process under one, or in a shell with
-`ME_UNATTENDED=1`, they exit 6 with `guard_denied` (`human_only`). No command
-takes `-y` or `--yes`.
+root add|remove`, `hub add|remove`, and `stream panel`. Run by an agent, by a
+process under one, or in a shell with `ME_UNATTENDED=1`, they exit 6 with
+`guard_denied` (`human_only`).
+
+The Epic commands (`epic open|close|revive|list|show|grant|artifacts|materialize`
+and `hub inbox|send|reply`) are the Operator's, inside Rex and out alike: a
+live personal agent with no agent of another role above it; a top-level agent
+you started with no role in a session nothing records as a Hub's, an Epic's,
+or a crew's; or you, from a shell outside Rex, a Rex pane with no agent, or a
+Desktop app's agent no hook adopted. Anyone else (an Epic's own agents, a
+summoned or launched agent, a nested `claude -p`, anything under an agent, a
+run marked `ME_UNATTENDED=1`, `AGY_UNATTENDED`, `OWL_DISPATCH_RUN`, or
+`OWL_DISPATCH_RUN_ID`) exits 6 with `guard_denied` (`operator_only` or
+`unattended`), decided from the adapter's records and the process tree before
+any Rex or amq call. `epic show` and `epic grant` also admit an Epic's own lead
+and narrator for their own session. No command takes `-y` or `--yes`.
 
 ## Use
 
@@ -306,7 +318,9 @@ An agent reaches a peer that may not be running with `rex-amq-adapter agent summ
 A personal agent runs Epics without working in them. Give an agent in a Rex
 session of its own (your `~/me`, say) the role with `rex-amq-adapter agent join
 --role personal` (in a Hub directory it takes the role by itself; see Hub
-below), and ask it for an Epic. It writes the goal contract (skill
+below), and ask it for an Epic. Any other Operator (above) runs the same
+command: you from a terminal or a Desktop agent outside Rex, linking the Epic
+to `--hub DIR` or the default Hub. It writes the goal contract (skill
 `make-goal`, when installed), picks the crew (Crew selection below), and runs
 one command, then tells you the Epic started and that you can ask it about it:
 
@@ -335,11 +349,15 @@ its own routing, leads, runs the contract's Slices one after another
 takes the narrator's `--control` directives as an orchestrator does; with
 `--crew design` an architect leads (Design Epics below). The result's `lead`
 names the lead's `role`, block, status, and handle. It links
-the Epic to the personal agent and waits for both agents (`--timeout`, 90 s
-by default).
-It prints one JSON line and exits 0 only when both are adopted and linked; a
-failure part way exits 7 (`partial_start` or `not_adopted`) with what started
-in `data`, and tears nothing down.
+the Epic to the personal agent's Hub (or its session, with no Hub), or for
+another Operator to `--hub DIR`, else the default Hub, and waits for both agents
+(`--timeout`, 90 s by default). The grant records who relayed your words:
+`relayed_by: <handle> (personal agent)`, `(interactive agent)` for a
+standalone or Desktop agent, or `user (user)` when you ran it yourself.
+It prints one JSON line and exits 0 once both are adopted and the Epic is
+linked; with no Hub configured at all it opens unlinked (`no_hub: true`, read
+it with `epic show <session>`). A failure part way exits 7 (`partial_start` or
+`not_adopted`) with what started in `data`, and tears nothing down.
 Every Epic runs unattended, whoever asked for it: `epic open` records the
 session's external-write policy (`sessions/<id>/policy.json`), and its
 orchestrator, its narrator, and every worker the session starts or resumes
@@ -367,13 +385,18 @@ nothing. Only on your words does it run `rex-amq-adapter epic close
 <session_id> --asked "<your words>"`, which kills the Epic's Rex session (what
 its panes showed is gone), parks its agents as `epic_closed`, takes their
 handles out of the amq roster with their identities (a closed Epic is never
-revived), and unlinks it. It refuses a session you did
-not link, and, unless `--force`, one whose agents are still working, waiting on
-a dialog, report no state, or hold unread mail. Nothing closes an Epic on its
-own, and a session you started yourself is yours to close.
+revived), and unlinks it. A personal agent closes only an Epic linked to its
+Hub or session; another Operator closes any Epic the records know (`--hub DIR`
+narrows it to one Hub's), never a Hub's session. Unless `--force`, it refuses
+one whose agents are still working, waiting on a dialog, report no state, or
+hold unread mail. Nothing closes an Epic on its own, and a session you started
+yourself is yours to close.
 
 Both commands take `--op-id ID` (at most 256 bytes, no control characters),
-which makes a retry safe. `epic open --op-id` records itself, with the sessions
+which makes a retry safe, from whichever Operator of the same Hub retries it
+(the request is identified by its Hub, or with none the personal agent's
+session; an op recorded by a version before 0.27 still replays, once, and is
+rewritten). `epic open --op-id` records itself, with the sessions
 Rex has, before it asks Rex for the new one, and the new session and its
 blocks before it waits for either agent, so running the same command again
 after a timeout or a crash never starts a second Epic: it finds the session
@@ -502,6 +525,20 @@ narrator writes to `mail send --to personal`; the adapter delivers to the
 personal agent that opened the Epic when it is live, else to the one you
 spoke to last, and the result names `routed_to` and `rerouted_from`. Mail a
 departing personal agent left unread goes to the next one in the Hub.
+
+Each Hub keeps an inbox of what its Epics told the Operator, whether or not a
+personal agent was live: every hand-back (`handback`, its `seq` and digest),
+every narrator mail to `personal` (`narrator`, kept before it is delivered;
+with no live personal agent of the Hub the inbox alone keeps it and the send
+answers `routed_to: hub`), your messages (`operator`), and a personal agent's
+replies to a narrator (`reply`, with `in_reply_to` the entry it answers). It is
+an append-only file per Hub directory, read with no Rex at all:
+`hub inbox [--since SEQ] [--wait 5m] [--epic S] [--kind K]`. `hub send
+<session> --body …` starts a topic with an Epic's narrator and `hub reply <seq>
+--body …` answers an entry; both keep your words in the inbox and mail them to
+the narrator as the adapter's relay (`adapter_operator_relay`, only for an Epic
+linked to that Hub), which passes them to the lead under `--control
+hub:<seq>`.
 `hub notify` rings the one you spoke to last. A personal agent's start
 notice counts the linked Epics whose hand-back waits for you, and `epic
 list` keeps showing them until you close each one.
@@ -602,6 +639,8 @@ rex-amq-adapter epic refresh --summary "<what changed>"   # (the narrator) rebui
 rex-amq-adapter epic handback @report.md       # (the Epic's lead, last) record its final report; epic show shows it as hand_back
 rex-amq-adapter epic revive <epic-session>     # (you or a personal agent) after a Rex restart, resume the Epic's agents in their own blocks
 rex-amq-adapter hub notify --ref inbox:42 --event-id ev-1 [--hub ~/me] [--summary "…"]   # (an outside producer) ring the Hub's live personal agent
+rex-amq-adapter hub inbox --since 12 --wait 5m   # (the Operator) what the Hub's Epics told you, Rex down or not
+rex-amq-adapter hub reply 12 --body "yes, merge it"   # (the Operator) answer entry 12; hub send <epic-session> --body … starts a topic
 ```
 
 The adapter sets the caller's identity and root itself; `mail send` has no

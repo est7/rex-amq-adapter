@@ -316,6 +316,14 @@ func (m managed) post(ctx context.Context, verb string, args []string) (int, err
 		if sent.ID != "" {
 			m.e.repairWakers(ctx, sent.To)
 		}
+		if m.rec.Role == core.PersonalRole && sent.ID != "" {
+			// A personal agent's word to a narrator is the Hub's too.
+			refsFlag, _ := flagValue(fs, "refs")
+			refs := splitCSV(refsFlag)
+			for _, h := range sent.To {
+				m.e.mirrorPersonalMail(ctx, m.rec, core.Handle(h), sent, o.ReplyTo, refs, *body)
+			}
+		}
 	}
 	if route != nil && route.NoHubDedupe {
 		fmt.Fprintf(Diagnostics, "mail send --op-id %q: %s uses a session-keyed link with no Hub; sent via amq only without Hub inbox deduplication\n", opID, m.rec.Handle)
