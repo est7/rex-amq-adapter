@@ -244,8 +244,12 @@ func (e Env) closeEpic(ctx context.Context, op Operator, r CloseRequest, settle 
 			}
 			rec = &prev // a run of the same close got here meanwhile
 		} else {
+			hubs, err := e.epicHubDirs(epic.SessionID)
+			if err != nil {
+				return res, err
+			}
 			now := e.Now().UTC()
-			rec = &store.EpicOpRecord{Kind: store.EpicOpClose, OpID: r.OpID, RequestHash: hash, SessionID: epic.SessionID, Server: epic.Server, HubDir: c.hubDir,
+			rec = &store.EpicOpRecord{Kind: store.EpicOpClose, OpID: r.OpID, RequestHash: hash, SessionID: epic.SessionID, Server: epic.Server, HubDirs: hubs,
 				PersonalHandle: c.personalHandle(), PersonalSessionID: c.personalSession(), State: store.EpicClosing, CreatedAt: now, UpdatedAt: now}
 			if err := e.Store.PutEpicOp(*rec); err != nil {
 				return res, fmt.Errorf("record the close under --op-id %q: %w", r.OpID, err)
@@ -321,6 +325,29 @@ func (e Env) closeTarget(c closer, session string) (core.SessionKey, error) {
 // its links, is of the Hub directory dir: what --hub admits a close by.
 func hubAuthorizes(lc store.EpicLifecycle, hasLC bool, links []core.Link, dir string) bool {
 	return hasLC && lc.Hub.Dir() == dir || slices.ContainsFunc(links, func(l core.Link) bool { return l.Hub.Dir() == dir })
+}
+
+// epicHubDirs are the Hub directories the Epic session is of now, by its
+// lifecycle and its links (hubAuthorizes), each once.
+func (e Env) epicHubDirs(session string) ([]string, error) {
+	lc, hasLC, err := e.Store.EpicLifecycle(session)
+	if err != nil {
+		return nil, err
+	}
+	links, err := e.linksToEpic(session)
+	if err != nil {
+		return nil, err
+	}
+	var dirs []string
+	if hasLC && lc.Hub != "" {
+		dirs = append(dirs, lc.Hub.Dir())
+	}
+	for _, l := range links {
+		if l.Hub != "" && !slices.Contains(dirs, l.Hub.Dir()) {
+			dirs = append(dirs, l.Hub.Dir())
+		}
+	}
+	return dirs, nil
 }
 
 func notOfHub(session, dir string) error {
@@ -420,20 +447,23 @@ func (e Env) replayClose(ctx context.Context, c closer, r CloseRequest, hash, le
 	} else if !same {
 		return CloseResult{OpID: opID}, true, errOpConflict(store.EpicOpClose, opID)
 	}
-	// --hub holds for a replay too: the Hub that authorized the first run,
-	// as its record keeps it past the unlink, else as a first run would
-	// decide it now (hubAuthorizes).
-	if c.hubDir != "" && !c.personal() && op.HubDir != c.hubDir {
-		lc, hasLC, err := e.Store.EpicLifecycle(op.SessionID)
+	// --hub holds for a replay too: a Hub the Epic was of when its close
+	// was recorded (HubDirs, which outlive the unlink), else one it is of
+	// now by its lifecycle or links (hubAuthorizes), which is added to them
+	// before anything can unlink it.
+	if c.hubDir != "" && !c.personal() && !slices.Contains(op.HubDirs, c.hubDir) {
+		hubs, err := e.epicHubDirs(op.SessionID)
 		if err != nil {
 			return CloseResult{OpID: opID}, true, err
 		}
-		links, err := e.linksToEpic(op.SessionID)
-		if err != nil {
-			return CloseResult{OpID: opID}, true, err
-		}
-		if !hubAuthorizes(lc, hasLC, links, c.hubDir) {
+		if !slices.Contains(hubs, c.hubDir) {
 			return CloseResult{OpID: opID}, true, notOfHub(op.SessionID, c.hubDir)
+		}
+		if !r.DryRun {
+			op.HubDirs = append(op.HubDirs, c.hubDir)
+			if err := e.Store.PutEpicOp(op); err != nil {
+				return CloseResult{OpID: opID}, true, fmt.Errorf("record the close under --op-id %q: %w", opID, err)
+			}
 		}
 	}
 	if r.DryRun {
