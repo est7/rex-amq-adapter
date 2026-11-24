@@ -233,3 +233,89 @@ func TestExternalOperatorOpensAndClosesAnEpic(t *testing.T) {
 		t.Errorf("links left: %v", links)
 	}
 }
+
+// The Operator outside Rex, with no personal agent live, runs an Epic
+// through its Hub's inbox: the lead's hand-back and the narrator's mail to
+// `personal` are kept there (routed_to hub), `hub inbox --wait` reads them
+// with no Rex call of its own, and `hub reply` and `hub send` keep the
+// Operator's words and mail them to the narrator, which takes them as the
+// gateway's adapter_operator_relay.
+func TestExternalOperatorRunsAnEpicThroughTheHubInbox(t *testing.T) {
+	w := newWorld(t)
+	hub, err := filepath.EvalSymlinks(w.project("hub"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	desktop := []string{"CODEX_THREAD_ID=019a8e2c-5c3d-7f10-9e6a-0c2b5d4e7a11"}
+	out, code := w.adapterRunEnv(desktop, "epic", "open", "e2e-inbox", "--cwd", w.project("app"), "--asked", "run it from the desktop", "--hub", hub, "--timeout", "40")
+	var res struct {
+		Session  string                                 `json:"session_id"`
+		Lead     struct{ Block, Status string }         `json:"lead"`
+		Narrator struct{ Block, Status, Handle string } `json:"narrator"`
+	}
+	if code != 0 || envelopeData(out, &res) != nil || res.Lead.Status != "adopted" || res.Narrator.Status != "adopted" {
+		t.Fatalf("epic open: exit %d\n%s\n%s", code, out, w.dump())
+	}
+	type page struct {
+		Items []struct {
+			Seq       int64  `json:"seq"`
+			Kind      string `json:"kind"`
+			Epic      string `json:"epic"`
+			MsgID     string `json:"msg_id"`
+			Body      string `json:"body"`
+			InReplyTo int64  `json:"in_reply_to"`
+		} `json:"items"`
+		NextSince int64 `json:"next_since"`
+	}
+	inbox := func(args ...string) page {
+		t.Helper()
+		out, code := w.adapterRunEnv(desktop, append([]string{"hub", "inbox", "--hub", hub}, args...)...)
+		var p page
+		if code != 0 || envelopeData(out, &p) != nil {
+			t.Fatalf("hub inbox %v: exit %d\n%s", args, code, out)
+		}
+		return p
+	}
+	// A wait started before anything is kept returns with the hand-back.
+	waited := make(chan page, 1)
+	go func() { waited <- inbox("--wait", "30s") }()
+	time.Sleep(500 * time.Millisecond)
+	if out, code := w.adapterIn(res.Lead.Block, "epic", "handback", "## Review queue\nPR #5 waits on the user"); code != 0 {
+		t.Fatalf("the lead's hand-back: exit %d\n%s", code, out)
+	}
+	if p := <-waited; len(p.Items) != 1 || p.Items[0].Kind != "handback" || p.Items[0].Epic != res.Session {
+		t.Fatalf("hub inbox --wait: %+v", p)
+	}
+	if out, code := w.adapterIn(res.Narrator.Block, "mail", "send", "--to", "personal", "--kind", "question", "--subject", "hand-back ready", "--body", "PR #5: merge it?", "--json"); code != 0 || !strings.Contains(out, `"routed_to":"hub"`) {
+		t.Fatalf("the narrator's mail with no personal agent live: exit %d\n%s", code, out)
+	}
+	p := inbox("--since", "1")
+	if len(p.Items) != 1 || p.Items[0].Kind != "narrator" || p.Items[0].Body != "PR #5: merge it?" || p.NextSince != 2 {
+		t.Fatalf("the narrator's entry: %+v", p)
+	}
+	if out, code := w.adapterRunEnv(desktop, "hub", "reply", "2", "--body", "yes, merge it", "--hub", hub, "--op-id", "e2e-reply-1"); code != 0 || !strings.Contains(out, `"control":"hub:3"`) {
+		t.Fatalf("hub reply: exit %d\n%s", code, out)
+	}
+	if out, code := w.adapterRunEnv(desktop, "hub", "send", res.Session, "--body", "also update the changelog", "--hub", hub); code != 0 || !strings.Contains(out, `"control":"hub:4"`) {
+		t.Fatalf("hub send: exit %d\n%s", code, out)
+	}
+	p = inbox("--since", "2", "--kind", "operator")
+	if len(p.Items) != 2 || p.Items[0].InReplyTo != 2 || p.Items[1].InReplyTo != 0 || p.Items[1].Body != "also update the changelog" {
+		t.Fatalf("the Operator's entries: %+v", p)
+	}
+	// The narrator takes both: its drain reads them (the gateway kept them).
+	drained, code := w.adapterIn(res.Narrator.Block, "mail", "drain", "--include-body", "--json")
+	if code != 0 || !strings.Contains(drained, "operator hub:3: yes, merge it") || !strings.Contains(drained, "operator hub:4: also update the changelog") {
+		t.Fatalf("the narrator's drain: exit %d\n%s", code, drained)
+	}
+	if out, code := w.adapterRunEnv(desktop, "epic", "close", res.Session, "--asked", "close it", "--hub", hub, "--force"); code != 0 || !strings.Contains(out, `"lifecycle_state":"closed"`) {
+		t.Fatalf("epic close: exit %d\n%s", code, out)
+	}
+	// Closed: the inbox stays readable for the Epic, and nothing more is relayed to it.
+	if p := inbox("--epic", res.Session); len(p.Items) != 4 {
+		t.Errorf("the closed Epic's entries: %+v", p)
+	}
+	if out, code := w.adapterRunEnv(desktop, "hub", "send", res.Session, "--body", "too late", "--hub", hub); code == 0 {
+		t.Errorf("hub send to a closed Epic: exit 0\n%s", out)
+	}
+}

@@ -123,6 +123,8 @@ rex-amq-adapter epic messages --ids <id>,<id> --max-body-bytes 4096   # read its
 ```bash
 rex-amq-adapter hub list                                   # ME_HUB, else config.toml hub_dirs, else ~/me
 rex-amq-adapter hub inbox --since <next_since> --wait 5m   # what the Hub's Epics told the Operator
+rex-amq-adapter hub send <session_id> --body "<the user's words>" --op-id <id>   # a new topic for the Epic's lead
+rex-amq-adapter hub reply <seq> --body "<the user's words>" --op-id <id>   # answer an inbox entry
 rex-amq-adapter hub notify --ref inbox:42 --event-id inbox-42
 rex-amq-adapter hub notify --ref timer:7 --event-id timer-7-1 --summary "standup in 5"
 ```
@@ -145,4 +147,7 @@ address, which resolves to a live personal of its Hub.
 live: each hand-back (`handback`, its seq and digest) and each narrator mail to
 `personal` (`narrator`; `routed_to: hub` when no personal agent could take it).
 It needs no Rex. Page with `--since <next_since>`; `--epic` and `--kind`
-narrow it.
+narrow it. `hub send` and `hub reply` keep the Operator's words (`operator`)
+and mail them to the Epic's narrator, which relays them to the lead under
+`--control hub:<seq>`; a personal agent's replies to a narrator are kept too
+(`reply`, `in_reply_to` the entry answered).

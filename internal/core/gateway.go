@@ -1,6 +1,9 @@
 package core
 
-import "time"
+import (
+	"slices"
+	"time"
+)
 
 // The gateway policy decides which agents may exchange mail on the one AMQ
 // root every agent shares. Rex sessions are Epics: an Epic's members work
@@ -102,6 +105,10 @@ const (
 	// agent in its own name for an outside producer (an Inbox or Timer
 	// entry).
 	OpNotify OpKind = "notify"
+	// OpOperatorRelay carries the Operator's message (`hub send`, `hub
+	// reply`) to an Epic's narrator: the adapter mails the narrator in its
+	// own name, under the Hub (Operation.Hub) the Epic is linked to.
+	OpOperatorRelay OpKind = "operator_relay"
 )
 
 // Operation is a message as it was sent. System is true only when the
@@ -111,11 +118,13 @@ const (
 // has moved since is no longer it. Unverified marks a message the adapter has
 // no provenance record of: its sender is only the name in its header.
 type Operation struct {
-	Kind             OpKind    `json:"op"`
-	ControlRequestID string    `json:"control_request_id,omitempty"`
-	System           bool      `json:"system,omitempty"`
-	Addressed        *Endpoint `json:"-"`
-	Unverified       bool      `json:"-"`
+	Kind             OpKind `json:"op"`
+	ControlRequestID string `json:"control_request_id,omitempty"`
+	System           bool   `json:"system,omitempty"`
+	// Hub is the Hub an OpOperatorRelay was sent for.
+	Hub        HubKey    `json:"hub,omitempty"`
+	Addressed  *Endpoint `json:"-"`
+	Unverified bool      `json:"-"`
 }
 
 // Decision is the gateway's answer; Reason names the rule that decided.
@@ -142,6 +151,8 @@ const (
 	ReasonNarratorWorker   = "narrator_never_mails_workers"
 	ReasonUnverified       = "unverified_sender"
 	ReasonNotify           = "adapter_notify_personal"
+	ReasonOperatorRelay    = "adapter_operator_relay"
+	ReasonRelayNotLinked   = "operator_relay_not_linked"
 	// ReasonUnreadableHeader: a file in an inbox whose header cannot be read
 	// names no sender to judge, so it is refused (the gate fails closed).
 	ReasonUnreadableHeader = "unreadable_header"
@@ -165,6 +176,15 @@ func CanExchange(sender, recipient Endpoint, op Operation, links []Link) Decisio
 			return deny(ReasonUnplaced)
 		}
 		return allow(ReasonNotify)
+	}
+	if op.Kind == OpOperatorRelay {
+		// The Operator's message reaches only a narrator, in its own name,
+		// of an Epic linked to the Hub it was sent for.
+		if op.System && sender.Handle == recipient.Handle && recipient.Role == NarratorRole && recipient.Placed() && op.Hub != "" &&
+			slices.ContainsFunc(links, func(l Link) bool { return l.Epic == recipient.Session() && l.Hub == op.Hub }) {
+			return allow(ReasonOperatorRelay)
+		}
+		return deny(ReasonRelayNotLinked)
 	}
 	if sender.Handle == recipient.Handle {
 		return allow(ReasonSelf)

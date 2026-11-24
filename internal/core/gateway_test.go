@@ -194,3 +194,48 @@ func TestGatewayUnverifiedAndNotifyRules(t *testing.T) {
 		})
 	}
 }
+
+// The Operator's relay (OpOperatorRelay, System, in the narrator's own
+// name, under a Hub) reaches only a placed narrator of an Epic linked to
+// that Hub; anything else it is sent as, or to, is refused, never
+// admitted as a self-send, and the fence still comes first.
+func TestGatewayOperatorRelayRule(t *testing.T) {
+	const srv = "unix:///rex.sock"
+	at := func(h Handle, role, session string) Endpoint {
+		return Endpoint{Handle: h, Role: role, Server: srv, SessionID: session}
+	}
+	hub, other := NewHubKey(srv, "/hub"), NewHubKey(srv, "/other")
+	narrA := at("agy-02", NarratorRole, "session:a")
+	narrB := at("agy-05", NarratorRole, "session:b")
+	orchA := at("claude-03", OrchestratorRole, "session:a")
+	me := at("claude-01", PersonalRole, "session:personal")
+	links := []Link{{Hub: hub, Epic: narrA.Session()}, {Personal: me.Session(), Epic: narrB.Session()}}
+	relay := func(h HubKey) Operation { return Operation{Kind: OpOperatorRelay, System: true, Hub: h} }
+	moved := narrA
+	moved.Generation = 1
+	for _, c := range []struct {
+		name     string
+		from, to Endpoint
+		op       Operation
+		allow    bool
+		reason   string
+	}{
+		{"to the narrator of an Epic of the Hub", narrA, narrA, relay(hub), true, ReasonOperatorRelay},
+		{"under another Hub", narrA, narrA, relay(other), false, ReasonRelayNotLinked},
+		{"under no Hub", narrA, narrA, relay(""), false, ReasonRelayNotLinked},
+		{"to a narrator linked only to a personal session", narrB, narrB, relay(hub), false, ReasonRelayNotLinked},
+		{"not marked system", narrA, narrA, Operation{Kind: OpOperatorRelay, Hub: hub}, false, ReasonRelayNotLinked},
+		{"to the lead in the narrator's name", narrA, orchA, relay(hub), false, ReasonRelayNotLinked},
+		{"to the lead in its own name", orchA, orchA, relay(hub), false, ReasonRelayNotLinked},
+		{"to a personal agent", me, me, relay(hub), false, ReasonRelayNotLinked},
+		{"to an unplaced narrator", Endpoint{Handle: "agy-02", Role: NarratorRole}, Endpoint{Handle: "agy-02", Role: NarratorRole}, relay(hub), false, ReasonRelayNotLinked},
+		{"addressed to a prior placement", narrA, moved, Operation{Kind: OpOperatorRelay, System: true, Hub: hub, Addressed: &narrA}, false, ReasonFenced},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			d := CanExchange(c.from, c.to, c.op, links)
+			if d.Allow != c.allow || d.Reason != c.reason {
+				t.Errorf("CanExchange = %+v, want allow=%v reason=%s", d, c.allow, c.reason)
+			}
+		})
+	}
+}

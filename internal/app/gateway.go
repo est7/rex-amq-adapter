@@ -321,7 +321,7 @@ func (e Env) post(ctx context.Context, o Outgoing) (amq.Sent, []byte, error) {
 	if err != nil {
 		return amq.Sent{}, nil, err
 	}
-	p := store.Provenance{Token: token, Op: o.Op.Kind, ControlRequestID: o.Op.ControlRequestID, System: o.Op.System, From: from, At: e.Now().UTC()}
+	p := store.Provenance{Token: token, Op: o.Op.Kind, ControlRequestID: o.Op.ControlRequestID, System: o.Op.System, Hub: o.Op.Hub, From: from, At: e.Now().UTC()}
 	if p.To, err = e.checkedRecipients(from, to, o, links); err != nil {
 		return amq.Sent{}, nil, err
 	}

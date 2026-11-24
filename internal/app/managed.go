@@ -218,6 +218,17 @@ func (m managed) post(ctx context.Context, verb string, args []string) (int, err
 		if sent.ID != "" {
 			m.e.repairWakers(ctx, sent.To)
 		}
+		if m.rec.Role == core.PersonalRole && sent.ID != "" {
+			// A personal agent's word to a narrator is the Hub's too.
+			refsFlag, _ := flagValue(fs, "refs")
+			var refs []string
+			if refsFlag != "" {
+				refs = strings.Split(refsFlag, ",")
+			}
+			for _, h := range sent.To {
+				m.e.mirrorPersonalMail(ctx, m.rec, core.Handle(h), sent, o.ReplyTo, refs, *body)
+			}
+		}
 	}
 	if kept != nil {
 		m.e.noteNarratorDelivery(*kept, sent)

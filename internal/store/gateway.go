@@ -124,6 +124,7 @@ type Provenance struct {
 	Op               core.OpKind     `json:"op"`
 	ControlRequestID string          `json:"control_request_id,omitempty"`
 	System           bool            `json:"system,omitempty"`
+	Hub              core.HubKey     `json:"hub,omitempty"`
 	From             core.Endpoint   `json:"from"`
 	To               []core.Endpoint `json:"to"`
 	At               time.Time       `json:"at"`
@@ -132,7 +133,7 @@ type Provenance struct {
 // Operation is the message as the gateway decides on it, addressed to
 // recipient h as it was at sending (nil when h was not a recipient).
 func (p Provenance) Operation(h core.Handle) core.Operation {
-	op := core.Operation{Kind: p.Op, ControlRequestID: p.ControlRequestID, System: p.System}
+	op := core.Operation{Kind: p.Op, ControlRequestID: p.ControlRequestID, System: p.System, Hub: p.Hub}
 	for i := range p.To {
 		if p.To[i].Handle == h {
 			to := p.To[i]

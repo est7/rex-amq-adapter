@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strconv"
 	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/app"
@@ -89,4 +90,35 @@ func hubInbox(c *cli.Ctx, in cli.Input) (cli.Result, error) {
 		return cli.Result{}, err
 	}
 	return cli.Result{Data: page}, nil
+}
+
+func hubSend(c *cli.Ctx, in cli.Input) (cli.Result, error) {
+	return hubMessage(c, in, app.HubSendRequest{Session: in.Arg("session")})
+}
+
+func hubReply(c *cli.Ctx, in cli.Input) (cli.Result, error) {
+	seq, _ := strconv.ParseInt(in.Arg("seq"), 10, 64) // checked as an int by the registry
+	return hubMessage(c, in, app.HubSendRequest{ReplyTo: seq})
+}
+
+// hubMessage sends the Operator's message to an Epic's narrator
+// (app.SendToNarrator).
+func hubMessage(c *cli.Ctx, in cli.Input, r app.HubSendRequest) (cli.Result, error) {
+	body, err := cli.ReadBody(in.Str("body"), c.Stdin)
+	if err != nil {
+		return cli.Result{}, err
+	}
+	env, op, err := operator(c)
+	if err != nil {
+		return cli.Result{}, err
+	}
+	env = onServer(env, c, op.Loc.Server)
+	ctx, cancel := within(c, 30*time.Second)
+	defer cancel()
+	r.Hub, r.Body, r.OpID, r.DryRun = in.Str("hub"), body, in.Str("op-id"), in.DryRun()
+	res, err := env.SendToNarrator(ctx, c.Getenv, r)
+	if err != nil {
+		return cli.Result{}, err
+	}
+	return cli.Result{Data: res}, nil
 }

@@ -46,6 +46,9 @@ type Header struct {
 	// Priority is urgent, normal, or low; amq reads a missing one as normal.
 	Priority string `json:"priority,omitempty"`
 	Kind     string `json:"kind,omitempty"`
+	// Refs are the messages this one names: the one a reply answers, the
+	// original of a delivery again.
+	Refs []string `json:"refs,omitempty"`
 	// Context is the sender's context object, of which only the adapter's
 	// own key is read (ContextOf).
 	Context map[string]json.RawMessage `json:"context,omitempty"`

@@ -392,7 +392,7 @@ func TestOperatorGuard(t *testing.T) {
 		names = append(names, c.Name())
 	}
 	slices.Sort(names)
-	if want := []string{"epic artifacts", "epic close", "epic grant", "epic list", "epic materialize", "epic open", "epic revive", "epic show", "hub inbox"}; !slices.Equal(names, want) {
+	if want := []string{"epic artifacts", "epic close", "epic grant", "epic list", "epic materialize", "epic open", "epic revive", "epic show", "hub inbox", "hub reply", "hub send"}; !slices.Equal(names, want) {
 		t.Fatalf("Operator commands %v, want %v", names, want)
 	}
 	run := func(cmd *cli.Command, dry bool) (int, envelope) {
