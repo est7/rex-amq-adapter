@@ -3,7 +3,9 @@ package app
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -365,8 +367,8 @@ func TestTheUsersCloseRetryKeepsTheHubThatAdmittedIt(t *testing.T) {
 		if _, err := e.CloseEpicFor(ctx, theUser, req); err == nil {
 			t.Fatalf("lifecycle Hub %v: the injected kill failure passed", lifecycleHub)
 		}
-		if op, _, _ := e.Store.EpicOp(store.EpicOpClose, "close-h"); op.HubDir != hub {
-			t.Errorf("lifecycle Hub %v: the close op recorded Hub %q, want %q", lifecycleHub, op.HubDir, hub)
+		if op, _, _ := e.Store.EpicOp(store.EpicOpClose, "close-h"); !slices.Contains(op.HubDirs, hub) {
+			t.Errorf("lifecycle Hub %v: the close op recorded Hubs %q, want %q among them", lifecycleHub, op.HubDirs, hub)
 		}
 		term.mu.Lock()
 		term.killErr = nil
@@ -380,5 +382,83 @@ func TestTheUsersCloseRetryKeepsTheHubThatAdmittedIt(t *testing.T) {
 			t.Errorf("lifecycle Hub %v: a retry after the unlink: %+v %v", lifecycleHub, again, err)
 		}
 		cancel()
+	}
+}
+
+// A close's record keeps only the Hubs the Epic's lifecycle and links
+// prove, never a directory a personal agent's --hub named because its own
+// directory is inside it: the user's retry naming that directory is
+// refused, and nothing is killed.
+func TestACloseRecordsOnlyTheHubsItsEpicIsOf(t *testing.T) {
+	e, term, _ := closeWorld(t)
+	parent := physical(t, t.TempDir())
+	team := filepath.Join(parent, "team")
+	if err := os.MkdirAll(team, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	key := core.NewHubKey(fakeServer, team)
+	putHub(t, e, "session:me", key)
+	me := seedOf(recordOf(t, e, "claude-01"))
+	me.Cwd = team
+	put(t, e, me)
+	if err := e.Store.PutLink(core.Link{Hub: key, Epic: core.SessionKey{Server: fakeServer, SessionID: "session:epic"}}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	term.mu.Lock()
+	term.killErr = errors.New("rex is busy")
+	term.mu.Unlock()
+	req := CloseRequest{Session: "session:epic", Asked: "close it", Hub: parent, OpID: "close-p", Force: true}
+	if _, err := e.CloseEpic(ctx, Location{Block: "block:me"}, req); err == nil {
+		t.Fatal("the injected kill failure passed")
+	}
+	if op, _, _ := e.Store.EpicOp(store.EpicOpClose, "close-p"); !slices.Equal(op.HubDirs, []string{team}) {
+		t.Fatalf("the close op recorded Hubs %q, want only %q", op.HubDirs, team)
+	}
+	term.mu.Lock()
+	term.killErr = nil
+	term.mu.Unlock()
+	if _, err := e.CloseEpicFor(ctx, theUser, req); !errors.Is(err, ErrRefused) || len(term.killed) != 0 {
+		t.Errorf("the user's retry naming the parent directory: %v (killed %v)", err, term.killed)
+	}
+}
+
+// A replay admitted by a Hub the Epic is linked to now, though its record
+// named none, keeps that Hub in the record before it unlinks, so the same
+// retry again is admitted after the unlink.
+func TestACloseReplayKeepsTheHubThatAdmittedIt(t *testing.T) {
+	e, term, _ := closeWorld(t)
+	hub := physical(t, t.TempDir())
+	hash, _, err := e.closeHashes(closer{op: theUser}, CloseRequest{Session: "session:epic", Force: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := e.Store.PutEpicOp(store.EpicOpRecord{Kind: store.EpicOpClose, OpID: "close-k", RequestHash: hash, SessionID: "session:epic", Server: fakeServer, State: store.EpicClosing, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Store.PutLink(core.Link{Hub: core.NewHubKey(fakeServer, hub), Epic: core.SessionKey{Server: fakeServer, SessionID: "session:epic"}}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req := CloseRequest{Session: "session:epic", Asked: "close it", Hub: hub, OpID: "close-k", Force: true}
+	dry := req
+	dry.DryRun = true
+	if _, err := e.CloseEpicFor(ctx, theUser, dry); err != nil {
+		t.Fatal(err)
+	}
+	if op, _, _ := e.Store.EpicOp(store.EpicOpClose, "close-k"); len(op.HubDirs) != 0 {
+		t.Errorf("a dry run wrote the record: %q", op.HubDirs)
+	}
+	if res, err := e.CloseEpicFor(ctx, theUser, req); err != nil || res.LifecycleState != store.EpicClosed || len(term.killed) != 1 {
+		t.Fatalf("the replay: %+v %v", res, err)
+	}
+	if links := mustLinks(t, e); len(links) != 0 {
+		t.Fatalf("links left %+v", links)
+	}
+	if again, err := e.CloseEpicFor(ctx, theUser, req); err != nil || !again.Replayed {
+		t.Errorf("the same retry after the unlink: %+v %v", again, err)
 	}
 }

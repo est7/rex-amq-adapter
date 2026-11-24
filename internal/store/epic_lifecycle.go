@@ -232,9 +232,10 @@ type EpicOpRecord struct {
 	// Name is the Epic an open asked for, its session's label.
 	Name   string `json:"name,omitempty"`
 	Server string `json:"server,omitempty"`
-	// HubDir is the Hub a close's --hub named and that authorized it, so a
-	// retry after the unlink is held to that Hub still.
-	HubDir            string      `json:"hub_dir,omitempty"`
+	// HubDirs are the Hubs a close's Epic was of when it was recorded, by
+	// its lifecycle and its links: what a retry's --hub is held to after
+	// the close's unlink removed the links.
+	HubDirs           []string    `json:"hub_dirs,omitempty"`
 	PersonalHandle    core.Handle `json:"personal_handle"`
 	PersonalSessionID string      `json:"personal_session_id"`
 	OrchestratorBlock string      `json:"orchestrator_block,omitempty"`
