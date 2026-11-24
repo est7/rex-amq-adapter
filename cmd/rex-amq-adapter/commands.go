@@ -351,7 +351,7 @@ func commands() []*cli.Command {
 		{
 			Path: path("epic", "grant"), Summary: "the Epic's notarized grant: the user's words and the contract, its sha256 checked again",
 			Args: []cli.Arg{a("session", cli.KindSessionID, false, "the Epic session; default yours")},
-			Tier: cli.TierRead, Audience: cli.AudienceAgent, Roles: []string{"operator", "lead"}, Guard: cli.GuardOperatorOrSelf,
+			Tier: cli.TierRead, Audience: cli.AudienceAgent, Roles: []string{"operator", "lead", "narrator"}, Guard: cli.GuardOperatorOrSelf,
 			Result:   "{session_id, relayed_by, relayed_at, asked, contract, contract_sha256, contract_sha256_ok, contract_note, markdown}; contract_sha256_ok is false when the contract changed, cannot be read, or the grant names none",
 			Examples: []string{"rex-amq-adapter epic grant", "rex-amq-adapter epic grant session:01a1eac4-f222-7d79-9291-9a8a86d39ec3 --text"},
 			Doc:      true,

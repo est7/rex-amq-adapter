@@ -22,8 +22,9 @@ type GrantRead struct {
 }
 
 // ReadGrant returns the grant of session (the caller's own when ""), for
-// the agent in loc: the lead of that session (sessionLead), or a personal
-// agent linked to it (core.LinkMatchesPersonal). Nothing is written.
+// the agent in loc: the lead or the narrator of that session (epicSelf),
+// or a personal agent linked to it (core.LinkMatchesPersonal). Nothing is
+// written.
 func (e Env) ReadGrant(loc Location, session string) (GrantRead, error) {
 	rec, ok, err := e.agentIn(loc)
 	if err != nil {
@@ -89,18 +90,18 @@ func contractCheck(g store.Grant) (ok bool, note string) {
 	return true, ""
 }
 
-// mayReadGrant allows the lead of session (sessionLead) and a personal agent
-// linked to it.
+// mayReadGrant allows the lead and the narrator of session (epicSelf) and a
+// personal agent linked to it.
 func (e Env) mayReadGrant(rec agent, session string) error {
 	if session == rec.SessionID {
-		lead, err := e.sessionLead(rec)
+		self, err := e.epicSelf(rec)
 		if err != nil {
 			return err
 		}
-		if lead {
+		if self {
 			return nil
 		}
-		return fmt.Errorf("%w: only an Epic's lead, or a personal agent linked to it, reads its grant, and %s is %s", ErrRefused, rec.Handle, whoIs(rec))
+		return fmt.Errorf("%w: only an Epic's lead or narrator, or a personal agent linked to it, reads its grant, and %s is %s", ErrRefused, rec.Handle, whoIs(rec))
 	}
 	if rec.Role != core.PersonalRole {
 		return fmt.Errorf("%w: only a personal agent reads the grant of another session, and %s is %q", ErrRefused, rec.Handle, rec.Role)

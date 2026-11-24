@@ -121,7 +121,8 @@ func TestDesignLead(t *testing.T) {
 		if _, err := e.PreviewHandBack(at, "x"); c.lead != (err == nil) {
 			t.Errorf("%s previewing a hand-back: %v", c.who, err)
 		}
-		if _, err := e.ReadGrant(at, ""); c.lead != (err == nil) {
+		// The Epic's own narrator reads its grant too (epicSelf).
+		if _, err := e.ReadGrant(at, ""); (c.lead || rec.Role == core.NarratorRole) != (err == nil) {
 			t.Errorf("%s reading the grant: %v", c.who, err)
 		}
 		if c.who != "agy-02" {

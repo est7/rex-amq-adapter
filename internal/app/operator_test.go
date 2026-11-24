@@ -45,6 +45,8 @@ func TestResolveOperatorAllowlist(t *testing.T) {
 		seed{Handle: "codex-07", Kind: core.Codex, BlockID: "block:crew", SessionID: "session:crew", AgentPID: 707},
 		seed{Handle: "codex-08", Kind: core.Codex, BlockID: "block:inepic", SessionID: "session:epic2", AgentPID: 708},
 		seed{Handle: "codex-09", Kind: core.Codex, BlockID: "block:inhub", SessionID: "session:hub", AgentPID: 709},
+		seed{Handle: "claude-10", Kind: core.Claude, Role: core.PersonalRole, Server: "tcp://remote:7000", BlockID: "block:remote", SessionID: "session:hub2", AgentPID: 710, AgentSessionID: "s-remote"},
+		seed{Handle: "claude-11", Kind: core.Claude, Role: core.PersonalRole, BlockID: "block:nopid", SessionID: "session:hub3", AgentSessionID: "s-nopid"},
 	)
 	if err := e.Store.PutSessionCrew("session:crew", store.SessionCrew{Crew: "pair"}); err != nil {
 		t.Fatal(err)
@@ -91,6 +93,9 @@ func TestResolveOperatorAllowlist(t *testing.T) {
 		{"a standalone agent under another agent", map[string]string{"REX_BLOCK": "block:alone"}, []proc{{PID: 702}, {PID: 701}}, GuardOperatorOnly},
 		{"a worker's session named beside the personal agent's", map[string]string{"CLAUDE_CODE_SESSION_ID": "s-personal", "CODEX_THREAD_ID": "s-alone"}, []proc{{PID: 701}, {PID: 702}}, GuardOperatorOnly},
 		{"a pane resuming the personal agent's conversation", map[string]string{"CLAUDE_CODE_SESSION_ID": "s-personal"}, nil, GuardOperatorOnly},
+		{"an unadopted codex nested under the personal agent", map[string]string{"CLAUDE_CODE_SESSION_ID": "s-personal", "CODEX_THREAD_ID": "nested"}, []proc{{PID: 9001}, {PID: 701}}, GuardOperatorOnly},
+		{"a personal agent on another machine's Rex", map[string]string{"CLAUDE_CODE_SESSION_ID": "s-remote"}, []proc{{PID: 9001}, {PID: 710}}, GuardOperatorOnly},
+		{"a personal agent whose lease records no process", map[string]string{"CLAUDE_CODE_SESSION_ID": "s-nopid"}, nil, GuardOperatorOnly},
 	} {
 		e := e
 		if c.ancestors != nil {

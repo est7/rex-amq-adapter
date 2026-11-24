@@ -464,7 +464,7 @@ func TestOperatorGuard(t *testing.T) {
 		{Handle: "claude-03", Kind: core.Claude, Role: core.NarratorRole, BlockID: "block:narrator"},
 		{Handle: "codex-04", Kind: core.Codex, Role: "implementer", BlockID: "block:worker"},
 		{Handle: "codex-05", Kind: core.Codex, BlockID: "block:norole"},
-		{Handle: "claude-06", Kind: core.Claude, Role: core.PersonalRole, BlockID: "block:personal", SessionID: "session:hub"},
+		{Handle: "claude-06", Kind: core.Claude, Role: core.PersonalRole, BlockID: "block:personal", SessionID: "session:hub", AgentSessionID: "s-personal"},
 	} {
 		a.Server, a.WindowID, a.AgentPID = "unix:///t.sock", "window:1", 999999
 		if a.SessionID == "" {
@@ -494,6 +494,13 @@ func TestOperatorGuard(t *testing.T) {
 	t.Setenv("REX_BLOCK", "block:personal")
 	admitted("a personal agent's pane", nil)
 	t.Setenv("REX_BLOCK", "")
+	// A harness session no hook adopted, nested under the personal agent
+	// whose own session the environment also names.
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "s-personal")
+	t.Setenv("CODEX_THREAD_ID", "nested-codex")
+	refused("an unadopted session nested under the personal agent", "operator_only", nil)
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "")
+	t.Setenv("CODEX_THREAD_ID", "")
 	if err := putAgent(s, testAgent{Handle: "codex-08", Kind: core.Codex, Role: "implementer", Server: "unix:///t.sock", BlockID: "block:above",
 		SessionID: epic, WindowID: "window:1", AgentPID: os.Getppid()}); err != nil {
 		t.Fatal(err)

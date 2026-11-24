@@ -107,6 +107,16 @@ func (e Env) ReadCockpitView(ctx context.Context, getenv func(string) string, re
 	if err != nil {
 		return nil, err
 	}
+	if !op.Personal() && req.Session != "" && req.Hub == "" && req.Personal == "" {
+		// An Epic of no Hub (opened with none configured, NoHub) is no
+		// Hub's to scope: the Operator names it.
+		if key, ok, err := e.unlinkedEpic(req.Session); err != nil || ok {
+			if err != nil {
+				return nil, err
+			}
+			return e.cockpitSession(key)
+		}
+	}
 	scope, err := e.cockpitScope(op, req)
 	if err != nil {
 		return nil, err
@@ -290,6 +300,20 @@ func cockpitTarget(req CockpitViewRequest) string {
 		parts = append(parts, "--hub "+req.Hub)
 	}
 	return strings.Join(parts, " ")
+}
+
+// unlinkedEpic is the Epic session whose lifecycle records no Hub and
+// that nothing links to; ok is false for any other session.
+func (e Env) unlinkedEpic(session string) (core.SessionKey, bool, error) {
+	lc, ok, err := e.Store.EpicLifecycle(session)
+	if err != nil || !ok || lc.Hub != "" || lc.PersonalSessionID != "" {
+		return core.SessionKey{}, false, err
+	}
+	links, err := e.linksToEpic(session)
+	if err != nil || len(links) > 0 {
+		return core.SessionKey{}, false, err
+	}
+	return core.SessionKey{Server: lc.Server, SessionID: session}, true, nil
 }
 
 // cockpitSession is the view of the linked Epic epic, with its stored

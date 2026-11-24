@@ -191,7 +191,7 @@ func (e Env) closeEpic(ctx context.Context, op Operator, r CloseRequest, settle 
 	// A recorded close is looked up before the link: the run that recorded
 	// it may have removed the link before it died.
 	if r.OpID != "" {
-		if out, done, err := e.replayClose(ctx, c, r.OpID, hash, legacy, settle); done || err != nil {
+		if out, done, err := e.replayClose(ctx, c, r, hash, legacy, settle); done || err != nil {
 			return out, err
 		}
 	}
@@ -394,7 +394,8 @@ func (e Env) closedAlready(c closer, r CloseRequest, hash, legacy string, res *C
 // is false when there is none, and the close goes on as a new one. The op id
 // of another request (another Hub, another session, another --force) is
 // refused.
-func (e Env) replayClose(ctx context.Context, c closer, opID, hash, legacy string, settle *closeSettle) (res CloseResult, done bool, err error) {
+func (e Env) replayClose(ctx context.Context, c closer, r CloseRequest, hash, legacy string, settle *closeSettle) (res CloseResult, done bool, err error) {
+	opID := r.OpID
 	unlockEpic, err := e.Store.LockEpicLifecycle(ctx)
 	if err != nil {
 		return res, true, err
@@ -404,10 +405,30 @@ func (e Env) replayClose(ctx context.Context, c closer, opID, hash, legacy strin
 	if err != nil || !found {
 		return res, err != nil, err
 	}
-	if same, err := e.opHashMatches(&op, hash, legacy, false); err != nil {
+	if same, err := e.opHashMatches(&op, hash, legacy, r.DryRun); err != nil {
 		return CloseResult{OpID: opID}, true, err
 	} else if !same {
 		return CloseResult{OpID: opID}, true, errOpConflict(store.EpicOpClose, opID)
+	}
+	// --hub holds for a replay too, read from what outlives the unlink: the
+	// Hub the Epic's lifecycle records.
+	if c.hubDir != "" && !c.personal() {
+		dir, err := e.epicHubDir(op.SessionID)
+		if err != nil {
+			return CloseResult{OpID: opID}, true, err
+		}
+		if dir != c.hubDir {
+			return CloseResult{OpID: opID}, true, fmt.Errorf("%w: --op-id %q closes %s, which is not an Epic of the Hub %s", ErrRefused, opID, op.SessionID, c.hubDir)
+		}
+	}
+	if r.DryRun {
+		// What the retry would do, and nothing of it: the record is not
+		// advanced, the session not killed.
+		res = CloseResult{SessionID: op.SessionID, OpID: opID, Parked: []core.Handle{}, Replayed: true, DryRun: true, Changed: op.State != store.EpicClosed}
+		if op.State == store.EpicClosed {
+			res.LifecycleState, res.Unlinked = store.EpicClosed, true
+		}
+		return res, true, nil
 	}
 	// The op is this caller's own close request: what it closed is settled.
 	settle.key = core.SessionKey{Server: op.Server, SessionID: op.SessionID}

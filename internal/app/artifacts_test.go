@@ -461,9 +461,10 @@ func TestMaterializeConflict(t *testing.T) {
 	}
 }
 
-// epic grant: the Epic's lead and its linked personal agent read the
-// notarized grant, the user outside Rex too; a council architect and
-// another Hub's personal agent are refused. contract_sha256_ok is checked
+// epic grant: the Epic's lead and narrator and its linked personal agent
+// read the notarized grant, the user outside Rex too; a council architect,
+// another Hub's personal agent, and the narrator reading another session's
+// are refused. contract_sha256_ok is checked
 // against the contract's bytes now: true while they are as notarized,
 // false once they change, and false for a grant that names no contract.
 func TestEpicGrantChecksTheContract(t *testing.T) {
@@ -475,11 +476,17 @@ func TestEpicGrantChecksTheContract(t *testing.T) {
 	for _, c := range []struct {
 		who core.Handle
 		ok  bool
-	}{{"claude-10", true}, {"claude-01", true}, {"codex-11", false}, {"claude-09", false}} {
+	}{{"claude-10", true}, {"agy-12", true}, {"claude-01", true}, {"codex-11", false}, {"claude-09", false}} {
 		g, err := e.ReadGrant(Location{Block: "block:" + string(c.who)}, "session:d")
 		if c.ok != (err == nil) || c.ok && !g.ContractSHA256OK {
 			t.Errorf("%s: %+v %v", c.who, g, err)
 		}
+	}
+	if err := e.notarize("session:x", personalOperator("claude-01"), epicGrant{asked: "another"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.ReadGrant(Location{Block: "block:agy-12"}, "session:x"); !errors.Is(err, ErrRefused) {
+		t.Errorf("the narrator reading another session's grant: %v", err)
 	}
 	if g, err := e.ReadGrantAsOperator(outsideRex, "session:d"); err != nil || !g.ContractSHA256OK || g.Asked != "design it" {
 		t.Fatalf("the user: %+v %v", g, err)

@@ -158,20 +158,23 @@ func (e Env) whoRuns(getenv func(string) string) (runner, error) {
 		}
 	}
 	switch {
+	case len(named) > 0 && r.harness != "":
+		// A harness session no hook adopted beside an adopted one: an agent
+		// started under that agent (a nested `claude -p`), whose command is
+		// not the adopted agent's.
+		return runner{}, operatorRefused(GuardOperatorOnly, "this command runs in a %s session that has no AMQ identity, under %s", r.harness, named[0].Handle)
 	case len(named) > 0:
 		rec, session := named[0], sessions[0]
 		if len(named) > 1 {
 			if rec, err = e.nearest(named); err != nil {
-				return runner{}, err
+				return runner{}, operatorRefused(GuardOperatorOnly, "%v", err)
 			}
 			session = sessions[slices.IndexFunc(named, func(a agent) bool { return a.Handle == rec.Handle })]
 		}
-		if err := e.callerUnder(rec, session); err != nil {
-			// A pane that resumed the conversation another pane's agent
-			// holds does not speak for it.
-			return runner{}, operatorRefused(GuardOperatorOnly, "%v", err)
+		if err := verifiedUnder(rec, session, ancestors); err != nil {
+			return runner{}, err
 		}
-		r.rec, r.harness = &rec, ""
+		r.rec = &rec
 	case r.harness != "" && inBlock != nil:
 		return runner{}, operatorRefused(GuardOperatorOnly, "this %s session has no AMQ identity and runs in %s's pane (%s)", r.harness, inBlock.Handle, whoIs(*inBlock))
 	case inBlock != nil:
@@ -194,6 +197,23 @@ func (e Env) whoRuns(getenv func(string) string) (runner, error) {
 		}
 	}
 	return r, nil
+}
+
+// verifiedUnder checks, from this machine's facts alone, that the command
+// runs under rec's agent process, the incarnation its lease records: a pane
+// that resumed the conversation another pane's agent holds names the same
+// session and does not speak for it. Unlike Caller's check (callerUnder),
+// a lease it cannot verify here (on another machine's Rex server, or with
+// no process recorded) is refused: the Operator is decided locally or not
+// at all.
+func verifiedUnder(rec agent, session string, ancestors []proc) error {
+	if !localServer(rec.Server) || rec.pid() <= 0 {
+		return operatorRefused(GuardOperatorOnly, "the agent this command's session names (%s) runs where this machine cannot tell that the command runs under it", rec.Handle)
+	}
+	if slices.ContainsFunc(ancestors, func(p proc) bool { return p.PID == rec.pid() }) && sameStart(rec.lease.Incarnation) {
+		return nil
+	}
+	return operatorRefused(GuardOperatorOnly, "%v", duplicateOf(session, rec))
 }
 
 // operatorOf is r as an Operator, or the guard_denied refusal of the rule
@@ -344,7 +364,9 @@ func (e Env) OperatorGate(getenv func(string) string, self bool) error {
 func OperatorGate(getenv func(string) string, self bool) error {
 	paths, err := store.DefaultPaths()
 	if err != nil {
-		return err
+		// No records to decide by (an `env -i` with no HOME): no caller can
+		// be told to be the Operator.
+		return operatorRefused(GuardOperatorOnly, "the adapter's state cannot be found (%v), so nothing tells who runs this command", err)
 	}
 	e := Env{Paths: paths, Store: store.Store{P: paths}, Now: time.Now, Getenv: os.Getenv, LookPath: exec.LookPath,
 		ClaudeDir: core.HarnessDirs(userHome(), os.Getenv).Claude}

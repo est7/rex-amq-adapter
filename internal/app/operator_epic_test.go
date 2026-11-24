@@ -251,3 +251,90 @@ func TestLegacyOpHashesReplayAndAreRewritten(t *testing.T) {
 		t.Errorf("the user replaying a personal agent's legacy op: %v", err)
 	}
 }
+
+// A retry of a close the user recorded and that died part way honours the
+// request it is: --dry-run reports what the retry would do and does none of
+// it, and a --hub the Epic is not of is refused, before anything is killed
+// or its record touched.
+func TestTheUsersCloseReplayHonoursDryRunAndHub(t *testing.T) {
+	e, term, hub := operatorCloseWorld(t)
+	hash, _, err := e.closeHashes(closer{op: theUser}, CloseRequest{Session: "session:epic", Force: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := e.Store.PutEpicOp(store.EpicOpRecord{Kind: store.EpicOpClose, OpID: "close-7", RequestHash: hash, SessionID: "session:epic", Server: fakeServer, State: store.EpicClosing, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req := CloseRequest{Session: "session:epic", Asked: "close it", OpID: "close-7", Force: true}
+	dry := req
+	dry.DryRun = true
+	if res, err := e.CloseEpicFor(ctx, theUser, dry); err != nil || !res.DryRun || !res.Replayed || !res.Changed {
+		t.Errorf("a dry run of the retry: %+v %v", res, err)
+	}
+	wrong := req
+	wrong.Hub = t.TempDir()
+	if _, err := e.CloseEpicFor(ctx, theUser, wrong); !errors.Is(err, ErrRefused) {
+		t.Errorf("a retry with another Hub: %v", err)
+	}
+	if op, _, _ := e.Store.EpicOp(store.EpicOpClose, "close-7"); len(term.killed) != 0 || op.State != store.EpicClosing {
+		t.Fatalf("a dry run or a refused retry acted: killed %v, op %s", term.killed, op.State)
+	}
+	right := req
+	right.Hub = hub
+	if res, err := e.CloseEpicFor(ctx, theUser, right); err != nil || !res.Replayed || res.LifecycleState != store.EpicClosed || len(term.killed) != 1 {
+		t.Errorf("the retry: %+v %v (killed %v)", res, err, term.killed)
+	}
+}
+
+// A retry of an open reconciles its Epic on the Rex server the first run
+// asked, or not at all: reaching another server, it is refused and starts
+// nothing there.
+func TestOpenEpicRetryStaysOnItsServer(t *testing.T) {
+	e, term, _, goal := openEpicWorld(t)
+	hub := physical(t, t.TempDir())
+	adoptPane(t, e, "block:epic-1-1", "claude-02", core.NarratorRole)
+	adoptPane(t, e, "block:epic-1-2", "claude-03", core.OrchestratorRole)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req := EpicRequest{Name: "login", Dir: filepath.Dir(goal), Asked: "run it", Hub: hub, OpID: "srv-1"}
+	if _, err := e.OpenEpicFor(ctx, theUser, req); err != nil {
+		t.Fatal(err)
+	}
+	elsewhere := Operator{Loc: Location{Server: "unix:///another.sock"}}
+	if _, err := e.OpenEpicFor(ctx, elsewhere, req); !isCode(err, fault.Conflict) {
+		t.Errorf("a retry on another server: %v", err)
+	}
+	if len(term.sessions_) != 1 {
+		t.Errorf("sessions created: %d", len(term.sessions_))
+	}
+}
+
+// An Epic the user opened with no Hub configured is read by naming it: it
+// is no Hub's to scope. One of a Hub, or a personal agent's, is not read
+// this way.
+func TestTheUserReadsAnUnlinkedEpic(t *testing.T) {
+	e := operatorWorld(t)
+	ctx := context.Background()
+	for _, lc := range []store.EpicLifecycle{
+		{SessionID: "session:alone", Server: fakeServer, Name: "alone", State: store.EpicOpened},
+		{SessionID: "session:hubs", Server: fakeServer, Hub: core.NewHubKey(fakeServer, "/hub"), State: store.EpicOpened},
+		{SessionID: "session:mine", Server: fakeServer, PersonalSessionID: "session:me", State: store.EpicOpened},
+	} {
+		if err := e.Store.PutEpicLifecycle(lc); err != nil {
+			t.Fatal(err)
+		}
+	}
+	user := func(string) string { return "" }
+	b, err := e.ReadCockpitView(ctx, user, CockpitViewRequest{Session: "session:alone"})
+	if err != nil || !strings.Contains(string(b), `"epic":"alone"`) {
+		t.Fatalf("the unlinked Epic: %s %v", b, err)
+	}
+	for _, s := range []string{"session:hubs", "session:mine"} {
+		if _, err := e.ReadCockpitView(ctx, user, CockpitViewRequest{Session: s}); err == nil {
+			t.Errorf("%s read with no Hub to scope it", s)
+		}
+	}
+}

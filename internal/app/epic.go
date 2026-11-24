@@ -12,6 +12,7 @@ import (
 
 	"github.com/est7/rex-amq-adapter/internal/core"
 	"github.com/est7/rex-amq-adapter/internal/crew"
+	"github.com/est7/rex-amq-adapter/internal/fault"
 	"github.com/est7/rex-amq-adapter/internal/rex"
 	"github.com/est7/rex-amq-adapter/internal/store"
 	"github.com/est7/rex-amq-adapter/internal/trust"
@@ -383,6 +384,12 @@ func (e Env) OpenEpicFor(ctx context.Context, op Operator, r EpicRequest) (EpicR
 					err = errOpConflict(store.EpicOpOpen, r.OpID)
 				}
 				return EpicResult{OpID: r.OpID}, err
+			}
+			// Its Epic is on the Rex server the first run asked: a retry
+			// reconciles it there, or nowhere, never by starting another.
+			if prev.Server != "" && prev.Server != o.server {
+				unlock()
+				return EpicResult{OpID: r.OpID}, refusal(fault.Conflict, "op_id_other_server", "--op-id %q opened its Epic on the Rex server %s, and this run reaches %s: retry it with REX_SERVER=%s", r.OpID, prev.Server, o.server, prev.Server)
 			}
 		}
 		switch {
