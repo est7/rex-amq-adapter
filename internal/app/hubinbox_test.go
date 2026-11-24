@@ -691,27 +691,21 @@ func TestNarratorOpIDReplaysSettledHubOnlyAndKeepsToken(t *testing.T) {
 	}
 
 	// Unsettled pending attempt (AMQ failure) keeps its durable token across
-	// retry and outbox recovery when the delivery sidecar cannot be written.
+	// retry and outbox recovery when the final delivery sidecar write fails
+	// after DeliveryAttempted succeeded.
 	real := e.AMQ
 	e.AMQ = postFails{Queue: real}
 	pendArgs := []string{"--to", "personal", "--kind", "status", "--subject", "retry me", "--op-id", "hb-pend", "--body", "try again"}
 	if got, err := managedSend(t, e, "block:agy-05", "send", pendArgs...); err != nil || got["routed_to"] != "hub" || got["inbox_seq"] != float64(2) {
 		t.Fatalf("failed AMQ attempt: %v %v", got, err)
 	}
-	e.AMQ = real
-	// Block delivery sidecar directory to prove the retry still carries the
-	// durable token in AMQ context for outbox recovery.
 	deliveredDir := filepath.Join(filepath.Dir(e.Paths.HubInboxPath("/hub")), "delivered")
-	if err := os.RemoveAll(deliveredDir); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(deliveredDir, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	e.AMQ = blockDeliveredDuringPost{Queue: real, deliveredDir: deliveredDir}
 	deliv, err := managedSend(t, e, "block:agy-05", "send", pendArgs...)
 	if err != nil || deliv["routed_to"] != "claude-04" || deliv["inbox_seq"] != float64(2) || deliv["id"] == nil {
 		t.Fatalf("retry after AMQ recovery: %v %v", deliv, err)
 	}
+	e.AMQ = real
 	// A third attempt recovers the delivery from BoxSent via the durable token
 	// and does not post a duplicate.
 	replay, err := managedSend(t, e, "block:agy-05", "send", pendArgs...)
@@ -929,20 +923,17 @@ func TestNarratorOpIDReplayPreservesSubjectAndMultiTo(t *testing.T) {
 		t.Errorf("claude-03 received %d messages for multi-1, want 1", len(ids))
 	}
 
-	// Sidecar-blocked outbox-recovered multi-recipient retry must also preserve
-	// subject and every recipient.
+	// Final-receipt sidecar failure (injected after DeliveryAttempted succeeds)
+	// must still recover subject and every recipient from BoxSent on retry.
 	deliveredDir := filepath.Join(filepath.Dir(e.Paths.HubInboxPath("/hub")), "delivered")
-	if err := os.RemoveAll(deliveredDir); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(deliveredDir, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	real := e.AMQ
+	e.AMQ = blockDeliveredDuringPost{Queue: real, deliveredDir: deliveredDir}
 	recArgs := []string{"--to", "personal,claude-03", "--thread", "epic/multi2", "--kind", "status", "--subject", "recovered multi", "--body", "hello2", "--op-id", "multi-rec"}
 	rFirst, err := managedSend(t, e, "block:agy-05", "send", recArgs...)
 	if err != nil || rFirst["id"] == nil || rFirst["subject"] != "recovered multi" {
 		t.Fatalf("multi recovered first: %v %v", rFirst, err)
 	}
+	e.AMQ = real
 	rReplay, err := managedSend(t, e, "block:agy-05", "send", recArgs...)
 	if err != nil || rReplay["id"] != rFirst["id"] || rReplay["subject"] != "recovered multi" || rReplay["thread"] != "epic/multi2" || rReplay["inbox_seq"] != float64(3) {
 		t.Fatalf("multi recovered replay: %v %v (first %v)", rReplay, err, rFirst)
@@ -1107,5 +1098,59 @@ func TestNarratorOpIDOutboxOnlyRecoveryPreservesMultiToAndSubject(t *testing.T) 
 		if ids, _ := amq.IDs(e.Paths.Root(), rcpt, amq.BoxUnread); len(ids) != 1 {
 			t.Errorf("%s received %d messages, want 1", rcpt, len(ids))
 		}
+	}
+}
+
+// blockDeliveredDuringPost runs the real AMQ Post (after DeliveryAttempted was
+// persisted) and then replaces deliveredDir with a regular file so the final
+// DeliveryDelivered sidecar write fails.
+type blockDeliveredDuringPost struct {
+	Queue
+	deliveredDir string
+}
+
+func (q blockDeliveredDuringPost) Post(ctx context.Context, root, verb string, args ...string) (amq.Sent, []byte, error) {
+	sent, out, err := q.Queue.Post(ctx, root, verb, args...)
+	_ = os.RemoveAll(q.deliveredDir)
+	_ = os.WriteFile(q.deliveredDir, nil, 0o600)
+	return sent, out, err
+}
+
+// For --op-id sends, persisting DeliveryAttempted is a precondition for
+// spawning AMQ: if delivered/ cannot be written, AMQ is not invoked, the
+// response reports kept in Hub with delivery_state=pending, and a retry once
+// delivered/ recovers delivers once with the same durable token.
+func TestNarratorOpIDRefusesAMQWhenAttemptMarkerFails(t *testing.T) {
+	e := routeWorld(t)
+	real := e.AMQ
+	bp := &blockingPost{Queue: real, entered: make(chan struct{}), release: make(chan struct{})}
+	close(bp.release)
+	e.AMQ = bp
+	inboxDir := filepath.Dir(e.Paths.HubInboxPath("/hub"))
+	if err := os.MkdirAll(inboxDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	deliveredPath := filepath.Join(inboxDir, "delivered")
+	if err := os.WriteFile(deliveredPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"--to", "personal", "--subject", "guard", "--body", "needs marker", "--op-id", "attempt-fail-1"}
+	first, err := managedSend(t, e, "block:agy-05", "send", args...)
+	if err != nil || first["routed_to"] != "hub" || first["inbox_seq"] != float64(1) || first["delivery_state"] != string(store.DeliveryPending) || first["id"] != nil {
+		t.Fatalf("attempt marker write failure: %v %v", first, err)
+	}
+	if got := bp.calls.Load(); got != 0 {
+		t.Fatalf("AMQ Post called %d time(s) despite failed DeliveryAttempted write", got)
+	}
+	// Restore delivered/ and retry with the same --op-id: delivers once.
+	if err := os.Remove(deliveredPath); err != nil {
+		t.Fatal(err)
+	}
+	second, err := managedSend(t, e, "block:agy-05", "send", args...)
+	if err != nil || second["routed_to"] != "claude-02" || second["inbox_seq"] != float64(1) || second["id"] == nil {
+		t.Fatalf("retry after delivered/ restored: %v %v", second, err)
+	}
+	if got := bp.calls.Load(); got != 1 {
+		t.Errorf("AMQ Post called %d time(s), want 1", got)
 	}
 }

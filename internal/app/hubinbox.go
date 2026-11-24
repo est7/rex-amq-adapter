@@ -333,20 +333,18 @@ func withDelivery(own json.RawMessage, token string) (json.RawMessage, error) {
 
 // noteNarratorAttempt records that AMQ delivery of x to recipients to is about
 // to start, so a crash after inbox write and before outbox write knows which
-// recipient mailboxes to reconcile on retry. Best-effort: a write failure is
-// reported, never returned.
-func (e Env) noteNarratorAttempt(x store.HubInboxEntry, to []core.Handle, route *MailRoute) {
+// recipient mailboxes to reconcile on retry. For --op-id sends, persisting
+// this marker is a precondition for spawning AMQ.
+func (e Env) noteNarratorAttempt(x store.HubInboxEntry, to []core.Handle, route *MailRoute) error {
 	if len(to) == 0 || x.Delivery == "" {
-		return
+		return nil
 	}
 	d := store.HubInboxDelivery{State: store.DeliveryAttempted, AttemptedTo: slices.Clone(to)}
 	if route != nil {
 		d.RoutedTo = route.RoutedTo
 		d.ReroutedFrom = route.ReroutedFrom
 	}
-	if err := e.Store.PutHubInboxDelivery(x.HubKey.Dir(), x.Delivery, d); err != nil {
-		fmt.Fprintf(Diagnostics, "record attempt of Hub inbox entry %d: %v\n", x.Seq, err)
-	}
+	return e.Store.PutHubInboxDelivery(x.HubKey.Dir(), x.Delivery, d)
 }
 
 // clearNarratorAttempt clears a DeliveryAttempted record after amq exited

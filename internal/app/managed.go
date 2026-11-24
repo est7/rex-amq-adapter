@@ -271,10 +271,19 @@ func (m managed) post(ctx context.Context, verb string, args []string) (int, err
 	var pendingState store.DeliveryState
 	attempted := o.ReplyTo != "" || len(o.To) > 0
 	delivered := attempted
-	if delivered {
-		if kept != nil {
-			m.e.noteNarratorAttempt(*kept, o.To, route)
+	if delivered && kept != nil {
+		if aerr := m.e.noteNarratorAttempt(*kept, o.To, route); aerr != nil {
+			fmt.Fprintf(Diagnostics, "record attempt of Hub inbox entry %d: %v\n", kept.Seq, aerr)
+			if opID != "" {
+				// For --op-id sends, never spawn AMQ without a durable
+				// DeliveryAttempted guard: keep the entry in Hub and report
+				// AMQ delivery pending without marking it Hub-only.
+				route.ReroutedFrom, route.RoutedTo, delivered = route.RoutedTo, HubAddress, false
+				return 0, m.printKept(*asJSON, route, store.DeliveryPending)
+			}
 		}
+	}
+	if delivered {
 		var err error
 		sent, out, err = m.e.post(ctx, o)
 		if err != nil && kept != nil && sent.ID == "" {
