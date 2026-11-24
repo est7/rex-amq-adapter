@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
@@ -46,6 +47,19 @@ const (
 	InboxReply    = "reply"    // a personal agent's reply to a narrator
 )
 
+// DeliveryState is what became of an inbox entry kept before its amq
+// delivery (Delivery != ""). Derived from its delivery record (or recovered
+// from the sender's sent mail by the app); never stored in inbox.jsonl.
+type DeliveryState string
+
+const (
+	DeliveryNone      DeliveryState = ""          // no deferred delivery
+	DeliveryPending   DeliveryState = "pending"   // kept before delivery; no AMQ attempt recorded
+	DeliveryAttempted DeliveryState = "attempted" // AMQ send started; outcome unresolved until reconciled
+	DeliveryHubOnly   DeliveryState = "hub_only"  // settled without amq delivery (no live personal agent)
+	DeliveryDelivered DeliveryState = "delivered" // settled with amq delivery (MsgID set)
+)
+
 // HubInboxEntry is one entry of a Hub's inbox. Seq numbers the Hub's
 // entries from 1; DedupeKey names the event, so writing it again (a retry
 // after a failure part way) appends nothing.
@@ -72,9 +86,19 @@ type HubInboxEntry struct {
 	InReplyTo int64       `json:"in_reply_to,omitempty"`
 	By        core.Handle `json:"by"`
 	DedupeKey string      `json:"dedupe_key"`
-	// Delivery names the record of the amq delivery of an entry kept
-	// before it was delivered; "" for none.
+	// RequestHash is the sha256 digest of the immutable normalized request
+	// that created an --op-id narrator entry, separate from amq-assigned
+	// Thread or dynamically selected live recipients; "" when unset.
+	RequestHash string `json:"request_hash,omitempty"`
+	// Delivery is the immutable durable correlation token of an entry kept
+	// before its amq delivery; "" for none. Separate from DeliveryState and
+	// never cleared on read.
 	Delivery string `json:"delivery,omitempty"`
+	// DeliveryState, DeliveryRoutedTo, and DeliveryReroutedFrom hold the
+	// resolved delivery outcome in memory (never written to inbox.jsonl).
+	DeliveryState        DeliveryState `json:"-"`
+	DeliveryRoutedTo     core.Handle   `json:"-"`
+	DeliveryReroutedFrom core.Handle   `json:"-"`
 }
 
 // hubInboxDir is where the inbox of the Hub directory dir is kept.
@@ -160,7 +184,30 @@ func (s Store) AppendHubInbox(ctx context.Context, dir string, e HubInboxEntry, 
 	if _, err := f.WriteAt(append(line, '\n'), int64(whole)); err != nil {
 		return e, false, err
 	}
+	if e.Delivery != "" {
+		if e.MsgID != "" {
+			e.DeliveryState = DeliveryDelivered
+		} else {
+			e.DeliveryState = DeliveryPending
+		}
+	}
 	return e, true, f.Sync()
+}
+
+// LockHubInboxOp serialises lookup, inbox append, amq delivery, and delivery
+// recording for one narrator op-id request (scoped by Hub dir, Epic session,
+// and opID). It is taken outside inbox.lock (which stays a leaf lock for
+// inbox.jsonl file I/O alone) and outside any lifecycle lock.
+func (s Store) LockHubInboxOp(ctx context.Context, dir, epic, opID string) (func(), error) {
+	if dir == "" || epic == "" || opID == "" {
+		return nil, errors.New("a Hub inbox op lock needs Hub, Epic, and op id")
+	}
+	base := filepath.Join(s.P.hubInboxDir(dir), "ops")
+	if err := os.MkdirAll(base, 0o700); err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256([]byte(strconv.Itoa(len(epic)) + ":" + epic + ":" + opID))
+	return fsutil.Flock(ctx, filepath.Join(base, hex.EncodeToString(sum[:16])+".lock"))
 }
 
 // HubInbox reads the inbox of the Hub directory dir, taking no lock: its
@@ -183,50 +230,139 @@ func (s Store) HubInbox(dir string) ([]HubInboxEntry, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	for i := range entries {
-		if x := &entries[i]; x.Delivery != "" && x.MsgID == "" {
-			// A record that cannot be read leaves the id out: the entry
-			// stands, and the app finds the id again (its sent mail).
-			var d hubInboxDelivery
-			if ok, err := readJSON(s.hubInboxDeliveryPath(dir, x.Delivery), &d); err == nil && ok {
-				// Settled: delivered as d.MsgID, or (none) sent to nobody.
-				x.MsgID, x.Delivery = d.MsgID, ""
+		x := &entries[i]
+		if x.Delivery == "" {
+			continue
+		}
+		if x.MsgID != "" {
+			x.DeliveryState = DeliveryDelivered
+			continue
+		}
+		// A record that cannot be read leaves the entry pending with its
+		// durable Delivery token intact so the app can recover it from
+		// sent mail or retry with the same correlation token.
+		var d HubInboxDelivery
+		if ok, err := readJSON(s.hubInboxDeliveryPath(dir, x.Delivery), &d); err == nil && ok {
+			state := d.State
+			if state == "" {
+				// Legacy sidecar written before explicit state.
+				if d.MsgID != "" {
+					state = DeliveryDelivered
+				} else {
+					state = DeliveryHubOnly
+				}
+			}
+			switch {
+			case state == DeliveryDelivered && d.MsgID != "":
+				x.DeliveryState = DeliveryDelivered
+				x.MsgID = d.MsgID
 				if x.Thread == "" {
 					x.Thread = d.Thread
 				}
+				x.DeliveryRoutedTo = d.RoutedTo
+				x.DeliveryReroutedFrom = d.ReroutedFrom
+			case state == DeliveryHubOnly && d.MsgID == "":
+				x.DeliveryState = DeliveryHubOnly
+				x.DeliveryRoutedTo = d.RoutedTo
+				x.DeliveryReroutedFrom = d.ReroutedFrom
+			case state == DeliveryAttempted && d.MsgID == "" && len(d.AttemptedTo) > 0:
+				x.DeliveryState = DeliveryAttempted
+				x.DeliveryRoutedTo = d.RoutedTo
+				x.DeliveryReroutedFrom = d.ReroutedFrom
+			default:
+				// Corrupt or inconsistent sidecar: leave pending so the app
+				// can recover from sent mail via the durable Delivery token.
+				x.DeliveryState = DeliveryPending
 			}
+		} else {
+			x.DeliveryState = DeliveryPending
 		}
 	}
 	return entries, nil
 }
 
-// hubInboxDelivery is the amq delivery of an entry kept before it.
-type hubInboxDelivery struct {
-	MsgID  string `json:"msg_id"`
-	Thread string `json:"thread,omitempty"`
+// HubInboxDelivery is the delivery record of an entry kept before delivery:
+// DeliveryAttempted (in-flight / unresolved AMQ attempt naming AttemptedTo),
+// DeliveryDelivered (with MsgID, To, Subject, and public Receipt JSON), or
+// DeliveryHubOnly (settled without AMQ because no live personal agent took it).
+type HubInboxDelivery struct {
+	State        DeliveryState   `json:"state"`
+	MsgID        string          `json:"msg_id,omitempty"`
+	Thread       string          `json:"thread,omitempty"`
+	To           []string        `json:"to,omitempty"`
+	Subject      string          `json:"subject,omitempty"`
+	RoutedTo     core.Handle     `json:"routed_to,omitempty"`
+	ReroutedFrom core.Handle     `json:"rerouted_from,omitempty"`
+	AttemptedTo  []core.Handle   `json:"attempted_to,omitempty"`
+	Receipt      json.RawMessage `json:"receipt,omitempty"`
 }
 
 func (s Store) hubInboxDeliveryPath(dir, delivery string) string {
 	return filepath.Join(s.P.hubInboxDir(dir), "delivered", fileKey(delivery)+".json")
 }
 
-// PutHubInboxDelivery records that the entry of the Hub directory dir
-// named delivery was delivered as amq message msgID on thread, or with
-// msgID "" that it was sent to nobody: readers see them as the entry's
-// (HubInbox). It takes no lock: each delivery is its own file, written
-// once whole.
-func (s Store) PutHubInboxDelivery(dir, delivery, msgID, thread string) error {
+// HubInboxDelivery reads the delivery record for delivery in the Hub dir.
+func (s Store) HubInboxDelivery(dir, delivery string) (HubInboxDelivery, bool, error) {
+	if delivery == "" {
+		return HubInboxDelivery{}, false, nil
+	}
+	var d HubInboxDelivery
+	ok, err := readJSON(s.hubInboxDeliveryPath(dir, delivery), &d)
+	return d, ok, err
+}
+
+// PutHubInboxDelivery records delivery state d for the entry of the Hub
+// directory dir named delivery: DeliveryAttempted (with AttemptedTo),
+// DeliveryDelivered (with MsgID), or DeliveryHubOnly (with empty MsgID).
+// It takes no lock: each delivery is its own file, replaced atomically.
+func (s Store) PutHubInboxDelivery(dir, delivery string, d HubInboxDelivery) error {
 	if delivery == "" {
 		return errors.New("a Hub inbox delivery needs its entry")
+	}
+	switch d.State {
+	case DeliveryDelivered:
+		if d.MsgID == "" {
+			return errors.New("a delivered Hub inbox record needs its amq message id")
+		}
+	case DeliveryHubOnly:
+		if d.MsgID != "" {
+			return errors.New("a Hub-only inbox record cannot carry an amq message id")
+		}
+	case DeliveryAttempted:
+		if d.MsgID != "" || len(d.AttemptedTo) == 0 {
+			return errors.New("an attempted Hub inbox record needs attempted recipients and no message id")
+		}
+	default:
+		return fmt.Errorf("a Hub inbox delivery record needs attempted, delivered, or hub_only state, not %q", d.State)
 	}
 	path := s.hubInboxDeliveryPath(dir, delivery)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	b, err := json.Marshal(hubInboxDelivery{MsgID: msgID, Thread: thread})
+	b, err := json.Marshal(d)
 	if err != nil {
 		return err
 	}
 	return fsutil.WriteAtomic(path, append(b, '\n'))
+}
+
+// ClearHubInboxAttempt removes an unresolved DeliveryAttempted sidecar once
+// the AMQ child process has exited and mailbox reconciliation confirmed no
+// delivery occurred, returning the entry to DeliveryPending. A settled record
+// (DeliveryDelivered or DeliveryHubOnly) is never removed.
+func (s Store) ClearHubInboxAttempt(dir, delivery string) error {
+	if delivery == "" {
+		return nil
+	}
+	d, ok, err := s.HubInboxDelivery(dir, delivery)
+	if err != nil || !ok || d.State != DeliveryAttempted {
+		return err
+	}
+	err = os.Remove(s.hubInboxDeliveryPath(dir, delivery))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	return err
 }
 
 // parseHubInbox parses whole lines of an inbox.

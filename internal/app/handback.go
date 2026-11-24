@@ -72,12 +72,7 @@ func (e Env) RecordHandBackWith(ctx context.Context, loc Location, r HandBackReq
 		return h, false, err
 	}
 	defer unlock()
-	// The stored one is kept before this run can replace it: if it cannot
-	// be, nothing is replaced, and the next run tries again.
-	if err := e.noteHandBackInHub(ctx, rec.SessionID); err != nil {
-		return h, false, fmt.Errorf("the hand-back is not recorded, and the stored one stays: %w (run hand-back again)", err)
-	}
-	h, changed, err = e.recordHandBack(rec, r)
+	h, changed, err = e.recordHandBack(ctx, rec, r)
 	if ierr := e.noteHandBackInHub(ctx, rec.SessionID); ierr != nil {
 		err = errors.Join(err, fmt.Errorf("the hand-back is stored; %w (run hand-back again)", ierr))
 	}
@@ -86,7 +81,7 @@ func (e Env) RecordHandBackWith(ctx context.Context, loc Location, r HandBackReq
 
 // recordHandBack is RecordHandBackWith's record of r for the lead rec; the
 // caller holds LockEpicLifecycle.
-func (e Env) recordHandBack(rec agent, r HandBackRequest) (h store.HandBack, changed bool, err error) {
+func (e Env) recordHandBack(ctx context.Context, rec agent, r HandBackRequest) (h store.HandBack, changed bool, err error) {
 	entries := store.Entries(r.Artifacts)
 	digest := store.HandBackWithArtifacts(store.HandBackDigest(r.Body), entries)
 	opHash := ""
@@ -124,16 +119,28 @@ func (e Env) recordHandBack(rec agent, r HandBackRequest) (h store.HandBack, cha
 		lc = store.EpicLifecycle{SessionID: rec.SessionID, Server: rec.Server}
 	}
 	// The lifecycle numbers hand-backs, and a Seq keeps its digest once
-	// given: the stored one is listed when an earlier failure left it out
-	// (after the latest, should its Seq have gone to another report).
+	// given: the stored one is backfilled into the lifecycle when an earlier
+	// failure left it out (after the latest, should its Seq have gone to
+	// another report), then idempotently kept in the Hub's inbox before any
+	// new hand-back can replace it.
 	var prev store.HandBack
 	if hasPrev {
 		prev = numbered(stored)
-		if !slices.ContainsFunc(lc.HandBacks, func(r store.HandBackRef) bool { return r.Seq == prev.Seq && r.Digest == prev.Digest }) {
+		var prevRef store.HandBackRef
+		if i := slices.IndexFunc(lc.HandBacks, func(r store.HandBackRef) bool { return r.Seq == prev.Seq && r.Digest == prev.Digest }); i >= 0 {
+			prevRef = lc.HandBacks[i]
+		} else {
 			if latest, ok := lc.LatestHandBack(); ok && slices.ContainsFunc(lc.HandBacks, func(r store.HandBackRef) bool { return r.Seq == prev.Seq }) {
 				prev.Seq = latest.Seq + 1
 			}
 			lc.NoteHandBack(prev)
+			if err := e.Store.PutEpicLifecycle(lc); err != nil {
+				return h, false, fmt.Errorf("the hand-back is not stored, and %d stays: recording it in the Epic's lifecycle failed: %w", prev.Seq, err)
+			}
+			prevRef = lc.HandBacks[len(lc.HandBacks)-1]
+		}
+		if err := e.noteHandBackRefInHub(ctx, rec.SessionID, lc.Hub, prevRef); err != nil {
+			return h, false, fmt.Errorf("the hand-back is not recorded, and the stored one stays: %w (run hand-back again)", err)
 		}
 	}
 	// A retry of an op id: the hand-back it recorded, or a conflict.

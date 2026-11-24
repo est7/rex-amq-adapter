@@ -137,6 +137,9 @@ func mailSend(c *cli.Ctx, in cli.Input) (cli.Result, error) {
 	if err := m.runIn("send", append([]string{"--to", strings.Join(names, ",")}, postArgs(in)...), body, &sent); err != nil {
 		return cli.Result{}, err
 	}
+	if sent["id"] == nil && sent["inbox_seq"] != nil {
+		return cli.Result{Data: sent, Human: line(fmt.Sprintf("Kept in the Hub's inbox as #%v (routed to %v)", sent["inbox_seq"], sent["routed_to"]))}, nil
+	}
 	return cli.Result{Data: sent, Human: line(fmt.Sprintf("Sent %v to %v", sent["id"], sent["to"]))}, nil
 }
 

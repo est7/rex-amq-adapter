@@ -90,7 +90,7 @@ func (m managed) post(ctx context.Context, verb string, args []string) (int, err
 		fs.Bool("allow-self", false, "Allow an intentional send to yourself")
 		fs.String("thread", "", "Thread ID")
 		fs.String("refs", "", "Related message IDs, comma-separated")
-		fs.String("op-id", "", "(a narrator's mail to its Hub's personal agent) names this message: a retry keeps and sends it once")
+		fs.String("op-id", "", "(a narrator's mail to personal) deduplicates Hub-linked deliveries per Hub and Epic; AMQ-only without Hub deduplication on session-keyed links")
 	} else {
 		fs.StringVar(&replyTo, "id", "", "Message ID to reply to")
 	}
@@ -101,7 +101,7 @@ func (m managed) post(ctx context.Context, verb string, args []string) (int, err
 	fs.String("kind", "", "Message kind")
 	fs.String("priority", "", "Message priority")
 	fs.String("labels", "", "Labels, comma-separated")
-	fs.Bool("allow-empty", false, "Allow a blank body")
+	allowEmpty := fs.Bool("allow-empty", false, "Allow a blank body")
 	fs.Bool("strict", false, "Error on unknown handles")
 	fs.String("wait-for", "", "Wait for a receipt stage")
 	fs.Duration("wait-timeout", 2*time.Minute, "Receipt wait timeout")
@@ -140,6 +140,7 @@ func (m managed) post(ctx context.Context, verb string, args []string) (int, err
 			return 2, fmt.Errorf("%w: send needs at least one recipient in --to", ErrUsage)
 		}
 	}
+	rawTo := slices.Clone(o.To)
 	if mailFlagPresent(fs, "context") {
 		if path, ok := strings.CutPrefix(*ctxObj, "@"); ok {
 			b, err := os.ReadFile(path)
@@ -206,39 +207,105 @@ func (m managed) post(ctx context.Context, verb string, args []string) (int, err
 		if err := m.e.admits(o); err != nil {
 			return 1, err
 		}
-		if _, err := withToken(o.Context, "check"); err != nil {
+		canonCtx, err := canonicalContext(o.Context)
+		if err != nil {
 			return 2, err
 		}
 		subject, _ := flagValue(fs, "subject")
 		thread, _ := flagValue(fs, "thread")
-		x, done, err := m.e.keepNarratorMail(ctx, m.rec, route.hub, opID, subject, thread, text)
+		kind, _ := flagValue(fs, "kind")
+		priority, _ := flagValue(fs, "priority")
+		labels, _ := flagValue(fs, "labels")
+		refs, _ := flagValue(fs, "refs")
+		req := narratorMailRequest{
+			To:         rawTo,
+			Subject:    subject,
+			Thread:     thread,
+			Kind:       kind,
+			Priority:   priority,
+			Labels:     splitCSV(labels),
+			Refs:       splitCSV(refs),
+			Context:    canonCtx,
+			Body:       text,
+			AllowEmpty: *allowEmpty,
+		}
+		if opID != "" {
+			// Serialise lookup, inbox append, AMQ delivery, and delivery
+			// recording per (Hub, Epic, opID) while keeping inbox.lock a
+			// leaf lock off the AMQ path.
+			unlockOp, err := m.e.Store.LockHubInboxOp(ctx, route.hub.Dir(), m.rec.SessionID, opID)
+			if err != nil {
+				return 1, err
+			}
+			defer unlockOp()
+		}
+		keep, err := m.e.keepNarratorMail(ctx, m.rec, route.hub, opID, req, o.To)
 		if err != nil {
 			return 1, err
 		}
+		x := keep.entry
 		kept, route.InboxSeq = &x, x.Seq
-		if done {
-			// A retry of a message kept and delivered already.
-			return 0, m.printKept(*asJSON, route)
+		if keep.settled {
+			if x.DeliveryState == store.DeliveryHubOnly {
+				return 0, m.printKept(*asJSON, &MailRoute{RoutedTo: HubAddress, ReroutedFrom: x.DeliveryReroutedFrom, hub: route.hub, InboxSeq: x.Seq}, "")
+			}
+			return 0, m.printDeliveredReplay(*asJSON, x, keep.delivery, keep.recovered, route)
+		}
+		if keep.uncertain {
+			fmt.Fprintf(Diagnostics, "op-id %q (Hub inbox entry #%d): previous AMQ delivery outcome could not be verified from mailboxes; not resending automatically\n", opID, x.Seq)
+			return 0, m.printKept(*asJSON, &MailRoute{RoutedTo: HubAddress, ReroutedFrom: keep.delivery.ReroutedFrom, hub: route.hub, InboxSeq: x.Seq}, store.DeliveryPending)
 		}
 		if o.Context, err = withDelivery(o.Context, x.Delivery); err != nil {
 			return 1, err
 		}
+	} else if route != nil && opID != "" {
+		// Session-keyed link with no Hub: keep the prompted command working
+		// as AMQ-only delivery without Hub inbox deduplication.
+		route.NoHubDedupe = true
 	} else if opID != "" {
-		return 2, fmt.Errorf("%w: --op-id names a narrator's mail to its Hub's personal agent, which this is not", ErrUsage)
+		return 2, fmt.Errorf("%w: --op-id applies only to a narrator's mail to personal", ErrUsage)
 	}
 	var sent amq.Sent
 	var out []byte
-	delivered := o.ReplyTo != "" || len(o.To) > 0
+	var recoveredHdr *amq.Header
+	var pendingState store.DeliveryState
+	attempted := o.ReplyTo != "" || len(o.To) > 0
+	delivered := attempted
+	if delivered && kept != nil {
+		if aerr := m.e.noteNarratorAttempt(*kept, o.To, route); aerr != nil {
+			fmt.Fprintf(Diagnostics, "record attempt of Hub inbox entry %d: %v\n", kept.Seq, aerr)
+			if opID != "" {
+				// For --op-id sends, never spawn AMQ without a durable
+				// DeliveryAttempted guard: keep the entry in Hub and report
+				// AMQ delivery pending without marking it Hub-only.
+				route.ReroutedFrom, route.RoutedTo, delivered = route.RoutedTo, HubAddress, false
+				return 0, m.printKept(*asJSON, route, store.DeliveryPending)
+			}
+		}
+	}
 	if delivered {
 		var err error
 		sent, out, err = m.e.post(ctx, o)
+		if err != nil && kept != nil && sent.ID == "" {
+			if h, found, uncertain := m.e.findDeliveredByToken(kept.By, kept.Delivery, o.To, nil); found {
+				sent = amq.Sent{ID: h.ID, Thread: h.Thread, To: h.To}
+				recoveredHdr, out = &h, nil
+			} else if uncertain {
+				pendingState = store.DeliveryPending
+			} else {
+				// amq exited and every mailbox was read cleanly with no match:
+				// clear the in-flight attempt so a later retry may send again.
+				m.e.clearNarratorAttempt(*kept)
+			}
+		}
 		switch {
 		case err != nil && kept != nil && sent.ID == "":
-			// Not delivered: the Hub's inbox keeps it.
+			// Not confirmed delivered: the Hub's inbox keeps it.
 			fmt.Fprintf(Diagnostics, "deliver to %s: %v; the Hub's inbox keeps it as #%d\n", route.RoutedTo, err, kept.Seq)
 			route.ReroutedFrom, route.RoutedTo, delivered = route.RoutedTo, HubAddress, false
 		case err != nil && kept != nil:
-			// amq failed after delivering (a receipt wait that timed out).
+			// amq failed after delivering (a receipt wait that timed out, or
+			// crashed after writing the recipient's inbox).
 			fmt.Fprintf(Diagnostics, "deliver to %s: delivered %s, then: %v\n", route.RoutedTo, sent.ID, err)
 		case err != nil:
 			if len(out) > 0 {
@@ -261,13 +328,39 @@ func (m managed) post(ctx context.Context, verb string, args []string) (int, err
 			}
 		}
 	}
+	if route != nil && route.NoHubDedupe {
+		fmt.Fprintf(Diagnostics, "mail send --op-id %q: %s uses a session-keyed link with no Hub; sent via amq only without Hub inbox deduplication\n", opID, m.rec.Handle)
+	}
+	var receipt []byte
+	if kept != nil && delivered {
+		receipt = withRoute(out, route)
+		if len(bytes.TrimSpace(out)) == 0 || !json.Valid(out) {
+			if recoveredHdr == nil {
+				if h, found, _ := m.e.findDeliveredByToken(kept.By, kept.Delivery, o.To, nil); found {
+					recoveredHdr = &h
+					if sent.Thread == "" {
+						sent.Thread = h.Thread
+					}
+					if len(sent.To) == 0 {
+						sent.To = h.To
+					}
+				}
+			}
+			d := store.HubInboxDelivery{State: store.DeliveryDelivered, MsgID: sent.ID, Thread: sent.Thread, To: sent.To, Subject: kept.Subject, RoutedTo: route.RoutedTo, ReroutedFrom: route.ReroutedFrom}
+			receipt = synthDeliveredReceipt(*kept, d, recoveredHdr, route)
+		}
+	}
 	if kept != nil {
-		m.e.noteNarratorDelivery(*kept, sent, o.ReplyTo != "" || len(o.To) > 0)
+		m.e.noteNarratorDelivery(*kept, sent, attempted, route, receipt)
 		if !delivered {
-			return 0, m.printKept(*asJSON, route)
+			return 0, m.printKept(*asJSON, route, pendingState)
 		}
 	}
 	if *asJSON {
+		if len(receipt) > 0 {
+			_, err := m.stdout.Write(receipt)
+			return 0, err
+		}
 		_, err := m.stdout.Write(withRoute(out, route))
 		return 0, err
 	}
@@ -304,12 +397,16 @@ func narratorBody(v, path string) (string, error) {
 // maxNarratorBody is cli.BodyMax: what a Hub inbox entry's line can hold.
 const maxNarratorBody = 256 << 10
 
-// printKept reports a narrator's message only its Hub's inbox kept.
-func (m managed) printKept(asJSON bool, route *MailRoute) error {
+// printKept reports a narrator's message only its Hub's inbox kept (or whose
+// previous AMQ attempt could not be verified, carrying delivery_state pending).
+func (m managed) printKept(asJSON bool, route *MailRoute, deliveryState store.DeliveryState) error {
 	if asJSON {
 		obj := map[string]any{"routed_to": route.RoutedTo, "inbox_seq": route.InboxSeq}
 		if route.ReroutedFrom != "" {
 			obj["rerouted_from"] = route.ReroutedFrom
+		}
+		if deliveryState != "" {
+			obj["delivery_state"] = deliveryState
 		}
 		b, err := json.Marshal(obj)
 		if err != nil {
@@ -318,7 +415,44 @@ func (m managed) printKept(asJSON bool, route *MailRoute) error {
 		_, err = m.stdout.Write(append(b, '\n'))
 		return err
 	}
+	if deliveryState != "" {
+		_, err := fmt.Fprintf(m.stdout, "Kept in the Hub's inbox as #%d (routed to %s, delivery %s)\n", route.InboxSeq, route.RoutedTo, deliveryState)
+		return err
+	}
 	_, err := fmt.Fprintf(m.stdout, "Kept in the Hub's inbox as #%d (routed to %s)\n", route.InboxSeq, route.RoutedTo)
+	return err
+}
+
+// printDeliveredReplay reports a retry of a narrator's Hub message that was
+// already delivered to AMQ: replays the exact public delivery receipt without
+// sending again.
+func (m managed) printDeliveredReplay(asJSON bool, x store.HubInboxEntry, d store.HubInboxDelivery, recovered *amq.Header, current *MailRoute) error {
+	if asJSON {
+		if trimmed := bytes.TrimSpace(d.Receipt); len(trimmed) > 0 {
+			_, err := m.stdout.Write(append(trimmed, '\n'))
+			return err
+		}
+		b := synthDeliveredReceipt(x, d, recovered, current)
+		_, err := m.stdout.Write(b)
+		return err
+	}
+	to := d.To
+	if len(to) == 0 && recovered != nil {
+		to = recovered.To
+	}
+	if len(to) == 0 {
+		routedTo := d.RoutedTo
+		if routedTo == "" {
+			routedTo = x.DeliveryRoutedTo
+		}
+		if routedTo == "" && current != nil {
+			routedTo = current.RoutedTo
+		}
+		if routedTo != "" {
+			to = []string{string(routedTo)}
+		}
+	}
+	_, err := fmt.Fprintf(m.stdout, "Sent %s to %s\n", x.MsgID, strings.Join(to, ","))
 	return err
 }
 

@@ -182,7 +182,7 @@ func commands() []*cli.Command {
 				f("control", cli.KindEventID, "(a narrator) relay a user-control directive under this request id"),
 				f("thread", cli.KindThreadID, "the thread; required when --to names more than one distinct handle"),
 				f("refs", cli.KindMessageIDs, "related message ids"),
-				f("op-id", cli.KindOpID, "(a narrator's mail to personal) names this message: a retry keeps and sends it once"),
+				f("op-id", cli.KindOpID, "(a narrator's mail to personal) deduplicates Hub-linked deliveries per Hub and Epic; accepted as AMQ-only without Hub deduplication on session-keyed links"),
 			},
 			Tier: cli.TierOutward, Mutating: true, DryRun: true, Input: true, Audience: cli.AudienceAgent,
 			Result:     "amq's send result: {id, thread, to, subject, ...}; a narrator's mail to personal adds routed_to (hub when no personal agent took it) and inbox_seq",

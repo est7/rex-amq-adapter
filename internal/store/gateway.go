@@ -321,6 +321,11 @@ func (s Store) QuarantinedIDs(h core.Handle) ([]string, error) {
 	return ids, nil
 }
 
+// QuarantinedMessagePath is the path of quarantined message id for h.
+func (s Store) QuarantinedMessagePath(h core.Handle, id string) string {
+	return filepath.Join(s.quarantineDir(h), fileKey(id)+".md")
+}
+
 // QuarantineReason reads why message id left h's inbox.
 func (s Store) QuarantineReason(h core.Handle, id string) (Quarantined, error) {
 	var q Quarantined
