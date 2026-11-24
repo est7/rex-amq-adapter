@@ -744,12 +744,12 @@ func TestNarratorOpIDRequestConflictChecksAllMessageFlags(t *testing.T) {
 
 	// 2. Explicit thread and message-affecting flags: normalized equivalent
 	// retries succeed; changing any message-affecting flag conflicts.
-	base := []string{"--to", "personal", "--subject", "s", "--body", "b", "--thread", "epic/t1", "--kind", "status", "--priority", "high", "--labels", "a,b", "--refs", "m1", "--context", `{"a":1,"b":2}`, "--op-id", "t-explicit"}
+	base := []string{"--to", "personal", "--subject", "s", "--body", "b", "--thread", "epic/t1", "--kind", "status", "--priority", "urgent", "--labels", "a,b", "--refs", "m1", "--context", `{"a":1,"b":2}`, "--op-id", "t-explicit"}
 	expFirst, err := managedSend(t, e, "block:agy-05", "send", base...)
-	if err != nil || expFirst["inbox_seq"] != float64(2) {
+	if err != nil || expFirst["inbox_seq"] != float64(2) || expFirst["id"] == nil {
 		t.Fatalf("explicit first: %v %v", expFirst, err)
 	}
-	equiv := []string{"--to", "personal", "--subject", "s", "--body", "b", "--thread", "epic/t1", "--kind", "status", "--priority", "high", "--labels", "a, b", "--refs", "m1", "--context", `{"b":2,"a":1}`, "--op-id", "t-explicit"}
+	equiv := []string{"--to", "personal", "--subject", "s", "--body", "b", "--thread", "epic/t1", "--kind", "status", "--priority", "urgent", "--labels", "a, b", "--refs", "m1", "--context", `{"b":2,"a":1}`, "--op-id", "t-explicit"}
 	if expReplay, err := managedSend(t, e, "block:agy-05", "send", equiv...); err != nil || expReplay["inbox_seq"] != float64(2) || expReplay["id"] != expFirst["id"] {
 		t.Fatalf("normalized equivalent retry: %v %v", expReplay, err)
 	}
@@ -757,13 +757,13 @@ func TestNarratorOpIDRequestConflictChecksAllMessageFlags(t *testing.T) {
 		name string
 		args []string
 	}{
-		{"omit thread", []string{"--to", "personal", "--subject", "s", "--body", "b", "--kind", "status", "--priority", "high", "--labels", "a,b", "--refs", "m1", "--context", `{"a":1,"b":2}`, "--op-id", "t-explicit"}},
-		{"other thread", []string{"--to", "personal", "--subject", "s", "--body", "b", "--thread", "epic/t2", "--kind", "status", "--priority", "high", "--labels", "a,b", "--refs", "m1", "--context", `{"a":1,"b":2}`, "--op-id", "t-explicit"}},
-		{"other kind", []string{"--to", "personal", "--subject", "s", "--body", "b", "--thread", "epic/t1", "--kind", "question", "--priority", "high", "--labels", "a,b", "--refs", "m1", "--context", `{"a":1,"b":2}`, "--op-id", "t-explicit"}},
+		{"omit thread", []string{"--to", "personal", "--subject", "s", "--body", "b", "--kind", "status", "--priority", "urgent", "--labels", "a,b", "--refs", "m1", "--context", `{"a":1,"b":2}`, "--op-id", "t-explicit"}},
+		{"other thread", []string{"--to", "personal", "--subject", "s", "--body", "b", "--thread", "epic/t2", "--kind", "status", "--priority", "urgent", "--labels", "a,b", "--refs", "m1", "--context", `{"a":1,"b":2}`, "--op-id", "t-explicit"}},
+		{"other kind", []string{"--to", "personal", "--subject", "s", "--body", "b", "--thread", "epic/t1", "--kind", "question", "--priority", "urgent", "--labels", "a,b", "--refs", "m1", "--context", `{"a":1,"b":2}`, "--op-id", "t-explicit"}},
 		{"other priority", []string{"--to", "personal", "--subject", "s", "--body", "b", "--thread", "epic/t1", "--kind", "status", "--priority", "normal", "--labels", "a,b", "--refs", "m1", "--context", `{"a":1,"b":2}`, "--op-id", "t-explicit"}},
-		{"other labels", []string{"--to", "personal", "--subject", "s", "--body", "b", "--thread", "epic/t1", "--kind", "status", "--priority", "high", "--labels", "a,c", "--refs", "m1", "--context", `{"a":1,"b":2}`, "--op-id", "t-explicit"}},
-		{"other refs", []string{"--to", "personal", "--subject", "s", "--body", "b", "--thread", "epic/t1", "--kind", "status", "--priority", "high", "--labels", "a,b", "--refs", "m2", "--context", `{"a":1,"b":2}`, "--op-id", "t-explicit"}},
-		{"other context", []string{"--to", "personal", "--subject", "s", "--body", "b", "--thread", "epic/t1", "--kind", "status", "--priority", "high", "--labels", "a,b", "--refs", "m1", "--context", `{"a":1,"b":3}`, "--op-id", "t-explicit"}},
+		{"other labels", []string{"--to", "personal", "--subject", "s", "--body", "b", "--thread", "epic/t1", "--kind", "status", "--priority", "urgent", "--labels", "a,c", "--refs", "m1", "--context", `{"a":1,"b":2}`, "--op-id", "t-explicit"}},
+		{"other refs", []string{"--to", "personal", "--subject", "s", "--body", "b", "--thread", "epic/t1", "--kind", "status", "--priority", "urgent", "--labels", "a,b", "--refs", "m2", "--context", `{"a":1,"b":2}`, "--op-id", "t-explicit"}},
+		{"other context", []string{"--to", "personal", "--subject", "s", "--body", "b", "--thread", "epic/t1", "--kind", "status", "--priority", "urgent", "--labels", "a,b", "--refs", "m1", "--context", `{"a":1,"b":3}`, "--op-id", "t-explicit"}},
 	} {
 		if _, err := managedSend(t, e, "block:agy-05", "send", tc.args...); !isCode(err, fault.Conflict) {
 			t.Errorf("%s: got %v, want conflict", tc.name, err)

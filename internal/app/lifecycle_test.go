@@ -52,9 +52,78 @@ func realAmqEnv(t *testing.T, term *fakeTerm) Env {
 	return e
 }
 
+func unwrapQueue(q Queue) Queue {
+	for {
+		u, ok := q.(interface{ unwrapQueue() Queue })
+		if !ok {
+			return q
+		}
+		q = u.unwrapQueue()
+	}
+}
+
+// hookQueue intercepts selected Queue operations on any Queue implementation
+// (amq.Fake or amq.CLI) so fault-injection and race-scheduling tests run under
+// both the default fake and REX_AMQ_REAL=1.
+type hookQueue struct {
+	Queue
+	beforeEnsureMailbox func(root, handle string) error
+	beforeRemoveMailbox func(root, handle string) error
+	beforeRetireHandle  func(root, handle string) error
+	afterRetireHandle   func(root, handle string) error
+	beforePost          func(verb string, args []string) error
+}
+
+func (h hookQueue) unwrapQueue() Queue { return h.Queue }
+
+func (h hookQueue) EnsureMailbox(ctx context.Context, root, handle string) error {
+	if h.beforeEnsureMailbox != nil {
+		if err := h.beforeEnsureMailbox(root, handle); err != nil {
+			return err
+		}
+	}
+	return h.Queue.EnsureMailbox(ctx, root, handle)
+}
+
+func (h hookQueue) RemoveMailbox(ctx context.Context, root, handle string) (amq.MailboxRemoval, error) {
+	if h.beforeRemoveMailbox != nil {
+		if err := h.beforeRemoveMailbox(root, handle); err != nil {
+			return amq.MailboxRemoval{}, err
+		}
+	}
+	return h.Queue.RemoveMailbox(ctx, root, handle)
+}
+
+func (h hookQueue) RetireHandle(ctx context.Context, root, handle string) (bool, error) {
+	if h.beforeRetireHandle != nil {
+		if err := h.beforeRetireHandle(root, handle); err != nil {
+			return false, err
+		}
+	}
+	retired, err := h.Queue.RetireHandle(ctx, root, handle)
+	if err != nil {
+		return retired, err
+	}
+	if retired && h.afterRetireHandle != nil {
+		if err := h.afterRetireHandle(root, handle); err != nil {
+			return retired, err
+		}
+	}
+	return retired, nil
+}
+
+func (h hookQueue) Post(ctx context.Context, root, verb string, args ...string) (amq.Sent, []byte, error) {
+	if h.beforePost != nil {
+		if err := h.beforePost(verb, args); err != nil {
+			return amq.Sent{}, nil, err
+		}
+	}
+	return h.Queue.Post(ctx, root, verb, args...)
+}
+
 func wakeState(t *testing.T, e Env, h string) amq.WakeState {
 	t.Helper()
-	if f, ok := e.AMQ.(*amq.Fake); ok {
+	if f, ok := unwrapQueue(e.AMQ).(*amq.Fake); ok {
 		return f.Waker(e.Paths.Root(), h)
 	}
 	st, err := amq.WakeCheck(context.Background(), realBin(t, e), e.Paths.Root(), h)
@@ -67,7 +136,7 @@ func wakeState(t *testing.T, e Env, h string) amq.WakeState {
 // killWaker kills h's waker as a crash would, leaving its lock stale.
 func killWaker(t *testing.T, e Env, h string) {
 	t.Helper()
-	if f, ok := e.AMQ.(*amq.Fake); ok {
+	if f, ok := unwrapQueue(e.AMQ).(*amq.Fake); ok {
 		f.Kill(e.Paths.Root(), h)
 		return
 	}
@@ -289,7 +358,7 @@ func TestWakerStartsWhenTheBinaryLivesInAGroupWritableDir(t *testing.T) {
 // adapter's use of the Queue, unless it runs against amq (REX_AMQ_REAL=1).
 func needsAmq(t *testing.T, e Env, why string) {
 	t.Helper()
-	if _, ok := e.AMQ.(*amq.Fake); ok {
+	if _, ok := unwrapQueue(e.AMQ).(*amq.Fake); ok {
 		t.Skip("needs " + why + ", which amq.Fake does not emulate: run with REX_AMQ_REAL=1")
 	}
 }
@@ -297,7 +366,7 @@ func needsAmq(t *testing.T, e Env, why string) {
 // noOpenObligations states, for amq.Fake, that the test's world has no open
 // obligations (the fake cannot compute them); amq itself computes them.
 func noOpenObligations(e Env) {
-	if f, ok := e.AMQ.(*amq.Fake); ok {
+	if f, ok := unwrapQueue(e.AMQ).(*amq.Fake); ok {
 		f.OpenObligations = &amq.OpenObligations{}
 	}
 }
@@ -307,7 +376,7 @@ func noOpenObligations(e Env) {
 // runs with REX_AMQ_REAL=1.
 func realBin(t *testing.T, e Env) string {
 	t.Helper()
-	c, ok := e.AMQ.(amq.CLI)
+	c, ok := unwrapQueue(e.AMQ).(amq.CLI)
 	if !ok {
 		t.Skip("needs amq itself (it runs or wraps the binary): run with REX_AMQ_REAL=1")
 	}

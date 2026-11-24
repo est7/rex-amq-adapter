@@ -219,11 +219,11 @@ func TestASweepRacingAResumeLeavesTheResumedAgentItsMailbox(t *testing.T) {
 	if err := e.finishQuietly(ctx, []agent{recordOf(t, e, "codex-01")}); err != nil {
 		t.Fatal(err)
 	}
-	fake := e.AMQ.(*amq.Fake)
 	resumed := make(chan error, 1)
 	var once sync.Once
-	e.AMQ = fake.WithFail(func(op string, _ []string) error {
-		if op == "cleanup" {
+	e.AMQ = hookQueue{
+		Queue: e.AMQ,
+		beforeRemoveMailbox: func(_, _ string) error {
 			once.Do(func() {
 				// The conversation resumes while the sweep removes its mailbox.
 				go func() {
@@ -232,9 +232,9 @@ func TestASweepRacingAResumeLeavesTheResumedAgentItsMailbox(t *testing.T) {
 				}()
 				time.Sleep(300 * time.Millisecond)
 			})
-		}
-		return nil
-	})
+			return nil
+		},
+	}
 	if _, err := e.retireRoster(ctx, []core.Handle{"codex-01"}, nil); err != nil {
 		t.Fatal(err)
 	}
