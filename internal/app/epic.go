@@ -22,7 +22,7 @@ import (
 // OpenEpic is the whole start, so a personal agent runs one command and
 // tells the user only that the Epic started.
 
-// EpicRequest is what a personal agent asks for.
+// EpicRequest is what the Operator asks for.
 type EpicRequest struct {
 	Name string // the Epic: its Rex session's label
 	Dir  string // the repository its agents work in
@@ -36,6 +36,10 @@ type EpicRequest struct {
 	Harness               string // the orchestrator's CLI; "" is the role's default
 	// Crew is the crew the Epic's session works as (Env.Join); "" for none.
 	Crew string
+	// Hub is the Hub directory to link the Epic to: a personal agent's own
+	// (also when "": its session's Hub), else any directory; "" for any
+	// other Operator is the default Hub.
+	Hub string
 	// OpID names this request, so a retry with the same OpID reconciles the
 	// Epic the first run started instead of starting another; "" for none.
 	OpID string
@@ -50,6 +54,7 @@ type EpicPlan struct {
 	Name            string    `json:"name"`
 	Dir             string    `json:"dir"`
 	Crew            string    `json:"crew,omitempty"`
+	Hub             string    `json:"hub,omitempty"`
 	LeadHarness     core.Kind `json:"lead_harness"`
 	NarratorHarness core.Kind `json:"narrator_harness"`
 }
@@ -69,12 +74,18 @@ type EpicResult struct {
 	SessionID string `json:"session_id"`
 	// Lead is the agent that runs the goal (epicLead): an orchestrator, a
 	// pair Epic's implementer, or a design Epic's architect.
-	Lead           EpicLead  `json:"lead"`
-	Narrator       EpicAgent `json:"narrator"`
-	Linked         bool      `json:"linked"`
-	OpID           string    `json:"op_id,omitempty"`
-	LifecycleState string    `json:"lifecycle_state,omitempty"`
-	Replayed       bool      `json:"replayed,omitempty"`
+	Lead     EpicLead  `json:"lead"`
+	Narrator EpicAgent `json:"narrator"`
+	Linked   bool      `json:"linked"`
+	// Hub is the Hub directory the Epic is linked to; NoHub says no Hub
+	// directory is configured, so the Epic of an Operator that is no
+	// personal agent opened unlinked: its narrator mails nobody, and the
+	// Operator reads it with `epic show`.
+	Hub            string `json:"hub,omitempty"`
+	NoHub          bool   `json:"no_hub,omitempty"`
+	OpID           string `json:"op_id,omitempty"`
+	LifecycleState string `json:"lifecycle_state,omitempty"`
+	Replayed       bool   `json:"replayed,omitempty"`
 	// GoalPath is the goal contract the lead runs, and GrantPath the Epic's
 	// notarized grant (grant.md), once written.
 	GoalPath  string `json:"goal_path,omitempty"`
@@ -120,12 +131,143 @@ func epicLead(crewName string) string {
 }
 
 // Ready reports whether the Epic is fully up: both agents adopted, and the
-// caller linked to its narrator.
+// Epic linked to its Hub (or its personal agent's session), unless no Hub
+// is configured to link it to.
 func (r EpicResult) Ready() bool {
-	return r.Linked && r.Lead.Status == core.StartupAdopted && r.Narrator.Status == core.StartupAdopted
+	return (r.Linked || r.NoHub) && r.Lead.Status == core.StartupAdopted && r.Narrator.Status == core.StartupAdopted
 }
 
-// OpenEpic starts an Epic for the personal agent in loc: a session labelled
+// opener is the Operator opening an Epic, with the Rex server its session
+// is created on and the Hub it is linked to ("" for none).
+type opener struct {
+	op     Operator
+	server string
+	hub    core.HubKey
+}
+
+// openHubDir is the Hub directory op links an Epic to: a personal agent's
+// session's Hub, which --hub may name and nothing else; for any other
+// Operator --hub, else the default Hub, else "".
+func (e Env) openHubDir(op Operator, flag string) (string, error) {
+	dir, err := hubFlagDir(flag)
+	if err != nil {
+		return "", err
+	}
+	if !op.Personal() {
+		if dir != "" {
+			return dir, nil
+		}
+		return e.defaultHubDir()
+	}
+	key, err := e.hubOfSession(op.Agent.SessionID)
+	if err != nil {
+		return "", err
+	}
+	if dir != "" && key.Dir() != dir && !dirWithin(op.Agent.Cwd, dir) {
+		return "", fmt.Errorf("%w: %s does not work in %s, and links its Epics to its own Hub", ErrRefused, op.Agent.Handle, flag)
+	}
+	return key.Dir(), nil
+}
+
+// newOpener is op opening an Epic linked to hubDir: on its agent's Rex
+// server, else REX_SERVER's, else the one rex reaches by default.
+func (e Env) newOpener(ctx context.Context, op Operator, hubDir string) (opener, error) {
+	o := opener{op: op, server: op.Loc.Server}
+	if op.Agent != nil {
+		o.server = op.Agent.Server
+	}
+	if o.server == "" {
+		srv, err := e.Rex.Whoami(ctx)
+		if err != nil {
+			return o, fmt.Errorf("tell which Rex server opens the Epic: %w", err)
+		}
+		o.server = srv.Endpoint
+	}
+	if op.Personal() {
+		key, err := e.hubOfSession(op.Agent.SessionID)
+		o.hub = key
+		return o, err
+	}
+	o.hub = core.NewHubKey(o.server, hubDir)
+	return o, nil
+}
+
+// noHub reports whether o links its Epic nowhere: an Operator that is no
+// personal agent, with no Hub directory configured.
+func (o opener) noHub() bool { return !o.op.Personal() && o.hub == "" }
+
+// personalHandle and personalSession are the personal agent opening, ""
+// for any other Operator.
+func (o opener) personalHandle() core.Handle {
+	if o.op.Personal() {
+		return o.op.Agent.Handle
+	}
+	return ""
+}
+
+func (o opener) personalSession() string {
+	if o.op.Personal() {
+		return o.op.Agent.SessionID
+	}
+	return ""
+}
+
+// hashes are the openIdentity hash of id for o, and the hash the same
+// request had before v0.27 ("" for an Operator that could not open then).
+func (o opener) hashes(id openIdentity) (hash, legacy string) {
+	id.HubDir = o.hub.Dir()
+	if o.op.Personal() {
+		session := o.op.Agent.Endpoint().Session()
+		if o.hub == "" {
+			id.Personal = session
+		}
+		legacy = requestHash(legacyOpenIdentity{Personal: session, Name: id.Name, Dir: id.Dir, Goal: id.Goal, Asked: id.Asked, Crew: id.Crew, Harness: id.Harness, GoalSHA256: id.GoalSHA256})
+	}
+	return requestHash(id), legacy
+}
+
+// linkEpic links the Epic session to o: a personal agent's as `epic link`
+// does (Link); any other Operator's to its Hub, with no preferred personal
+// agent. With no Hub there is nothing to link to: linked is false.
+func (e Env) linkEpic(ctx context.Context, o opener, session string) (linked bool, err error) {
+	if o.op.Personal() {
+		_, _, err := e.Link(ctx, o.op.Loc, session, true)
+		return err == nil, err
+	}
+	if o.hub == "" {
+		return false, nil
+	}
+	l := core.Link{Hub: o.hub, Epic: core.SessionKey{Server: o.server, SessionID: session}, CreatedBy: o.op.By(), CreatedAt: e.Now().UTC()}
+	return true, e.Store.PutLink(l)
+}
+
+// narratorBrief is the narrator's first prompt: whom it narrates for, and
+// to mail nobody yet.
+func narratorBrief(name string, op Operator) string {
+	if op.Personal() {
+		h := op.Agent.Handle
+		return fmt.Sprintf("Narrate the Epic %q for its Hub's personal agent (%s opened it). On this first turn, refresh the view, add your reading with --summary, and end your turn: do not mail %s now, nor any personal agent. Mail one only when your role prompt says so (its question, a hand-back or orchestrator departure, a wait on the human), always as `rex-amq-adapter mail send --to personal`: the adapter delivers to whichever personal agent of the Hub is with the user.", name, h, h)
+	}
+	who := "the user opened it"
+	switch {
+	case op.Agent != nil:
+		who = "the user's agent " + string(op.Agent.Handle) + " opened it"
+	case op.Harness != "":
+		who = "the user's " + string(op.Harness) + " agent opened it from outside Rex"
+	}
+	return fmt.Sprintf("Narrate the Epic %q for its Hub's personal agent (%s). On this first turn, refresh the view, add your reading with --summary, and end your turn: do not mail any personal agent now. Mail one only when your role prompt says so (its question, a hand-back or orchestrator departure, a wait on the human), always as `rex-amq-adapter mail send --to personal`: the adapter delivers to whichever personal agent of the Hub is with the user.", name, who)
+}
+
+// OpenEpic is OpenEpicFor the agent in loc, which must be an Operator's.
+func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicResult, error) {
+	op, err := e.operatorIn(loc)
+	if err != nil {
+		return EpicResult{}, err
+	}
+	return e.OpenEpicFor(ctx, op, r)
+}
+
+// OpenEpicFor starts an Epic for the Operator op: a session labelled
 // r.Name with a tab for its orchestrator, briefed with the goal contract or
 // the user's words, and one for its narrator, told whom it narrates for; then it links the session to the caller and
 // waits, until ctx ends, for both agents to be adopted. The Epic's lifecycle
@@ -136,17 +278,7 @@ func (r EpicResult) Ready() bool {
 // same request, however the first run ended, reconciles that session
 // (adoptCreated, reconcileOpen) and never creates another; the op id reused
 // for another request is refused.
-func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicResult, error) {
-	caller, ok, err := e.agentIn(loc)
-	if err != nil {
-		return EpicResult{}, err
-	}
-	if !ok || !caller.Live() {
-		return EpicResult{}, errors.New("no AMQ identity for this pane, so nothing can open an Epic")
-	}
-	if caller.Role != core.PersonalRole {
-		return EpicResult{}, fmt.Errorf("%w: only a %s agent opens Epics, and %s is %q", ErrRefused, core.PersonalRole, caller.Handle, caller.Role)
-	}
+func (e Env) OpenEpicFor(ctx context.Context, op Operator, r EpicRequest) (EpicResult, error) {
 	// The session carries the Epic's whole name (Rex takes up to 128
 	// characters); pane labels carry it shortened to their task width.
 	name := strings.Join(strings.Fields(r.Name), " ")
@@ -206,29 +338,33 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 	if err != nil {
 		return EpicResult{}, err
 	}
-	if r.DryRun {
-		return EpicResult{OpID: r.OpID, Lead: EpicLead{Role: lead}, DryRun: true,
-			Plan: &EpicPlan{Name: name, Dir: physical, Crew: crewName, LeadHarness: kind, NarratorHarness: narrator}}, nil
-	}
-	callerHub, err := e.hubOfSession(caller.SessionID)
+	hubDir, err := e.openHubDir(op, r.Hub)
 	if err != nil {
 		return EpicResult{}, err
 	}
-	seed := store.EpicLifecycle{Name: name, Dir: physical, Hub: callerHub, PersonalHandle: caller.Handle, PersonalSessionID: caller.SessionID, Server: caller.Server, Crew: crewName, OpenOpID: r.OpID}
-	var op *store.EpicOpRecord
+	if r.DryRun {
+		return EpicResult{OpID: r.OpID, Lead: EpicLead{Role: lead}, DryRun: true,
+			Plan: &EpicPlan{Name: name, Dir: physical, Crew: crewName, Hub: hubDir, LeadHarness: kind, NarratorHarness: narrator}}, nil
+	}
+	o, err := e.newOpener(ctx, op, hubDir)
+	if err != nil {
+		return EpicResult{}, err
+	}
+	seed := store.EpicLifecycle{Name: name, Dir: physical, Hub: o.hub, PersonalHandle: o.personalHandle(), PersonalSessionID: o.personalSession(), Server: o.server, Crew: crewName, OpenOpID: r.OpID}
+	var rec *store.EpicOpRecord
 	// release frees LockEpicLifecycle when an op id took it: once the new
 	// session is recorded, or on any return before.
 	release := func() {}
 	defer func() { release() }()
 	if r.OpID != "" {
-		id := openIdentity{Personal: caller.Endpoint().Session(), Name: name, Dir: physical, Asked: r.Asked, Crew: crewName, Goal: grant.goal}
+		id := openIdentity{Name: name, Dir: physical, Asked: r.Asked, Crew: crewName, Goal: grant.goal}
 		if grant.piped {
 			id.GoalSHA256 = store.ContractDigest([]byte(grant.text))
 		}
 		if r.Harness != "" {
 			id.Harness = string(kind)
 		}
-		hash := requestHash(id)
+		hash, legacy := o.hashes(id)
 		// Held from the look-up until the new session is recorded, so two
 		// runs of one op id create one session between them.
 		unlock, err := e.Store.LockEpicLifecycle(ctx)
@@ -236,13 +372,20 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 			return EpicResult{}, err
 		}
 		prev, found, err := e.Store.EpicOp(store.EpicOpOpen, r.OpID)
-		switch {
-		case err != nil:
+		if err != nil {
 			unlock()
 			return EpicResult{}, err
-		case found && prev.RequestHash != hash:
-			unlock()
-			return EpicResult{OpID: r.OpID}, errOpConflict(store.EpicOpOpen, r.OpID)
+		}
+		if found {
+			if same, err := e.opHashMatches(&prev, hash, legacy, false); err != nil || !same {
+				unlock()
+				if err == nil {
+					err = errOpConflict(store.EpicOpOpen, r.OpID)
+				}
+				return EpicResult{OpID: r.OpID}, err
+			}
+		}
+		switch {
 		case found && prev.SessionID == "":
 			// The first run asked Rex for its session and ended before
 			// recording which: find it, or learn that there is none.
@@ -254,10 +397,10 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 		if found {
 			unlock()
 			seed.SessionID = prev.SessionID
-			return e.reconcileOpen(ctx, loc, prev, seed, grant)
+			return e.reconcileOpen(ctx, o, prev, seed, grant)
 		}
 		release = unlock
-		op = &store.EpicOpRecord{Kind: store.EpicOpOpen, OpID: r.OpID, RequestHash: hash, Name: name, Server: caller.Server, PersonalHandle: caller.Handle, PersonalSessionID: caller.SessionID, CreatedAt: e.Now().UTC()}
+		rec = &store.EpicOpRecord{Kind: store.EpicOpOpen, OpID: r.OpID, RequestHash: hash, Name: name, Server: o.server, PersonalHandle: o.personalHandle(), PersonalSessionID: o.personalSession(), CreatedAt: e.Now().UTC()}
 	}
 	// Both agents' folder trust before the session exists: an Epic either
 	// starts with no dialog in its panes or does not start.
@@ -267,7 +410,7 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 		}
 		return EpicResult{}, fmt.Errorf("trust preflight: %w", err)
 	}
-	narrate := fmt.Sprintf("Narrate the Epic %q for its Hub's personal agent (%s opened it). On this first turn, refresh the view, add your reading with --summary, and end your turn: do not mail %s now, nor any personal agent. Mail one only when your role prompt says so (its question, a hand-back or orchestrator departure, a wait on the human), always as `rex-amq-adapter mail send --to personal`: the adapter delivers to whichever personal agent of the Hub is with the user.", name, caller.Handle, caller.Handle)
+	narrate := narratorBrief(name, op)
 	// The narrator's tab first and the orchestrator's last, which Rex makes
 	// the session's active tab; both keep Rex's placeholder name, so each
 	// follows its agent (core.FollowTab).
@@ -287,7 +430,7 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 		{Label: core.NarratorRole + core.PaneSeparator + task, Dir: dir, Command: withReservation(narrRes, withUnattendedEnv(withLaunchEnv(narrLaunch, e.withTrust(dir, narrLaunch.Args(narrator, startCommand(narrator, narrate))))))},
 		{Label: lead + core.PaneSeparator + task, Dir: dir, Command: withReservation(leadRes, withUnattendedEnv(withLaunchEnv(orchLaunch, e.withTrust(dir, orchLaunch.Args(kind, startCommand(kind, brief))))))},
 	}
-	if op != nil {
+	if rec != nil {
 		// Recorded before Rex is asked, with the sessions it has, so a retry
 		// after any failure from here tells the session this run creates.
 		prior, err := e.Rex.ListSessions(ctx)
@@ -296,14 +439,14 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 			e.dropReservation(leadRes)
 			return EpicResult{OpID: r.OpID}, fmt.Errorf("list Rex's sessions before creating the Epic's: %w", err)
 		}
-		op.State, op.PriorSessions, op.UpdatedAt = store.EpicCreating, prior, e.Now().UTC()
-		if err := e.Store.PutEpicOp(*op); err != nil {
+		rec.State, rec.PriorSessions, rec.UpdatedAt = store.EpicCreating, prior, e.Now().UTC()
+		if err := e.Store.PutEpicOp(*rec); err != nil {
 			e.dropReservation(narrRes)
 			e.dropReservation(leadRes)
 			return EpicResult{OpID: r.OpID}, fmt.Errorf("record --op-id %q before creating the Epic's session: %w", r.OpID, err)
 		}
 	}
-	session, blocks, policyErr, crewErr, notaryErr, err := e.newEpicSession(ctx, name, panes, crewName, caller, grant)
+	session, blocks, policyErr, crewErr, notaryErr, err := e.newEpicSession(ctx, name, panes, crewName, o, grant)
 	if err != nil {
 		// Rex was not asked: the names are free again. After an ambiguous
 		// reply (it may have started the panes) they stay reserved until
@@ -312,12 +455,15 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 			e.dropReservation(narrRes)
 			e.dropReservation(leadRes)
 		}
-		if op != nil {
-			e.dropUnstartedOp(ctx, *op)
+		if rec != nil {
+			e.dropUnstartedOp(ctx, *rec)
 		}
 		return EpicResult{OpID: r.OpID}, fmt.Errorf("create the Epic's session: %w", err)
 	}
-	res := EpicResult{SessionID: session, Narrator: EpicAgent{Block: blocks[0]}, Lead: EpicLead{Role: lead, EpicAgent: EpicAgent{Block: blocks[1]}}, OpID: r.OpID}
+	res := EpicResult{SessionID: session, Narrator: EpicAgent{Block: blocks[0]}, Lead: EpicLead{Role: lead, EpicAgent: EpicAgent{Block: blocks[1]}}, OpID: r.OpID, Hub: o.hub.Dir(), NoHub: o.noHub()}
+	if res.NoHub {
+		fmt.Fprintf(Diagnostics, "no Hub directory is configured: the Epic %s opened unlinked (--hub DIR, `rex-amq-adapter hub add DIR`, or ~/me links one)\n", session)
+	}
 	var errs []error
 	if policyErr != nil {
 		errs = append(errs, fmt.Errorf("record the Epic policy: %w", policyErr))
@@ -333,9 +479,9 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 	// Recorded before any wait, so a run that dies or times out from here on
 	// leaves the session to reconcile.
 	seed.SessionID = session
-	if op != nil {
-		op.SessionID, op.NarratorBlock, op.OrchestratorBlock, op.PriorSessions = session, blocks[0], blocks[1], nil
-		lc, err := e.advanceEpic(seed, store.EpicPartialStart, op)
+	if rec != nil {
+		rec.SessionID, rec.NarratorBlock, rec.OrchestratorBlock, rec.PriorSessions = session, blocks[0], blocks[1], nil
+		lc, err := e.advanceEpic(seed, store.EpicPartialStart, rec)
 		release()
 		release = func() {}
 		if err != nil {
@@ -351,14 +497,12 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 	}
 	// Linked before the narrator is adopted, so the caller can mail it the
 	// moment it is.
-	if _, _, err := e.Link(ctx, loc, session, true); err != nil {
+	if res.Linked, err = e.linkEpic(ctx, o, session); err != nil {
 		errs = append(errs, fmt.Errorf("link: %w", err))
-	} else {
-		res.Linked = true
 	}
 	errs = append(errs, e.awaitEpicAgents(ctx, &res)...)
 	if res.Lead.Status == core.StartupAdopted && res.Narrator.Status == core.StartupAdopted {
-		if lc, err := e.lockedAdvanceEpic(ctx, seed, store.EpicOpened, op); err != nil {
+		if lc, err := e.lockedAdvanceEpic(ctx, seed, store.EpicOpened, rec); err != nil {
 			errs = append(errs, fmt.Errorf("record the lifecycle: %w", err))
 		} else {
 			res.LifecycleState = lc.State
@@ -377,7 +521,7 @@ func (e Env) OpenEpic(ctx context.Context, loc Location, r EpicRequest) (EpicRes
 // recorded. The lifecycle lock is taken only for the records, after Rex
 // created the session. policyErr, crewErr, and notaryErr are what could not
 // be recorded; the session stands.
-func (e Env) newEpicSession(ctx context.Context, name string, panes []rex.Pane, crewName string, by agent, grant epicGrant) (session string, blocks []string, policyErr, crewErr, notaryErr, err error) {
+func (e Env) newEpicSession(ctx context.Context, name string, panes []rex.Pane, crewName string, by opener, grant epicGrant) (session string, blocks []string, policyErr, crewErr, notaryErr, err error) {
 	unlockOpening, err := e.Store.LockEpicOpening(ctx)
 	if err != nil {
 		return "", nil, nil, nil, nil, fmt.Errorf("%w: %v", errEpicNotAsked, err)
@@ -402,11 +546,11 @@ func (e Env) newEpicSession(ctx context.Context, name string, panes []rex.Pane, 
 	}
 	defer unlock()
 	now := e.Now().UTC()
-	policyErr = e.Store.PutSessionPolicy(epicPolicy(session, by.Server, crewName, by.Handle, now))
+	policyErr = e.Store.PutSessionPolicy(epicPolicy(session, by.server, crewName, by.op.By(), now))
 	if crewName != "" {
-		crewErr = e.Store.PutSessionCrew(session, store.SessionCrew{Crew: crewName, ClaimedBy: by.Handle, ClaimedAt: now})
+		crewErr = e.Store.PutSessionCrew(session, store.SessionCrew{Crew: crewName, ClaimedBy: by.op.By(), ClaimedAt: now})
 	}
-	return session, blocks, policyErr, crewErr, e.notarize(session, by.Handle, grant), nil
+	return session, blocks, policyErr, crewErr, e.notarize(session, by.op, grant), nil
 }
 
 // errEpicNotAsked is an Epic whose session Rex was never asked to create.
@@ -527,7 +671,7 @@ func designBrief(g epicGrant, dir string) string {
 // notarize keeps g for session as the personal agent by relayed it: a piped
 // contract as the session's goal.md, then the read-only grant
 // (store.PutGrant), once; a retry keeps what the first run wrote.
-func (e Env) notarize(session string, by core.Handle, g epicGrant) error {
+func (e Env) notarize(session string, by Operator, g epicGrant) error {
 	contract := g.goal
 	if g.piped {
 		if err := e.Store.PutGoal(session, g.text); err != nil {
@@ -535,7 +679,7 @@ func (e Env) notarize(session string, by core.Handle, g epicGrant) error {
 		}
 		contract = e.Paths.GoalPath(session)
 	}
-	rec := store.Grant{Asked: g.asked, RelayedBy: by, RelayedAt: e.Now().UTC(), SessionID: session, Contract: contract}
+	rec := store.Grant{Asked: g.asked, RelayedBy: by.By(), RelayedRole: by.GrantRole(), RelayedAt: e.Now().UTC(), SessionID: session, Contract: contract}
 	if contract != "" {
 		rec.ContractSHA256 = store.ContractDigest([]byte(g.text))
 	}

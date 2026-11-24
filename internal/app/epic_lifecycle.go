@@ -55,10 +55,13 @@ func requestHash(v any) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
-// openIdentity is what makes two `epic` requests the same one: who asks, for
-// which Epic, where, under what grant, as which crew, on which harness.
+// openIdentity is what makes two `epic open --op-id` requests the same
+// one: the Hub the Epic is linked to (HubDir, whoever of its Operators
+// asks), or with no Hub the personal agent's session, and the Epic, where,
+// under what grant, as which crew, on which harness.
 type openIdentity struct {
-	Personal core.SessionKey `json:"personal"`
+	HubDir   string          `json:"hub_dir,omitempty"`
+	Personal core.SessionKey `json:"personal,omitzero"`
 	Name     string          `json:"name"`
 	Dir      string          `json:"dir"`
 	Goal     string          `json:"goal"`
@@ -66,16 +69,84 @@ type openIdentity struct {
 	Crew     string          `json:"crew"`
 	Harness  string          `json:"harness"`
 	// GoalSHA256 is the digest of a contract piped in (--goal -), which has
-	// no path; omitted otherwise, so earlier requests keep their hash.
+	// no path; omitted otherwise.
 	GoalSHA256 string `json:"goal_sha256,omitempty"`
 }
 
-// closeIdentity is what makes two `epic close` requests the same one.
+// closeIdentity is what makes two `epic close --op-id` requests the same
+// one: the Hub (a personal agent's own, or its session without one; for any
+// other Operator the Hub the Epic's lifecycle records), the Epic, and
+// --force (closeHashes). Neither changes under the close's own unlink, so a
+// retry after a close that died part way is the same request.
 type closeIdentity struct {
+	HubDir   string          `json:"hub_dir,omitempty"`
+	Personal core.SessionKey `json:"personal,omitzero"`
+	Session  string          `json:"session"`
+	Force    bool            `json:"force,omitempty"`
+}
+
+// The identities before v0.27 named the personal agent (or the user) that
+// asked, not the Hub, so an op id one Operator recorded could not be
+// replayed by another. An op recorded under one is still the same request
+// for the caller that could have made it (opHashMatches).
+//
+// TODO(v0.28): remove legacyOpenIdentity, legacyCloseIdentity, and
+// legacyReviveIdentity, one minor version after the change.
+type legacyOpenIdentity struct {
+	Personal   core.SessionKey `json:"personal"`
+	Name       string          `json:"name"`
+	Dir        string          `json:"dir"`
+	Goal       string          `json:"goal"`
+	Asked      string          `json:"asked"`
+	Crew       string          `json:"crew"`
+	Harness    string          `json:"harness"`
+	GoalSHA256 string          `json:"goal_sha256,omitempty"`
+}
+
+type legacyCloseIdentity struct {
 	Hub      string          `json:"hub,omitempty"`
 	Personal core.SessionKey `json:"personal"`
 	Session  string          `json:"session"`
 	Force    bool            `json:"force,omitempty"`
+}
+
+type legacyReviveIdentity struct {
+	Session  string          `json:"session"`
+	Personal core.SessionKey `json:"personal,omitzero"`
+	Human    bool            `json:"human,omitempty"`
+}
+
+// opHashMatches reports whether prev, a recorded op, is the request whose
+// identity hashes to hash. One recorded under legacy, the hash the same
+// request had before v0.27 ("" when this caller could not have made one),
+// is the same request too: unless dryRun, its record is rewritten to hash,
+// so its next replay matches on its own. The caller holds
+// LockEpicLifecycle when it writes.
+func (e Env) opHashMatches(prev *store.EpicOpRecord, hash, legacy string, dryRun bool) (bool, error) {
+	if prev.RequestHash == hash {
+		return true, nil
+	}
+	if legacy == "" || prev.RequestHash != legacy {
+		return false, nil
+	}
+	if dryRun {
+		return true, nil
+	}
+	prev.RequestHash = hash
+	if err := e.Store.PutEpicOp(*prev); err != nil {
+		return true, fmt.Errorf("record --op-id %q under its new request hash: %w", prev.OpID, err)
+	}
+	return true, nil
+}
+
+// epicHubDir is the Hub directory session's Epic lifecycle records, "" for
+// none.
+func (e Env) epicHubDir(session string) (string, error) {
+	lc, ok, err := e.Store.EpicLifecycle(session)
+	if err != nil || !ok {
+		return "", err
+	}
+	return lc.Hub.Dir(), nil
 }
 
 // errOpConflict refuses an op id already used for another request.
@@ -138,8 +209,8 @@ func fill[T comparable](dst *T, v T) {
 // records the session's unattended policy and crew if the first run could
 // not, waits as the first run did for both agents, and moves the lifecycle
 // on.
-func (e Env) reconcileOpen(ctx context.Context, loc Location, op store.EpicOpRecord, seed store.EpicLifecycle, grant epicGrant) (EpicResult, error) {
-	res := EpicResult{SessionID: op.SessionID, OpID: op.OpID, Replayed: true,
+func (e Env) reconcileOpen(ctx context.Context, o opener, op store.EpicOpRecord, seed store.EpicLifecycle, grant epicGrant) (EpicResult, error) {
+	res := EpicResult{SessionID: op.SessionID, OpID: op.OpID, Replayed: true, Hub: o.hub.Dir(), NoHub: o.noHub(),
 		Lead: EpicLead{Role: epicLead(seed.Crew), EpicAgent: EpicAgent{Block: op.OrchestratorBlock}}, Narrator: EpicAgent{Block: op.NarratorBlock}}
 	lc, ok, err := e.Store.EpicLifecycle(op.SessionID)
 	if err != nil {
@@ -158,24 +229,22 @@ func (e Env) reconcileOpen(ctx context.Context, loc Location, op store.EpicOpRec
 		return res, fmt.Errorf("inspect the Epic session %s that --op-id %q opened: %w", op.SessionID, op.OpID, err)
 	}
 	var errs []error
-	if err := e.ensureEpicPolicy(op, seed.Crew); err != nil {
+	if err := e.ensureEpicPolicy(op, seed.Crew, o.op.By()); err != nil {
 		errs = append(errs, fmt.Errorf("record the Epic policy: %w", err))
 	}
 	if seed.Crew != "" {
-		if err := e.ensureSessionCrew(ctx, op.SessionID, seed.Crew, op.PersonalHandle); err != nil {
+		if err := e.ensureSessionCrew(ctx, op.SessionID, seed.Crew, o.op.By()); err != nil {
 			errs = append(errs, fmt.Errorf("record the crew: %w", err))
 		}
 	}
 	// The first run's grant stands; one it never wrote is written now.
-	if err := e.notarize(op.SessionID, op.PersonalHandle, grant); err != nil {
+	if err := e.notarize(op.SessionID, o.op, grant); err != nil {
 		errs = append(errs, fmt.Errorf("notarize the grant: %w", err))
 	} else {
 		res.GoalPath, res.GrantPath = e.grantPaths(op.SessionID)
 	}
-	if _, _, err := e.Link(ctx, loc, op.SessionID, true); err != nil {
+	if res.Linked, err = e.linkEpic(ctx, o, op.SessionID); err != nil {
 		errs = append(errs, fmt.Errorf("link: %w", err))
-	} else {
-		res.Linked = true
 	}
 	errs = append(errs, e.awaitEpicAgents(ctx, &res)...)
 	state := store.EpicPartialStart
@@ -297,11 +366,11 @@ func (e Env) adoptCreated(ctx context.Context, op *store.EpicOpRecord, seed stor
 // ensureEpicPolicy records the unattended policy of op's Epic unless one is:
 // a first run that died between creating the session and writing it
 // (newEpicSession) leaves its agents' later summons without it.
-func (e Env) ensureEpicPolicy(op store.EpicOpRecord, crewName string) error {
+func (e Env) ensureEpicPolicy(op store.EpicOpRecord, crewName string, by core.Handle) error {
 	if _, ok, err := e.Store.SessionPolicy(op.SessionID); err != nil || ok {
 		return err
 	}
-	return e.Store.PutSessionPolicy(epicPolicy(op.SessionID, op.Server, crewName, op.PersonalHandle, e.Now().UTC()))
+	return e.Store.PutSessionPolicy(epicPolicy(op.SessionID, op.Server, crewName, by, e.Now().UTC()))
 }
 
 // ensureSessionCrew records crew as session's crew unless one is.
@@ -337,7 +406,7 @@ func (e Env) awaitEpicAgents(ctx context.Context, res *EpicResult) []error {
 // records the Epic closed, with op when there is one; the closed lifecycle
 // stays as the close's tombstone. The caller holds LockEpicLifecycle and
 // then LockLifecycle.
-func (e Env) finishClose(ctx context.Context, on Terminal, epic core.SessionKey, caller agent, me core.Endpoint, op *store.EpicOpRecord) (CloseResult, error) {
+func (e Env) finishClose(ctx context.Context, on Terminal, epic core.SessionKey, c closer, op *store.EpicOpRecord) (CloseResult, error) {
 	res := CloseResult{SessionID: epic.SessionID, Changed: true}
 	if op != nil {
 		res.OpID = op.OpID
@@ -352,7 +421,12 @@ func (e Env) finishClose(ctx context.Context, on Terminal, epic core.SessionKey,
 	if res.Parked, err = e.parkClosed(ctx, epic); err != nil {
 		return res, err
 	}
-	links, err := e.linksFor(me, epic)
+	var links []core.Link
+	if c.personal() {
+		links, err = e.linksFor(c.me, epic)
+	} else {
+		links, err = e.linksToEpic(epic.SessionID)
+	}
 	if err != nil {
 		return res, err
 	}
@@ -362,7 +436,7 @@ func (e Env) finishClose(ctx context.Context, on Terminal, epic core.SessionKey,
 		}
 	}
 	res.Unlinked = true
-	seed := store.EpicLifecycle{SessionID: epic.SessionID, Server: epic.Server, Hub: me.Hub, PersonalHandle: caller.Handle, PersonalSessionID: caller.SessionID}
+	seed := store.EpicLifecycle{SessionID: epic.SessionID, Server: epic.Server, Hub: c.me.Hub, PersonalHandle: c.personalHandle(), PersonalSessionID: c.personalSession()}
 	if op != nil {
 		seed.CloseOpID = op.OpID
 	}

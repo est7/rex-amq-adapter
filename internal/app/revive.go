@@ -106,12 +106,13 @@ func (r ReviveResult) Touched() bool {
 	})
 }
 
-// reviveIdentity is what a revive request is: the Epic, and who asked (a
-// personal agent's session, or the user from outside an agent).
+// reviveIdentity is what a revive request is: the Epic, and the Hub its
+// lifecycle records, whoever of its Operators asks (with no Hub, a personal
+// agent's session).
 type reviveIdentity struct {
 	Session  string          `json:"session"`
+	HubDir   string          `json:"hub_dir,omitempty"`
 	Personal core.SessionKey `json:"personal,omitzero"`
-	Human    bool            `json:"human,omitempty"`
 }
 
 // ReviveEpic resumes, after a Rex restart, the agents of Epic session
@@ -133,11 +134,10 @@ func (e Env) ReviveEpic(ctx context.Context, getenv func(string) string, r Reviv
 	if err := ValidOpID(r.OpID); err != nil {
 		return res, err
 	}
-	by, id, err := e.reviver(getenv, r.Session)
+	by, hash, legacy, err := e.reviver(getenv, r.Session)
 	if err != nil {
 		return res, err
 	}
-	hash := requestHash(id)
 	var release func()
 	if !r.DryRun {
 		// Held until every pane is written: a close cannot kill the session
@@ -163,11 +163,15 @@ func (e Env) ReviveEpic(ctx context.Context, getenv func(string) string, r Reviv
 	res.LifecycleState = lc.State
 	if r.OpID != "" {
 		prev, found, err := e.Store.EpicOp(store.EpicOpRevive, r.OpID)
-		switch {
-		case err != nil:
+		if err != nil {
 			return res, err
-		case found && prev.RequestHash != hash:
-			return res, errOpConflict(store.EpicOpRevive, r.OpID)
+		}
+		if found {
+			if same, err := e.opHashMatches(&prev, hash, legacy, r.DryRun); err != nil {
+				return res, err
+			} else if !same {
+				return res, errOpConflict(store.EpicOpRevive, r.OpID)
+			}
 		}
 		res.Replayed = found
 	}
@@ -249,24 +253,30 @@ func (e Env) ReviveEpic(ctx context.Context, getenv func(string) string, r Reviv
 // reviver is who asks to revive session: the Operator (ResolveOperator);
 // a personal agent only for an Epic linked to its Hub or session. by is the
 // personal agent, zero for any other Operator, whose request is the user's.
-func (e Env) reviver(getenv func(string) string, session string) (by agent, id reviveIdentity, err error) {
-	id.Session = session
+// hash is the request's reviveIdentity hash, and legacy the one the same
+// request had before v0.27.
+func (e Env) reviver(getenv func(string) string, session string) (by agent, hash, legacy string, err error) {
 	op, err := e.ResolveOperator(getenv)
 	if err != nil {
-		return agent{}, id, err
+		return agent{}, "", "", err
+	}
+	id := reviveIdentity{Session: session}
+	if id.HubDir, err = e.epicHubDir(session); err != nil {
+		return agent{}, "", "", err
 	}
 	if !op.Personal() {
-		id.Human = true
-		return agent{}, id, nil
+		return agent{}, requestHash(id), requestHash(legacyReviveIdentity{Session: session, Human: true}), nil
 	}
 	rec := *op.Agent
 	if linked, err := e.personalLinked(rec, session); err != nil {
-		return agent{}, id, err
+		return agent{}, "", "", err
 	} else if !linked {
-		return agent{}, id, refused(fmt.Sprintf("%s reviving %s", rec.Handle, session), core.Decision{Reason: core.ReasonNotLinked})
+		return agent{}, "", "", refused(fmt.Sprintf("%s reviving %s", rec.Handle, session), core.Decision{Reason: core.ReasonNotLinked})
 	}
-	id.Personal = rec.Endpoint().Session()
-	return rec, id, nil
+	if id.HubDir == "" {
+		id.Personal = rec.Endpoint().Session()
+	}
+	return rec, requestHash(id), requestHash(legacyReviveIdentity{Session: session, Personal: rec.Endpoint().Session()}), nil
 }
 
 // epicLinked reports whether a link to the Epic exists: the narrator's

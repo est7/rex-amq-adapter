@@ -14,7 +14,7 @@ import (
 	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
-// epicOpen opens an Epic for the personal agent running it (app.OpenEpic).
+// epicOpen opens an Epic for the Operator running it (app.OpenEpicFor).
 // What started is in data even when part of it failed: a partial start
 // exits 7 (partial_start) so the caller reads data before ok.
 func epicOpen(c *cli.Ctx, in cli.Input) (cli.Result, error) {
@@ -32,14 +32,15 @@ func epicOpen(c *cli.Ctx, in cli.Input) (cli.Result, error) {
 	if asked, err = readText(asked, c.Stdin); err != nil {
 		return cli.Result{}, err
 	}
-	env, loc, err := caller(c)
+	env, op, err := operator(c)
 	if err != nil {
 		return cli.Result{}, err
 	}
+	env = onServer(env, c, op.Loc.Server)
 	ctx, cancel := within(c, in.Duration("timeout", 90*time.Second))
 	defer cancel()
-	res, err := env.OpenEpic(ctx, loc, app.EpicRequest{Name: in.Arg("name"), Dir: in.Str("cwd"), Goal: goalFile, GoalText: goalText,
-		Asked: asked, Harness: in.Str("harness"), Crew: in.Str("crew"), OpID: in.Str("op-id"), DryRun: in.DryRun()})
+	res, err := env.OpenEpicFor(ctx, op, app.EpicRequest{Name: in.Arg("name"), Dir: in.Str("cwd"), Goal: goalFile, GoalText: goalText,
+		Asked: asked, Harness: in.Str("harness"), Crew: in.Str("crew"), Hub: in.Str("hub"), OpID: in.Str("op-id"), DryRun: in.DryRun()})
 	switch {
 	case res.SessionID == "" && err != nil:
 		return cli.Result{}, err
@@ -81,8 +82,7 @@ func readText(v string, stdin io.Reader) (string, error) {
 	return v, nil
 }
 
-// epicClose closes a linked Epic for the personal agent running it, on the
-// user's words (--asked, the named confirmation, checked before anything
+// epicClose closes an Epic for the Operator running it, on the user's words (--asked, the named confirmation, checked before anything
 // else so a missing one is exit 2 anywhere).
 func epicClose(c *cli.Ctx, in cli.Input) (cli.Result, error) {
 	session := in.Arg("session")
@@ -95,13 +95,14 @@ func epicClose(c *cli.Ctx, in cli.Input) (cli.Result, error) {
 			WithHint("relay the user's words verbatim; never write them yourself").
 			WithNext("rex-amq-adapter epic close " + session + " --asked \"<the user's words>\"")
 	}
-	env, loc, err := caller(c)
+	env, op, err := operator(c)
 	if err != nil {
 		return cli.Result{}, err
 	}
+	env = onServer(env, c, op.Loc.Server)
 	ctx, cancel := within(c, 30*time.Second)
 	defer cancel()
-	res, err := env.CloseEpic(ctx, loc, app.CloseRequest{Session: session, Asked: asked, Force: in.Bool("force"), OpID: in.Str("op-id"), DryRun: in.DryRun()})
+	res, err := env.CloseEpicFor(ctx, op, app.CloseRequest{Session: session, Hub: in.Str("hub"), Asked: asked, Force: in.Bool("force"), OpID: in.Str("op-id"), DryRun: in.DryRun()})
 	if err != nil {
 		return cli.Result{}, err
 	}

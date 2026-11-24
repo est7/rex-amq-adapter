@@ -469,7 +469,7 @@ func TestMaterializeConflict(t *testing.T) {
 func TestEpicGrantChecksTheContract(t *testing.T) {
 	e, _ := artifactWorld(t)
 	contract := writeSrc(t, "goal.md", []byte("GOAL: design the cache\n"))
-	if err := e.notarize("session:d", "claude-01", epicGrant{asked: "design it", goal: contract, text: "GOAL: design the cache\n"}); err != nil {
+	if err := e.notarize("session:d", personalOperator("claude-01"), epicGrant{asked: "design it", goal: contract, text: "GOAL: design the cache\n"}); err != nil {
 		t.Fatal(err)
 	}
 	for _, c := range []struct {
@@ -498,10 +498,16 @@ func TestEpicGrantChecksTheContract(t *testing.T) {
 	if g, err := e.ReadGrant(Location{Block: "block:claude-10"}, ""); err != nil || g.ContractSHA256OK || !strings.Contains(g.ContractNote, "changed") {
 		t.Errorf("a changed contract: %+v %v", g, err)
 	}
-	if err := e.notarize("session:w", "claude-01", epicGrant{asked: "just words"}); err != nil {
+	if err := e.notarize("session:w", personalOperator("claude-01"), epicGrant{asked: "just words"}); err != nil {
 		t.Fatal(err)
 	}
 	if g, err := e.ReadGrantAsOperator(outsideRex, "session:w"); err != nil || g.ContractSHA256OK {
 		t.Errorf("a grant with no contract: %+v %v", g, err)
 	}
+}
+
+// personalOperator is the personal agent h as the Operator, for a record it
+// relays.
+func personalOperator(h core.Handle) Operator {
+	return Operator{Agent: &agent{Identity: store.Identity{Handle: h, Role: core.PersonalRole}}}
 }

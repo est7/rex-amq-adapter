@@ -11,17 +11,17 @@ import (
 	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
-// The cockpit is the human's read of a Hub's Epics, from a personal agent's
-// own pane or from outside Rex (`epic list`, `epic show`). It reads only: no
-// mail moves, no receipt is written, nothing is started. Its scope is the
-// Epics linked to one Hub (core.LinkMatchesPersonal), never another Epic,
-// and it does not depend on which of the Hub's personal agents are live, or
-// how many; and it is not a way around the view's own access rule, so
-// anything running as, or under, an agent that is not a personal one is
-// refused, however its environment was trimmed (cockpitScope). A pane or a
-// shell with no agent in it is not trusted for being one: it reads the Hub
-// it names (--hub), the Hub of the personal agent it names (--personal), or
-// the default Hub.
+// The cockpit is the Operator's read of a Hub's Epics (`epic list`, `epic
+// show`, ResolveOperator): the user's, from outside Rex, a pane with no
+// agent, or a Desktop agent no hook adopted; a personal agent's, from its
+// own pane; or a top-level standalone agent's. It reads only: no mail
+// moves, no receipt is written, nothing is started. Its scope is the Epics
+// linked to one Hub (core.LinkMatchesPersonal), never another Epic, and it
+// does not depend on which of the Hub's personal agents are live, or how
+// many. A caller that is no Operator, however its environment was trimmed,
+// is refused by ResolveOperator. An Operator that is no personal agent
+// reads the Hub it names (--hub), the Hub of the personal agent it names
+// (--personal), or the default Hub.
 
 // CockpitViewRequest is what `epic list` and `epic show` from outside Rex
 // ask: Session, one linked Epic's view; without it, a summary of every

@@ -274,6 +274,44 @@ func (e Env) ResolveOperator(getenv func(string) string) (Operator, error) {
 	return e.operatorOf(r, getenv)
 }
 
+// operatorIn is the live agent in loc as an Operator, for a caller that
+// located it already (OpenEpic, CloseEpic): a personal agent, or a
+// standalone one (rule 2) that runs attended.
+func (e Env) operatorIn(loc Location) (Operator, error) {
+	rec, ok, err := e.agentIn(loc)
+	if err != nil {
+		return Operator{}, err
+	}
+	if !ok || !rec.Live() {
+		return Operator{}, fmt.Errorf("no AMQ identity for this pane (%s)", loc.Block)
+	}
+	if rec.Role != core.PersonalRole {
+		if err := e.standalone(rec); err != nil {
+			return Operator{}, err
+		}
+		if rec.Unattended {
+			return Operator{}, operatorRefused(GuardUnattended, "an Epic's operator is attended, and %s runs unattended", rec.Handle)
+		}
+	}
+	return Operator{Agent: &rec, Loc: loc}, nil
+}
+
+// hubFlagDir is the Hub directory a --hub flag names, resolved; "" for
+// none. One that is not a directory is ErrUsage.
+func hubFlagDir(flag string) (string, error) {
+	if flag == "" {
+		return "", nil
+	}
+	dir, err := resolvedDir(flag)
+	if err != nil {
+		return "", fmt.Errorf("%w: --hub %s: %v", ErrUsage, flag, err)
+	}
+	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+		return "", fmt.Errorf("%w: --hub %s is not a directory", ErrUsage, flag)
+	}
+	return dir, nil
+}
+
 // epicSelf reports whether rec is an Epic's own lead or narrator: the
 // readers of its own session's view and grant beside the Operator.
 func (e Env) epicSelf(rec agent) (bool, error) {

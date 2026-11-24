@@ -169,3 +169,67 @@ func TestPersonalAgentClosesAnEpic(t *testing.T) {
 		t.Errorf("links left: %v", links)
 	}
 }
+
+// The user's Desktop agent, outside Rex (a harness session no hook adopted,
+// with no personal agent live anywhere), operates an Epic: it opens one
+// linked to the Hub --hub names, with a grant that says an interactive
+// agent relayed the words, replays it under its op id, sees it in the Hub's
+// cockpit, and closes it on the user's words. An agent of the Epic, from
+// its own pane, is refused every one of those commands.
+func TestExternalOperatorOpensAndClosesAnEpic(t *testing.T) {
+	w := newWorld(t)
+	hub, err := filepath.EvalSymlinks(w.project("hub"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	goal := filepath.Join(w.dir, "goal.md")
+	w.write(goal, "GOAL: ship from the desktop\n")
+	desktop := []string{"ANTIGRAVITY_CONVERSATION_ID=desktop-e2e-1"}
+	open := []string{"epic", "open", "e2e-external", "--cwd", w.project("app"), "--goal", goal, "--asked", "run it from the desktop",
+		"--hub", hub, "--timeout", "40", "--op-id", "e2e-ext-open-1"}
+	out, code := w.adapterRunEnv(desktop, open...)
+	if code != 0 {
+		t.Fatalf("epic open from outside Rex: exit %d\n%s\n%s", code, out, w.dump())
+	}
+	var res struct {
+		Session   string                         `json:"session_id"`
+		Linked    bool                           `json:"linked"`
+		Hub       string                         `json:"hub"`
+		GrantPath string                         `json:"grant_path"`
+		Lead      struct{ Block, Status string } `json:"lead"`
+		Narrator  struct{ Status string }        `json:"narrator"`
+	}
+	if err := envelopeData(out, &res); err != nil || !res.Linked || res.Hub != hub || res.Lead.Status != "adopted" || res.Narrator.Status != "adopted" {
+		t.Fatalf("open result %+v (%v)\n%s", res, err, w.dump())
+	}
+	if b, err := os.ReadFile(res.GrantPath); err != nil || !strings.Contains(string(b), "- relayed_by: agy (interactive agent)\n") {
+		t.Errorf("grant %s (%v):\n%s", res.GrantPath, err, b)
+	}
+	again, code := w.adapterRunEnv(desktop, open...)
+	var replay struct {
+		Session  string `json:"session_id"`
+		Replayed bool   `json:"replayed"`
+	}
+	if code != 0 || envelopeData(again, &replay) != nil || !replay.Replayed || replay.Session != res.Session {
+		t.Fatalf("the replay: exit %d\n%s", code, again)
+	}
+	if list, code := w.adapterRunEnv(desktop, "epic", "list", "--hub", hub); code != 0 || !strings.Contains(list, res.Session) {
+		t.Errorf("the Hub's cockpit: exit %d\n%s", code, list)
+	}
+	member := []string{"REX_BLOCK=" + res.Lead.Block}
+	for _, args := range [][]string{{"epic", "list", "--hub", hub}, {"epic", "close", res.Session, "--asked", "close it"}, {"epic", "open", "x", "--cwd", hub, "--asked", "go"}} {
+		if out, code := w.adapterRunEnv(member, args...); code != 6 || !strings.Contains(out, `"code":"guard_denied"`) {
+			t.Errorf("%v from the lead's pane: exit %d\n%s", args, code, out)
+		}
+	}
+	closeOut, code := w.adapterRunEnv(desktop, "epic", "close", res.Session, "--asked", "close it from the desktop", "--hub", hub, "--force", "--op-id", "e2e-ext-close-1")
+	if code != 0 || !strings.Contains(closeOut, `"unlinked":true`) || !strings.Contains(closeOut, `"lifecycle_state":"closed"`) {
+		t.Fatalf("epic close from outside Rex: exit %d\n%s\n%s", code, closeOut, w.dump())
+	}
+	if _, err := w.rexErr("session", "inspect", res.Session); err == nil {
+		t.Errorf("the Epic's session %s is still there", res.Session)
+	}
+	if links, _ := filepath.Glob(filepath.Join(w.root(), "extensions", "rex-amq-adapter", "links", "*.json")); len(links) != 0 {
+		t.Errorf("links left: %v", links)
+	}
+}
