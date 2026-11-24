@@ -72,3 +72,21 @@ func hubNotify(c *cli.Ctx, in cli.Input) (cli.Result, error) {
 	}
 	return cli.Result{Data: res}, nil
 }
+
+// hubInbox reads a Hub's inbox for the Operator (app.ReadHubInbox), from
+// the records alone: it asks no Rex, so it reads with Rex down.
+func hubInbox(c *cli.Ctx, in cli.Input) (cli.Result, error) {
+	env, err := app.NewEnv(c.Getenv("REX_SERVER"))
+	if err != nil {
+		return cli.Result{}, err
+	}
+	wait := in.Duration("wait", 0)
+	ctx, cancel := within(c, wait+30*time.Second)
+	defer cancel()
+	page, err := env.ReadHubInbox(ctx, c.Getenv, app.HubInboxRequest{Hub: in.Str("hub"), Since: int64(in.Int("since")), Wait: wait,
+		Epic: in.Str("epic"), Kind: in.Str("kind"), Limit: in.Int("limit")})
+	if err != nil {
+		return cli.Result{}, err
+	}
+	return cli.Result{Data: page}, nil
+}

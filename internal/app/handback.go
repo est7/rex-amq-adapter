@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -54,6 +55,10 @@ func (e Env) RecordHandBack(ctx context.Context, loc Location, body string) (sto
 // it recorded, and the op id with another request is a conflict. A retry
 // after a failure part way finishes what is left: the same request again
 // stores the one the lifecycle lists.
+//
+// Whenever the stored hand-back is the latest the lifecycle lists, it is
+// kept in the Hub's inbox too (noteHandBackInHub), under the same lock and
+// whether or not this run changed it.
 func (e Env) RecordHandBackWith(ctx context.Context, loc Location, r HandBackRequest) (h store.HandBack, changed bool, err error) {
 	rec, err := e.handBackCaller(loc, r.Body)
 	if err != nil {
@@ -62,17 +67,27 @@ func (e Env) RecordHandBackWith(ctx context.Context, loc Location, r HandBackReq
 	if err := ValidOpID(r.OpID); err != nil {
 		return h, false, err
 	}
+	unlock, err := e.Store.LockEpicLifecycle(ctx)
+	if err != nil {
+		return h, false, err
+	}
+	defer unlock()
+	h, changed, err = e.recordHandBack(rec, r)
+	if ierr := e.noteHandBackInHub(ctx, rec.SessionID); ierr != nil {
+		err = errors.Join(err, ierr)
+	}
+	return h, changed, err
+}
+
+// recordHandBack is RecordHandBackWith's record of r for the lead rec; the
+// caller holds LockEpicLifecycle.
+func (e Env) recordHandBack(rec agent, r HandBackRequest) (h store.HandBack, changed bool, err error) {
 	entries := store.Entries(r.Artifacts)
 	digest := store.HandBackWithArtifacts(store.HandBackDigest(r.Body), entries)
 	opHash := ""
 	if r.OpID != "" {
 		opHash = store.ContractDigest([]byte(r.OpID))
 	}
-	unlock, err := e.Store.LockEpicLifecycle(ctx)
-	if err != nil {
-		return h, false, err
-	}
-	defer unlock()
 	stored, hasPrev, err := e.Store.HandBack(rec.SessionID)
 	if err != nil {
 		return h, false, err

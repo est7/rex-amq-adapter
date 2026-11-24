@@ -2,8 +2,10 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -390,7 +392,7 @@ func TestOperatorGuard(t *testing.T) {
 		names = append(names, c.Name())
 	}
 	slices.Sort(names)
-	if want := []string{"epic artifacts", "epic close", "epic grant", "epic list", "epic materialize", "epic open", "epic revive", "epic show"}; !slices.Equal(names, want) {
+	if want := []string{"epic artifacts", "epic close", "epic grant", "epic list", "epic materialize", "epic open", "epic revive", "epic show", "hub inbox"}; !slices.Equal(names, want) {
 		t.Fatalf("Operator commands %v, want %v", names, want)
 	}
 	run := func(cmd *cli.Command, dry bool) (int, envelope) {
@@ -628,5 +630,55 @@ func TestOutputModes(t *testing.T) {
 	r = invoke(t, "", "skill", "show", "peers", "--text")
 	if r.code != 0 || !strings.HasPrefix(r.stdout, "#") {
 		t.Errorf("skill show --text is not raw markdown: %q", r.stdout[:min(80, len(r.stdout))])
+	}
+}
+
+// hub inbox reads a Hub's inbox from the records alone: with Rex and amq
+// both failing (and marking any call), the user outside Rex reads it,
+// pages it, and narrows it, and nothing asks Rex or amq.
+func TestHubInboxReadsWithRexDown(t *testing.T) {
+	home := isolate(t)
+	marker := filepath.Join(t.TempDir(), "touched")
+	stub := filepath.Join(t.TempDir(), "stub")
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\ntouch "+marker+"\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("REX_AMQ_REX", stub)
+	t.Setenv("REX_AMQ_AMQ", stub)
+	hub, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := store.Store{P: store.Paths{Home: filepath.Join(home, "state")}}
+	key := core.NewHubKey("unix:///t.sock", hub)
+	if err := s.PutLink(core.Link{Hub: key, Epic: core.SessionKey{Server: "unix:///t.sock", SessionID: "session:01a1eac4-f222-7d79-9291-9a8a86d39ec3"}}); err != nil {
+		t.Fatal(err)
+	}
+	for i, kind := range []string{store.InboxHandBack, store.InboxNarrator} {
+		if _, _, err := s.AppendHubInbox(context.Background(), hub, store.HubInboxEntry{Epic: "session:01a1eac4-f222-7d79-9291-9a8a86d39ec3", HubKey: key, Kind: kind, By: "agy-01", DedupeKey: fmt.Sprint("k", i)}, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	code, env := machine(t, "hub", "inbox", "--hub", hub)
+	var page struct {
+		Hub   string `json:"hub"`
+		Items []struct {
+			Seq  int64  `json:"seq"`
+			Kind string `json:"kind"`
+		} `json:"items"`
+		NextSince int64 `json:"next_since"`
+	}
+	if code != 0 || json.Unmarshal(env.Data, &page) != nil || page.Hub != hub || len(page.Items) != 2 || page.NextSince != 2 {
+		t.Fatalf("hub inbox: exit %d %s %+v", code, env.Data, env.Error)
+	}
+	if code, env := machine(t, "hub", "inbox", "--hub", hub, "--since", "1", "--kind", "narrator"); code != 0 || !strings.Contains(string(env.Data), `"seq":2`) || strings.Contains(string(env.Data), `"seq":1,`) {
+		t.Errorf("--since 1 --kind narrator: exit %d %s", code, env.Data)
+	}
+	check(t, []want{
+		{[]string{"hub", "inbox", "--hub", hub, "--epic", "session:01a1eac4-f222-7d79-9291-9a8a86d39ec4"}, 3, "permission_denied"},
+		{[]string{"hub", "inbox", "--hub", hub, "--kind", "gossip"}, 2, "invalid_input"},
+	})
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("hub inbox asked Rex or amq")
 	}
 }

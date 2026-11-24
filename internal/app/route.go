@@ -181,7 +181,16 @@ func (e Env) preferredOf(l core.Link) core.Handle {
 type MailRoute struct {
 	RoutedTo     core.Handle `json:"routed_to"`
 	ReroutedFrom core.Handle `json:"rerouted_from,omitempty"`
+	// hub is the Hub whose inbox keeps the message: that of a Hub link,
+	// "" for a session-keyed one, which amq alone carries.
+	hub core.HubKey
+	// InboxSeq is the message's entry in that inbox, once kept.
+	InboxSeq int64 `json:"inbox_seq,omitempty"`
 }
+
+// HubAddress is routed_to for a narrator's message no personal agent of
+// its Hub, live or recorded, could take: the Hub's inbox alone keeps it.
+const HubAddress core.Handle = "hub"
 
 // routeNarratorMail resolves, for narrator n's outgoing message o, the mail
 // it addresses to its Hub's personal agent: the role address
@@ -190,13 +199,19 @@ type MailRoute struct {
 // one's message, which crosses mailboxes and so becomes a send keeping the
 // reply's thread, subject, and kind, with the original among its refs.
 // given reports whether a flag was given. A route is nil when nothing was
-// resolved.
+// resolved. Mail to a Hub link's personal agent names the Hub's inbox,
+// which keeps it (inboxNarratorMail); with no personal agent of the Hub,
+// live or recorded, the inbox alone does: that recipient leaves o.To and
+// the route is HubAddress.
 func (e Env) routeNarratorMail(ctx context.Context, n agent, o *Outgoing, given func(string) bool) (*MailRoute, error) {
 	if o.ReplyTo != "" {
 		return e.routeNarratorReply(ctx, n, o, given)
 	}
 	var route *MailRoute
+	kept := o.To[:0:0]
+	defer func() { o.To = kept }()
 	for i, h := range o.To {
+		kept = append(kept, h)
 		addressed := h
 		if h != PersonalAddress {
 			r, ok, err := e.agentOf(h)
@@ -221,11 +236,16 @@ func (e Env) routeNarratorMail(ctx context.Context, n agent, o *Outgoing, given 
 			addressed = e.preferredOf(l)
 		}
 		to, err := e.resolvePersonal(ctx, l, addressed)
+		if f, ok := fault.As(err); ok && f.Code == fault.NotFound && l.Hub != "" {
+			kept = kept[:len(kept)-1]
+			route = &MailRoute{RoutedTo: HubAddress, hub: l.Hub}
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}
-		o.To[i] = to
-		route = &MailRoute{RoutedTo: to}
+		o.To[i], kept[len(kept)-1] = to, to
+		route = &MailRoute{RoutedTo: to, hub: l.Hub}
 		if addressed != "" && addressed != to {
 			route.ReroutedFrom = addressed
 		}
@@ -292,6 +312,9 @@ func withRoute(out []byte, route *MailRoute) []byte {
 	obj["routed_to"] = route.RoutedTo
 	if route.ReroutedFrom != "" {
 		obj["rerouted_from"] = route.ReroutedFrom
+	}
+	if route.InboxSeq != 0 {
+		obj["inbox_seq"] = route.InboxSeq
 	}
 	b, err := json.Marshal(obj)
 	if err != nil {

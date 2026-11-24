@@ -173,24 +173,67 @@ func (m managed) post(ctx context.Context, verb string, args []string) (int, err
 			return 1, err
 		}
 	}
-	sent, out, err := m.e.post(ctx, o)
-	if err != nil {
-		if len(out) > 0 {
-			_, _ = m.stdout.Write(out)
+	var kept *narratorMail
+	if route != nil && route.hub != "" {
+		subject, _ := flagValue(fs, "subject")
+		thread, _ := flagValue(fs, "thread")
+		nm, err := m.e.prepareNarratorMail(m.rec, route.hub, subject, thread, *body)
+		if err != nil {
+			return 1, err
 		}
-		return 1, err
+		kept = &nm
 	}
-	m.e.repairWakers(ctx, sent.To)
+	var sent amq.Sent
+	var out []byte
+	delivered := o.ReplyTo != "" || len(o.To) > 0
+	if delivered {
+		var err error
+		if sent, out, err = m.e.post(ctx, o); err != nil {
+			if len(out) > 0 {
+				_, _ = m.stdout.Write(out)
+			}
+			return 1, err
+		}
+		m.e.repairWakers(ctx, sent.To)
+	}
+	if kept != nil {
+		x, err := m.e.keepNarratorMail(ctx, *kept, sent)
+		if err != nil {
+			return 1, err
+		}
+		route.InboxSeq = x.Seq
+		if !delivered {
+			return 0, m.printKept(*asJSON, route)
+		}
+	}
 	if *asJSON {
-		_, err = m.stdout.Write(withRoute(out, route))
+		_, err := m.stdout.Write(withRoute(out, route))
 		return 0, err
 	}
 	past := map[string]string{"send": "Sent", "reply": "Replied"}[verb]
 	if o.ReplyTo == "" && verb == "reply" {
 		past = "Sent"
 	}
-	_, err = fmt.Fprintf(m.stdout, "%s %s to %s\n", past, sent.ID, strings.Join(sent.To, ","))
+	_, err := fmt.Fprintf(m.stdout, "%s %s to %s\n", past, sent.ID, strings.Join(sent.To, ","))
 	return 0, err
+}
+
+// printKept reports a narrator's message only its Hub's inbox kept.
+func (m managed) printKept(asJSON bool, route *MailRoute) error {
+	if asJSON {
+		obj := map[string]any{"routed_to": route.RoutedTo, "inbox_seq": route.InboxSeq}
+		if route.ReroutedFrom != "" {
+			obj["rerouted_from"] = route.ReroutedFrom
+		}
+		b, err := json.Marshal(obj)
+		if err != nil {
+			return err
+		}
+		_, err = m.stdout.Write(append(b, '\n'))
+		return err
+	}
+	_, err := fmt.Fprintf(m.stdout, "Kept in the Hub's inbox as #%d (routed to %s)\n", route.InboxSeq, route.RoutedTo)
+	return err
 }
 
 // repairWakers brings back the dead wakers of the live recipients of a
