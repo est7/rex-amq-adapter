@@ -250,7 +250,7 @@ func TestExternalOperatorRunsAnEpicThroughTheHubInbox(t *testing.T) {
 	out, code := w.adapterRunEnv(desktop, "epic", "open", "e2e-inbox", "--cwd", w.project("app"), "--asked", "run it from the desktop", "--hub", hub, "--timeout", "40")
 	var res struct {
 		Session  string                                 `json:"session_id"`
-		Lead     struct{ Block, Status string }         `json:"lead"`
+		Lead     struct{ Block, Status, Handle string } `json:"lead"`
 		Narrator struct{ Block, Status, Handle string } `json:"narrator"`
 	}
 	if code != 0 || envelopeData(out, &res) != nil || res.Lead.Status != "adopted" || res.Narrator.Status != "adopted" {
@@ -307,6 +307,10 @@ func TestExternalOperatorRunsAnEpicThroughTheHubInbox(t *testing.T) {
 	drained, code := w.adapterIn(res.Narrator.Block, "mail", "drain", "--include-body", "--json")
 	if code != 0 || !strings.Contains(drained, "operator hub:3: yes, merge it") || !strings.Contains(drained, "operator hub:4: also update the changelog") {
 		t.Fatalf("the narrator's drain: exit %d\n%s", code, drained)
+	}
+	// It relays the user's words to the lead under the entry's control id.
+	if out, code := w.adapterIn(res.Narrator.Block, "mail", "send", "--to", res.Lead.Handle, "--control", "hub:3", "--subject", "the user: merge PR #5", "--body", "yes, merge it"); code != 0 {
+		t.Fatalf("the narrator's relay to the lead: exit %d\n%s", code, out)
 	}
 	if out, code := w.adapterRunEnv(desktop, "epic", "close", res.Session, "--asked", "close it", "--hub", hub, "--force"); code != 0 || !strings.Contains(out, `"lifecycle_state":"closed"`) {
 		t.Fatalf("epic close: exit %d\n%s", code, out)

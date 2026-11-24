@@ -88,7 +88,7 @@ func (e Env) SendToNarrator(ctx context.Context, getenv func(string) string, r H
 	res := HubSendResult{Hub: scope.hubDir, Epic: r.Session, DryRun: r.DryRun}
 	var parent *store.HubInboxEntry
 	if r.ReplyTo > 0 {
-		all, err := e.Store.HubInbox(scope.hubDir)
+		all, err := e.hubInbox(scope.hubDir)
 		if err != nil {
 			return res, err
 		}
@@ -246,7 +246,7 @@ func (e Env) mirrorPersonalMail(ctx context.Context, p agent, narrator core.Hand
 	if err != nil || hub == "" {
 		return
 	}
-	all, err := e.Store.HubInbox(hub.Dir())
+	all, err := e.hubInbox(hub.Dir())
 	if err != nil {
 		fmt.Fprintf(Diagnostics, "keep %s's reply %s in the Hub's inbox: %v\n", p.Handle, sent.ID, err)
 		return
