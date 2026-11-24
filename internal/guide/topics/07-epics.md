@@ -1,13 +1,14 @@
 ---
 topic: epics
-summary: A personal agent opens, watches, and closes Epics; leads hand back; Hub rules
+summary: The Operator opens, watches, and closes Epics; leads hand back; the Hub inbox
 ---
-# Run Epics from a personal agent
+# Run Epics as the Operator
 
-A personal agent works in a Rex session of its own and runs the user's Epics
-from there, one Rex session each, each driven by a lead and watched by a
-narrator. Take the role in your pane with
-`rex-amq-adapter agent join --role personal`.
+The Operator runs the user's Epics, one Rex session each, each driven by a
+lead and watched by a narrator: a personal agent (`agent join --role
+personal`), a top-level agent the user started with no role, or the user
+outside Rex (their shell, a Desktop agent). Anyone else, an Epic's own agents
+included, gets exit 6 `guard_denied` (`operator_only`, `unattended`).
 
 ```bash
 rex-amq-adapter epic open <name> --cwd <dir> --goal <file|-> --asked "<the user's words>" --crew <crew> --op-id <id>
@@ -16,9 +17,11 @@ rex-amq-adapter epic close <session_id> --asked "<the user's words>" --op-id <id
 
 `epic open` creates the Epic's Rex session with its lead (briefed to run the
 goal contract, or with the user's words) and its narrator, each on its role's
-routing, links the Epic to you, and prints one JSON line (`session_id`, each
+routing, links it to your Hub (`--hub <dir>`, else yours or the default
+Hub; with none, `no_hub`), and prints one JSON line (`session_id`, each
 agent's `handle`, `block` and `status`, `linked`, and `lead`, the role that runs
-the goal); it exits 0 only when both agents are adopted and linked. `--goal -`
+the goal); it exits 0 once both agents are adopted, linked when there is
+a Hub to link to. `--goal -`
 reads the contract from stdin; `--crew <crew>` makes the Epic work as that crew.
 The lead per crew: `pair` gives implementer, `design` gives architect, else
 orchestrator.
@@ -53,10 +56,9 @@ rex-amq-adapter epic unlink <session_id>      # revoke that link
 ```
 
 `epic show` is the session's view: members, obligations, recent mail, coverage
-gaps, hand-back, lifecycle. Always narrow it with `--fields`. Read it without
-moving mail. `lifecycle_state` moves `partial_start` (session up), `opened`
-(both agents adopted), `hand_back`, `closed`. Outside Rex, the human passes
-`--hub <dir>` or `--personal <handle>`.
+gaps, hand-back, lifecycle; narrow it with `--fields`. `lifecycle_state` moves
+`partial_start`, `opened`, `hand_back`, `closed`. Outside a personal agent's
+pane, pass `--hub <dir>` or `--personal <handle>`.
 
 ## The lead's hand-back and design artifacts
 
@@ -91,39 +93,23 @@ Epic is working or holds unread mail, unless the user says `--force`.
 
 ## After a Rex restart: revive
 
-A Rex server or machine restart keeps the Epic's session, tabs, and block ids
-but kills every agent in them: each block comes back as an idle login shell
-under a new server instance, while the adapter's records keep who ran there and
-the conversation each ran as.
+A Rex restart keeps the Epic's session, tabs, and block ids but kills its
+agents; the records keep who ran where, as which conversation.
 
 ```bash
 rex-amq-adapter epic revive <session_id> --dry-run   # who would resume where: no pane, no tab, nothing written
 rex-amq-adapter epic revive <session_id> --asked "<the user's words>" --op-id <id>
 ```
 
-`epic revive` resumes those conversations in the blocks they ran in, so the
-layout, the handles, and the waiting mail are what they were. It covers the
-lead and narrator always, plus every other agent that died where it ran rather
-than leaving (its process gone, or its pane taken by something else); a
-retired, replaced, or closed-block agent is never revived. Stale leases are
-reconciled first, so an agent still live is left alone (`action: already_live`)
-and a retry resumes only what is still down. A closed Epic is never revived
-(exit 5), nor a session Rex no longer has (exit 4).
-
-Each agent resumes by its latest conversation id, on the model and effort it
-was launched on, unattended as every Epic agent is, with a first prompt saying
-who revived it and to drain its mail. The command is typed into a block only
-when that block holds no other agent's process, its foreground is a shell, and
-it shows a fresh shell's empty prompt of a common shape (no draft, nothing run
-since; a custom prompt is refused); otherwise that agent is refused with its
-reason and nothing is typed, and the user empties it, runs Rex's Clear Terminal on it, and revives again. A
-closed lead or narrator block is replaced by a tab of its own
-(`action: respawned_window`). `status` is `ready` once an agent was adopted as
-itself, else how its startup ended (`timeout`, `trust_screen`, `blocked`,
-`exited`). The command waits up to `--timeout` (default 90s), then makes sure
-the watcher runs and rebuilds the view; when not every agent is ready it exits
-7 with all of it in `data`. `--asked` records the user's words in
-`logs/revive.log`.
+`epic revive` resumes the lead, the narrator, and every agent that died where
+it ran, in its own block, by its latest conversation, on its launch model:
+layout, handles, and waiting mail stay. A live agent is left alone
+(`already_live`); a retired or replaced one is never revived, nor a closed
+Epic (exit 5) or a session Rex lost (exit 4). It types only into a block whose
+foreground is a fresh shell's empty prompt; otherwise that agent is refused
+with its reason (clear the pane, revive again). A closed lead or narrator
+block gets a new tab (`respawned_window`). `status` is `ready`, or how startup
+ended (`timeout`, `trust_screen`, `blocked`, `exited`); not all ready exits 7.
 
 ## Narrator-only commands
 
@@ -136,6 +122,7 @@ rex-amq-adapter epic messages --ids <id>,<id> --max-body-bytes 4096   # read its
 
 ```bash
 rex-amq-adapter hub list                                   # ME_HUB, else config.toml hub_dirs, else ~/me
+rex-amq-adapter hub inbox --since <next_since> --wait 5m   # what the Hub's Epics told the Operator
 rex-amq-adapter hub notify --ref inbox:42 --event-id inbox-42
 rex-amq-adapter hub notify --ref timer:7 --event-id timer-7-1 --summary "standup in 5"
 ```
@@ -153,3 +140,9 @@ never the user's words or a grant, so look the entry up by its ref before
 acting. It answers `notified`, `deduped` for a repeated event id, or
 `no_live_personal` which exits 0. A narrator writes to `personal`, the role
 address, which resolves to a live personal of its Hub.
+
+`hub inbox` reads the Hub's inbox, kept whether or not a personal agent was
+live: each hand-back (`handback`, its seq and digest) and each narrator mail to
+`personal` (`narrator`; `routed_to: hub` when no personal agent could take it).
+It needs no Rex. Page with `--since <next_since>`; `--epic` and `--kind`
+narrow it.

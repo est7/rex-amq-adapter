@@ -137,10 +137,11 @@ func TestNarratorRoutesToLivePersonal(t *testing.T) {
 	if again, _, _ := e.Store.ProvenanceOf(origID, "", "claude-02", []string{"agy-05"}); again.From != origProv.From || len(again.To) != 1 || again.To[0].Handle != "agy-05" {
 		t.Errorf("the original's provenance changed: %+v", again)
 	}
-	// No live personal agent: the preferred one's mailbox keeps it.
+	// No live personal agent of the Hub: its inbox keeps it, and no
+	// departed one's mailbox does.
 	leave(t, e, "claude-01")
 	leave(t, e, "claude-03")
-	if sent, err := managedSend(t, e, "block:agy-05", "send", "--to", "personal", "--subject", "s", "--body", "b"); err != nil || sent["routed_to"] != "claude-02" {
+	if sent, err := managedSend(t, e, "block:agy-05", "send", "--to", "personal", "--subject", "s", "--body", "b"); err != nil || sent["routed_to"] != "hub" || sent["inbox_seq"] == nil {
 		t.Errorf("no live personal agent: %v %v", sent, err)
 	}
 }

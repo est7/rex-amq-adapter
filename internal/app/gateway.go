@@ -251,6 +251,39 @@ type Outgoing struct {
 // post sends o through amq, recording its provenance first under a token
 // the message carries, so the arrival gate can judge it before amq returns
 // its id.
+// checkedRecipients are to as the gateway sees them, each checked for o's sender
+// (from) when o.Check: the first one it refuses is the error.
+func (e Env) checkedRecipients(from core.Endpoint, to []core.Handle, o Outgoing, links []core.Link) ([]core.Endpoint, error) {
+	var eps []core.Endpoint
+	for _, h := range to {
+		ep, err := e.endpointOf(h)
+		if err != nil {
+			return nil, err
+		}
+		if o.Check {
+			if d := core.CanExchange(from, ep, o.Op, links); !d.Allow {
+				return nil, refusedSend(from, ep, d)
+			}
+		}
+		eps = append(eps, ep)
+	}
+	return eps, nil
+}
+
+// admits is post's gateway check of send o, run before anything is sent.
+func (e Env) admits(o Outgoing) error {
+	from, err := e.endpointOf(o.From)
+	if err != nil {
+		return err
+	}
+	links, err := e.Store.Links()
+	if err != nil {
+		return err
+	}
+	_, err = e.checkedRecipients(from, o.To, o, links)
+	return err
+}
+
 func (e Env) post(ctx context.Context, o Outgoing) (amq.Sent, []byte, error) {
 	from, err := e.endpointOf(o.From)
 	if err != nil {
@@ -289,17 +322,8 @@ func (e Env) post(ctx context.Context, o Outgoing) (amq.Sent, []byte, error) {
 		return amq.Sent{}, nil, err
 	}
 	p := store.Provenance{Token: token, Op: o.Op.Kind, ControlRequestID: o.Op.ControlRequestID, System: o.Op.System, From: from, At: e.Now().UTC()}
-	for _, h := range to {
-		ep, err := e.endpointOf(h)
-		if err != nil {
-			return amq.Sent{}, nil, err
-		}
-		if o.Check {
-			if d := core.CanExchange(from, ep, o.Op, links); !d.Allow {
-				return amq.Sent{}, nil, refusedSend(from, ep, d)
-			}
-		}
-		p.To = append(p.To, ep)
+	if p.To, err = e.checkedRecipients(from, to, o, links); err != nil {
+		return amq.Sent{}, nil, err
 	}
 	ctxJSON, err := withToken(o.Context, p.Token)
 	if err != nil {
@@ -312,7 +336,9 @@ func (e Env) post(ctx context.Context, o Outgoing) (amq.Sent, []byte, error) {
 	if err != nil && sent.ID == "" {
 		// amq may have failed after delivering (it delivers before it
 		// writes the outbox copy): the copy carries the token if it exists.
-		sent.ID = e.sentWithToken(o.From, p.Token)
+		if hdr, ok := e.sentHeaderWithToken(o.From, p.Token); ok {
+			sent = amq.Sent{ID: hdr.ID, Thread: hdr.Thread, To: hdr.To}
+		}
 	}
 	if sent.ID == "" {
 		// Delivery cannot be ruled out: the pending record stays, and
@@ -327,21 +353,20 @@ func (e Env) post(ctx context.Context, o Outgoing) (amq.Sent, []byte, error) {
 	return sent, out, err
 }
 
-// sentWithToken finds the message in h's outbox that carries token, ""
-// when none does.
-func (e Env) sentWithToken(h core.Handle, token string) string {
+// sentHeaderWithToken finds the message header in h's outbox that carries token.
+func (e Env) sentHeaderWithToken(h core.Handle, token string) (amq.Header, bool) {
 	ids, err := amq.IDs(e.Paths.Root(), string(h), amq.BoxSent)
 	if err != nil {
-		return ""
+		return amq.Header{}, false
 	}
 	for i := len(ids) - 1; i >= 0; i-- {
 		hdr, err := amq.ReadHeader(e.Paths.Root(), string(h), amq.BoxSent, ids[i])
 		var ac adapterContext
 		if err == nil && hdr.ContextOf(store.ProvenanceContextKey, &ac) && ac.Token == token {
-			return hdr.ID
+			return hdr, true
 		}
 	}
-	return ""
+	return amq.Header{}, false
 }
 
 // sendAs is the adapter's own send in from's name: a notice (system) or an

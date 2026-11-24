@@ -48,6 +48,17 @@ func mailFlagArgs(fs *flag.FlagSet, names ...string) []string {
 	return args
 }
 
+// flagValue is the value given for flag name, and whether it was given.
+func flagValue(fs *flag.FlagSet, name string) (string, bool) {
+	v, given := "", false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			v, given = f.Value.String(), true
+		}
+	})
+	return v, given
+}
+
 func mailFlagPresent(fs *flag.FlagSet, name string) bool {
 	present := false
 	fs.Visit(func(f *flag.Flag) {
