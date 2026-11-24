@@ -40,7 +40,7 @@ func TestMaterializeEnvelopeMarksTheBatch(t *testing.T) {
 // narrator, its personal agent, and the user outside Rex.
 func TestEpicShowRoles(t *testing.T) {
 	c := registry().Find("epic", "show")
-	if c == nil || !slices.Equal(c.Roles, []string{"lead", "narrator", "personal", "human"}) {
+	if c == nil || !slices.Equal(c.Roles, []string{"operator", "lead", "narrator"}) {
 		t.Fatalf("epic show roles: %+v", c)
 	}
 }

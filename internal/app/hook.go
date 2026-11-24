@@ -423,7 +423,7 @@ func (e Env) identityParts(ctx context.Context, a Adoption, unread int) core.Sta
 	if lead {
 		r := e.grantReceipt(a.Agent.SessionID, g)
 		receipt = &r
-		tail = append(tail, core.GrantNotice(g.Contract, e.Paths.GrantPath(a.Agent.SessionID), g.RelayedBy))
+		tail = append(tail, core.GrantNotice(g.Contract, e.Paths.GrantPath(a.Agent.SessionID), g.RelayedBy, g.RelayedRole))
 	}
 	var kept []string
 	for _, t := range tail {
@@ -476,7 +476,7 @@ func (e Env) grantNotice(rec agent) string {
 	if !ok {
 		return ""
 	}
-	return core.GrantNotice(g.Contract, e.Paths.GrantPath(rec.SessionID), g.RelayedBy)
+	return core.GrantNotice(g.Contract, e.Paths.GrantPath(rec.SessionID), g.RelayedBy, g.RelayedRole)
 }
 
 // leadGrant is the stored grant of rec's session when rec leads it
@@ -507,7 +507,7 @@ func (e Env) grantReceipt(session string, g store.Grant) core.GrantReceipt {
 		ok, _ = contractCheck(g)
 	}
 	return core.GrantReceipt{
-		SessionID: session, RelayedBy: g.RelayedBy, RelayedAt: g.RelayedAt,
+		SessionID: session, RelayedBy: g.RelayedBy, RelayedRole: g.RelayedRole, RelayedAt: g.RelayedAt,
 		GrantPath: e.Paths.GrantPath(session), ContractPath: g.Contract, ContractSHA256: g.ContractSHA256,
 		ContractOK: ok, Asked: g.Asked,
 	}

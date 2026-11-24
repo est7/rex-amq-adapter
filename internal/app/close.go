@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/est7/rex-amq-adapter/internal/fault"
+	"slices"
 	"strings"
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
@@ -19,9 +20,11 @@ import (
 // Nothing closes an Epic on its own: a hand-back can leave items only the
 // user can act on, and a killed session's screens are gone for good.
 
-// CloseRequest is what a personal agent asks.
+// CloseRequest is what the Operator asks.
 type CloseRequest struct {
 	Session string // the Epic's Rex session id
+	// Hub, when set, closes only an Epic of that Hub directory.
+	Hub string
 	// Asked is the user's own words asking to close it, its grant.
 	Asked string
 	// Force closes while an agent of the Epic is working, waiting on a
@@ -51,16 +54,18 @@ type CloseResult struct {
 	DryRun bool `json:"dry_run,omitempty"`
 }
 
-// CloseEpic closes the Epic session r.Session for the personal agent in
-// loc: it kills the Rex session, parks every live agent recorded in it as
+// CloseEpic closes the Epic session r.Session for the Operator op: it kills the Rex session, parks every live agent recorded in it as
 // departed for epic_closed (handles stay reserved for a resume, ReserveFor),
 // removes every link to it the caller's Hub holds, and records the Epic's
-// lifecycle closed. Any personal agent of the Hub the Epic is linked to may
-// close it (core.LinkMatchesPersonal); the lifecycle's personal agent is a
-// delivery preference, never the one allowed.
+// lifecycle closed. A personal agent closes an Epic linked to its Hub (or
+// its session): any of the Hub's may (core.LinkMatchesPersonal), and the
+// lifecycle's personal agent is a delivery preference, never the one
+// allowed. Any other Operator, the user's, closes any Epic the records
+// know (its lifecycle, link, or policy), never a Hub's session, and with
+// r.Hub only one of that Hub; it removes every link to it.
 //
-// It refuses a caller that is not a live personal agent, one without the
-// user's words, and a session not linked to the caller's Hub; unless
+// It refuses a request without the user's words, and an Epic the Operator
+// may not close; unless
 // forced, also while an agent other than a Stealth one is not at rest or
 // holds unread mail. Membership, the link, and the busy check are decided
 // under LockEpicLifecycle and then LockLifecycle, so two closes of one Epic
@@ -72,9 +77,9 @@ type CloseResult struct {
 // got to, the unlink included; the op id reused for another request is
 // refused. Without one, a retry before the lifecycle is closed finishes
 // what is left: a session already gone is not an error.
-func (e Env) CloseEpic(ctx context.Context, loc Location, r CloseRequest) (CloseResult, error) {
+func (e Env) CloseEpicFor(ctx context.Context, op Operator, r CloseRequest) (CloseResult, error) {
 	var settle closeSettle
-	res, err := e.closeEpic(ctx, loc, r, &settle)
+	res, err := e.closeEpic(ctx, op, r, &settle)
 	if r.DryRun || settle.key == (core.SessionKey{}) {
 		return res, err
 	}
@@ -91,6 +96,44 @@ func (e Env) CloseEpic(ctx context.Context, loc Location, r CloseRequest) (Close
 		}
 	}
 	return res, err
+}
+
+// CloseEpic is CloseEpicFor the agent in loc, which must be an Operator's.
+func (e Env) CloseEpic(ctx context.Context, loc Location, r CloseRequest) (CloseResult, error) {
+	op, err := e.operatorIn(loc)
+	if err != nil {
+		return CloseResult{SessionID: r.Session, OpID: r.OpID}, err
+	}
+	return e.CloseEpicFor(ctx, op, r)
+}
+
+// closer is who closes an Epic: the Operator, with its gateway endpoint
+// when it is a personal agent, and the Hub directory --hub names.
+type closer struct {
+	op     Operator
+	me     core.Endpoint
+	hubDir string
+}
+
+func (c closer) personal() bool { return c.op.Personal() }
+
+// closeHashes is the closeIdentity hash of r for c, read before any lock: a personal
+// agent's Hub (its session without one), or for any other Operator the Hub
+// the Epic's lifecycle records, which only its open writes; legacy is the
+// hash the same request had before v0.27, "" when c could not have made it.
+func (e Env) closeHashes(c closer, r CloseRequest) (hash, legacy string, err error) {
+	id := closeIdentity{Session: r.Session, Force: r.Force}
+	if c.personal() {
+		id.HubDir = c.me.Hub.Dir()
+		if c.me.Hub == "" {
+			id.Personal = c.me.Session()
+		}
+		return requestHash(id), requestHash(legacyCloseIdentityOf(c.me, r)), nil
+	}
+	if id.HubDir, err = e.epicHubDir(r.Session); err != nil {
+		return "", "", err
+	}
+	return requestHash(id), "", nil
 }
 
 // closeSettle is what a close may settle once its locks are released: the
@@ -114,20 +157,10 @@ func (e Env) closedPending(epic core.SessionKey) []agent {
 	return out
 }
 
-// closeEpic is CloseEpic up to the agents' quiet departures, which it
+// closeEpic is CloseEpicFor up to the agents' quiet departures, which it
 // leaves to finish with no lock held.
-func (e Env) closeEpic(ctx context.Context, loc Location, r CloseRequest, settle *closeSettle) (CloseResult, error) {
+func (e Env) closeEpic(ctx context.Context, op Operator, r CloseRequest, settle *closeSettle) (CloseResult, error) {
 	res := CloseResult{SessionID: r.Session, OpID: r.OpID}
-	caller, ok, err := e.agentIn(loc)
-	if err != nil {
-		return res, err
-	}
-	if !ok || !caller.Live() {
-		return res, errors.New("no AMQ identity for this pane, so nothing can close an Epic")
-	}
-	if caller.Role != core.PersonalRole {
-		return res, fmt.Errorf("%w: only a %s agent closes Epics, and %s is %q", ErrRefused, core.PersonalRole, caller.Handle, caller.Role)
-	}
 	if strings.TrimSpace(r.Asked) == "" {
 		return res, fault.New(fault.ConfirmationRequired, "%s: closing an Epic kills its Rex session and what its panes show; it needs the user's own words asking for it (--asked \"<their words>\")", ErrRefused).
 			WithCause(ErrRefused).WithNext("rex-amq-adapter epic close " + r.Session + " --asked \"<the user's words>\"")
@@ -135,18 +168,30 @@ func (e Env) closeEpic(ctx context.Context, loc Location, r CloseRequest, settle
 	if err := ValidOpID(r.OpID); err != nil {
 		return res, err
 	}
-	if r.Session == "" || r.Session == caller.SessionID {
+	c := closer{op: op}
+	if op.Personal() && (r.Session == "" || r.Session == op.Agent.SessionID) || r.Session == "" {
 		return res, fmt.Errorf("%w: name an Epic session other than your own", ErrUsage)
 	}
-	me, err := e.gatewayEndpoint(caller)
+	var err error
+	if c.hubDir, err = hubFlagDir(r.Hub); err != nil {
+		return res, err
+	}
+	if op.Personal() {
+		if c.me, err = e.gatewayEndpoint(*op.Agent); err != nil {
+			return res, err
+		}
+		if c.hubDir != "" && c.me.Hub.Dir() != c.hubDir && !dirWithin(op.Agent.Cwd, c.hubDir) {
+			return res, fmt.Errorf("%w: %s does not work in %s", ErrRefused, op.Agent.Handle, r.Hub)
+		}
+	}
+	hash, legacy, err := e.closeHashes(c, r)
 	if err != nil {
 		return res, err
 	}
-	hash := requestHash(closeIdentityOf(me, r))
 	// A recorded close is looked up before the link: the run that recorded
 	// it may have removed the link before it died.
 	if r.OpID != "" {
-		if out, done, err := e.replayClose(ctx, caller, me, r.OpID, hash, settle); done || err != nil {
+		if out, done, err := e.replayClose(ctx, c, r, hash, legacy, settle); done || err != nil {
 			return out, err
 		}
 	}
@@ -160,19 +205,19 @@ func (e Env) closeEpic(ctx context.Context, loc Location, r CloseRequest, settle
 		return res, err
 	}
 	defer unlock()
-	if done, err := e.closedAlready(caller, me, r, hash, &res, settle); done || err != nil {
+	if done, err := e.closedAlready(c, r, hash, legacy, &res, settle); done || err != nil {
 		return res, err
 	}
-	link, err := e.linkTo(caller, me, r.Session)
+	epic, err := e.closeTarget(c, r.Session)
 	if err != nil {
 		return res, err
 	}
 	on := e.Rex
-	if e.RexOn != nil && link.Epic.Server != "" {
-		on = e.RexOn(link.Epic.Server)
+	if e.RexOn != nil && epic.Server != "" {
+		on = e.RexOn(epic.Server)
 	}
 	if !r.Force {
-		if busy, err := e.unsettled(ctx, on, link.Epic); err != nil {
+		if busy, err := e.unsettled(ctx, on, epic); err != nil {
 			return res, err
 		} else if len(busy) > 0 {
 			return res, fault.New(fault.Busy, "%s: not every agent of the Epic is at rest (%s); ask the user again", ErrRefused, strings.Join(busy, "; ")).
@@ -185,33 +230,150 @@ func (e Env) closeEpic(ctx context.Context, loc Location, r CloseRequest, settle
 		res.DryRun, res.Parked, res.Changed = true, []core.Handle{}, true
 		return res, nil
 	}
-	var op *store.EpicOpRecord
+	var rec *store.EpicOpRecord
 	if r.OpID != "" {
 		prev, found, err := e.Store.EpicOp(store.EpicOpClose, r.OpID)
-		switch {
-		case err != nil:
+		if err != nil {
 			return res, err
-		case found && prev.RequestHash != hash:
-			return res, errOpConflict(store.EpicOpClose, r.OpID)
-		case found:
-			op = &prev // a run of the same close got here meanwhile
-		default:
+		}
+		if found {
+			if same, err := e.opHashMatches(&prev, hash, legacy, false); err != nil {
+				return res, err
+			} else if !same {
+				return res, errOpConflict(store.EpicOpClose, r.OpID)
+			}
+			rec = &prev // a run of the same close got here meanwhile
+		} else {
+			hubs, err := e.epicHubDirs(epic.SessionID)
+			if err != nil {
+				return res, err
+			}
 			now := e.Now().UTC()
-			op = &store.EpicOpRecord{Kind: store.EpicOpClose, OpID: r.OpID, RequestHash: hash, SessionID: link.Epic.SessionID, Server: link.Epic.Server,
-				PersonalHandle: caller.Handle, PersonalSessionID: caller.SessionID, State: store.EpicClosing, CreatedAt: now, UpdatedAt: now}
-			if err := e.Store.PutEpicOp(*op); err != nil {
+			rec = &store.EpicOpRecord{Kind: store.EpicOpClose, OpID: r.OpID, RequestHash: hash, SessionID: epic.SessionID, Server: epic.Server, HubDirs: hubs,
+				PersonalHandle: c.personalHandle(), PersonalSessionID: c.personalSession(), State: store.EpicClosing, CreatedAt: now, UpdatedAt: now}
+			if err := e.Store.PutEpicOp(*rec); err != nil {
 				return res, fmt.Errorf("record the close under --op-id %q: %w", r.OpID, err)
 			}
 		}
 	}
-	settle.key = link.Epic
-	return e.finishClose(ctx, on, link.Epic, caller, me, op)
+	settle.key = epic
+	return e.finishClose(ctx, on, epic, c, rec)
 }
 
-// closeIdentityOf is the identity of close request r from personal agent
-// me: its Hub (its session when it has none), the Epic, and --force.
-func closeIdentityOf(me core.Endpoint, r CloseRequest) closeIdentity {
-	id := closeIdentity{Hub: string(me.Hub), Session: r.Session, Force: r.Force}
+func (c closer) personalHandle() core.Handle {
+	if c.personal() {
+		return c.op.Agent.Handle
+	}
+	return ""
+}
+
+func (c closer) personalSession() string {
+	if c.personal() {
+		return c.op.Agent.SessionID
+	}
+	return ""
+}
+
+// owns reports whether lc, a closed Epic's tombstone, is one c may answer:
+// for a personal agent one of its Hub or its session; for any other
+// Operator any, of the --hub Hub when one is named.
+func (c closer) owns(lc store.EpicLifecycle) bool {
+	if !c.personal() {
+		return c.hubDir == "" || lc.Hub.Dir() == c.hubDir
+	}
+	return lc.Hub != "" && lc.Hub == c.me.Hub || lc.PersonalSessionID != "" && lc.PersonalSessionID == c.op.Agent.SessionID && lc.Server == c.op.Agent.Server
+}
+
+// closeTarget is the Epic session c closes: for a personal agent one linked
+// to it (linkTo); for any other Operator one the records know, never a
+// Hub's session, and of the --hub Hub when one is named.
+func (e Env) closeTarget(c closer, session string) (core.SessionKey, error) {
+	if c.personal() {
+		l, err := e.linkTo(*c.op.Agent, c.me, session)
+		return l.Epic, err
+	}
+	p, hasPolicy, err := e.Store.SessionPolicy(session)
+	if err != nil {
+		return core.SessionKey{}, err
+	}
+	if hasPolicy && p.Hub() {
+		return core.SessionKey{}, fmt.Errorf("%w: %s is a Hub's Rex session, not an Epic's", ErrRefused, session)
+	}
+	links, err := e.linksToEpic(session)
+	if err != nil {
+		return core.SessionKey{}, err
+	}
+	lc, hasLC, err := e.Store.EpicLifecycle(session)
+	if err != nil {
+		return core.SessionKey{}, err
+	}
+	if c.hubDir != "" && !hubAuthorizes(lc, hasLC, links, c.hubDir) {
+		return core.SessionKey{}, notOfHub(session, c.hubDir)
+	}
+	switch {
+	case len(links) > 0:
+		return links[0].Epic, nil
+	case hasLC:
+		return core.SessionKey{Server: lc.Server, SessionID: session}, nil
+	case hasPolicy && p.Epic():
+		return core.SessionKey{Server: p.Server, SessionID: session}, nil
+	}
+	return core.SessionKey{}, fault.New(fault.NotFound, "%s is no Epic the adapter knows: it has no lifecycle, link, or policy", session).With("kind", "session")
+}
+
+// hubAuthorizes reports whether an Epic, by its lifecycle (when hasLC) and
+// its links, is of the Hub directory dir: what --hub admits a close by.
+func hubAuthorizes(lc store.EpicLifecycle, hasLC bool, links []core.Link, dir string) bool {
+	return hasLC && lc.Hub.Dir() == dir || slices.ContainsFunc(links, func(l core.Link) bool { return l.Hub.Dir() == dir })
+}
+
+// epicHubDirs are the Hub directories the Epic session is of now, by its
+// lifecycle and its links (hubAuthorizes), each once.
+func (e Env) epicHubDirs(session string) ([]string, error) {
+	lc, hasLC, err := e.Store.EpicLifecycle(session)
+	if err != nil {
+		return nil, err
+	}
+	links, err := e.linksToEpic(session)
+	if err != nil {
+		return nil, err
+	}
+	var dirs []string
+	if hasLC && lc.Hub != "" {
+		dirs = append(dirs, lc.Hub.Dir())
+	}
+	for _, l := range links {
+		if l.Hub != "" && !slices.Contains(dirs, l.Hub.Dir()) {
+			dirs = append(dirs, l.Hub.Dir())
+		}
+	}
+	return dirs, nil
+}
+
+func notOfHub(session, dir string) error {
+	return fmt.Errorf("%w: %s is not an Epic of the Hub %s (`rex-amq-adapter epic list --hub %s` lists them)", ErrRefused, session, dir, dir)
+}
+
+// linksToEpic is every recorded link to the Epic session.
+func (e Env) linksToEpic(session string) ([]core.Link, error) {
+	all, err := e.Store.Links()
+	if err != nil {
+		return nil, err
+	}
+	var out []core.Link
+	for _, l := range all {
+		if l.Epic.SessionID == session {
+			out = append(out, l)
+		}
+	}
+	return out, nil
+}
+
+// legacyCloseIdentityOf is the identity a close request r from personal
+// agent me had before v0.27: its Hub key (its session when it has none), the
+// Epic, and --force.
+func legacyCloseIdentityOf(me core.Endpoint, r CloseRequest) legacyCloseIdentity {
+	id := legacyCloseIdentity{Hub: string(me.Hub), Session: r.Session, Force: r.Force}
 	if me.Hub == "" {
 		id.Personal = me.Session()
 	}
@@ -224,12 +386,12 @@ func closeIdentityOf(me core.Endpoint, r CloseRequest) closeIdentity {
 // recorded closed, so its replay answers the same. done is false when the
 // Epic is not closed, or the tombstone names another Hub. The caller holds
 // LockEpicLifecycle and then LockLifecycle.
-func (e Env) closedAlready(caller agent, me core.Endpoint, r CloseRequest, hash string, res *CloseResult, settle *closeSettle) (bool, error) {
+func (e Env) closedAlready(c closer, r CloseRequest, hash, legacy string, res *CloseResult, settle *closeSettle) (bool, error) {
 	lc, ok, err := e.Store.EpicLifecycle(r.Session)
 	if err != nil || !ok || lc.State != store.EpicClosed {
 		return false, err
 	}
-	if !(lc.Hub != "" && lc.Hub == me.Hub) && !(lc.PersonalSessionID != "" && lc.PersonalSessionID == caller.SessionID && lc.Server == caller.Server) {
+	if !c.owns(lc) {
 		return false, nil
 	}
 	res.LifecycleState, res.Parked = lc.State, []core.Handle{}
@@ -244,18 +406,21 @@ func (e Env) closedAlready(caller agent, me core.Endpoint, r CloseRequest, hash 
 		return true, nil
 	}
 	prev, found, err := e.Store.EpicOp(store.EpicOpClose, r.OpID)
-	switch {
-	case err != nil:
+	if err != nil {
 		return true, err
-	case found && prev.RequestHash != hash:
-		return true, errOpConflict(store.EpicOpClose, r.OpID)
-	case found:
+	}
+	if found {
+		if same, err := e.opHashMatches(&prev, hash, legacy, false); err != nil {
+			return true, err
+		} else if !same {
+			return true, errOpConflict(store.EpicOpClose, r.OpID)
+		}
 		authorized()
 		return true, nil
 	}
 	now := e.Now().UTC()
 	if err := e.Store.PutEpicOp(store.EpicOpRecord{Kind: store.EpicOpClose, OpID: r.OpID, RequestHash: hash, SessionID: r.Session, Server: lc.Server,
-		PersonalHandle: caller.Handle, PersonalSessionID: caller.SessionID, State: store.EpicClosed, CreatedAt: now, UpdatedAt: now}); err != nil {
+		PersonalHandle: c.personalHandle(), PersonalSessionID: c.personalSession(), State: store.EpicClosed, CreatedAt: now, UpdatedAt: now}); err != nil {
 		return true, err
 	}
 	authorized()
@@ -266,7 +431,8 @@ func (e Env) closedAlready(caller agent, me core.Endpoint, r CloseRequest, hash 
 // is false when there is none, and the close goes on as a new one. The op id
 // of another request (another Hub, another session, another --force) is
 // refused.
-func (e Env) replayClose(ctx context.Context, caller agent, me core.Endpoint, opID, hash string, settle *closeSettle) (res CloseResult, done bool, err error) {
+func (e Env) replayClose(ctx context.Context, c closer, r CloseRequest, hash, legacy string, settle *closeSettle) (res CloseResult, done bool, err error) {
+	opID := r.OpID
 	unlockEpic, err := e.Store.LockEpicLifecycle(ctx)
 	if err != nil {
 		return res, true, err
@@ -276,8 +442,38 @@ func (e Env) replayClose(ctx context.Context, caller agent, me core.Endpoint, op
 	if err != nil || !found {
 		return res, err != nil, err
 	}
-	if op.RequestHash != hash {
+	if same, err := e.opHashMatches(&op, hash, legacy, r.DryRun); err != nil {
+		return CloseResult{OpID: opID}, true, err
+	} else if !same {
 		return CloseResult{OpID: opID}, true, errOpConflict(store.EpicOpClose, opID)
+	}
+	// --hub holds for a replay too: a Hub the Epic was of when its close
+	// was recorded (HubDirs, which outlive the unlink), else one it is of
+	// now by its lifecycle or links (hubAuthorizes), which is added to them
+	// before anything can unlink it.
+	if c.hubDir != "" && !c.personal() && !slices.Contains(op.HubDirs, c.hubDir) {
+		hubs, err := e.epicHubDirs(op.SessionID)
+		if err != nil {
+			return CloseResult{OpID: opID}, true, err
+		}
+		if !slices.Contains(hubs, c.hubDir) {
+			return CloseResult{OpID: opID}, true, notOfHub(op.SessionID, c.hubDir)
+		}
+		if !r.DryRun {
+			op.HubDirs = append(op.HubDirs, c.hubDir)
+			if err := e.Store.PutEpicOp(op); err != nil {
+				return CloseResult{OpID: opID}, true, fmt.Errorf("record the close under --op-id %q: %w", opID, err)
+			}
+		}
+	}
+	if r.DryRun {
+		// What the retry would do, and nothing of it: the record is not
+		// advanced, the session not killed.
+		res = CloseResult{SessionID: op.SessionID, OpID: opID, Parked: []core.Handle{}, Replayed: true, DryRun: true, Changed: op.State != store.EpicClosed}
+		if op.State == store.EpicClosed {
+			res.LifecycleState, res.Unlinked = store.EpicClosed, true
+		}
+		return res, true, nil
 	}
 	// The op is this caller's own close request: what it closed is settled.
 	settle.key = core.SessionKey{Server: op.Server, SessionID: op.SessionID}
@@ -309,7 +505,7 @@ func (e Env) replayClose(ctx context.Context, caller agent, me core.Endpoint, op
 	if e.RexOn != nil && op.Server != "" {
 		on = e.RexOn(op.Server)
 	}
-	res, err = e.finishClose(ctx, on, core.SessionKey{Server: op.Server, SessionID: op.SessionID}, caller, me, &op)
+	res, err = e.finishClose(ctx, on, core.SessionKey{Server: op.Server, SessionID: op.SessionID}, c, &op)
 	res.Replayed = true
 	return res, true, err
 }

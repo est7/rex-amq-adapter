@@ -112,6 +112,22 @@ func TestBlackBoxContract(t *testing.T) {
 			t.Errorf("%q unattended: exit %d %q, want 6", args, p.code, errCode(m))
 		}
 	}
+	// The Operator's commands under `env -i`, which leaves no HOME and so no
+	// records to decide by: exit 6, never internal.
+	for _, cmd := range registry().Commands {
+		if cmd.Guard != cli.GuardOperator && cmd.Guard != cli.GuardOperatorOrSelf {
+			continue
+		}
+		args := invocation(t, cmd, "", "", "")
+		c := exec.Command(bin, args...)
+		c.Env, c.Dir = []string{"PATH=/usr/bin:/bin", "REX_AMQ_REX=" + filepath.Join(work, "no-rex"), "REX_AMQ_AMQ=" + filepath.Join(work, "no-amq")}, work
+		var o, e bytes.Buffer
+		c.Stdout, c.Stderr = &o, &e
+		_ = c.Run()
+		if m := envelopeOf(args, proc{c.ProcessState.ExitCode(), o.String(), e.String()}); c.ProcessState.ExitCode() != 6 || errCode(m) != "guard_denied" {
+			t.Errorf("%q with no HOME: exit %d %q", args, c.ProcessState.ExitCode(), errCode(m))
+		}
+	}
 	// --text failures: nothing on stdout, a diagnostic on stderr, no ANSI.
 	for _, args := range [][]string{{"nonesuch", "--text"}, {"skill", "show", "nope", "--text"}, {"agent", "retire", "../x", "--text"}} {
 		p := runBin(nil, args...)

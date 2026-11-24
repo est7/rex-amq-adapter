@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -12,17 +11,17 @@ import (
 	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
-// The cockpit is the human's read of a Hub's Epics, from a personal agent's
-// own pane or from outside Rex (`epic list`, `epic show`). It reads only: no
-// mail moves, no receipt is written, nothing is started. Its scope is the
-// Epics linked to one Hub (core.LinkMatchesPersonal), never another Epic,
-// and it does not depend on which of the Hub's personal agents are live, or
-// how many; and it is not a way around the view's own access rule, so
-// anything running as, or under, an agent that is not a personal one is
-// refused, however its environment was trimmed (cockpitScope). A pane or a
-// shell with no agent in it is not trusted for being one: it reads the Hub
-// it names (--hub), the Hub of the personal agent it names (--personal), or
-// the default Hub.
+// The cockpit is the Operator's read of a Hub's Epics (`epic list`, `epic
+// show`, ResolveOperator): the user's, from outside Rex, a pane with no
+// agent, or a Desktop agent no hook adopted; a personal agent's, from its
+// own pane; or a top-level standalone agent's. It reads only: no mail
+// moves, no receipt is written, nothing is started. Its scope is the Epics
+// linked to one Hub (core.LinkMatchesPersonal), never another Epic, and it
+// does not depend on which of the Hub's personal agents are live, or how
+// many. A caller that is no Operator, however its environment was trimmed,
+// is refused by ResolveOperator. An Operator that is no personal agent
+// reads the Hub it names (--hub), the Hub of the personal agent it names
+// (--personal), or the default Hub.
 
 // CockpitViewRequest is what `epic list` and `epic show` from outside Rex
 // ask: Session, one linked Epic's view; without it, a summary of every
@@ -104,7 +103,21 @@ func (c cockpitScope) matches(e Env, l core.Link) bool {
 // the view of req.Session, an Epic linked to the Hub in scope, or without
 // req.Session the summary of every Epic linked to it.
 func (e Env) ReadCockpitView(ctx context.Context, getenv func(string) string, req CockpitViewRequest) (json.RawMessage, error) {
-	scope, err := e.cockpitScope(ctx, getenv, req)
+	op, err := e.ResolveOperator(getenv)
+	if err != nil {
+		return nil, err
+	}
+	if !op.Personal() && req.Session != "" && req.Hub == "" && req.Personal == "" {
+		// An Epic of no Hub (opened with none configured, NoHub) is no
+		// Hub's to scope: the Operator names it.
+		if key, ok, err := e.unlinkedEpic(req.Session); err != nil || ok {
+			if err != nil {
+				return nil, err
+			}
+			return e.cockpitSession(key)
+		}
+	}
+	scope, err := e.cockpitScope(op, req)
 	if err != nil {
 		return nil, err
 	}
@@ -154,77 +167,24 @@ func cockpitWhose(s cockpitScope) string {
 	return "this caller"
 }
 
-// cockpitScope is the Hub whose linked Epics the caller may read, after
-// every gate:
+// cockpitScope is the Hub whose linked Epics op, the Operator
+// (ResolveOperator), may read.
 //
-//  1. No harness session the environment names (sessionVars) is a live
-//     agent's of another role, even beside a personal agent's.
-//  2. The caller (Caller) resolves: a harness session no hook adopted (a
-//     worker's nested `claude -p`) is refused; its pane, when it holds a
-//     live agent, holds a personal one.
-//  3. No ancestor of this process is the agent of a live record of another
-//     role, so `env -i` under a worker or an orchestrator is still refused.
-//  4. ME_UNATTENDED=1 is refused unless the caller is a personal agent (which
-//     may carry it inherited).
-//
-// A personal caller reads its own Hub, by its own endpoint alone
+// A personal agent reads its own Hub, by its own endpoint alone
 // (core.LinkMatchesPersonal); --personal only narrows that to the Epics the
 // named personal agent opened or prefers, live or not (§4.2(8)), so naming
 // one outside the scope reads nothing; a directory it does not work in is
-// refused. Anyone else reads the Hub
-// --hub names, else the Hub of the live personal agent --personal names,
-// else the default Hub; with none of them, it names one. However many of
-// the Hub's personal agents are live, none, one, or several, the scope is
-// the same Hub.
-func (e Env) cockpitScope(ctx context.Context, getenv func(string) string, req CockpitViewRequest) (cockpitScope, error) {
+// refused. Any other Operator reads the Hub --hub names, else the Hub of
+// the live personal agent --personal names, else the default Hub; with none
+// of them, it names one. However many of the Hub's personal agents are
+// live, none, one, or several, the scope is the same Hub.
+func (e Env) cockpitScope(op Operator, req CockpitViewRequest) (cockpitScope, error) {
 	recs, err := e.agents()
 	if err != nil {
 		return cockpitScope{}, err
 	}
-	for _, v := range sessionVars {
-		id := getenv(v.name)
-		if id == "" {
-			continue
-		}
-		// One no hook adopted is Caller's to refuse, below.
-		rec, ok, err := e.liveRecordOf(v.kind, id)
-		if err != nil {
-			return cockpitScope{}, err
-		}
-		if ok && rec.Role != core.PersonalRole {
-			return cockpitScope{}, cockpitRefused(rec)
-		}
-	}
-	var caller agent
-	isPersonal := false
-	loc, err := e.Caller(ctx, getenv)
-	switch {
-	case errors.Is(err, ErrNotInRex):
-	case err != nil:
-		return cockpitScope{}, fmt.Errorf("%w: the cockpit's caller: %v", ErrRefused, err)
-	default:
-		rec, ok, err := e.agentIn(loc)
-		if err != nil {
-			return cockpitScope{}, err
-		}
-		if ok && rec.Live() {
-			if rec.Role != core.PersonalRole {
-				return cockpitScope{}, cockpitRefused(rec)
-			}
-			caller, isPersonal = rec, true
-		}
-	}
-	ancestors, err := e.ancestors()
-	if err != nil {
-		return cockpitScope{}, fmt.Errorf("tell which agent runs the cockpit: %w", err)
-	}
-	if r, ok := agentAncestor(ancestors, recs, func(r agent) bool { return r.Role != core.PersonalRole }); ok {
-		return cockpitScope{}, cockpitRefused(r)
-	}
-	if getenv("ME_UNATTENDED") == "1" && !isPersonal {
-		return cockpitScope{}, fmt.Errorf("%w: the cockpit is the human's or a personal agent's, and this command runs unattended (ME_UNATTENDED=1)", ErrRefused)
-	}
-	if isPersonal {
+	if op.Personal() {
+		caller := *op.Agent
 		if req.Hub != "" && !dirWithin(caller.Cwd, req.Hub) {
 			return cockpitScope{}, fmt.Errorf("%w: %s does not work in %s", ErrRefused, caller.Handle, req.Hub)
 		}
@@ -331,14 +291,6 @@ func agentAncestor(ancestors []proc, recs []agent, match func(agent) bool) (agen
 	return agent{}, false
 }
 
-func cockpitRefused(rec agent) error {
-	role := rec.Role
-	if role == "" {
-		role = "no role"
-	}
-	return fmt.Errorf("%w: the cockpit is the human's or a personal agent's to read, and this command runs as or under %s (%s)", ErrRefused, rec.Handle, role)
-}
-
 func cockpitTarget(req CockpitViewRequest) string {
 	var parts []string
 	if req.Personal != "" {
@@ -348,6 +300,20 @@ func cockpitTarget(req CockpitViewRequest) string {
 		parts = append(parts, "--hub "+req.Hub)
 	}
 	return strings.Join(parts, " ")
+}
+
+// unlinkedEpic is the Epic session whose lifecycle records no Hub and
+// that nothing links to; ok is false for any other session.
+func (e Env) unlinkedEpic(session string) (core.SessionKey, bool, error) {
+	lc, ok, err := e.Store.EpicLifecycle(session)
+	if err != nil || !ok || lc.Hub != "" || lc.PersonalSessionID != "" {
+		return core.SessionKey{}, false, err
+	}
+	links, err := e.linksToEpic(session)
+	if err != nil || len(links) > 0 {
+		return core.SessionKey{}, false, err
+	}
+	return core.SessionKey{Server: lc.Server, SessionID: session}, true, nil
 }
 
 // cockpitSession is the view of the linked Epic epic, with its stored

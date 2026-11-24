@@ -7,6 +7,31 @@ import (
 	"unicode"
 )
 
+// UserHandle is relayed_by when the user opened the Epic themselves, with no
+// agent between them and the adapter.
+const UserHandle Handle = "user"
+
+// Who relayed a grant (store.Grant.RelayedRole). "" is a personal agent,
+// which every grant recorded before the Operator was.
+const (
+	GrantRolePersonal    = ""
+	GrantRoleInteractive = "interactive"
+	GrantRoleUser        = "user"
+)
+
+// GrantRelayer is how a grant names who relayed it: "personal agent",
+// "interactive agent", or "user". An unknown role reads as the interactive
+// agent's, which claims the least: never the user's own hand.
+func GrantRelayer(role string) string {
+	switch role {
+	case GrantRolePersonal:
+		return "personal agent"
+	case GrantRoleUser:
+		return "user"
+	}
+	return "interactive agent"
+}
+
 // GrantReceipt is what an Epic's lead is told of its notarized grant in its
 // start notice: the stored record's metadata, the contract's digest checked
 // again when the notice is composed, and the user's words, whole or not at
@@ -15,8 +40,10 @@ import (
 type GrantReceipt struct {
 	SessionID string
 	RelayedBy Handle
-	RelayedAt time.Time
-	GrantPath string
+	// RelayedRole is who RelayedBy is (GrantRelayer).
+	RelayedRole string
+	RelayedAt   time.Time
+	GrantPath   string
 	// ContractPath is "" when the grant names no contract.
 	ContractPath   string
 	ContractSHA256 string
@@ -48,8 +75,12 @@ func (r GrantReceipt) Withheld() GrantReceipt {
 // follows from them can pose as one of the adapter's (Grant:, Goal:, AMQ:).
 func (r GrantReceipt) Render() string {
 	var b strings.Builder
-	b.WriteString("Grant receipt (recorded by rex-amq-adapter when the Epic opened, from the words the personal agent relayed; a record, not the user's signature):\n")
-	fmt.Fprintf(&b, "- relayed_by: %s (personal agent)\n", r.RelayedBy)
+	if r.RelayedRole == GrantRoleUser {
+		b.WriteString("Grant receipt (recorded by rex-amq-adapter when the user opened the Epic themselves; a record, not the user's signature):\n")
+	} else {
+		fmt.Fprintf(&b, "Grant receipt (recorded by rex-amq-adapter when the Epic opened, from the words the %s relayed; a record, not the user's signature):\n", GrantRelayer(r.RelayedRole))
+	}
+	fmt.Fprintf(&b, "- relayed_by: %s (%s)\n", r.RelayedBy, GrantRelayer(r.RelayedRole))
 	fmt.Fprintf(&b, "- relayed_at: %s\n", r.RelayedAt.UTC().Format(time.RFC3339))
 	fmt.Fprintf(&b, "- grant_path: %s\n", r.GrantPath)
 	fmt.Fprintf(&b, "- contract_path: %s\n", noneIfEmpty(r.ContractPath))

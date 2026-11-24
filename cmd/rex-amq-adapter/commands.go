@@ -57,7 +57,7 @@ var (
 // registry is the CLI's command set, built and checked once.
 func registry() *cli.Registry {
 	registryOnce.Do(func() {
-		r := &cli.Registry{Groups: groups(), Commands: commands(), HumanGate: app.HumanGate, Classify: app.Classify}
+		r := &cli.Registry{Groups: groups(), Commands: commands(), HumanGate: app.HumanGate, OperatorGate: app.OperatorGate, Classify: app.Classify}
 		if err := r.Finish(); err != nil {
 			panic("registry: " + err.Error())
 		}
@@ -275,7 +275,7 @@ func commands() []*cli.Command {
 		},
 		// epic
 		{
-			Path: path("epic", "open"), Summary: "(a personal agent) open an Epic: a Rex session with its lead and narrator, linked to you",
+			Path: path("epic", "open"), Summary: "(the Operator) open an Epic: a Rex session with its lead and narrator, linked to a Hub",
 			Args: []cli.Arg{a("name", cli.KindSingleLine, true, "the Epic's name (its Rex session label)")},
 			Flags: []cli.Flag{
 				req(f("cwd", cli.KindDir, "the repository the Epic's agents work in")),
@@ -283,20 +283,22 @@ func commands() []*cli.Command {
 				f("asked", cli.KindBody, "the user's own words asking for the Epic"),
 				f("crew", cli.KindCrew, "the crew the Epic works as"),
 				enum("harness", harnesses, "the lead's CLI"),
+				f("hub", cli.KindDir, "the Hub directory to link the Epic to (default: a personal agent's own Hub, else the default Hub)"),
 				dflt(f("timeout", cli.KindDuration, "how long to wait for both agents"), "90s"),
 				f("op-id", cli.KindOpID, "names this request: a retry reconciles the Epic the first run started"),
 			},
-			Tier: cli.TierLaunch, Mutating: true, Idempotent: true, DryRun: true, Input: true, Audience: cli.AudienceAgent, Roles: []string{"personal"},
+			Tier: cli.TierLaunch, Mutating: true, Idempotent: true, DryRun: true, Input: true, Audience: cli.AudienceAgent, Roles: []string{"operator"}, Guard: cli.GuardOperator,
 			Result:     "{session_id, op_id, replayed, lifecycle_state, lead {role, block, status, handle}, narrator, goal_path, grant_path, ...}; a partial start exits 7 with it in data",
 			Guardrails: []string{"needs --goal, --asked, or both"},
 			Examples:   []string{`rex-amq-adapter epic open s1 --cwd ~/projects/x --goal goal.md --asked "run the S1 goal"`, `rex-amq-adapter epic open s1 --cwd ~/projects/x --asked "fix the login bug" --op-id me:board:epic-7#open --dry-run`},
 			Run:        epicOpen,
 		},
 		{
-			Path: path("epic", "close"), Summary: "(a personal agent, on the user's words) close a linked Epic: kill its session, park its agents, unlink it",
-			Args:  []cli.Arg{a("session", cli.KindSessionID, true, "the Epic's Rex session")},
-			Flags: []cli.Flag{f("asked", cli.KindBody, "the user's own words asking to close it: the named confirmation"), b("force", "only when the user says so: close while its agents work"), f("op-id", cli.KindOpID, "names this request: a retry finishes the close")},
-			Tier:  cli.TierRecoverable, Mutating: true, Idempotent: true, DryRun: true, Audience: cli.AudienceAgent, Roles: []string{"personal"},
+			Path: path("epic", "close"), Summary: "(the Operator, on the user's words) close an Epic: kill its session, park its agents, unlink it",
+			Args: []cli.Arg{a("session", cli.KindSessionID, true, "the Epic's Rex session")},
+			Flags: []cli.Flag{f("asked", cli.KindBody, "the user's own words asking to close it: the named confirmation"), b("force", "only when the user says so: close while its agents work"),
+				f("hub", cli.KindDir, "only an Epic of this Hub directory"), f("op-id", cli.KindOpID, "names this request: a retry finishes the close")},
+			Tier: cli.TierRecoverable, Mutating: true, Idempotent: true, DryRun: true, Audience: cli.AudienceAgent, Roles: []string{"operator"}, Guard: cli.GuardOperator,
 			Result:     "{session_id, parked, unlinked, op_id, lifecycle_state, replayed}",
 			Guardrails: []string{"without --asked: exit 2 confirmation_required", "--force skips only the busy check, and only the user authorizes it"},
 			Examples:   []string{`rex-amq-adapter epic close session:01a1eac4-f222-7d79-9291-9a8a86d39ec3 --asked "close it"`, `rex-amq-adapter epic close session:01a1eac4-f222-7d79-9291-9a8a86d39ec3 --asked "close it" --dry-run`},
@@ -307,7 +309,7 @@ func commands() []*cli.Command {
 			Args: []cli.Arg{a("session", cli.KindSessionID, true, "the Epic's Rex session")},
 			Flags: []cli.Flag{f("asked", cli.KindBody, "the user's own words asking to revive it: logged with the revive"), dflt(f("timeout", cli.KindDuration, "how long to wait for the resumed agents to be adopted"), "90s"),
 				f("op-id", cli.KindOpID, "names this request: a retry resumes only what is still down")},
-			Tier: cli.TierLaunch, Mutating: true, Idempotent: true, DryRun: true, Audience: cli.AudienceAgent, Roles: []string{"personal", "human"}, Guard: cli.GuardHumanOutsideRex,
+			Tier: cli.TierLaunch, Mutating: true, Idempotent: true, DryRun: true, Audience: cli.AudienceAgent, Roles: []string{"operator"}, Guard: cli.GuardOperator,
 			Result:     "{session_id, op_id, replayed, lifecycle_state, server_instance, linked, view_refreshed, agents: [{handle, kind, role, block, agent_session_id, cwd, action, status, reason, note}]}; agents' action is already_live, resumed_in_place, respawned_window, or (--dry-run) resume_in_place/respawn_window; a partial start exits 7 with it in data",
 			Guardrails: []string{"a closed Epic is never revived (exit 5)", "an agent whose block holds another agent's process, a non-shell, or unsent input is refused, not clobbered"},
 			Examples:   []string{`rex-amq-adapter epic revive session:01a1eac4-f222-7d79-9291-9a8a86d39ec3 --asked "把 Epic 恢复起来"`, `rex-amq-adapter epic revive session:01a1eac4-f222-7d79-9291-9a8a86d39ec3 --dry-run`},
@@ -316,7 +318,7 @@ func commands() []*cli.Command {
 		{
 			Path: path("epic", "list"), Summary: "the Epics linked to a personal agent: lifecycle, hand-back, whether a view exists",
 			Flags: []cli.Flag{f("hub", cli.KindDir, "outside a personal agent's pane: the Hub directory (default: the default Hub)"), f("personal", cli.KindHandle, "only Epics this personal agent opened or prefers (outside its pane: names its Hub)")},
-			Tier:  cli.TierRead, Audience: cli.AudienceAgent, Roles: []string{"personal", "human"}, Guard: cli.GuardHumanOutsideRex, List: true,
+			Tier:  cli.TierRead, Audience: cli.AudienceAgent, Roles: []string{"operator"}, Guard: cli.GuardOperator, List: true,
 			Result:   "a list of Epics {session_id, name, dir, lifecycle, hand_back, has_view}",
 			Examples: []string{"rex-amq-adapter epic list", "rex-amq-adapter epic list --personal claude-01 --fields session_id,lifecycle,hand_back"},
 			Run:      epicList,
@@ -325,7 +327,7 @@ func commands() []*cli.Command {
 			Path: path("epic", "show"), Summary: "a session's view: members, obligations, recent mail, coverage gaps, hand-back, lifecycle",
 			Args:  []cli.Arg{a("session", cli.KindSessionID, false, "the Epic session (a personal agent's linked Epic); default yours")},
 			Flags: []cli.Flag{f("hub", cli.KindDir, "outside Rex: the Hub the Epic is linked to (default: the default Hub)"), f("personal", cli.KindHandle, "outside Rex: a live personal agent of that Hub")},
-			Tier:  cli.TierRead, Audience: cli.AudienceAgent, Roles: []string{"lead", "narrator", "personal", "human"}, Guard: cli.GuardHumanOutsideRex, Fields: true,
+			Tier:  cli.TierRead, Audience: cli.AudienceAgent, Roles: []string{"operator", "lead", "narrator"}, Guard: cli.GuardOperatorOrSelf, Fields: true,
 			Result:   "the view; narrow it with --fields lifecycle,obligations,hand_back",
 			Examples: []string{"rex-amq-adapter epic show --fields lifecycle,obligations,hand_back", "rex-amq-adapter epic show session:01a1eac4-f222-7d79-9291-9a8a86d39ec3"},
 			Run:      epicShow,
@@ -349,7 +351,7 @@ func commands() []*cli.Command {
 		{
 			Path: path("epic", "grant"), Summary: "the Epic's notarized grant: the user's words and the contract, its sha256 checked again",
 			Args: []cli.Arg{a("session", cli.KindSessionID, false, "the Epic session; default yours")},
-			Tier: cli.TierRead, Audience: cli.AudienceAgent, Roles: []string{"lead", "personal", "human"}, Guard: cli.GuardHumanOutsideRex,
+			Tier: cli.TierRead, Audience: cli.AudienceAgent, Roles: []string{"operator", "lead", "narrator"}, Guard: cli.GuardOperatorOrSelf,
 			Result:   "{session_id, relayed_by, relayed_at, asked, contract, contract_sha256, contract_sha256_ok, contract_note, markdown}; contract_sha256_ok is false when the contract changed, cannot be read, or the grant names none",
 			Examples: []string{"rex-amq-adapter epic grant", "rex-amq-adapter epic grant session:01a1eac4-f222-7d79-9291-9a8a86d39ec3 --text"},
 			Doc:      true,
@@ -372,7 +374,7 @@ func commands() []*cli.Command {
 			Path: path("epic", "artifacts"), Summary: "the artifact manifests an Epic's hand-backs carry",
 			Args:  []cli.Arg{a("session", cli.KindSessionID, true, "the Epic session")},
 			Flags: []cli.Flag{num("seq", "0", 0, 1000000, "one revision (0: the latest)")},
-			Tier:  cli.TierRead, Audience: cli.AudienceAgent, Roles: []string{"personal", "human"}, Guard: cli.GuardHumanOutsideRex,
+			Tier:  cli.TierRead, Audience: cli.AudienceAgent, Roles: []string{"operator"}, Guard: cli.GuardOperator,
 			Result:   "a list of manifests {session_id, seq, by, at, report_digest, artifacts: [{name, sha256, bytes}]}",
 			Examples: []string{"rex-amq-adapter epic artifacts session:01a1eac4-f222-7d79-9291-9a8a86d39ec3", "rex-amq-adapter epic artifacts session:01a1eac4-f222-7d79-9291-9a8a86d39ec3 --seq 2"},
 			Run:      epicArtifacts,
@@ -381,7 +383,7 @@ func commands() []*cli.Command {
 			Path: path("epic", "materialize"), Summary: "write an Epic's artifacts into a directory, byte for byte",
 			Args:  []cli.Arg{a("session", cli.KindSessionID, true, "the Epic session")},
 			Flags: []cli.Flag{req(f("into", cli.KindOutDir, "the directory to write")), num("seq", "0", 0, 1000000, "one revision (0: the latest)"), b("replace", "replace files that changed locally")},
-			Tier:  cli.TierUndoable, Mutating: true, Idempotent: true, DryRun: true, Audience: cli.AudienceAgent, Roles: []string{"personal", "human"}, Guard: cli.GuardHumanOutsideRex,
+			Tier:  cli.TierUndoable, Mutating: true, Idempotent: true, DryRun: true, Audience: cli.AudienceAgent, Roles: []string{"operator"}, Guard: cli.GuardOperator,
 			Result:     "{session_id, seq, into, changed, atomic, complete, items: [{name, sha256, bytes, status}]}; writing into an existing directory is a non-atomic batch, meta.complete=false",
 			Guardrails: []string{"a file changed since it was last materialized is a conflict (exit 5) and nothing is written, unless --replace", "a symbolic link in --into's path is invalid_input"},
 			Examples:   []string{"rex-amq-adapter epic materialize session:01a1eac4-f222-7d79-9291-9a8a86d39ec3 --into ./design --dry-run", "rex-amq-adapter epic materialize session:01a1eac4-f222-7d79-9291-9a8a86d39ec3 --into ./design --seq 2"},

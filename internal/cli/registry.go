@@ -33,6 +33,11 @@ type Registry struct {
 	// HumanGate refuses a caller an agent runs (GuardHuman); it returns a
 	// *fault.Error with code guard_denied.
 	HumanGate func(getenv func(string) string) error
+	// OperatorGate refuses a caller that is no Epic Operator (GuardOperator)
+	// or, with self, also no Epic's own lead or narrator
+	// (GuardOperatorOrSelf); it returns a *fault.Error with code
+	// guard_denied.
+	OperatorGate func(getenv func(string) string, self bool) error
 	// Classify maps a command's error to its code; nil keeps fault errors
 	// and makes every other error internal.
 	Classify func(error) *fault.Error
@@ -232,11 +237,19 @@ func (r *Registry) Execute(ctx *Ctx, args []string) int {
 	if err != nil {
 		return p.Fail(asFault(err))
 	}
-	if cmd.Guard == GuardHuman || cmd.Guard == GuardHumanOutsideRex && ctx.Getenv("REX_BLOCK") == "" {
+	switch cmd.Guard {
+	case GuardHuman:
 		if r.HumanGate == nil {
 			return p.Fail(fault.New(fault.Internal, "%s is human-only and no guard is configured", cmd.Name()))
 		}
 		if err := r.HumanGate(ctx.Getenv); err != nil {
+			return p.Fail(r.classify(err))
+		}
+	case GuardOperator, GuardOperatorOrSelf:
+		if r.OperatorGate == nil {
+			return p.Fail(fault.New(fault.Internal, "%s is the Operator's and no guard is configured", cmd.Name()))
+		}
+		if err := r.OperatorGate(ctx.Getenv, cmd.Guard == GuardOperatorOrSelf); err != nil {
 			return p.Fail(r.classify(err))
 		}
 	}

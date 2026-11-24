@@ -140,7 +140,7 @@ func parkedFor(s seed, reason string) seed {
 func (w *reviveWorld) adopt(block, sid string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if _, err := w.e.Hook(ctx, EventSessionStart, core.Pi, Location{Block: block}, HookInput{SessionID: sid, AgentPID: os.Getpid()}); err != nil {
+	if _, err := w.e.Hook(ctx, EventSessionStart, core.Pi, Location{Block: block}, HookInput{SessionID: sid, AgentPID: 1}); err != nil {
 		w.t.Errorf("adopt %s in %s: %v", sid, block, err)
 	}
 }
@@ -299,9 +299,9 @@ func TestReviveRefusesClosedMissingAndGoneEpics(t *testing.T) {
 // refused before anything is reconciled.
 func TestReviveRefusesWhoMayNot(t *testing.T) {
 	w := newReviveWorld(t)
-	put(t, w.e, seed{Handle: "claude-09", Kind: core.Claude, Role: "implementer", BlockID: "block:x", SessionID: "session:other", AgentPID: os.Getpid(), AdoptedAt: time.Now()})
+	put(t, w.e, seed{Handle: "claude-09", Kind: core.Claude, Role: "implementer", BlockID: "block:x", SessionID: "session:other", AgentPID: 1, AdoptedAt: time.Now()})
 	w.env["REX_BLOCK"] = "block:x"
-	if _, err := w.revive(ReviveRequest{}); err == nil || !strings.Contains(err.Error(), "revived by the user or by a personal agent") {
+	if _, err := w.revive(ReviveRequest{}); err == nil || !isCode(err, fault.GuardDenied) {
 		t.Errorf("a worker: %v", err)
 	}
 	if _, err := w.e.Store.DeleteLink(core.Link{Personal: core.SessionKey{Server: fakeServer, SessionID: "session:me"}, Epic: core.SessionKey{Server: fakeServer, SessionID: reviveSess}}); err != nil {

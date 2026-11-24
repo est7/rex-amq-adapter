@@ -280,7 +280,8 @@ func TestEpicRejectsBadUsage(t *testing.T) {
 		{[]string{"epic", "open", "x", "-c", dir, "--asked", "go"}, 2, "usage"},
 		{[]string{"epic", "open", "x", "--cwd", dir, "--asked", "go", "--op-id", strings.Repeat("x", 257)}, 2, "invalid_input"},
 		{[]string{"epic", "open", "x", "--cwd", dir, "--asked", "go", "--op-id", "a‮b"}, 2, "invalid_input"},
-		{[]string{"epic", "open", "x", "--cwd", dir, "--asked", "go", "--op-id", "me:board:epic-7#open"}, 5, "failed_precondition"},
+		{[]string{"epic", "open", "x", "--cwd", dir, "--asked", "go", "--op-id", "me:board:epic-7#open", "--dry-run"}, 0, ""},
+		{[]string{"epic", "open", "x", "--cwd", dir, "--asked", "go", "--hub", filepath.Join(dir, "missing"), "--dry-run"}, 2, "invalid_input"},
 		{[]string{"epic", "close"}, 2, "usage"},
 		{[]string{"epic", "close", "--asked", "x"}, 2, "usage"},
 		{[]string{"epic", "close", s, "--nope"}, 2, "usage"},
@@ -288,7 +289,7 @@ func TestEpicRejectsBadUsage(t *testing.T) {
 		{[]string{"epic", "close", "s"}, 2, "invalid_input"},
 		{[]string{"epic", "close", s}, 2, "confirmation_required"},
 		{[]string{"epic", "close", s, "--asked", "close", "--op-id", "a\tb"}, 2, "invalid_input"},
-		{[]string{"epic", "close", s, "--asked", "close it"}, 5, "failed_precondition"},
+		{[]string{"epic", "close", s, "--asked", "close it"}, 4, "not_found"},
 	})
 }
 
@@ -315,7 +316,7 @@ func TestEpicReviveCommands(t *testing.T) {
 		t.Fatal("epic revive is not registered")
 	}
 	if spec.Tier != cli.TierLaunch || !spec.Mutating || !spec.Idempotent || !spec.DryRun || spec.Audience != cli.AudienceAgent ||
-		spec.Guard != cli.GuardHumanOutsideRex || !slices.Equal(spec.Roles, []string{"personal", "human"}) {
+		spec.Guard != cli.GuardOperator || !slices.Equal(spec.Roles, []string{"operator"}) {
 		t.Errorf("epic revive's spec: %+v", spec)
 	}
 	t.Setenv("ME_UNATTENDED", "1")

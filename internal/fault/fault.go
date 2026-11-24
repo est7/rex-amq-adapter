@@ -76,7 +76,7 @@ var codes = []Info{
 	{Busy, 5, true, "an agent is not at rest or holds unread mail; wait, or (only when the user says so) force"},
 	{CapReached, 5, false, "the session already runs its maximum number of agents"},
 	{FailedPrecondition, 5, false, "a precondition does not hold (details.reason, such as not_in_rex)"},
-	{GuardDenied, 6, false, "a guard refused the caller; details.reason is human_only, unattended, personal_role_locked, personal_session_pure, or epic_session_no_personal"},
+	{GuardDenied, 6, false, "a guard refused the caller; details.reason is human_only, operator_only, unattended, personal_role_locked, personal_session_pure, or epic_session_no_personal"},
 	{PartialStart, 7, false, "part of the start took effect; data holds what did"},
 	{NotAdopted, 7, false, "an agent was launched but not adopted; data holds its startup"},
 	{SeatFailed, 7, false, "a council seat could not be seated; data holds each seat"},

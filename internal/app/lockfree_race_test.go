@@ -740,7 +740,8 @@ func TestAConflictingCloseOpIDSettlesNothing(t *testing.T) {
 	}
 	var settle closeSettle
 	var res CloseResult
-	if _, err := e.closedAlready(caller, me, CloseRequest{Session: "session:epic", Asked: "close it", OpID: "me:close#1", Force: true}, "another-hash", &res, &settle); err == nil {
+	c := closer{op: Operator{Agent: &caller, Loc: loc}, me: me}
+	if _, err := e.closedAlready(c, CloseRequest{Session: "session:epic", Asked: "close it", OpID: "me:close#1", Force: true}, "another-hash", "", &res, &settle); err == nil {
 		t.Fatal("setup: the reused op id should conflict")
 	}
 	if settle.key != (core.SessionKey{}) {
