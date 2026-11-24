@@ -116,3 +116,45 @@ func TestHubInboxConcurrentAppends(t *testing.T) {
 		}
 	}
 }
+
+// Delivery records distinguish pending, settled Hub-only, and delivered
+// entries while keeping the durable Delivery token intact; invalid delivery
+// states are refused.
+func TestHubInboxDeliveryStatesKeepToken(t *testing.T) {
+	s := Store{P: Paths{Home: t.TempDir()}}
+	ctx, now := context.Background(), time.Now()
+	hub := "/hub/a"
+	a, _, err := s.AppendHubInbox(ctx, hub, HubInboxEntry{Epic: "session:e", Kind: InboxNarrator, By: "agy-01", DedupeKey: "k1", Delivery: "tok-hub"}, now)
+	if err != nil || a.DeliveryState != DeliveryPending || a.Delivery != "tok-hub" {
+		t.Fatalf("append hub-only candidate: %+v %v", a, err)
+	}
+	b, _, err := s.AppendHubInbox(ctx, hub, HubInboxEntry{Epic: "session:e", Kind: InboxNarrator, By: "agy-01", DedupeKey: "k2", Delivery: "tok-del"}, now)
+	if err != nil || b.DeliveryState != DeliveryPending {
+		t.Fatalf("append delivered candidate: %+v %v", b, err)
+	}
+	if err := s.PutHubInboxDelivery(hub, "tok-hub", HubInboxDelivery{State: DeliveryPending}); err == nil {
+		t.Error("accepted unsettled DeliveryPending sidecar")
+	}
+	if err := s.PutHubInboxDelivery(hub, "tok-hub", HubInboxDelivery{State: DeliveryDelivered}); err == nil {
+		t.Error("accepted DeliveryDelivered without msg_id")
+	}
+	if err := s.PutHubInboxDelivery(hub, "tok-hub", HubInboxDelivery{State: DeliveryHubOnly, MsgID: "m1"}); err == nil {
+		t.Error("accepted DeliveryHubOnly with msg_id")
+	}
+	if err := s.PutHubInboxDelivery(hub, "tok-hub", HubInboxDelivery{State: DeliveryHubOnly, RoutedTo: "hub", ReroutedFrom: "claude-01"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutHubInboxDelivery(hub, "tok-del", HubInboxDelivery{State: DeliveryDelivered, MsgID: "m2", Thread: "p2p/x", RoutedTo: "claude-02"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.HubInbox(hub)
+	if err != nil || len(got) != 2 {
+		t.Fatalf("read: %+v %v", got, err)
+	}
+	if got[0].Delivery != "tok-hub" || got[0].DeliveryState != DeliveryHubOnly || got[0].MsgID != "" || got[0].DeliveryRoutedTo != "hub" || got[0].DeliveryReroutedFrom != "claude-01" {
+		t.Errorf("settled hub-only entry: %+v", got[0])
+	}
+	if got[1].Delivery != "tok-del" || got[1].DeliveryState != DeliveryDelivered || got[1].MsgID != "m2" || got[1].Thread != "p2p/x" || got[1].DeliveryRoutedTo != "claude-02" {
+		t.Errorf("settled delivered entry: %+v", got[1])
+	}
+}

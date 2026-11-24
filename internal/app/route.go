@@ -190,6 +190,9 @@ type MailRoute struct {
 	hub core.HubKey
 	// InboxSeq is the message's entry in that inbox, once kept.
 	InboxSeq int64 `json:"inbox_seq,omitempty"`
+	// NoHubDedupe is true when a narrator passed --op-id on a session-keyed
+	// link without a Hub: delivered via AMQ only without Hub deduplication.
+	NoHubDedupe bool `json:"no_hub_dedupe,omitempty"`
 }
 
 // HubAddress is routed_to for a narrator's message no personal agent of
@@ -330,6 +333,9 @@ func withRoute(out []byte, route *MailRoute) []byte {
 	}
 	if route.InboxSeq != 0 {
 		obj["inbox_seq"] = route.InboxSeq
+	}
+	if route.NoHubDedupe {
+		obj["no_hub_dedupe"] = true
 	}
 	b, err := json.Marshal(obj)
 	if err != nil {
