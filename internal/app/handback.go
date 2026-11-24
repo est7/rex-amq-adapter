@@ -72,14 +72,14 @@ func (e Env) RecordHandBackWith(ctx context.Context, loc Location, r HandBackReq
 		return h, false, err
 	}
 	defer unlock()
-	// Before and after: one an earlier run failed to keep is kept before
-	// this one can replace it.
-	before := e.noteHandBackInHub(ctx, rec.SessionID)
+	// The stored one is kept before this run can replace it: if it cannot
+	// be, nothing is replaced, and the next run tries again.
+	if err := e.noteHandBackInHub(ctx, rec.SessionID); err != nil {
+		return h, false, fmt.Errorf("the hand-back is not recorded, and the stored one stays: %w (run hand-back again)", err)
+	}
 	h, changed, err = e.recordHandBack(rec, r)
 	if ierr := e.noteHandBackInHub(ctx, rec.SessionID); ierr != nil {
-		err = errors.Join(err, ierr)
-	} else if before != nil {
-		fmt.Fprintf(Diagnostics, "keep an earlier hand-back in the Hub's inbox: %v (kept now)\n", before)
+		err = errors.Join(err, fmt.Errorf("the hand-back is stored; %w (run hand-back again)", ierr))
 	}
 	return h, changed, err
 }

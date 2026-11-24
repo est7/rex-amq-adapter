@@ -184,11 +184,12 @@ func (s Store) HubInbox(dir string) ([]HubInboxEntry, error) {
 	}
 	for i := range entries {
 		if x := &entries[i]; x.Delivery != "" && x.MsgID == "" {
+			// A record that cannot be read leaves the id out: the entry
+			// stands, and the app finds the id again (its sent mail).
 			var d hubInboxDelivery
-			if ok, err := readJSON(s.hubInboxDeliveryPath(dir, x.Delivery), &d); err != nil {
-				return nil, err
-			} else if ok {
-				x.MsgID = d.MsgID
+			if ok, err := readJSON(s.hubInboxDeliveryPath(dir, x.Delivery), &d); err == nil && ok {
+				// Settled: delivered as d.MsgID, or (none) sent to nobody.
+				x.MsgID, x.Delivery = d.MsgID, ""
 				if x.Thread == "" {
 					x.Thread = d.Thread
 				}
@@ -209,12 +210,13 @@ func (s Store) hubInboxDeliveryPath(dir, delivery string) string {
 }
 
 // PutHubInboxDelivery records that the entry of the Hub directory dir
-// named delivery was delivered as amq message msgID on thread: readers
-// see them as the entry's (HubInbox). It takes no lock: each delivery is
-// its own file, written once whole.
+// named delivery was delivered as amq message msgID on thread, or with
+// msgID "" that it was sent to nobody: readers see them as the entry's
+// (HubInbox). It takes no lock: each delivery is its own file, written
+// once whole.
 func (s Store) PutHubInboxDelivery(dir, delivery, msgID, thread string) error {
-	if delivery == "" || msgID == "" {
-		return errors.New("a Hub inbox delivery needs its entry and the message id")
+	if delivery == "" {
+		return errors.New("a Hub inbox delivery needs its entry")
 	}
 	path := s.hubInboxDeliveryPath(dir, delivery)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {

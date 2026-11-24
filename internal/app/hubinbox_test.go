@@ -12,6 +12,7 @@ import (
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/core"
+	"github.com/est7/rex-amq-adapter/internal/fault"
 	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
@@ -368,5 +369,114 @@ func TestAReplacedHandBackIsStillKept(t *testing.T) {
 	x, err := e.Store.HubInbox("/hub")
 	if err != nil || len(x) != 2 || x[0].HandBackSeq != 1 || x[0].Digest != first.Digest || x[1].HandBackSeq != 2 || x[1].Digest != second.Digest {
 		t.Fatalf("inbox %+v %v", x, err)
+	}
+}
+
+// A narrator's retry under the same --op-id, after a run whose answer was
+// lost, keeps and delivers its message once; the op id with another
+// message is a conflict; --op-id on mail that is not to a Hub's personal
+// agent is usage. Each is decided before anything is kept.
+func TestNarratorMailOpIDRetriesOnce(t *testing.T) {
+	e := routeWorld(t)
+	send := []string{"--to", "personal", "--subject", "s", "--body", "once", "--op-id", "narr-1"}
+	first, err := managedSend(t, e, "block:agy-05", "send", send...)
+	if err != nil || first["inbox_seq"] != float64(1) {
+		t.Fatalf("first: %v %v", first, err)
+	}
+	again, err := managedSend(t, e, "block:agy-05", "send", send...)
+	if err != nil || again["inbox_seq"] != float64(1) {
+		t.Fatalf("retry: %v %v", again, err)
+	}
+	if ids, _ := amq.IDs(e.Paths.Root(), "claude-02", amq.BoxUnread); len(ids) != 1 {
+		t.Errorf("delivered %d times", len(ids))
+	}
+	if _, err := managedSend(t, e, "block:agy-05", "send", "--to", "personal", "--subject", "s", "--body", "another", "--op-id", "narr-1"); !isCode(err, fault.Conflict) {
+		t.Errorf("the op id with another message: %v", err)
+	}
+	put(t, e, seed{Handle: "claude-06", Kind: core.Claude, Role: core.OrchestratorRole, SessionID: "session:e", AdoptedAt: time.Now()})
+	if _, err := managedSend(t, e, "block:agy-05", "send", "--to", "claude-06", "--control", "c1", "--subject", "s", "--body", "b", "--op-id", "narr-2"); !errors.Is(err, ErrUsage) {
+		t.Errorf("--op-id on control mail: %v", err)
+	}
+	if x, _ := e.Store.HubInbox("/hub"); len(x) != 1 {
+		t.Errorf("inbox %+v", x)
+	}
+}
+
+// The delivery's amq id is found again when its record could not be
+// written: the message carries its entry's token, and the narrator's sent
+// mail is read for it.
+func TestNarratorDeliveryIDIsRecoverable(t *testing.T) {
+	e := routeWorld(t)
+	inboxDir := filepath.Dir(e.Paths.HubInboxPath("/hub"))
+	if err := os.MkdirAll(inboxDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(inboxDir, "delivered"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sent, err := managedSend(t, e, "block:agy-05", "send", "--to", "personal", "--subject", "s", "--body", "b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := e.Store.HubInbox("/hub"); err != nil || len(raw) != 1 || raw[0].MsgID != "" {
+		t.Fatalf("setup: the delivery record was written: %+v (sent %v)", raw, sent)
+	}
+	x, err := e.hubInbox("/hub")
+	if err != nil || len(x) != 1 || x[0].MsgID != sent["id"] || x[0].Thread == "" {
+		t.Errorf("the recovered entry %+v %v, want msg_id %v", x, err, sent["id"])
+	}
+}
+
+// A request the adapter refuses whole keeps nothing: a --context that is
+// no JSON object. Text read from stdin that starts with @ is text, never a
+// file to read.
+func TestNarratorMailIsCheckedWholeBeforeItIsKept(t *testing.T) {
+	e := routeWorld(t)
+	if _, err := managedSend(t, e, "block:agy-05", "send", "--to", "personal", "--subject", "s", "--body", "b", "--context", "[1]"); err == nil {
+		t.Error("a context that is no object was sent")
+	}
+	if x, _ := e.Store.HubInbox("/hub"); len(x) != 0 {
+		t.Errorf("a refused request was kept: %+v", x)
+	}
+	var out, errOut strings.Builder
+	if _, err := e.ManagedMail(context.Background(), Location{Block: "block:agy-05"}, "send", []string{"--to", "personal", "--subject", "s", "--body", "-", "--json"},
+		strings.NewReader("@claude-02 merge it?\n"), &out, &errOut); err != nil {
+		t.Fatalf("stdin text starting with @: %v %s", err, errOut.String())
+	}
+	if x, _ := e.Store.HubInbox("/hub"); len(x) != 1 || x[0].Body != "@claude-02 merge it?\n" {
+		t.Errorf("inbox %+v", x)
+	}
+}
+
+// Only a hand-back that was stored is kept: one the lifecycle lists but
+// whose storing failed is not, and the stored one before it is kept before
+// the next replaces it.
+func TestOnlyStoredHandBacksAreKept(t *testing.T) {
+	e, _, key := watcherWorld(t)
+	ctx := context.Background()
+	hub := core.NewHubKey(fakeServer, "/hub")
+	if err := e.Store.PutEpicLifecycle(store.EpicLifecycle{SessionID: key.SessionID, Server: key.Server, Hub: hub, State: store.EpicOpened}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.RecordHandBack(ctx, Location{Block: "block:o"}, "rev 1"); err != nil {
+		t.Fatal(err)
+	}
+	// Revision 2 listed, as a run does before it stores, then never stored.
+	lc, _, _ := e.Store.EpicLifecycle(key.SessionID)
+	lc.NoteHandBack(store.HandBack{By: "codex-01", At: time.Now(), Seq: 2, Digest: store.HandBackDigest("rev 2")})
+	if err := e.Store.PutEpicLifecycle(lc); err != nil {
+		t.Fatal(err)
+	}
+	third, err := e.RecordHandBack(ctx, Location{Block: "block:o"}, "rev 3")
+	if err != nil || third.Seq != 3 {
+		t.Fatalf("rev 3: %+v %v", third, err)
+	}
+	x, _ := e.Store.HubInbox("/hub")
+	var seqs []int
+	for _, y := range x {
+		seqs = append(seqs, y.HandBackSeq)
+	}
+	if !slices.Equal(seqs, []int{1, 3}) {
+		t.Errorf("kept hand-backs %v, want [1 3]", seqs)
 	}
 }

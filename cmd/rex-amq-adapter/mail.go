@@ -97,7 +97,7 @@ func (m mailbox) capBody(obj map[string]any, key string, max int) error {
 // postArgs are a send's or reply's flags; the body goes on stdin (runIn).
 func postArgs(in cli.Input) []string {
 	var args []string
-	for _, k := range []string{"subject", "kind", "priority", "thread", "refs", "control"} {
+	for _, k := range []string{"subject", "kind", "priority", "thread", "refs", "control", "op-id"} {
 		if v := in.Str(k); v != "" {
 			args = append(args, "--"+k, v)
 		}

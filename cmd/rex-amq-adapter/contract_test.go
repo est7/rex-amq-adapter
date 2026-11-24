@@ -682,3 +682,17 @@ func TestHubInboxReadsWithRexDown(t *testing.T) {
 		t.Error("hub inbox asked Rex or amq")
 	}
 }
+
+// mail send declares --op-id (a narrator's mail to personal): checked as
+// an op id before anything runs, and carried to the caller's lookup.
+func TestMailSendTakesAnOpID(t *testing.T) {
+	isolate(t)
+	stubTools(t)
+	check(t, []want{
+		{[]string{"mail", "send", "--to", "personal", "--subject", "s", "--body", "b", "--op-id", "a\tb"}, 2, "invalid_input"},
+		{[]string{"mail", "send", "--to", "personal", "--subject", "s", "--body", "b", "--op-id", "hb-1"}, 5, "failed_precondition"},
+	})
+	if spec := registry().Find("mail", "send"); spec == nil || !slices.ContainsFunc(spec.Flags, func(f cli.Flag) bool { return f.Name == "op-id" && f.Kind == cli.KindOpID }) {
+		t.Errorf("mail send does not declare --op-id")
+	}
+}
