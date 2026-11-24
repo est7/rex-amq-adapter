@@ -298,7 +298,10 @@ func (e Env) narratorRetry(x store.HubInboxEntry, n agent, hubDir string, req na
 		_ = e.Store.PutHubInboxDelivery(hubDir, x.Delivery, settled)
 		return narratorKeepResult{entry: x, delivery: settled, recovered: &hdr, settled: true}, nil
 	}
-	if uncertain {
+	if uncertain || x.DeliveryState == store.DeliveryAttempted {
+		// DeliveryAttempted without a confirmed delivery means a prior attempt
+		// did not finish cleanly (for example, the parent was SIGKILLed while
+		// its amq child was still running): never auto-resend.
 		return narratorKeepResult{entry: x, delivery: d, uncertain: true}, nil
 	}
 	return narratorKeepResult{entry: x, delivery: d}, nil
@@ -343,6 +346,14 @@ func (e Env) noteNarratorAttempt(x store.HubInboxEntry, to []core.Handle, route 
 	}
 	if err := e.Store.PutHubInboxDelivery(x.HubKey.Dir(), x.Delivery, d); err != nil {
 		fmt.Fprintf(Diagnostics, "record attempt of Hub inbox entry %d: %v\n", x.Seq, err)
+	}
+}
+
+// clearNarratorAttempt clears a DeliveryAttempted record after amq exited
+// cleanly and mailbox reconciliation confirmed nothing was delivered.
+func (e Env) clearNarratorAttempt(x store.HubInboxEntry) {
+	if err := e.Store.ClearHubInboxAttempt(x.HubKey.Dir(), x.Delivery); err != nil {
+		fmt.Fprintf(Diagnostics, "clear failed attempt of Hub inbox entry %d: %v\n", x.Seq, err)
 	}
 }
 

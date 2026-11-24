@@ -346,6 +346,25 @@ func (s Store) PutHubInboxDelivery(dir, delivery string, d HubInboxDelivery) err
 	return fsutil.WriteAtomic(path, append(b, '\n'))
 }
 
+// ClearHubInboxAttempt removes an unresolved DeliveryAttempted sidecar once
+// the AMQ child process has exited and mailbox reconciliation confirmed no
+// delivery occurred, returning the entry to DeliveryPending. A settled record
+// (DeliveryDelivered or DeliveryHubOnly) is never removed.
+func (s Store) ClearHubInboxAttempt(dir, delivery string) error {
+	if delivery == "" {
+		return nil
+	}
+	d, ok, err := s.HubInboxDelivery(dir, delivery)
+	if err != nil || !ok || d.State != DeliveryAttempted {
+		return err
+	}
+	err = os.Remove(s.hubInboxDeliveryPath(dir, delivery))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
 // parseHubInbox parses whole lines of an inbox.
 func parseHubInbox(b []byte) ([]HubInboxEntry, error) {
 	var out []HubInboxEntry

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -948,5 +949,163 @@ func TestNarratorOpIDReplayPreservesSubjectAndMultiTo(t *testing.T) {
 	}
 	if to, _ := rReplay["to"].([]any); len(to) != 2 || to[0] != "claude-02" || to[1] != "claude-03" {
 		t.Errorf("multi recovered replay to = %v, want [claude-02 claude-03]", rReplay["to"])
+	}
+}
+
+// delayedChildPost starts a real amq send subprocess gated on a file, then
+// returns an error immediately to simulate the adapter parent dying (SIGKILL)
+// while the orphan amq child is still running before writing the inbox.
+type delayedChildPost struct {
+	Queue
+	script  string
+	started string
+	cmdCh   chan *exec.Cmd
+}
+
+func (q *delayedChildPost) Post(_ context.Context, root, verb string, args ...string) (amq.Sent, []byte, error) {
+	argv := append([]string{verb, "--root", root}, args...)
+	cmd := exec.Command(q.script, argv...)
+	if err := cmd.Start(); err != nil {
+		return amq.Sent{}, nil, err
+	}
+	q.cmdCh <- cmd
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(q.started); err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return amq.Sent{}, nil, errors.New("simulated parent death while amq child still running")
+}
+
+// If the adapter process dies (SIGKILL) while its amq send child is still
+// running and the inbox is still empty, a retry seeing DeliveryAttempted must
+// return explicit pending instead of auto-resending; once the orphan child
+// finishes, a later retry reconciles that single delivery.
+func TestNarratorOpIDOrphanAMQChildDoesNotDuplicate(t *testing.T) {
+	amqBin, err := amq.ResolveBin()
+	if err != nil {
+		t.Skip("amq binary not available:", err)
+	}
+	e := routeWorld(t)
+	real := e.AMQ
+	dir := t.TempDir()
+	started := filepath.Join(dir, "started")
+	gate := filepath.Join(dir, "gate")
+	script := filepath.Join(dir, "delayed-amq.sh")
+	body := "#!/bin/sh\n: > '" + started + "'\nwhile [ ! -f '" + gate + "' ]; do sleep 0.02; done\nexec '" + amqBin + "' \"$@\"\n"
+	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Persist the entry + DeliveryAttempted as a parent that got SIGKILLed right
+	// after spawning amq (before any post-return cleanup could run).
+	hubKey := core.NewHubKey(fakeServer, "/hub")
+	req := narratorMailRequest{To: []core.Handle{"personal"}, Subject: "orphan-sub", Body: "orphan-body"}
+	entry, _, err := e.Store.AppendHubInbox(context.Background(), "/hub", store.HubInboxEntry{
+		Epic: "session:e", HubKey: hubKey, Kind: store.InboxNarrator, Subject: req.Subject, Body: req.Body,
+		By: "agy-05", DedupeKey: narratorOpKey("session:e", "orphan-1"), RequestHash: req.hash(), Delivery: "tok-orphan",
+	}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Store.PutHubInboxDelivery("/hub", "tok-orphan", store.HubInboxDelivery{
+		State: store.DeliveryAttempted, AttemptedTo: []core.Handle{"claude-02"}, RoutedTo: "claude-02",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ctxJSON, err := withDelivery(nil, "tok-orphan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Spawn the real delayed amq send child (as the dead parent's orphan child).
+	dc := &delayedChildPost{Queue: real, script: script, started: started, cmdCh: make(chan *exec.Cmd, 1)}
+	e.AMQ = dc
+	_, _, _ = e.post(context.Background(), Outgoing{
+		From: "agy-05", To: []core.Handle{"claude-02"}, Context: ctxJSON,
+		Args: []string{"--subject=orphan-sub", "--body=orphan-body", "--json"},
+	})
+	child := <-dc.cmdCh
+	defer func() {
+		_ = os.WriteFile(gate, []byte("go"), 0o600)
+		_ = child.Wait()
+	}()
+	// While the orphan amq child is still alive and inbox is empty, retry with
+	// the same --op-id must NOT resend (must return explicit delivery_state: pending).
+	bp := &blockingPost{Queue: real, entered: make(chan struct{}), release: make(chan struct{})}
+	close(bp.release)
+	e.AMQ = bp
+	args := []string{"--to", "personal", "--subject", "orphan-sub", "--body", "orphan-body", "--op-id", "orphan-1"}
+	pending, err := managedSend(t, e, "block:agy-05", "send", args...)
+	if err != nil || pending["inbox_seq"] != float64(entry.Seq) || pending["routed_to"] != "hub" || pending["delivery_state"] != string(store.DeliveryPending) || pending["id"] != nil {
+		t.Fatalf("retry while orphan amq child is still running: %v %v", pending, err)
+	}
+	if got := bp.calls.Load(); got != 0 {
+		t.Fatalf("retry auto-resent %d time(s) while orphan amq child was still running", got)
+	}
+	// Let the orphan amq child finish and deliver its message.
+	if err := os.WriteFile(gate, []byte("go"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := child.Wait(); err != nil {
+		t.Fatalf("orphan amq child failed: %v", err)
+	}
+	ids, _ := amq.IDs(e.Paths.Root(), "claude-02", amq.BoxUnread)
+	if len(ids) != 1 {
+		t.Fatalf("claude-02 inbox = %v, want exactly 1 message from orphan child", ids)
+	}
+	// Subsequent retry reconciles the orphan's delivery without posting again.
+	reconciled, err := managedSend(t, e, "block:agy-05", "send", args...)
+	if err != nil || reconciled["inbox_seq"] != float64(entry.Seq) || reconciled["id"] != ids[0] || reconciled["subject"] != "orphan-sub" {
+		t.Fatalf("retry after orphan child completed: %v %v", reconciled, err)
+	}
+	if got := bp.calls.Load(); got != 0 {
+		t.Errorf("post-completion retry called AMQ Post %d times, want 0", got)
+	}
+	if after, _ := amq.IDs(e.Paths.Root(), "claude-02", amq.BoxUnread); len(after) != 1 {
+		t.Errorf("claude-02 inbox after reconciliation = %v, want 1", after)
+	}
+}
+
+// outboxWrittenThenLostStdout runs the real amq send (writing both recipient
+// inboxes and sender outbox) and then returns empty Sent + nil stdout + error,
+// simulating amq exiting after writing outbox and before emitting JSON stdout.
+type outboxWrittenThenLostStdout struct{ Queue }
+
+func (q outboxWrittenThenLostStdout) Post(ctx context.Context, root, verb string, args ...string) (amq.Sent, []byte, error) {
+	_, _, err := q.Queue.Post(ctx, root, verb, args...)
+	if err != nil {
+		return amq.Sent{}, nil, err
+	}
+	return amq.Sent{}, nil, errors.New("amq exited after outbox write before printing stdout")
+}
+
+// When amq writes outbox and fails before printing stdout on a multi-recipient
+// --thread send, recovering the delivery preserves subject, thread, and every
+// recipient in both the first response and subsequent --op-id retries.
+func TestNarratorOpIDOutboxOnlyRecoveryPreservesMultiToAndSubject(t *testing.T) {
+	e := routeWorld(t)
+	real := e.AMQ
+	e.AMQ = outboxWrittenThenLostStdout{Queue: real}
+	args := []string{"--to", "personal,claude-03", "--thread", "epic/outbox", "--kind", "status", "--subject", "outbox multi", "--body", "both get it", "--op-id", "outbox-multi-1"}
+	first, err := managedSend(t, e, "block:agy-05", "send", args...)
+	if err != nil || first["id"] == nil || first["subject"] != "outbox multi" || first["thread"] != "epic/outbox" || first["inbox_seq"] != float64(1) {
+		t.Fatalf("first outbox-recovered response: %v %v", first, err)
+	}
+	if to, _ := first["to"].([]any); len(to) != 2 || to[0] != "claude-02" || to[1] != "claude-03" {
+		t.Fatalf("first outbox-recovered to = %v, want [claude-02 claude-03]", first["to"])
+	}
+	e.AMQ = real
+	replay, err := managedSend(t, e, "block:agy-05", "send", args...)
+	if err != nil || replay["id"] != first["id"] || replay["subject"] != "outbox multi" || replay["thread"] != "epic/outbox" || replay["inbox_seq"] != float64(1) {
+		t.Fatalf("retry after outbox recovery: %v %v", replay, err)
+	}
+	if to, _ := replay["to"].([]any); len(to) != 2 || to[0] != "claude-02" || to[1] != "claude-03" {
+		t.Errorf("retry after outbox recovery to = %v, want [claude-02 claude-03]", replay["to"])
+	}
+	for _, rcpt := range []string{"claude-02", "claude-03"} {
+		if ids, _ := amq.IDs(e.Paths.Root(), rcpt, amq.BoxUnread); len(ids) != 1 {
+			t.Errorf("%s received %d messages, want 1", rcpt, len(ids))
+		}
 	}
 }

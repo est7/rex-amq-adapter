@@ -283,6 +283,10 @@ func (m managed) post(ctx context.Context, verb string, args []string) (int, err
 				recoveredHdr, out = &h, nil
 			} else if uncertain {
 				pendingState = store.DeliveryPending
+			} else {
+				// amq exited and every mailbox was read cleanly with no match:
+				// clear the in-flight attempt so a later retry may send again.
+				m.e.clearNarratorAttempt(*kept)
 			}
 		}
 		switch {
@@ -311,6 +315,17 @@ func (m managed) post(ctx context.Context, verb string, args []string) (int, err
 	if kept != nil && delivered {
 		receipt = withRoute(out, route)
 		if len(bytes.TrimSpace(out)) == 0 || !json.Valid(out) {
+			if recoveredHdr == nil {
+				if h, found, _ := m.e.findDeliveredByToken(kept.By, kept.Delivery, o.To, nil); found {
+					recoveredHdr = &h
+					if sent.Thread == "" {
+						sent.Thread = h.Thread
+					}
+					if len(sent.To) == 0 {
+						sent.To = h.To
+					}
+				}
+			}
 			d := store.HubInboxDelivery{State: store.DeliveryDelivered, MsgID: sent.ID, Thread: sent.Thread, To: sent.To, Subject: kept.Subject, RoutedTo: route.RoutedTo, ReroutedFrom: route.ReroutedFrom}
 			receipt = synthDeliveredReceipt(*kept, d, recoveredHdr, route)
 		}

@@ -336,7 +336,9 @@ func (e Env) post(ctx context.Context, o Outgoing) (amq.Sent, []byte, error) {
 	if err != nil && sent.ID == "" {
 		// amq may have failed after delivering (it delivers before it
 		// writes the outbox copy): the copy carries the token if it exists.
-		sent.ID = e.sentWithToken(o.From, p.Token)
+		if hdr, ok := e.sentHeaderWithToken(o.From, p.Token); ok {
+			sent = amq.Sent{ID: hdr.ID, Thread: hdr.Thread, To: hdr.To}
+		}
 	}
 	if sent.ID == "" {
 		// Delivery cannot be ruled out: the pending record stays, and
@@ -351,21 +353,20 @@ func (e Env) post(ctx context.Context, o Outgoing) (amq.Sent, []byte, error) {
 	return sent, out, err
 }
 
-// sentWithToken finds the message in h's outbox that carries token, ""
-// when none does.
-func (e Env) sentWithToken(h core.Handle, token string) string {
+// sentHeaderWithToken finds the message header in h's outbox that carries token.
+func (e Env) sentHeaderWithToken(h core.Handle, token string) (amq.Header, bool) {
 	ids, err := amq.IDs(e.Paths.Root(), string(h), amq.BoxSent)
 	if err != nil {
-		return ""
+		return amq.Header{}, false
 	}
 	for i := len(ids) - 1; i >= 0; i-- {
 		hdr, err := amq.ReadHeader(e.Paths.Root(), string(h), amq.BoxSent, ids[i])
 		var ac adapterContext
 		if err == nil && hdr.ContextOf(store.ProvenanceContextKey, &ac) && ac.Token == token {
-			return hdr.ID
+			return hdr, true
 		}
 	}
-	return ""
+	return amq.Header{}, false
 }
 
 // sendAs is the adapter's own send in from's name: a notice (system) or an
