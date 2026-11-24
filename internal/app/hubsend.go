@@ -150,14 +150,23 @@ func (e Env) SendToNarrator(ctx context.Context, getenv func(string) string, r H
 	}
 	res.Seq, res.Replayed, res.Control = x.Seq, !added, "hub:"+strconv.FormatInt(x.Seq, 10)
 	if !added {
+		if x.Thread != "" {
+			res.Thread = x.Thread
+		}
 		d, hasSidecar, _ := e.Store.HubInboxDelivery(scope.hubDir, x.Delivery)
 		if hasSidecar && d.State == store.DeliveryDelivered && d.MsgID != "" {
+			if d.Thread != "" {
+				res.Thread = d.Thread
+			}
 			res.MsgID = d.MsgID
 			return res, nil
 		}
 		scanHandles := uniqueHandles(d.AttemptedTo, []core.Handle{narr.Handle})
-		if id, ok, uncertain := e.relayedAlready(scanHandles, scope.hubDir, x.Seq, x.Delivery); ok {
+		if id, thread, ok, uncertain := e.relayedAlready(scanHandles, scope.hubDir, x.Seq, x.Delivery); ok {
 			res.MsgID = id
+			if thread != "" {
+				res.Thread = thread
+			}
 			if x.Delivery != "" {
 				_ = e.Store.PutHubInboxDelivery(scope.hubDir, x.Delivery, store.HubInboxDelivery{
 					State: store.DeliveryDelivered, MsgID: id, Thread: res.Thread, To: []string{string(narr.Handle)}, RoutedTo: narr.Handle,
@@ -195,8 +204,11 @@ func (e Env) SendToNarrator(ctx context.Context, getenv func(string) string, r H
 	sent, _, err := e.post(ctx, Outgoing{From: narr.Handle, To: []core.Handle{narr.Handle}, Check: true, Context: rc,
 		Op: core.Operation{Kind: core.OpOperatorRelay, System: true, Hub: link.Hub}, Args: args})
 	if sent.ID == "" {
-		if id, ok, uncertain := e.relayedAlready([]core.Handle{narr.Handle}, scope.hubDir, x.Seq, x.Delivery); ok {
+		if id, thread, ok, uncertain := e.relayedAlready([]core.Handle{narr.Handle}, scope.hubDir, x.Seq, x.Delivery); ok {
 			sent.ID = id
+			if thread != "" {
+				res.Thread = thread
+			}
 		} else {
 			if !uncertain && x.Delivery != "" {
 				_ = e.Store.ClearHubInboxAttempt(scope.hubDir, x.Delivery)
@@ -255,11 +267,11 @@ func (e Env) liveNarrator(epic core.SessionKey) (agent, error) {
 		With("reason", "no_live_narrator")
 }
 
-// relayedAlready is the id of the relay of inbox entry seq of the Hub dir
-// in any candidate narrator's mailbox (unread, drained, sent, DLQ, or
+// relayedAlready is the id and thread of the relay of inbox entry seq of the
+// Hub dir in any candidate narrator's mailbox (unread, drained, sent, DLQ, or
 // quarantine): a retry that finds one sends it not again. uncertain is true
 // when any box or header read failed so absence cannot be confirmed.
-func (e Env) relayedAlready(narrators []core.Handle, dir string, seq int64, token string) (string, bool, bool) {
+func (e Env) relayedAlready(narrators []core.Handle, dir string, seq int64, token string) (string, string, bool, bool) {
 	root := e.Paths.Root()
 	uncertain := false
 	matches := func(n core.Handle, h amq.Header) bool {
@@ -294,7 +306,7 @@ func (e Env) relayedAlready(narrators []core.Handle, dir string, seq int64, toke
 					continue
 				}
 				if matches(n, h) {
-					return id, true, false
+					return id, h.Thread, true, false
 				}
 			}
 		}
@@ -312,11 +324,11 @@ func (e Env) relayedAlready(narrators []core.Handle, dir string, seq int64, toke
 				continue
 			}
 			if matches(n, h) {
-				return h.ID, true, false
+				return h.ID, h.Thread, true, false
 			}
 		}
 	}
-	return "", false, uncertain
+	return "", "", false, uncertain
 }
 
 // summaryLine is the first line of body, cut for a subject.
@@ -339,8 +351,19 @@ func (e Env) mirrorPersonalMail(ctx context.Context, p agent, narrator core.Hand
 	if err != nil || !ok || n.Role != core.NarratorRole || sent.ID == "" {
 		return
 	}
-	hub, err := e.epicHub(n.SessionID)
-	if err != nil || hub == "" {
+	me, err := e.gatewayEndpoint(p)
+	if err != nil {
+		return
+	}
+	links, err := e.linksFor(me, n.Endpoint().Session())
+	if err != nil {
+		return
+	}
+	var hub core.HubKey
+	if i := slices.IndexFunc(links, func(l core.Link) bool { return l.Hub != "" }); i >= 0 {
+		hub = links[i].Hub
+	}
+	if hub == "" {
 		return
 	}
 	all, err := e.hubInbox(hub.Dir())

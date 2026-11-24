@@ -295,3 +295,71 @@ func TestOperatorSendOpIDSerializesAndFailsClosedOnUnresolvedAttempt(t *testing.
 		t.Fatalf("reconciled orphan relay: %+v %v", got, err)
 	}
 }
+
+// After the opening Hub unlinks an Epic and another Hub links it, a personal
+// reply in the newly linked Hub mirrors into that linked Hub with its parent
+// association, not into the old opening Hub from the lifecycle.
+func TestPersonalReplyMirrorsToMatchingLinkedHub(t *testing.T) {
+	e, hubA := relayWorld(t)
+	ctx := context.Background()
+	hubB := physical(t, t.TempDir())
+	keyA := core.NewHubKey(fakeServer, hubA)
+	keyB := core.NewHubKey(fakeServer, hubB)
+	put(t, e, seed{Handle: "claude-04", Kind: core.Claude, Role: core.PersonalRole, SessionID: "session:claude-04", AdoptedAt: time.Now()})
+	putHub(t, e, "session:claude-04", keyB)
+	if err := e.AMQ.EnsureMailbox(ctx, e.Paths.Root(), "claude-04"); err != nil {
+		t.Fatal(err)
+	}
+	// Unlink Hub A (lifecycle still records Hub A as opening Hub) and link Hub B.
+	if _, err := e.Store.DeleteLink(core.Link{Hub: keyA, Epic: core.SessionKey{Server: fakeServer, SessionID: "session:e"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Store.PutLink(core.Link{Hub: keyB, Personal: core.SessionKey{Server: fakeServer, SessionID: "session:claude-04"}, PreferredPersonal: "claude-04", Epic: core.SessionKey{Server: fakeServer, SessionID: "session:e"}}); err != nil {
+		t.Fatal(err)
+	}
+	q, err := managedSend(t, e, "block:agy-05", "send", "--to", "personal", "--subject", "question", "--body", "proceed?")
+	if err != nil || q["routed_to"] != "claude-04" {
+		t.Fatalf("narrator mail to Hub B: %v %v", q, err)
+	}
+	if _, err := managedSend(t, e, "block:claude-04", "reply", "--id", q["id"].(string), "--body", "go ahead"); err != nil {
+		t.Fatal(err)
+	}
+	inA, err := e.Store.HubInbox(hubA)
+	if err != nil || len(inA) != 0 {
+		t.Errorf("unlinked Hub A inbox = %+v (%v), want empty", inA, err)
+	}
+	inB, err := e.Store.HubInbox(hubB)
+	if err != nil || len(inB) != 2 || inB[0].Kind != store.InboxNarrator || inB[1].Kind != store.InboxReply || inB[1].InReplyTo != 1 || inB[1].By != "claude-04" {
+		t.Fatalf("linked Hub B inbox = %+v (%v), want narrator #1 + reply #2 -> #1", inB, err)
+	}
+}
+
+// Replaying a settled hub reply --op-id returns the original thread even if
+// the parent entry's delivery later populates a different thread.
+func TestOperatorReplyOpIDReplayKeepsOriginalThread(t *testing.T) {
+	e, hub := relayWorld(t)
+	ctx := context.Background()
+	key := core.NewHubKey(fakeServer, hub)
+	parent, _, err := e.Store.AppendHubInbox(ctx, hub, store.HubInboxEntry{
+		Epic: "session:e", HubKey: key, Kind: store.InboxNarrator, Subject: "merge?", Body: "merge it?",
+		By: "agy-05", DedupeKey: "narrator:pending-1", Delivery: "tok-parent-1",
+	}, time.Now())
+	if err != nil || parent.Seq != 1 || parent.Thread != "" {
+		t.Fatalf("pending parent: %+v %v", parent, err)
+	}
+	req := HubSendRequest{Hub: hub, ReplyTo: 1, Body: "yes, merge", OpID: "reply-thread-1"}
+	first, err := e.SendToNarrator(ctx, userEnv, req)
+	if err != nil || first.MsgID == "" || !strings.HasPrefix(first.Thread, "hub/") {
+		t.Fatalf("first reply while parent thread empty: %+v %v", first, err)
+	}
+	// Parent's AMQ delivery finishes later and fills in its p2p thread.
+	if err := e.Store.PutHubInboxDelivery(hub, "tok-parent-1", store.HubInboxDelivery{
+		State: store.DeliveryDelivered, MsgID: "parent-msg-1", Thread: "p2p/agy-05__claude-02", RoutedTo: "claude-02",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	replay, err := e.SendToNarrator(ctx, userEnv, req)
+	if err != nil || !replay.Replayed || replay.MsgID != first.MsgID || replay.Thread != first.Thread {
+		t.Fatalf("replayed reply: %+v (%v), want msg_id=%q thread=%q", replay, err, first.MsgID, first.Thread)
+	}
+}
