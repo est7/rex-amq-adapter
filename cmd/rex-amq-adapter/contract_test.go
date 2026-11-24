@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/cli"
@@ -286,7 +287,7 @@ func TestHumanGate(t *testing.T) {
 	t.Setenv("REX_AMQ_AMQ", stub)
 	var gated []*cli.Command
 	for _, cmd := range registry().Commands {
-		if cmd.Guard != cli.GuardNone {
+		if cmd.Guard == cli.GuardHuman {
 			gated = append(gated, cmd)
 		}
 	}
@@ -297,7 +298,7 @@ func TestHumanGate(t *testing.T) {
 		}
 		return n
 	}()
-	for _, want := range []string{"trust grant", "trust root add", "trust root remove", "hub add", "hub remove", "install setup", "install remove", "stream panel", "epic list", "epic show", "epic revive"} {
+	for _, want := range []string{"trust grant", "trust root add", "trust root remove", "hub add", "hub remove", "install setup", "install remove", "stream panel"} {
 		if !slices.Contains(names, want) {
 			t.Errorf("%s is not guarded (guarded: %v)", want, names)
 		}
@@ -305,9 +306,6 @@ func TestHumanGate(t *testing.T) {
 	try := func(label string, wantReason string) {
 		t.Helper()
 		for _, cmd := range gated {
-			if cmd.Guard == cli.GuardHumanOutsideRex && os.Getenv("REX_BLOCK") != "" {
-				continue
-			}
 			for _, dry := range []bool{false, true} {
 				if dry && !cmd.DryRun {
 					continue
@@ -325,6 +323,9 @@ func TestHumanGate(t *testing.T) {
 					t.Errorf("%s: %q: exit %d %q reason %v, want 6 guard_denied %s", label, args, code, env.code(), reason["r"], wantReason)
 				}
 			}
+		}
+		if _, err := os.Stat(marker); err == nil {
+			t.Errorf("%s: a refused command asked Rex or amq", label)
 		}
 	}
 	for _, v := range []string{"CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "PI_SESSION_ID", "ANTIGRAVITY_CONVERSATION_ID"} {
@@ -360,6 +361,144 @@ func TestHumanGate(t *testing.T) {
 		t.Fatal(err)
 	}
 	try("under a live agent", "human_only")
+}
+
+// The Operator guard admits only an Epic's Operator (the user, a personal
+// agent, a top-level attended standalone agent) to the Epic lifecycle and
+// cockpit commands, inside Rex and out alike: everyone else is refused with
+// exit 6 guard_denied before any Rex or amq call, dry run or not. An
+// unadopted harness session outside Rex (a Desktop app's agent) is the
+// user's; an agent of an Epic is refused from its own pane even after the
+// Epic's narrator crashed, since its session's records still say Epic.
+func TestOperatorGuard(t *testing.T) {
+	isolate(t)
+	marker := filepath.Join(t.TempDir(), "touched")
+	stub := filepath.Join(t.TempDir(), "stub")
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\ntouch "+marker+"\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("REX_AMQ_REX", stub)
+	t.Setenv("REX_AMQ_AMQ", stub)
+	var gated []*cli.Command
+	for _, cmd := range registry().Commands {
+		if cmd.Guard == cli.GuardOperator || cmd.Guard == cli.GuardOperatorOrSelf {
+			gated = append(gated, cmd)
+		}
+	}
+	var names []string
+	for _, c := range gated {
+		names = append(names, c.Name())
+	}
+	slices.Sort(names)
+	if want := []string{"epic artifacts", "epic close", "epic grant", "epic list", "epic materialize", "epic open", "epic revive", "epic show"}; !slices.Equal(names, want) {
+		t.Fatalf("Operator commands %v, want %v", names, want)
+	}
+	run := func(cmd *cli.Command, dry bool) (int, envelope) {
+		t.Helper()
+		args := invocation(t, cmd, "", "", "")
+		if dry {
+			args = append(args, "--dry-run")
+		}
+		return machine(t, args...)
+	}
+	refused := func(label, wantReason string, spare func(*cli.Command) bool) {
+		t.Helper()
+		for _, cmd := range gated {
+			if spare != nil && spare(cmd) {
+				continue
+			}
+			for _, dry := range []bool{false, true} {
+				if dry && !cmd.DryRun {
+					continue
+				}
+				code, env := run(cmd, dry)
+				var reason any
+				if env.Error != nil {
+					reason = env.Error.Details["reason"]
+				}
+				if code != 6 || env.code() != "guard_denied" || reason != wantReason {
+					t.Errorf("%s: %s (dry %v): exit %d %q reason %v, want 6 guard_denied %s", label, cmd.Name(), dry, code, env.code(), reason, wantReason)
+				}
+			}
+		}
+		if _, err := os.Stat(marker); err == nil {
+			t.Fatalf("%s: a refused command asked Rex or amq", label)
+		}
+	}
+	admitted := func(label string, only func(*cli.Command) bool) {
+		t.Helper()
+		for _, cmd := range gated {
+			if only != nil && !only(cmd) {
+				continue
+			}
+			if code, env := run(cmd, false); code == 6 || env.code() == "guard_denied" {
+				t.Errorf("%s: %s refused by the guard: %+v", label, cmd.Name(), env.Error)
+			}
+		}
+		os.Remove(marker)
+	}
+	for _, kv := range [][2]string{{"ME_UNATTENDED", "1"}, {"AGY_UNATTENDED", "1"}, {"OWL_DISPATCH_RUN", "run.1"}, {"OWL_DISPATCH_RUN_ID", "r-1"}} {
+		t.Setenv(kv[0], kv[1])
+		refused(kv[0], "unattended", nil)
+		t.Setenv(kv[0], "")
+	}
+	// A Desktop app's agent outside Rex: a harness session no hook adopted.
+	for _, v := range []string{"CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "PI_SESSION_ID", "ANTIGRAVITY_CONVERSATION_ID"} {
+		t.Setenv(v, "a-desktop-session")
+		admitted(v+" outside Rex", nil)
+		t.Setenv(v, "")
+	}
+	admitted("the user's shell", nil)
+
+	home := os.Getenv("REX_AMQ_ADAPTER_HOME")
+	s := store.Store{P: store.Paths{Home: home}}
+	epic := "session:epic"
+	if err := s.PutSessionPolicy(store.SessionPolicy{Kind: store.PolicyEpic, SessionID: epic, Server: "unix:///t.sock", LeadRole: core.OrchestratorRole, LeadHandle: "claude-02"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutEpicLifecycle(store.EpicLifecycle{SessionID: epic, Server: "unix:///t.sock", State: store.EpicOpened}); err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range []testAgent{
+		{Handle: "claude-02", Kind: core.Claude, Role: core.OrchestratorRole, BlockID: "block:lead"},
+		{Handle: "claude-03", Kind: core.Claude, Role: core.NarratorRole, BlockID: "block:narrator"},
+		{Handle: "codex-04", Kind: core.Codex, Role: "implementer", BlockID: "block:worker"},
+		{Handle: "codex-05", Kind: core.Codex, BlockID: "block:norole"},
+		{Handle: "claude-06", Kind: core.Claude, Role: core.PersonalRole, BlockID: "block:personal", SessionID: "session:hub"},
+	} {
+		a.Server, a.WindowID, a.AgentPID = "unix:///t.sock", "window:1", 999999
+		if a.SessionID == "" {
+			a.SessionID = epic
+		}
+		if err := putAgent(s, a); err != nil {
+			t.Fatal(err)
+		}
+	}
+	self := func(c *cli.Command) bool { return c.Guard == cli.GuardOperatorOrSelf }
+	t.Setenv("REX_BLOCK", "block:worker")
+	refused("an Epic worker's pane", "operator_only", nil)
+	// The narrator of this Epic crashed: its record is gone from the live
+	// ones, and the session's records still make its no-role agent an Epic's.
+	if _, err := s.ReleaseLease("claude-03", 1, store.Departure{Reason: store.DepartSessionEnd, At: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("REX_BLOCK", "block:norole")
+	refused("a no-role agent of an Epic whose narrator crashed", "operator_only", nil)
+	t.Setenv("REX_BLOCK", "block:worker")
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "nested-claude-p")
+	refused("an unadopted session nested in a worker's pane", "operator_only", nil)
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "")
+	t.Setenv("REX_BLOCK", "block:lead")
+	refused("the Epic's lead, outside its own session's reads", "operator_only", self)
+	admitted("the Epic's lead reading its own session", self)
+	t.Setenv("REX_BLOCK", "block:personal")
+	admitted("a personal agent's pane", nil)
+	t.Setenv("REX_BLOCK", "")
+	if err := putAgent(s, testAgent{Handle: "codex-08", Kind: core.Codex, Role: "implementer", Server: "unix:///t.sock", BlockID: "block:above",
+		SessionID: epic, WindowID: "window:1", AgentPID: os.Getppid()}); err != nil {
+		t.Fatal(err)
+	}
+	refused("under a live agent", "operator_only", nil)
 }
 
 // inject is amq wake's injector: exactly three positional arguments after

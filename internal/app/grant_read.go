@@ -41,11 +41,17 @@ func (e Env) ReadGrant(loc Location, session string) (GrantRead, error) {
 	return e.readGrant(session)
 }
 
-// ReadGrantAsHuman returns the grant of session for the user outside Rex
-// (HumanGate): nothing an agent runs gets it this way.
-func (e Env) ReadGrantAsHuman(getenv func(string) string, session string) (GrantRead, error) {
-	if err := e.HumanGate(getenv); err != nil {
+// ReadGrantAsOperator returns the grant of session for the Operator
+// (ResolveOperator): a personal agent only for an Epic linked to it.
+func (e Env) ReadGrantAsOperator(getenv func(string) string, session string) (GrantRead, error) {
+	op, err := e.ResolveOperator(getenv)
+	if err != nil {
 		return GrantRead{}, err
+	}
+	if op.Personal() {
+		if err := e.mayReadGrant(*op.Agent, session); err != nil {
+			return GrantRead{}, err
+		}
 	}
 	return e.readGrant(session)
 }

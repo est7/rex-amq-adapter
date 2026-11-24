@@ -315,7 +315,7 @@ func TestEpicReviveCommands(t *testing.T) {
 		t.Fatal("epic revive is not registered")
 	}
 	if spec.Tier != cli.TierLaunch || !spec.Mutating || !spec.Idempotent || !spec.DryRun || spec.Audience != cli.AudienceAgent ||
-		spec.Guard != cli.GuardHumanOutsideRex || !slices.Equal(spec.Roles, []string{"personal", "human"}) {
+		spec.Guard != cli.GuardOperator || !slices.Equal(spec.Roles, []string{"operator"}) {
 		t.Errorf("epic revive's spec: %+v", spec)
 	}
 	t.Setenv("ME_UNATTENDED", "1")

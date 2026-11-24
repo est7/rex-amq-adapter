@@ -168,10 +168,12 @@ func newWorldWith(t *testing.T, restore bool) *world {
 		// CLAUDE* and the other harnesses' session ids: the agent running the
 		// tests may be a harness session, whose pid and session id must not
 		// stand for the scripted agents'.
-		// ME_UNATTENDED: the agent running the tests may be an Epic's, and
-		// the marker an agent shell reads must come from its own launch.
+		// ME_UNATTENDED and the other unattended markers: the agent running
+		// the tests may be an Epic's, and the marker an agent shell reads
+		// must come from its own launch.
 		switch name {
-		case "HOME", "SHELL", "XDG_CONFIG_HOME", "CODEX_THREAD_ID", "PI_SESSION_ID", "ANTIGRAVITY_CONVERSATION_ID", "ME_UNATTENDED":
+		case "HOME", "SHELL", "XDG_CONFIG_HOME", "CODEX_THREAD_ID", "PI_SESSION_ID", "ANTIGRAVITY_CONVERSATION_ID", "ME_UNATTENDED",
+			"AGY_UNATTENDED", "OWL_DISPATCH_RUN", "OWL_DISPATCH_RUN_ID":
 			continue
 		}
 		if name == "PATH" {

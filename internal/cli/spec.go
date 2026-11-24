@@ -44,9 +44,12 @@ const (
 	// GuardHuman refuses (exit 6) any caller an agent runs or that runs
 	// unattended (humanGate).
 	GuardHuman Guard = "human_only"
-	// GuardHumanOutsideRex is GuardHuman for a caller outside any Rex pane;
-	// inside one, the command's own role checks apply.
-	GuardHumanOutsideRex Guard = "human_only_outside_rex"
+	// GuardOperator refuses (exit 6) every caller but an Epic's Operator
+	// (app.Env.OperatorGate), inside Rex and out alike.
+	GuardOperator Guard = "operator"
+	// GuardOperatorOrSelf is GuardOperator that also admits an Epic's own
+	// lead or narrator, whose command reads its own session only.
+	GuardOperatorOrSelf Guard = "operator_or_epic_self"
 )
 
 // Value is the declared kind of an argument or flag value.

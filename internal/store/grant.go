@@ -34,13 +34,16 @@ func (p Paths) grantJSONPath(id string) string {
 	return filepath.Join(p.SessionDir(id), "grant.json")
 }
 
-// Grant is what a personal agent relayed when it opened an Epic: the user's
-// own words (Asked, empty when it passed only a contract) and the goal
-// contract (Contract, its absolute path, empty when there is none) with the
-// SHA-256 of the contract as read then.
+// Grant is what the Operator relayed when it opened an Epic: the user's own
+// words (Asked, empty when it passed only a contract) and the goal contract
+// (Contract, its absolute path, empty when there is none) with the SHA-256
+// of the contract as read then. RelayedRole says who RelayedBy is
+// (core.GrantRelayer): "" for a personal agent, as every grant recorded
+// before the Operator was.
 type Grant struct {
 	Asked          string      `json:"asked"`
 	RelayedBy      core.Handle `json:"relayed_by"`
+	RelayedRole    string      `json:"relayed_role,omitempty"`
 	RelayedAt      time.Time   `json:"relayed_at"`
 	SessionID      string      `json:"session_id"`
 	Contract       string      `json:"contract"`
@@ -116,7 +119,7 @@ func (s Store) Grant(id string) (Grant, bool, error) {
 func (g Grant) Markdown() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Grant for Epic session %s\n\n", g.SessionID)
-	fmt.Fprintf(&b, "- relayed_by: %s (personal agent)\n", g.RelayedBy)
+	fmt.Fprintf(&b, "- relayed_by: %s (%s)\n", g.RelayedBy, core.GrantRelayer(g.RelayedRole))
 	fmt.Fprintf(&b, "- relayed_at: %s\n", g.RelayedAt.UTC().Format(time.RFC3339))
 	fmt.Fprintf(&b, "- contract: %s\n", orNone(g.Contract))
 	fmt.Fprintf(&b, "- contract_sha256: %s\n", orNone(g.ContractSHA256))

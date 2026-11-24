@@ -103,7 +103,7 @@ func TestPersonalAgentOpensAnEpic(t *testing.T) {
 		cockpit.Epics[0].Lifecycle.State != "opened" || cockpit.Epics[0].Lifecycle.OpID != "e2e-open-1" {
 		t.Errorf("the cockpit outside Rex: exit %d\n%s", code, out)
 	}
-	if out, code := w.adapterRunEnv(append(quiet, "REX_BLOCK="+res.Lead.Block), "epic", "list", "--personal", w.handleOf("me")); code != 3 || !strings.Contains(out, `"code":"permission_denied"`) {
+	if out, code := w.adapterRunEnv(append(quiet, "REX_BLOCK="+res.Lead.Block), "epic", "list", "--personal", w.handleOf("me")); code != 6 || !strings.Contains(out, `"code":"guard_denied"`) {
 		t.Errorf("the cockpit from the orchestrator's pane: exit %d\n%s", code, out)
 	}
 }

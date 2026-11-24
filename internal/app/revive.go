@@ -133,7 +133,7 @@ func (e Env) ReviveEpic(ctx context.Context, getenv func(string) string, r Reviv
 	if err := ValidOpID(r.OpID); err != nil {
 		return res, err
 	}
-	by, id, err := e.reviver(ctx, getenv, r.Session)
+	by, id, err := e.reviver(getenv, r.Session)
 	if err != nil {
 		return res, err
 	}
@@ -246,31 +246,20 @@ func (e Env) ReviveEpic(ctx context.Context, getenv func(string) string, r Reviv
 	return res, nil
 }
 
-// reviver is who asks to revive session, decided as for an Epic's
-// artifacts: the user (outside Rex, or in a pane with no live agent, past
-// HumanGate), or a live personal agent of a Hub the Epic is linked to.
-// Anyone else is refused. by is the personal agent, zero for the user.
-func (e Env) reviver(ctx context.Context, getenv func(string) string, session string) (by agent, id reviveIdentity, err error) {
+// reviver is who asks to revive session: the Operator (ResolveOperator);
+// a personal agent only for an Epic linked to its Hub or session. by is the
+// personal agent, zero for any other Operator, whose request is the user's.
+func (e Env) reviver(getenv func(string) string, session string) (by agent, id reviveIdentity, err error) {
 	id.Session = session
-	loc, err := e.Caller(ctx, getenv)
-	switch {
-	case errors.Is(err, ErrNotInRex):
-		id.Human = true
-		return agent{}, id, e.HumanGate(getenv)
-	case err != nil:
-		return agent{}, id, err
-	}
-	rec, ok, err := e.agentIn(loc)
+	op, err := e.ResolveOperator(getenv)
 	if err != nil {
 		return agent{}, id, err
 	}
-	if !ok || !rec.Live() {
+	if !op.Personal() {
 		id.Human = true
-		return agent{}, id, e.HumanGate(getenv)
+		return agent{}, id, nil
 	}
-	if rec.Role != core.PersonalRole {
-		return agent{}, id, fmt.Errorf("%w: an Epic is revived by the user or by a personal agent of a Hub it is linked to; %s is %s", ErrRefused, rec.Handle, whoIs(rec))
-	}
+	rec := *op.Agent
 	if linked, err := e.personalLinked(rec, session); err != nil {
 		return agent{}, id, err
 	} else if !linked {

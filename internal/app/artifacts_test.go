@@ -481,10 +481,10 @@ func TestEpicGrantChecksTheContract(t *testing.T) {
 			t.Errorf("%s: %+v %v", c.who, g, err)
 		}
 	}
-	if g, err := e.ReadGrantAsHuman(outsideRex, "session:d"); err != nil || !g.ContractSHA256OK || g.Asked != "design it" {
+	if g, err := e.ReadGrantAsOperator(outsideRex, "session:d"); err != nil || !g.ContractSHA256OK || g.Asked != "design it" {
 		t.Fatalf("the user: %+v %v", g, err)
 	}
-	if _, err := e.ReadGrantAsHuman(func(k string) string {
+	if _, err := e.ReadGrantAsOperator(func(k string) string {
 		if k == "ME_UNATTENDED" {
 			return "1"
 		}
@@ -501,7 +501,7 @@ func TestEpicGrantChecksTheContract(t *testing.T) {
 	if err := e.notarize("session:w", "claude-01", epicGrant{asked: "just words"}); err != nil {
 		t.Fatal(err)
 	}
-	if g, err := e.ReadGrantAsHuman(outsideRex, "session:w"); err != nil || g.ContractSHA256OK {
+	if g, err := e.ReadGrantAsOperator(outsideRex, "session:w"); err != nil || g.ContractSHA256OK {
 		t.Errorf("a grant with no contract: %+v %v", g, err)
 	}
 }

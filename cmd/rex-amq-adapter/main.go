@@ -180,6 +180,28 @@ func caller(c *cli.Ctx) (app.Env, app.Location, error) {
 	return env, loc, nil
 }
 
+// operator is the Operator running c (app.Env.ResolveOperator) with an Env
+// on the default Rex server. A caller that is none gets the guard's
+// refusal, which matches app.ErrRefused: one the registry admitted anyway is
+// an Epic's own lead or narrator (cli.GuardOperatorOrSelf).
+func operator(c *cli.Ctx) (app.Env, app.Operator, error) {
+	env, err := app.NewEnv(c.Getenv("REX_SERVER"))
+	if err != nil {
+		return app.Env{}, app.Operator{}, err
+	}
+	op, err := env.ResolveOperator(c.Getenv)
+	return env, op, err
+}
+
+// onServer is env pointed at server, the Rex server its caller's agent runs
+// on, when that is not REX_SERVER's.
+func onServer(env app.Env, c *cli.Ctx, server string) app.Env {
+	if server != "" && server != c.Getenv("REX_SERVER") {
+		env.Rex = env.RexOn(server)
+	}
+	return env
+}
+
 // within is c's context bounded by d.
 func within(c *cli.Ctx, d time.Duration) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(c, d)

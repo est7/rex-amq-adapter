@@ -91,9 +91,17 @@ func OrchestratorNotice(mates []Peer) string {
 
 // GrantNotice tells an Epic's lead where its notarized grant is: the goal
 // contract it runs (contract, "" when it has none) and grant.md, which
-// quotes the user's words as the personal agent by relayed them.
-func GrantNotice(contract, grant string, by Handle) string {
-	line := fmt.Sprintf("Grant: %s (user's words relayed verbatim by personal %s, recorded by rex-amq-adapter)", grant, by)
+// quotes the user's words as by (of role, GrantRelayer) relayed them.
+func GrantNotice(contract, grant string, by Handle, role string) string {
+	var line string
+	switch role {
+	case GrantRolePersonal:
+		line = fmt.Sprintf("Grant: %s (user's words relayed verbatim by personal %s, recorded by rex-amq-adapter)", grant, by)
+	case GrantRoleUser:
+		line = fmt.Sprintf("Grant: %s (the user's own words, recorded by rex-amq-adapter when they opened the Epic)", grant)
+	default:
+		line = fmt.Sprintf("Grant: %s (user's words relayed verbatim by %s %s, recorded by rex-amq-adapter)", grant, GrantRelayer(role), by)
+	}
 	if contract == "" {
 		return line
 	}

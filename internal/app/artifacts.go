@@ -137,28 +137,14 @@ func snapshotFile(path string) ([]byte, error) {
 }
 
 // artifactReader authorizes a read or materialization of session's
-// artifacts: from an agent's pane or harness session, only a personal agent
-// linked to the Epic (core.LinkMatchesPersonal); from no agent's (Caller
-// finds none), only the human (HumanGate), however the environment was
-// trimmed.
-func (e Env) artifactReader(ctx context.Context, getenv func(string) string, session string) error {
-	loc, err := e.Caller(ctx, getenv)
-	switch {
-	case errors.Is(err, ErrNotInRex):
-		return e.HumanGate(getenv)
-	case err != nil:
+// artifacts: the Operator (ResolveOperator), a personal agent only for an
+// Epic linked to it (core.LinkMatchesPersonal).
+func (e Env) artifactReader(getenv func(string) string, session string) error {
+	op, err := e.ResolveOperator(getenv)
+	if err != nil || !op.Personal() {
 		return err
 	}
-	rec, ok, err := e.agentIn(loc)
-	if err != nil {
-		return err
-	}
-	if !ok || !rec.Live() {
-		return e.HumanGate(getenv)
-	}
-	if rec.Role != core.PersonalRole {
-		return fmt.Errorf("%w: an Epic's artifacts are for the personal agent of a Hub it is linked to, or the user; %s is %s", ErrRefused, rec.Handle, whoIs(rec))
-	}
+	rec := *op.Agent
 	if linked, err := e.personalLinked(rec, session); err != nil || linked {
 		return err
 	}
@@ -169,7 +155,7 @@ func (e Env) artifactReader(ctx context.Context, getenv func(string) string, ses
 // personal agent or the user (artifactReader): every revision, or with seq
 // only that one. Nothing is written.
 func (e Env) Artifacts(ctx context.Context, getenv func(string) string, session string, seq int) ([]store.Manifest, error) {
-	if err := e.artifactReader(ctx, getenv, session); err != nil {
+	if err := e.artifactReader(getenv, session); err != nil {
 		return nil, err
 	}
 	if seq > 0 {
@@ -260,7 +246,7 @@ type MaterializeResult struct {
 // Files are written 0644, never the store's 0444.
 func (e Env) Materialize(ctx context.Context, getenv func(string) string, r MaterializeRequest) (MaterializeResult, error) {
 	res := MaterializeResult{SessionID: r.Session, DryRun: r.DryRun, Items: []MaterializedItem{}}
-	if err := e.artifactReader(ctx, getenv, r.Session); err != nil {
+	if err := e.artifactReader(getenv, r.Session); err != nil {
 		return res, err
 	}
 	into, err := filepath.Abs(r.Into)

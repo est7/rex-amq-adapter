@@ -116,14 +116,11 @@ func epicRevive(c *cli.Ctx, in cli.Input) (cli.Result, error) {
 	if err != nil {
 		return cli.Result{}, err
 	}
-	env, _, err := caller(c)
-	if errors.Is(err, app.ErrNotInRex) {
-		if env, err = app.NewEnv(c.Getenv("REX_SERVER")); err != nil {
-			return cli.Result{}, err
-		}
-	} else if err != nil {
+	env, op, err := operator(c)
+	if err != nil {
 		return cli.Result{}, err
 	}
+	env = onServer(env, c, op.Loc.Server)
 	timeout := in.Duration("timeout", 90*time.Second)
 	ctx, cancel := within(c, timeout)
 	defer cancel()
@@ -174,21 +171,23 @@ type epicPage struct {
 	SessionID string `json:"session_id"`
 }
 
-// epicShow is a session's view: the caller's own (a lead or narrator), a
-// linked Epic's (a personal agent), or from outside Rex the cockpit's.
+// epicShow is a session's view: for a personal agent a linked Epic's, for
+// the user in a Rex pane of no agent that pane's session's (ReadSessionView),
+// for any other Operator a Hub's Epic's, by name (the cockpit); and for an
+// Epic's own lead or narrator, whom the guard admits beside the Operator,
+// its own session's.
 func epicShow(c *cli.Ctx, in cli.Input) (cli.Result, error) {
 	session := in.Arg("session")
 	ctx, cancel := within(c, 60*time.Second)
 	defer cancel()
-	env, loc, err := caller(c)
-	if errors.Is(err, app.ErrNotInRex) {
-		if session == "" {
-			return cli.Result{}, cli.Usage(c.Cmd, "outside Rex, name the Epic session to show")
-		}
-		if env, err = app.NewEnv(c.Getenv("REX_SERVER")); err != nil {
+	env, op, err := operator(c)
+	inPane := err == nil && (op.Personal() || op.Agent == nil && op.Harness == "" && op.Loc.Block != "" && session == "")
+	if errors.Is(err, app.ErrRefused) || inPane {
+		env, loc, err := caller(c)
+		if err != nil {
 			return cli.Result{}, err
 		}
-		raw, err := env.ReadCockpitView(ctx, c.Getenv, app.CockpitViewRequest{Session: session, Hub: in.Str("hub"), Personal: in.Str("personal")})
+		raw, err := env.ReadSessionView(ctx, loc, session)
 		if err != nil {
 			return cli.Result{}, err
 		}
@@ -197,7 +196,10 @@ func epicShow(c *cli.Ctx, in cli.Input) (cli.Result, error) {
 	if err != nil {
 		return cli.Result{}, err
 	}
-	raw, err := env.ReadSessionView(ctx, loc, session)
+	if session == "" {
+		return cli.Result{}, cli.Usage(c.Cmd, "name the Epic session to show")
+	}
+	raw, err := env.ReadCockpitView(ctx, c.Getenv, app.CockpitViewRequest{Session: session, Hub: in.Str("hub"), Personal: in.Str("personal")})
 	if err != nil {
 		return cli.Result{}, err
 	}
@@ -254,19 +256,17 @@ func epicMessages(c *cli.Ctx, in cli.Input) (cli.Result, error) {
 }
 
 // epicGrant is an Epic's notarized grant, its contract digest checked
-// again: for the Epic's lead, a personal agent linked to it, or the user
-// outside Rex, who names the session.
+// again: for the Operator, who names the session (a personal agent one
+// linked to it), or for the Epic's own lead, whom the guard admits beside it.
 func epicGrant(c *cli.Ctx, in cli.Input) (cli.Result, error) {
-	env, loc, err := caller(c)
-	if errors.Is(err, app.ErrNotInRex) {
-		session := in.Arg("session")
-		if session == "" {
-			return cli.Result{}, cli.Usage(c.Cmd, "outside Rex, name the Epic session whose grant to read")
-		}
-		if env, err = app.NewEnv(c.Getenv("REX_SERVER")); err != nil {
+	session := in.Arg("session")
+	env, _, err := operator(c)
+	if errors.Is(err, app.ErrRefused) {
+		env, loc, err := caller(c)
+		if err != nil {
 			return cli.Result{}, err
 		}
-		g, err := env.ReadGrantAsHuman(c.Getenv, session)
+		g, err := env.ReadGrant(loc, session)
 		if err != nil {
 			return cli.Result{}, err
 		}
@@ -275,7 +275,10 @@ func epicGrant(c *cli.Ctx, in cli.Input) (cli.Result, error) {
 	if err != nil {
 		return cli.Result{}, err
 	}
-	g, err := env.ReadGrant(loc, in.Arg("session"))
+	if session == "" {
+		return cli.Result{}, cli.Usage(c.Cmd, "name the Epic session whose grant to read")
+	}
+	g, err := env.ReadGrantAsOperator(c.Getenv, session)
 	if err != nil {
 		return cli.Result{}, err
 	}
