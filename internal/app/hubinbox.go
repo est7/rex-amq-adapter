@@ -38,10 +38,13 @@ func (e Env) epicHub(session string) (core.HubKey, error) {
 	return "", nil
 }
 
-// noteHandBackInHub keeps the Epic session's stored hand-back in its Hub's
-// inbox, once, while it is the latest the lifecycle lists: a retry of a
-// hand-back that stored the report and failed before this, whether or not
-// the report changed, keeps it then. The caller holds LockEpicLifecycle.
+// noteHandBackInHub keeps in the Epic session's Hub inbox, once each, every
+// hand-back its lifecycle lists that was stored: those before the stored
+// one, which replaced them, and the stored one while it is the latest
+// listed (a later one is listed before it is stored, and is kept once it
+// is). A run that failed to keep one is made good by the next hand-back
+// run, whether it repeats that one or replaces it. The caller holds
+// LockEpicLifecycle.
 func (e Env) noteHandBackInHub(ctx context.Context, session string) error {
 	stored, ok, err := e.Store.HandBack(session)
 	if err != nil || !ok {
@@ -51,21 +54,23 @@ func (e Env) noteHandBackInHub(ctx context.Context, session string) error {
 	if err != nil || !ok {
 		return err
 	}
-	h := numbered(stored)
-	latest, ok := lc.LatestHandBack()
-	if !ok || latest.Seq != h.Seq || latest.Digest != h.Digest {
-		return nil
-	}
 	hub, err := e.epicHub(session)
 	if err != nil || hub == "" {
 		return err
 	}
-	_, _, err = e.Store.AppendHubInbox(ctx, hub.Dir(), store.HubInboxEntry{
-		Epic: session, HubKey: hub, Kind: store.InboxHandBack, HandBackSeq: h.Seq, Digest: h.Digest, By: h.By, At: h.At,
-		DedupeKey: "handback:" + session + "#" + strconv.Itoa(h.Seq),
-	}, e.Now())
-	if err != nil {
-		return fmt.Errorf("the hand-back is stored; keeping it in the Hub's inbox failed (run hand-back again): %w", err)
+	h := numbered(stored)
+	refs := slices.Clone(lc.HandBacks)
+	slices.SortFunc(refs, func(a, b store.HandBackRef) int { return a.Seq - b.Seq })
+	for _, ref := range refs {
+		if ref.Seq > h.Seq || ref.Seq == h.Seq && ref.Digest != h.Digest {
+			continue
+		}
+		if _, _, err := e.Store.AppendHubInbox(ctx, hub.Dir(), store.HubInboxEntry{
+			Epic: session, HubKey: hub, Kind: store.InboxHandBack, HandBackSeq: ref.Seq, Digest: ref.Digest, By: ref.By, At: ref.At,
+			DedupeKey: "handback:" + session + "#" + strconv.Itoa(ref.Seq),
+		}, e.Now()); err != nil {
+			return fmt.Errorf("the hand-back is stored; keeping it in the Hub's inbox failed (run hand-back again): %w", err)
+		}
 	}
 	return nil
 }
@@ -80,52 +85,39 @@ func (e Env) latestHandBackSeq(session string) (int, error) {
 	return latest.Seq, nil
 }
 
-// narratorMail is narrator mail to its Hub's personal agent, ready to keep
-// in the Hub's inbox once it is sent.
-type narratorMail struct {
-	entry store.HubInboxEntry
-}
-
-// prepareNarratorMail is narrator n's message (subject, thread as given,
-// body) to the personal agent of hub, with the Epic's latest hand-back.
-func (e Env) prepareNarratorMail(n agent, hub core.HubKey, subject, thread, body string) (narratorMail, error) {
+// keepNarratorMail keeps narrator n's message (subject, thread as given,
+// body) to the personal agent of hub in the Hub's inbox, before any
+// delivery: the inbox holds it whatever becomes of the delivery, whose amq
+// id is recorded beside it once there is one (PutHubInboxDelivery under the
+// entry's Delivery). Each send is its own entry, the same words twice are
+// two.
+func (e Env) keepNarratorMail(ctx context.Context, n agent, hub core.HubKey, subject, thread, body string) (store.HubInboxEntry, error) {
 	seq, err := e.latestHandBackSeq(n.SessionID)
 	if err != nil {
-		return narratorMail{}, err
+		return store.HubInboxEntry{}, err
 	}
-	return narratorMail{entry: store.HubInboxEntry{Epic: n.SessionID, HubKey: hub, Kind: store.InboxNarrator, Thread: thread, Subject: subject,
-		HandBackSeq: seq, Body: body, By: n.Handle}}, nil
+	token, err := newToken()
+	if err != nil {
+		return store.HubInboxEntry{}, err
+	}
+	x, _, err := e.Store.AppendHubInbox(ctx, hub.Dir(), store.HubInboxEntry{Epic: n.SessionID, HubKey: hub, Kind: store.InboxNarrator, Thread: thread, Subject: subject,
+		HandBackSeq: seq, Body: body, By: n.Handle, DedupeKey: "narrator:" + token, Delivery: token}, e.Now())
+	if err != nil {
+		return x, fmt.Errorf("keep the message in the Hub's inbox (nothing was sent): %w", err)
+	}
+	return x, nil
 }
 
-// keepNarratorMail keeps nm in its Hub's inbox, with the amq message sent
-// that carried it to a personal agent (none when no personal agent of the
-// Hub, live or recorded, could take it). It runs after the delivery, which
-// gives the message its id, and holds no lock across it. The message is
-// its key, so keeping one message again keeps it once; two messages with
-// the same words are two entries.
-func (e Env) keepNarratorMail(ctx context.Context, nm narratorMail, sent amq.Sent) (store.HubInboxEntry, error) {
-	x := nm.entry
-	x.MsgID = sent.ID
-	if sent.Thread != "" {
-		x.Thread = sent.Thread
+// noteNarratorDelivery records that x, kept before it was sent, was
+// delivered as sent. A failure only leaves the entry without its id, so it
+// is reported, never returned: the message is kept and delivered.
+func (e Env) noteNarratorDelivery(x store.HubInboxEntry, sent amq.Sent) {
+	if sent.ID == "" {
+		return
 	}
-	if x.MsgID != "" {
-		x.DedupeKey = "narrator:" + x.MsgID
-	} else {
-		token, err := newToken()
-		if err != nil {
-			return x, err
-		}
-		x.DedupeKey = "narrator:hub:" + token
+	if err := e.Store.PutHubInboxDelivery(x.HubKey.Dir(), x.Delivery, sent.ID, sent.Thread); err != nil {
+		fmt.Fprintf(Diagnostics, "record that Hub inbox entry %d was delivered as %s: %v\n", x.Seq, sent.ID, err)
 	}
-	got, _, err := e.Store.AppendHubInbox(ctx, x.HubKey.Dir(), x, e.Now())
-	if err != nil {
-		if sent.ID != "" {
-			return got, fmt.Errorf("the message was delivered as %s; keeping it in the Hub's inbox failed: %w", sent.ID, err)
-		}
-		return got, fmt.Errorf("no personal agent of the Hub could take the message, and keeping it in the Hub's inbox failed: %w", err)
-	}
-	return got, nil
 }
 
 // HubInboxRequest is what `hub inbox` asks: the entries after Since, of one

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -242,5 +243,130 @@ func TestNarratorMailIsKeptInTheHubInbox(t *testing.T) {
 	put(t, e, seed{Handle: "agy-08", Kind: core.Agy, Role: core.NarratorRole, SessionID: "session:u", AdoptedAt: time.Now()})
 	if _, err := managedSend(t, e, "block:agy-08", "send", "--to", "personal", "--subject", "s", "--body", "b"); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), core.ReasonNotLinked) {
 		t.Errorf("unlinked: %v", err)
+	}
+}
+
+// postFails is a queue whose sends fail: with an id (delivered, then a
+// receipt wait timed out) or without one (nothing delivered).
+type postFails struct {
+	Queue
+	deliveredAs string
+}
+
+func (q postFails) Post(ctx context.Context, root, verb string, args ...string) (amq.Sent, []byte, error) {
+	if q.deliveredAs != "" {
+		sent, out, _ := q.Queue.Post(ctx, root, verb, args...)
+		return sent, out, errors.New("the drained receipt timed out")
+	}
+	return amq.Sent{}, nil, errors.New("amq is down")
+}
+
+// A narrator's mail to the Hub's personal agent is kept before it is sent:
+// a delivery that fails still leaves it in the inbox (routed_to hub, exit
+// 0), and one that delivered and then failed its receipt wait is kept with
+// the id it was delivered as. A send the gateway refuses keeps nothing.
+func TestNarratorMailIsKeptBeforeItsDelivery(t *testing.T) {
+	e := routeWorld(t)
+	real := e.AMQ
+	e.AMQ = postFails{Queue: real}
+	got, err := managedSend(t, e, "block:agy-05", "send", "--to", "personal", "--subject", "s", "--body", "kept though amq is down")
+	if err != nil || got["routed_to"] != "hub" || got["rerouted_from"] != "claude-02" || got["inbox_seq"] != float64(1) {
+		t.Fatalf("a failed delivery: %v %v", got, err)
+	}
+	e.AMQ = postFails{Queue: real, deliveredAs: "yes"}
+	if got, err := managedSend(t, e, "block:agy-05", "send", "--to", "personal", "--subject", "s", "--body", "delivered, receipt lost"); err != nil || got["routed_to"] != "claude-02" || got["inbox_seq"] != float64(2) {
+		t.Fatalf("a delivery whose receipt wait failed: %v %v", got, err)
+	}
+	x, err := e.Store.HubInbox("/hub")
+	if err != nil || len(x) != 2 || x[0].MsgID != "" || x[0].Body != "kept though amq is down" || x[1].MsgID == "" || x[1].Thread == "" {
+		t.Fatalf("inbox %+v %v", x, err)
+	}
+	if ids, _ := amq.IDs(e.Paths.Root(), "claude-02", amq.BoxUnread); !slices.Contains(ids, x[1].MsgID) {
+		t.Errorf("entry 2's id %s is not the message claude-02 got (%v)", x[1].MsgID, ids)
+	}
+	// The gateway refuses mail to the lead without --control: nothing kept.
+	e.AMQ = real
+	put(t, e, seed{Handle: "claude-06", Kind: core.Claude, Role: core.OrchestratorRole, SessionID: "session:e", AdoptedAt: time.Now()})
+	if _, err := managedSend(t, e, "block:agy-05", "send", "--to", "personal,claude-06", "--subject", "s", "--body", "b"); !errors.Is(err, ErrRefused) {
+		t.Fatalf("a refused send: %v", err)
+	}
+	if x, _ := e.Store.HubInbox("/hub"); len(x) != 2 {
+		t.Errorf("a refused send was kept: %+v", x)
+	}
+}
+
+// The inbox keeps a narrator's body as the message is: the file --body
+// @PATH names, not the path; a body over the limit is refused before
+// anything is kept or sent, and the inbox stays readable and appendable.
+// No entry longer than a reader reads is ever written.
+func TestNarratorBodyIsResolvedAndBounded(t *testing.T) {
+	e := routeWorld(t)
+	doc := filepath.Join(t.TempDir(), "report.md")
+	if err := os.WriteFile(doc, []byte("## Review queue\nPR #4\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := managedSend(t, e, "block:agy-05", "send", "--to", "personal", "--subject", "s", "--body", "@"+doc); err != nil {
+		t.Fatal(err)
+	}
+	big := filepath.Join(t.TempDir(), "big.md")
+	if err := os.WriteFile(big, []byte(strings.Repeat("x", maxNarratorBody+1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := managedSend(t, e, "block:agy-05", "send", "--to", "personal", "--subject", "s", "--body", "@"+big); !errors.Is(err, ErrUsage) {
+		t.Errorf("an oversized body: %v", err)
+	}
+	if _, err := managedSend(t, e, "block:agy-05", "send", "--to", "personal", "--subject", "s", "--body", "after"); err != nil {
+		t.Fatal(err)
+	}
+	x, err := e.Store.HubInbox("/hub")
+	if err != nil || len(x) != 2 || x[0].Body != "## Review queue\nPR #4\n" || x[1].Body != "after" {
+		t.Fatalf("inbox %+v %v", x, err)
+	}
+	if hdr, err := amq.ReadHeader(e.Paths.Root(), "claude-02", amq.BoxUnread, x[0].MsgID); err != nil {
+		t.Errorf("the @file message as delivered: %+v %v", hdr, err)
+	} else if b, _ := amq.BodyPrefix(e.Paths.Root(), "claude-02", amq.BoxUnread, x[0].MsgID, 1<<10); !strings.Contains(b, "PR #4") {
+		t.Errorf("claude-02 got %q, not the file", b)
+	}
+	escaped := strings.Repeat("<", store.HubInboxMaxLine/6+1)
+	if _, _, err := e.Store.AppendHubInbox(context.Background(), "/hub", store.HubInboxEntry{Epic: "session:e", Kind: store.InboxNarrator, Body: escaped, By: "agy-05", DedupeKey: "big"}, time.Now()); err == nil {
+		t.Error("an entry past the line limit was written")
+	}
+	if x, err := e.Store.HubInbox("/hub"); err != nil || len(x) != 2 {
+		t.Errorf("the inbox after a refused entry: %d %v", len(x), err)
+	}
+}
+
+// A hand-back the inbox failed to keep is kept by the next hand-back run
+// even when that one replaces it: every revision stored stays in the
+// inbox, in order.
+func TestAReplacedHandBackIsStillKept(t *testing.T) {
+	e, _, key := watcherWorld(t)
+	ctx := context.Background()
+	hub := core.NewHubKey(fakeServer, "/hub")
+	if err := e.Store.PutEpicLifecycle(store.EpicLifecycle{SessionID: key.SessionID, Server: key.Server, Hub: hub, State: store.EpicOpened}); err != nil {
+		t.Fatal(err)
+	}
+	blocker := filepath.Join(e.Paths.Extensions(), "hub-inbox")
+	if err := os.MkdirAll(filepath.Dir(blocker), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first, _, err := e.RecordHandBackWith(ctx, Location{Block: "block:o"}, HandBackRequest{Body: "rev 1", OpID: "hb-1"})
+	if err == nil {
+		t.Fatal("the inbox could not be written, and the hand-back said nothing")
+	}
+	os.Remove(blocker)
+	second, err := e.RecordHandBack(ctx, Location{Block: "block:o"}, "rev 2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, changed, err := e.RecordHandBackWith(ctx, Location{Block: "block:o"}, HandBackRequest{Body: "rev 1", OpID: "hb-1"}); err != nil || changed {
+		t.Fatalf("the replay of revision 1: %v %v", changed, err)
+	}
+	x, err := e.Store.HubInbox("/hub")
+	if err != nil || len(x) != 2 || x[0].HandBackSeq != 1 || x[0].Digest != first.Digest || x[1].HandBackSeq != 2 || x[1].Digest != second.Digest {
+		t.Fatalf("inbox %+v %v", x, err)
 	}
 }

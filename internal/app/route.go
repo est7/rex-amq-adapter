@@ -133,33 +133,37 @@ func (e Env) narratorLink(n agent) (core.Link, bool, error) {
 // most recent personal agent; else preferred, whose mailbox keeps the mail
 // until it is back.
 func (e Env) resolvePersonal(ctx context.Context, l core.Link, preferred core.Handle) (core.Handle, error) {
-	member := hubMember(l)
-	if preferred != "" {
-		r, ok, err := e.agentOf(preferred)
-		if err != nil {
-			return "", err
-		}
-		if ok && e.reachable(ctx, r) {
-			ep, err := e.gatewayEndpoint(r)
-			if err != nil {
-				return "", err
-			}
-			if member(ep) {
-				return preferred, nil
-			}
-		}
-	}
-	r, ok, err := e.mostRecentPersonal(ctx, member)
-	if err != nil {
-		return "", err
-	}
-	if ok {
-		return r.Handle, nil
+	if to, ok, err := e.livePersonal(ctx, l, preferred); err != nil || ok {
+		return to, err
 	}
 	if preferred == "" {
 		return "", fault.New(fault.NotFound, "no personal agent of this Epic's Hub, live or recorded, to mail").With("kind", "agent")
 	}
 	return preferred, nil
+}
+
+// livePersonal is where mail for the Hub l grants goes now: preferred
+// while it is live, reachable, and of the Hub, else the Hub's most recent
+// personal agent; ok is false with none of them live.
+func (e Env) livePersonal(ctx context.Context, l core.Link, preferred core.Handle) (core.Handle, bool, error) {
+	member := hubMember(l)
+	if preferred != "" {
+		r, ok, err := e.agentOf(preferred)
+		if err != nil {
+			return "", false, err
+		}
+		if ok && e.reachable(ctx, r) {
+			ep, err := e.gatewayEndpoint(r)
+			if err != nil {
+				return "", false, err
+			}
+			if member(ep) {
+				return preferred, true, nil
+			}
+		}
+	}
+	r, ok, err := e.mostRecentPersonal(ctx, member)
+	return r.Handle, ok, err
 }
 
 // preferredOf is the personal agent the Epic of l prefers: the link's, else
@@ -235,13 +239,24 @@ func (e Env) routeNarratorMail(ctx context.Context, n agent, o *Outgoing, given 
 		if h == PersonalAddress {
 			addressed = e.preferredOf(l)
 		}
-		to, err := e.resolvePersonal(ctx, l, addressed)
-		if f, ok := fault.As(err); ok && f.Code == fault.NotFound && l.Hub != "" {
-			kept = kept[:len(kept)-1]
-			route = &MailRoute{RoutedTo: HubAddress, hub: l.Hub}
-			continue
-		}
-		if err != nil {
+		var to core.Handle
+		if l.Hub != "" {
+			// A Hub's inbox keeps what no live personal agent of the Hub
+			// could take; nothing waits in a departed one's mailbox.
+			live, ok, err := e.livePersonal(ctx, l, addressed)
+			if err != nil {
+				return nil, err
+			}
+			if !ok {
+				kept = kept[:len(kept)-1]
+				route = &MailRoute{RoutedTo: HubAddress, hub: l.Hub}
+				if addressed != "" {
+					route.ReroutedFrom = addressed
+				}
+				continue
+			}
+			to = live
+		} else if to, err = e.resolvePersonal(ctx, l, addressed); err != nil {
 			return nil, err
 		}
 		o.To[i], kept[len(kept)-1] = to, to

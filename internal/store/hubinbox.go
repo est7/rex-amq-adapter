@@ -32,6 +32,12 @@ import (
 // HubInboxSchema is the version of an inbox entry.
 const HubInboxSchema = 1
 
+// HubInboxMaxLine bounds an entry's line, newline included: an entry
+// longer is refused before it is written, and every line written is one a
+// reader can read. A body of cli.BodyMax JSON-escaped at its worst (six
+// bytes a character) fits.
+const HubInboxMaxLine = 2 << 20
+
 // Kinds of inbox entry.
 const (
 	InboxHandBack = "handback" // a lead handed back (its seq and digest)
@@ -51,7 +57,8 @@ type HubInboxEntry struct {
 	HubKey core.HubKey `json:"hub_key,omitempty"`
 	Kind   string      `json:"kind"`
 	// MsgID is the amq message the entry is, when it is one; Thread its
-	// thread.
+	// thread. For an entry kept before its delivery, they are read from
+	// its delivery record (Delivery, PutHubInboxDelivery).
 	MsgID   string `json:"msg_id,omitempty"`
 	Thread  string `json:"thread,omitempty"`
 	Subject string `json:"subject,omitempty"`
@@ -65,6 +72,9 @@ type HubInboxEntry struct {
 	InReplyTo int64       `json:"in_reply_to,omitempty"`
 	By        core.Handle `json:"by"`
 	DedupeKey string      `json:"dedupe_key"`
+	// Delivery names the record of the amq delivery of an entry kept
+	// before it was delivered; "" for none.
+	Delivery string `json:"delivery,omitempty"`
 }
 
 // hubInboxDir is where the inbox of the Hub directory dir is kept.
@@ -144,6 +154,9 @@ func (s Store) AppendHubInbox(ctx context.Context, dir string, e HubInboxEntry, 
 	if err != nil {
 		return e, false, err
 	}
+	if len(line)+1 > HubInboxMaxLine {
+		return e, false, fmt.Errorf("a Hub inbox entry is at most %d bytes, and this one is %d", HubInboxMaxLine, len(line)+1)
+	}
 	if _, err := f.WriteAt(append(line, '\n'), int64(whole)); err != nil {
 		return e, false, err
 	}
@@ -169,14 +182,56 @@ func (s Store) HubInbox(dir string) ([]HubInboxEntry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
+	for i := range entries {
+		if x := &entries[i]; x.Delivery != "" && x.MsgID == "" {
+			var d hubInboxDelivery
+			if ok, err := readJSON(s.hubInboxDeliveryPath(dir, x.Delivery), &d); err != nil {
+				return nil, err
+			} else if ok {
+				x.MsgID = d.MsgID
+				if x.Thread == "" {
+					x.Thread = d.Thread
+				}
+			}
+		}
+	}
 	return entries, nil
+}
+
+// hubInboxDelivery is the amq delivery of an entry kept before it.
+type hubInboxDelivery struct {
+	MsgID  string `json:"msg_id"`
+	Thread string `json:"thread,omitempty"`
+}
+
+func (s Store) hubInboxDeliveryPath(dir, delivery string) string {
+	return filepath.Join(s.P.hubInboxDir(dir), "delivered", fileKey(delivery)+".json")
+}
+
+// PutHubInboxDelivery records that the entry of the Hub directory dir
+// named delivery was delivered as amq message msgID on thread: readers
+// see them as the entry's (HubInbox). It takes no lock: each delivery is
+// its own file, written once whole.
+func (s Store) PutHubInboxDelivery(dir, delivery, msgID, thread string) error {
+	if delivery == "" || msgID == "" {
+		return errors.New("a Hub inbox delivery needs its entry and the message id")
+	}
+	path := s.hubInboxDeliveryPath(dir, delivery)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	b, err := json.Marshal(hubInboxDelivery{MsgID: msgID, Thread: thread})
+	if err != nil {
+		return err
+	}
+	return fsutil.WriteAtomic(path, append(b, '\n'))
 }
 
 // parseHubInbox parses whole lines of an inbox.
 func parseHubInbox(b []byte) ([]HubInboxEntry, error) {
 	var out []HubInboxEntry
 	sc := bufio.NewScanner(bytes.NewReader(b))
-	sc.Buffer(make([]byte, 0, 64<<10), 8<<20)
+	sc.Buffer(make([]byte, 0, 64<<10), HubInboxMaxLine)
 	for n := 1; sc.Scan(); n++ {
 		if len(bytes.TrimSpace(sc.Bytes())) == 0 {
 			continue

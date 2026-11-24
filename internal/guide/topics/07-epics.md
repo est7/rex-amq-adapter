@@ -20,7 +20,8 @@ goal contract, or with the user's words) and its narrator, each on its role's
 routing, links it to your Hub (`--hub <dir>`, else yours or the default
 Hub; with none, `no_hub`), and prints one JSON line (`session_id`, each
 agent's `handle`, `block` and `status`, `linked`, and `lead`, the role that runs
-the goal); it exits 0 only when both agents are adopted and linked. `--goal -`
+the goal); it exits 0 once both agents are adopted, linked when there is
+a Hub to link to. `--goal -`
 reads the contract from stdin; `--crew <crew>` makes the Epic work as that crew.
 The lead per crew: `pair` gives implementer, `design` gives architect, else
 orchestrator.

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/est7/rex-amq-adapter/internal/fault"
+	"github.com/est7/rex-amq-adapter/internal/store"
 	"io"
 	"os"
 	"path/filepath"
@@ -173,35 +174,53 @@ func (m managed) post(ctx context.Context, verb string, args []string) (int, err
 			return 1, err
 		}
 	}
-	var kept *narratorMail
+	// Mail to a Hub link's personal agent is kept in the Hub's inbox first,
+	// its body resolved and bounded once, and only after the gateway would
+	// pass it; its delivery is then best effort.
+	var kept *store.HubInboxEntry
 	if route != nil && route.hub != "" {
+		text, err := narratorBody(*body)
+		if err != nil {
+			return 2, err
+		}
+		*body, o.Args[len(o.Args)-1] = text, "--body="+text
+		if err := m.e.admits(o); err != nil {
+			return 1, err
+		}
 		subject, _ := flagValue(fs, "subject")
 		thread, _ := flagValue(fs, "thread")
-		nm, err := m.e.prepareNarratorMail(m.rec, route.hub, subject, thread, *body)
+		x, err := m.e.keepNarratorMail(ctx, m.rec, route.hub, subject, thread, text)
 		if err != nil {
 			return 1, err
 		}
-		kept = &nm
+		kept, route.InboxSeq = &x, x.Seq
 	}
 	var sent amq.Sent
 	var out []byte
 	delivered := o.ReplyTo != "" || len(o.To) > 0
 	if delivered {
 		var err error
-		if sent, out, err = m.e.post(ctx, o); err != nil {
+		sent, out, err = m.e.post(ctx, o)
+		switch {
+		case err != nil && kept != nil && sent.ID == "":
+			// Not delivered: the Hub's inbox keeps it.
+			fmt.Fprintf(Diagnostics, "deliver to %s: %v; the Hub's inbox keeps it as #%d\n", route.RoutedTo, err, kept.Seq)
+			route.ReroutedFrom, route.RoutedTo, delivered = route.RoutedTo, HubAddress, false
+		case err != nil && kept != nil:
+			// amq failed after delivering (a receipt wait that timed out).
+			fmt.Fprintf(Diagnostics, "deliver to %s: delivered %s, then: %v\n", route.RoutedTo, sent.ID, err)
+		case err != nil:
 			if len(out) > 0 {
 				_, _ = m.stdout.Write(out)
 			}
 			return 1, err
 		}
-		m.e.repairWakers(ctx, sent.To)
+		if sent.ID != "" {
+			m.e.repairWakers(ctx, sent.To)
+		}
 	}
 	if kept != nil {
-		x, err := m.e.keepNarratorMail(ctx, *kept, sent)
-		if err != nil {
-			return 1, err
-		}
-		route.InboxSeq = x.Seq
+		m.e.noteNarratorDelivery(*kept, sent)
 		if !delivered {
 			return 0, m.printKept(*asJSON, route)
 		}
@@ -217,6 +236,32 @@ func (m managed) post(ctx context.Context, verb string, args []string) (int, err
 	_, err := fmt.Fprintf(m.stdout, "%s %s to %s\n", past, sent.ID, strings.Join(sent.To, ","))
 	return 0, err
 }
+
+// narratorBody is a narrator's --body as its Hub's inbox keeps it: the
+// text, or the file @PATH names, at most cli's body limit.
+func narratorBody(v string) (string, error) {
+	if path, ok := strings.CutPrefix(v, "@"); ok {
+		st, err := os.Stat(path)
+		if err != nil {
+			return "", fmt.Errorf("%w: --body %s: %v", ErrUsage, v, err)
+		}
+		if st.Size() > maxNarratorBody {
+			return "", fmt.Errorf("%w: --body %s is %d bytes, more than %d", ErrUsage, v, st.Size(), maxNarratorBody)
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return "", err
+		}
+		v = string(b)
+	}
+	if len(v) > maxNarratorBody {
+		return "", fmt.Errorf("%w: the body is %d bytes, more than %d", ErrUsage, len(v), maxNarratorBody)
+	}
+	return v, nil
+}
+
+// maxNarratorBody is cli.BodyMax: what a Hub inbox entry's line can hold.
+const maxNarratorBody = 256 << 10
 
 // printKept reports a narrator's message only its Hub's inbox kept.
 func (m managed) printKept(asJSON bool, route *MailRoute) error {
