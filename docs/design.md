@@ -1836,7 +1836,7 @@ One AMQ root holds every Epic (a Rex session) and every Personal agent
 (`core.CanExchange`). Members of one
 Epic mail each other; Epics never do. A `personal` agent and the `narrator` of
 an Epic its session is linked with (`epic link`/`epic unlink`) mail each other, and
-nothing else crosses sessions. The narrator takes no member mail, only the
+nothing else crosses sessions, except the Operator's relay below. The narrator takes no member mail, only the
 adapter's own notices (provenance `system`, never a header label or a sender
 named `system`); its one message into the Epic is a control directive to the
 Epic's lead (`Endpoint.Lead`, which the app layer marks with `sessionLead`:
@@ -1870,6 +1870,16 @@ never reaches a Personal agent or a narrator (`unverified_sender`), whichever
 handle its header names, so `amq send --me <personal> --to <personal>` is not
 the Personal agent's own mail. Ordinary members still take it as before
 (`sender_outside_rex`, `self`, `same_epic`).
+
+The Operator's words reach a narrator as the adapter's relay (`hub send`,
+`hub reply`, below): a system message in the narrator's own name, `op:
+operator_relay`, whose provenance names the Hub it was sent for
+(`Operation.Hub`). The gateway admits exactly that
+(`adapter_operator_relay`): a system relay from a placed narrator to itself,
+under a Hub that a link of its Epic names. Any other use of the op, another
+Hub's, one with no Hub, to a lead, to a personal agent, or unmarked as
+system, is refused (`operator_relay_not_linked`), never admitted as a
+self-send; the fence of prior placements still comes first.
 
 ### hub notify
 
@@ -1911,12 +1921,101 @@ This is a policy on the supported paths, not a sandbox: any process of the same
 UNIX user can read and write the mailbox files, and `amq` run directly with
 another `--me` names any sender. `events` only reads and applies no gate.
 
+### The Operator
+
+The Epic commands (`epic open|close|revive|list|show|grant|artifacts|materialize`,
+`hub inbox|send|reply`) are guarded by one principal, the Operator
+(`cli.GuardOperator`, `app.Env.ResolveOperator`), decided the same inside
+Rex and out, from the adapter's records, the environment's harness session
+and unattended variables, and this process's ancestors, before any Rex or
+amq call, so a refusal neither waits on nor hides behind a missing
+dependency. It is a positive allowlist, failing closed:
+
+1. a live `personal` agent with no live agent of another role above it;
+2. a top-level attended standalone agent: no role, depth 0, no parent, not
+   launched, not unattended, placed in a session with no recorded policy,
+   crew, or Epic lifecycle (persisted records only: an Epic whose narrator
+   crashed is still an Epic), with no other live agent above it and no
+   unattended marker;
+3. no agent: a shell outside Rex or in a pane with no live agent, or a harness
+   session no hook adopted (a Desktop app's agent) outside any agent's pane,
+   with no live agent above it and none of `ME_UNATTENDED=1`,
+   `AGY_UNATTENDED`, `OWL_DISPATCH_RUN`, `OWL_DISPATCH_RUN_ID`.
+
+The command is the nearest adopted session's the environment names, and that
+lease is verified locally (`verifiedUnder`: a unix server, a recorded pid
+that is this process's ancestor, its start time), so a pane that resumed
+another's conversation, a lease on another machine's Rex, or one with no pid
+is refused; an unadopted session named beside an adopted one (a nested
+`claude -p`) is refused; a walk up the process tree that stopped at its bound
+is refused; with no HOME there are no records, and that is refused too. Every
+refusal is `guard_denied` (exit 6, `operator_only` or `unattended`). `epic
+show` and `epic grant` also admit an Epic's own lead or narrator
+(`GuardOperatorOrSelf`), whose read stays pinned to its own session
+(`viewReader`, `mayReadGrant`). A personal agent's scope is its own Hub's (or
+session's) links, as before; any other Operator's is the Hub `--hub` names,
+else the default Hub (`cockpitScope`). The human-only commands
+(`trust grant`, `trust root add|remove`, `hub add|remove`, `install
+setup|remove`, `stream panel`) keep `GuardHuman`.
+
+### The Hub inbox
+
+Each Hub keeps what its Epics told the Operator, whether or not a personal
+agent was live: `extensions/hub-inbox/<sha256(dir)>/inbox.jsonl`, keyed by
+the Hub's canonical directory (not its key, which names a Rex server a reader
+outside Rex does not know), so reading it needs no Rex. Each line is one
+entry (`store.HubInboxEntry`: `schema`, `seq` from 1, `at`, `epic`,
+`hub_key`, `kind`, `msg_id`, `thread`, `subject`, `hand_back_seq`, `digest`,
+`body`, `in_reply_to`, `by`, `dedupe_key`, `delivery`), appended whole under
+`inbox.lock`, a leaf: its holder takes no other lock and does no Rex or amq
+I/O (`epic-lifecycle.lock` and the lifecycle lock come first wherever they
+are held with it). An entry whose `dedupe_key` is there already appends
+nothing. A line longer than `HubInboxMaxLine` (2 MiB) is refused before it is
+written, so every line is one a reader reads. Readers take no lock and stop
+at a trailing line with no newline; the next writer cuts such a line off.
+
+- **Hand-backs** (`handback`): under `epic-lifecycle.lock`, before a new
+  hand-back is recorded and after, the stored one is kept as `handback:<session>#<seq>`
+  (its seq, digest, by, at; no body), not gated on whether the run changed
+  it, so a retry after a failed write keeps it; a report the lifecycle lists
+  but that was never stored is not kept. If the stored one cannot be kept,
+  nothing replaces it.
+- **Narrator mail** (`narrator`): a narrator's `mail send --to personal` on a
+  Hub link passes the gateway and its context check, is kept, and only then
+  delivered, best effort, to a live, reachable personal agent of the Hub;
+  with none, or when the delivery fails, the inbox alone keeps it and the
+  send answers `routed_to: hub` (exit 0). amq gives the id only on delivery,
+  so the line holds a `delivery` token instead, carried in the message's
+  context; the id is recorded beside it (`delivered/<token>.json`) and read
+  back as `msg_id`, or found again in the narrator's sent mail by that
+  token. `--op-id` names the message, so a retry keeps and sends it once.
+  A session-keyed link stays amq-only, and an unlinked narrator is refused
+  (`personal_narrator_not_linked`).
+- **The Operator's words** (`operator`): `hub send <session>` and `hub reply
+  <seq>` keep the message (`in_reply_to` the entry answered, whose Epic,
+  thread, and message a reply takes), then mail it to the Epic's narrator as
+  the relay above, subject `operator hub:<seq>: …`, which the narrator
+  passes to the lead under `--control hub:<seq>`. Only an Epic linked to the
+  Hub with a live narrator takes one; `--op-id` sends it once.
+- **Replies** (`reply`): a personal agent's mail to a narrator, once
+  delivered, is kept with `in_reply_to` the entry of the message it names by
+  id, followed through a reply's refs and a delivery again's
+  `rerouted_from`, never guessed from the thread.
+
+`hub inbox [--hub DIR] [--since SEQ] [--wait DUR] [--epic S] [--kind K]
+[--limit N]` reads it for the Operator; `--epic` must be an Epic of the Hub
+(a link in scope, or a closed one's lifecycle), and `--wait` polls the file,
+holding no lock, until an entry after `--since` comes.
+
 ### Opening an Epic
 
-`rex-amq-adapter epic open <name> --cwd DIR [--goal FILE|-] [--asked "WORDS"] [--crew C]`
-(`app.Env.OpenEpic`) is the whole start, so a personal agent runs one command
-and its user sees no steps. It refuses a caller that is not a live `personal`
-agent, and needs a grant as `agent summon` does: a goal contract, which the lead's
+`rex-amq-adapter epic open <name> --cwd DIR [--goal FILE|-] [--asked "WORDS"] [--crew C] [--hub DIR]`
+(`app.Env.OpenEpicFor`) is the whole start, so the Operator runs one command
+and the user sees no steps. A personal agent links the Epic to its session's
+Hub (a `--hub` it does not work in is refused); any other Operator to
+`--hub`, else the default Hub, on the Rex server its agent runs on, else
+`REX_SERVER`'s, else the one `rex` reaches (`whoami`); with no Hub
+configured it opens unlinked (`no_hub`, exit 0 with a diagnostic). It needs a grant as `agent summon` does: a goal contract, which the lead's
 brief runs (make-goal's prompt for a contract in a file, whole, so the run
 ends at either of its exits, `/goal`-prefixed for Claude Code), or the user's
 own words, which become the brief when there is no contract; both may be
@@ -1926,8 +2025,10 @@ at most 256 KB read from stdin (`EpicGoalMax`), whose digest joins the
 
 **Grant notary.** Under the same lock, `notarize` keeps a piped contract as
 `sessions/<id>/goal.md` and writes `grant.json` and `grant.md`
-(`store.Grant`: `asked`, `relayed_by`, `relayed_at`, `session_id`,
-`contract`, `contract_sha256`), each `0444` and written once (`writeOnce`
+(`store.Grant`: `asked`, `relayed_by`, `relayed_role`, `relayed_at`, `session_id`,
+`contract`, `contract_sha256`; `relayed_role` is empty for a personal agent,
+`interactive` for a standalone or Desktop agent, `user` for the user with no
+agent between, rendered `(personal agent)`, `(interactive agent)`, `(user)`), each `0444` and written once (`writeOnce`
 links a finished temporary file into place, so a reader never sees half of
 one and a second writer cannot replace it); an `--op-id` replay keeps the
 first run's grant and writes only what is missing. Rex assigns the session id
@@ -1950,7 +2051,7 @@ contract has nothing to check); otherwise `asked_verbatim` is left out
 entirely, never truncated, since a cut restriction reads as a wider grant,
 and `next_action: rex-amq-adapter epic grant <session_id>` tells the lead to
 read the whole grant first. The receipt shows that the adapter recorded the
-personal agent's relay; it is not the user's signature. `EpicResult` and `SessionView` carry `goal_path` and
+relay; it is not the user's signature. `EpicResult` and `SessionView` carry `goal_path` and
 `grant_path`. One
 `session.create` makes the Epic's Rex session, labelled with the whole name
 (pane labels shorten it to their task width), with two windows, all or none: the narrator's tab,
@@ -2075,14 +2176,17 @@ each new one, also when its author joined since the last look or the
 watcher's first look finds one already stored; the change is urgent, so it neither waits behind an unread routine
 notice nor sits out the narrator's hold. The orchestrator's task (its pane
 label) signals nothing. The narrator tells the linked personal agent,
-unasked, from `hand_back`, and the personal agent asks the user. On the user's
-words it runs `rex-amq-adapter epic close <session_id> --asked "WORDS"
-[--force]` (`app.Env.CloseEpic`):
+unasked, from `hand_back`, and the personal agent asks the user (or the user
+reads it in the Hub's inbox). On the user's words the Operator runs
+`rex-amq-adapter epic close <session_id> --asked "WORDS" [--hub DIR]
+[--force]` (`app.Env.CloseEpicFor`):
 
-1. Guards, before any effect: the caller is a live `personal` agent, the
-   user's words are given, and a link from the caller's session to the
-   named one exists (a session the caller did not open or link is the user's
-   to close). Unless `--force`, every live agent of the Epic other than a
+1. Guards, before any effect: the caller is the Operator, the user's words
+   are given, and the Epic is one it may close: for a personal agent, one
+   linked to its Hub or session; for any other Operator, one the records
+   know (its lifecycle, a link, or an Epic policy; `not_found` otherwise),
+   never a Hub's session, and with `--hub` one that Hub's lifecycle or a link
+   names (`hubAuthorizes`). Unless `--force`, every live agent of the Epic other than a
    Stealth one must be at rest (its program status `idle`, `done`, or
    `error`) and hold no unread mail; one working, blocked on a dialog, or
    reporting no state (which cannot be told from working) is named in the
@@ -2120,11 +2224,21 @@ shows is read live.
 
 `epic open --op-id ID` and `epic close --op-id ID` each keep an operation record,
 `epic-ops/<kind>-<sha256(ID)>.json` (`store.EpicOpRecord`), whose
-`request_hash` is a SHA-256 of the request's identity as JSON: for an open,
-the caller's session key, the name, the symlink-resolved directory, the goal
-path, the user's words, the crew, and the harness; for a close, the caller's
-session key and the Epic's session. A record with another hash refuses the
-op id.
+`request_hash` is a SHA-256 of the request's identity as JSON, named by its
+target rather than by who asks, so any Operator of the same Hub replays it:
+for an open, the Hub directory it links to (with no Hub, the personal
+agent's session key), the name, the symlink-resolved directory, the goal
+path, the user's words, the crew, and the harness; for a close, a personal
+agent's Hub (its session without one) or for any other Operator the Hub the
+Epic's lifecycle records, the Epic's session, and `--force`; for a revive,
+the Epic's session and its lifecycle's Hub. A record with another hash
+refuses the op id. A record written before v0.27 under the identity that named
+the caller is accepted on replay by a caller that could have made it, and its
+hash is rewritten under `epic-lifecycle.lock` (`opHashMatches`; removed in
+v0.28). An open op found on another Rex server than the run reaches is
+refused (`op_id_other_server`), never reconciled there; a close op keeps the
+Hubs its Epic's lifecycle and links proved when it was recorded
+(`hub_dirs`), which a retry's `--hub` is held to after the unlink.
 
 - **Open.** The op record is looked up under `epic-lifecycle.lock`, which is
   held through `session.create` until the new session and its two blocks are
@@ -2180,9 +2294,9 @@ which still name the old `server_instance`. `rex-amq-adapter epic revive
 (`app.Env.ReviveEpic`, `internal/app/revive.go`) puts those conversations back
 in their own blocks:
 
-1. Guards, before any effect. The caller is the user (outside Rex, or a pane
-   with no live agent, past `HumanGate`) or a live `personal` agent of a Hub
-   the Epic is linked to (`personalLinked`); anyone else is refused. The
+1. Guards, before any effect. The caller is the Operator (`ResolveOperator`),
+   a personal agent only for an Epic linked to its Hub or session
+   (`personalLinked`); anyone else is refused. The
    session has a lifecycle (`not_found` otherwise) that is not `closed`
    (`conflict`, `reason: epic_closed`: a closed Epic is never revived), and Rex
    still has it (`not_found`, `kind: session`). An op id already recorded for
