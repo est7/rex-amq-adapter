@@ -566,6 +566,12 @@ func (e Env) unrest(ctx context.Context, on Terminal, rec agent) (string, error)
 		if a.Box == screen.BoxDraft {
 			return fmt.Sprintf("%s: draft in input box", rec.Handle), nil
 		}
+		// When TurnIdle overrides a non-at-rest external status (such as
+		// frozen OSC working), require a successful empty-box check before
+		// allowing shutdown so a draft or hidden dialog cannot be discarded.
+		if a.Source == core.SignalTurnLedger && !snap.External.State.AtRest() && (snap.Surface == nil || a.Box != screen.BoxEmpty) {
+			return fmt.Sprintf("%s: cannot verify empty input box", rec.Handle), nil
+		}
 		// At rest; check unread mail below.
 	case core.InTurn:
 		return fmt.Sprintf("%s: working", rec.Handle), nil

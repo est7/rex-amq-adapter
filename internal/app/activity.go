@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
@@ -32,6 +33,7 @@ type activityRequest struct {
 type activitySnapshot struct {
 	Activity core.AgentActivity
 	External core.ExternalSignal
+	Turn     *core.TurnLedger
 	Surface  *screen.Surface
 	VT       string
 }
@@ -88,6 +90,10 @@ func (e Env) assessActivity(ctx context.Context, req activityRequest) (activityS
 	}
 
 	profile := core.ProfileForSignal(kind, sig)
+	var turn *core.TurnLedger
+	if req.Agent != nil {
+		turn = e.readTurn(*req.Agent)
+	}
 	var (
 		surf *screen.Surface
 		vt   string
@@ -102,7 +108,8 @@ func (e Env) assessActivity(ctx context.Context, req activityRequest) (activityS
 		s := screen.Inspect(string(profile.Kind), vt, req.Ours)
 		surf = &s
 	case LazyScreen:
-		if profile.IsPassiveBanner(sig) {
+		needCapture := profile.IsPassiveBanner(sig) || (turn != nil && turn.Phase == core.TurnIdle && !sig.State.AtRest())
+		if needCapture {
 			if captured, err := term.CaptureVT(ctx, block); err == nil {
 				vt = captured
 				s := screen.Inspect(string(profile.Kind), vt, req.Ours)
@@ -117,15 +124,34 @@ func (e Env) assessActivity(ctx context.Context, req activityRequest) (activityS
 	}
 	act := core.AssessActivity(profile, core.ActivityEvidence{
 		External: sig,
+		Turn:     turn,
 		Surface:  surf,
 		Now:      now,
 	})
 	return activitySnapshot{
 		Activity: act,
 		External: sig,
+		Turn:     turn,
 		Surface:  surf,
 		VT:       vt,
 	}, nil
+}
+
+// readTurn reads rec's hook turn ledger without locking and discards any
+// record whose Incarnation does not match rec's live lease incarnation.
+func (e Env) readTurn(rec agent) *core.TurnLedger {
+	if rec.lease == nil {
+		return nil
+	}
+	tr, ok, err := e.Store.Turn(rec.Handle)
+	if err != nil {
+		fmt.Fprintf(Diagnostics, "read turn ledger of %s: %v\n", rec.Handle, err)
+		return nil
+	}
+	if !ok || !tr.Incarnation.Same(rec.lease.Incarnation) {
+		return nil
+	}
+	return &core.TurnLedger{Seq: tr.Seq, Phase: tr.Phase, At: tr.At}
 }
 
 // inspectSurface captures block's screen and returns its Surface snapshot

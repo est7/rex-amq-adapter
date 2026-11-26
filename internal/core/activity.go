@@ -203,9 +203,25 @@ type Unknown struct {
 
 func (Unknown) agentActivity() {}
 
+// TurnPhase is whether an agent's hooks last reported a turn open or settled.
+type TurnPhase string
+
+const (
+	TurnWorking TurnPhase = "working"
+	TurnIdle    TurnPhase = "idle"
+)
+
+// TurnLedger is the incarnation-verified hook turn ledger snapshot for one agent.
+type TurnLedger struct {
+	Seq   uint64
+	Phase TurnPhase
+	At    time.Time
+}
+
 // ActivityEvidence is everything observed about an agent at one moment.
 type ActivityEvidence struct {
 	External ExternalSignal
+	Turn     *TurnLedger     // nil when absent or discarded on incarnation mismatch
 	Surface  *screen.Surface // nil when the screen was not captured
 	Now      time.Time
 }
@@ -238,26 +254,31 @@ func AssessActivity(profile HarnessProfile, ev ActivityEvidence) AgentActivity {
 		return AtPrompt{Box: box, Source: SignalSupervisor, RawState: ev.External.State}
 	}
 
-	// 2. OSC blocked outranks working, except for a passive banner over an
-	// on-screen input box (empty or user draft) with no trust dialog.
-	if ev.External.State == StateBlocked {
-		if profile.IsPassiveBanner(ev.External) && ev.Surface != nil && trustPhrase == "" && (box == screen.BoxEmpty || box == screen.BoxDraft) {
-			return AtPrompt{Box: box, Source: ev.External.Source, RawState: StateIdle}
-		}
-		what := "its status reports blocked"
-		if ev.External.Kind != "" {
-			what += " (" + ev.External.Kind + ")"
-		}
-		return AwaitingUser{
-			What:        what,
-			Kind:        ev.External.Kind,
-			TrustPhrase: trustPhrase,
-			SelfDenying: selfDenying,
-			Source:      ev.External.Source,
+	// 2. Modal OSC blocked outranks working and the turn ledger, except for a
+	// passive banner over an on-screen input box (empty or user draft) with no
+	// trust dialog, which normalizes to an at-rest external signal.
+	ext := ev.External
+	if ext.State == StateBlocked {
+		if profile.IsPassiveBanner(ext) && ev.Surface != nil && trustPhrase == "" && (box == screen.BoxEmpty || box == screen.BoxDraft) {
+			ext.State = StateIdle
+			ext.Kind = ""
+			ext.Msg = ""
+		} else {
+			what := "its status reports blocked"
+			if ext.Kind != "" {
+				what += " (" + ext.Kind + ")"
+			}
+			return AwaitingUser{
+				What:        what,
+				Kind:        ext.Kind,
+				TrustPhrase: trustPhrase,
+				SelfDenying: selfDenying,
+				Source:      ext.Source,
+			}
 		}
 	}
 
-	// 3. A trust dialog on screen outranks working or absent status.
+	// 3. A trust dialog on screen outranks working, idle, and absent status.
 	// screen.Inspect suppresses TrustPhrase whenever Box == BoxEmpty, so quoted
 	// transcript text above an empty prompt box never triggers this.
 	if trustPhrase != "" {
@@ -265,24 +286,49 @@ func AssessActivity(profile HarnessProfile, ev ActivityEvidence) AgentActivity {
 			What:        "a trust screen is up: " + trustPhrase,
 			Kind:        "trust_screen",
 			TrustPhrase: trustPhrase,
-			Source:      ev.External.Source,
+			Source:      ext.Source,
 		}
 	}
 
-	// 4. External OSC signal evaluation.
-	switch ev.External.State {
+	// 4. Hook turn ledger (when present for the live lease's incarnation).
+	if ev.Turn != nil {
+		switch ev.Turn.Phase {
+		case TurnWorking:
+			// An at-rest external signal strictly newer than Turn.At heals a
+			// turn that ended without a Stop hook (e.g. Esc cancel).
+			if ext.Present() && ext.State.AtRest() && !ext.UpdatedAt.IsZero() && ext.UpdatedAt.After(ev.Turn.At) {
+				return AtPrompt{Box: box, Source: ext.Source, RawState: ext.State}
+			}
+			return InTurn{Since: ev.Turn.At, Backed: true, Source: SignalTurnLedger}
+		case TurnIdle:
+			// For harnesses whose OSC working implies an active foreground turn
+			// (Claude/Codex, never agy), a strictly newer working signal overrides
+			// idle before the next hook writes working.
+			if profile.OSCWorkingIsTurn && ext.Present() && ext.State == StateWorking && !ext.UpdatedAt.IsZero() && ext.UpdatedAt.After(ev.Turn.At) {
+				return InTurn{Since: ext.UpdatedAt, Backed: false, Source: ext.Source}
+			}
+			raw := StateIdle
+			if ext.Present() && ext.State.AtRest() {
+				raw = ext.State
+			}
+			return AtPrompt{Box: box, Source: SignalTurnLedger, RawState: raw}
+		}
+	}
+
+	// 5. Nil ledger: fall back to ExternalSignal with Backed=false.
+	switch ext.State {
 	case StateWorking:
-		return InTurn{Since: ev.External.UpdatedAt, Backed: false, Source: ev.External.Source}
+		return InTurn{Since: ext.UpdatedAt, Backed: false, Source: ext.Source}
 	case StateIdle, StateDone, StateError:
-		return AtPrompt{Box: box, Source: ev.External.Source, RawState: ev.External.State}
+		return AtPrompt{Box: box, Source: ext.Source, RawState: ext.State}
 	case StateAbsent:
-		return Unknown{Why: "no_signal", Box: box, Source: ev.External.Source}
+		return Unknown{Why: "no_signal", Box: box, Source: ext.Source}
 	default:
 		return Unknown{
-			Why:          "unknown_state:" + string(ev.External.State),
-			Unrecognized: ev.External.State,
+			Why:          "unknown_state:" + string(ext.State),
+			Unrecognized: ext.State,
 			Box:          box,
-			Source:       ev.External.Source,
+			Source:       ext.Source,
 		}
 	}
 }

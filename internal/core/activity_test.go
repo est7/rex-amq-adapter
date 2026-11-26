@@ -157,9 +157,11 @@ func TestAssessActivity(t *testing.T) {
 			wantSrc  string
 		}{
 			{InTurn{Source: SignalRexStatus}, StateWorking, "", "rex_status"},
+			{InTurn{Backed: true, Source: SignalTurnLedger}, StateWorking, "", "turn_ledger"},
 			{InTurn{Backed: true, Source: SignalSupervisor}, StateWorking, "", "supervisor"},
 			{AtPrompt{Source: SignalRexStatus, RawState: StateDone}, StateDone, "", "rex_status"},
 			{AtPrompt{Source: SignalSupervisor, RawState: StateIdle}, StateIdle, "", "supervisor"},
+			{AtPrompt{Source: SignalTurnLedger, RawState: StateIdle}, StateIdle, "", "turn_ledger"},
 			{AwaitingUser{Kind: "permission", Source: SignalRexStatus}, StateBlocked, "permission", "rex_status"},
 			{Unknown{Why: "no_signal"}, StateAbsent, "", "rex_status"},
 			{Unknown{Why: "unknown_state:thinking", Unrecognized: "thinking", Source: SignalRexStatus}, "thinking", "", "rex_status"},
@@ -168,6 +170,72 @@ func TestAssessActivity(t *testing.T) {
 			if obs.State != tc.wantSt || obs.Kind != tc.wantKind || obs.Source != tc.wantSrc {
 				t.Errorf("%#v -> %+v, want state=%q kind=%q src=%q", tc.act, obs, tc.wantSt, tc.wantKind, tc.wantSrc)
 			}
+		}
+	})
+
+	t.Run("TurnLedger precedence rules", func(t *testing.T) {
+		t1 := t0.Add(10 * time.Second)
+		t2 := t0.Add(20 * time.Second)
+
+		// Rule 1: supervisor and modal blocked / trust outrank TurnWorking and TurnIdle.
+		if got := AssessActivity(ProfileFor(Claude), ActivityEvidence{
+			External: ExternalSignal{Source: SignalSupervisor, State: StateWorking, UpdatedAt: t1},
+			Turn:     &TurnLedger{Seq: 1, Phase: TurnIdle, At: t2},
+		}); func() bool { it, ok := got.(InTurn); return !ok || !it.Backed || it.Source != SignalSupervisor }() {
+			t.Errorf("supervisor must outrank TurnIdle: got %#v", got)
+		}
+		if got := AssessActivity(ProfileFor(Agy), ActivityEvidence{
+			External: ExternalSignal{Source: SignalRexStatus, State: StateBlocked, Kind: "permission", Msg: "Approve bash"},
+			Turn:     &TurnLedger{Seq: 1, Phase: TurnWorking, At: t1},
+			Surface:  &screen.Surface{Box: screen.BoxEmpty},
+		}); func() bool { _, ok := got.(AwaitingUser); return !ok }() {
+			t.Errorf("modal blocked must outrank TurnWorking: got %#v", got)
+		}
+		if got := AssessActivity(ProfileFor(Agy), ActivityEvidence{
+			External: ExternalSignal{Source: SignalRexStatus, State: StateWorking, UpdatedAt: t0},
+			Turn:     &TurnLedger{Seq: 1, Phase: TurnWorking, At: t1},
+			Surface:  &screen.Surface{Box: screen.BoxMissing, TrustPhrase: "Trust this folder?"},
+		}); func() bool { _, ok := got.(AwaitingUser); return !ok }() {
+			t.Errorf("trust screen must outrank TurnWorking: got %#v", got)
+		}
+
+		// Rule 2: TurnWorking -> InTurn{Backed:true}, healed to AtPrompt only by newer at-rest OSC.
+		if got := AssessActivity(ProfileFor(Agy), ActivityEvidence{
+			External: ExternalSignal{Source: SignalRexStatus, State: StateIdle, UpdatedAt: t0},
+			Turn:     &TurnLedger{Seq: 1, Phase: TurnWorking, At: t1},
+			Surface:  &screen.Surface{Box: screen.BoxEmpty},
+		}); func() bool { it, ok := got.(InTurn); return !ok || !it.Backed || it.Source != SignalTurnLedger }() {
+			t.Errorf("older OSC idle must not heal TurnWorking: got %#v", got)
+		}
+		if got := AssessActivity(ProfileFor(Agy), ActivityEvidence{
+			External: ExternalSignal{Source: SignalRexStatus, State: StateIdle, UpdatedAt: t2},
+			Turn:     &TurnLedger{Seq: 1, Phase: TurnWorking, At: t1},
+			Surface:  &screen.Surface{Box: screen.BoxEmpty},
+		}); func() bool { ap, ok := got.(AtPrompt); return !ok || ap.Box != screen.BoxEmpty }() {
+			t.Errorf("newer OSC idle must heal TurnWorking to AtPrompt: got %#v", got)
+		}
+
+		// Rule 3: TurnIdle -> AtPrompt for agy even with newer OSC working; for Codex/Claude newer OSC working yields unbacked InTurn.
+		if got := AssessActivity(ProfileFor(Agy), ActivityEvidence{
+			External: ExternalSignal{Source: SignalRexStatus, State: StateWorking, UpdatedAt: t2},
+			Turn:     &TurnLedger{Seq: 1, Phase: TurnIdle, At: t1},
+			Surface:  &screen.Surface{Box: screen.BoxEmpty},
+		}); func() bool { ap, ok := got.(AtPrompt); return !ok || ap.Box != screen.BoxEmpty }() {
+			t.Errorf("agy TurnIdle must ignore OSC working (OSCWorkingIsTurn=false): got %#v", got)
+		}
+		if got := AssessActivity(ProfileFor(Codex), ActivityEvidence{
+			External: ExternalSignal{Source: SignalRexStatus, State: StateWorking, UpdatedAt: t2},
+			Turn:     &TurnLedger{Seq: 1, Phase: TurnIdle, At: t1},
+			Surface:  &screen.Surface{Box: screen.BoxEmpty},
+		}); func() bool { it, ok := got.(InTurn); return !ok || it.Backed || it.Source != SignalRexStatus }() {
+			t.Errorf("codex TurnIdle with newer OSC working must return unbacked InTurn: got %#v", got)
+		}
+		if got := AssessActivity(ProfileFor(Codex), ActivityEvidence{
+			External: ExternalSignal{Source: SignalRexStatus, State: StateWorking, UpdatedAt: t0},
+			Turn:     &TurnLedger{Seq: 1, Phase: TurnIdle, At: t1},
+			Surface:  &screen.Surface{Box: screen.BoxEmpty},
+		}); func() bool { ap, ok := got.(AtPrompt); return !ok || ap.Box != screen.BoxEmpty }() {
+			t.Errorf("codex TurnIdle with older OSC working must remain AtPrompt: got %#v", got)
 		}
 	})
 }

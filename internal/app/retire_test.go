@@ -267,6 +267,9 @@ func TestRetireAfterAFailedCloseFinishesOnASecondRun(t *testing.T) {
 	if r := recordOf(t, e, worker); !r.Live() {
 		t.Fatalf("the running agent's next turn did not take its handle back: %+v", r)
 	}
+	if _, err := e.Hook(ctx, EventSettle, core.Pi, Location{Block: "block:w"}, HookInput{SessionID: "w1", AgentPID: os.Getpid(), Outcome: "completed"}); err != nil {
+		t.Fatal(err)
+	}
 	term.closeErr = rex.ErrNotFound
 	res, err := retire(e, "block:o", worker, false)
 	if err != nil || res.Action != RetireRetired || res.Block != "block:w" || res.Pane != PaneGone {

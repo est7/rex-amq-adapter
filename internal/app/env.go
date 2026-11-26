@@ -181,6 +181,9 @@ type HookInput struct {
 	StopHookActive bool            `json:"stop_hook_active"`
 
 	ConversationID string `json:"conversationId"`
+	// InvocationNum is Antigravity's per-turn model call counter (restarts at 0
+	// at each turn's first PreInvocation). Pointer distinguishes omitted from 0.
+	InvocationNum *int `json:"invocationNum"`
 	// Job is set when the hook's session is a Claude Code background job
 	// (jobLocation): its process is not its pane's foreground.
 	Job                  bool   `json:"-"`

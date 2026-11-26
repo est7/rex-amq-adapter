@@ -145,18 +145,38 @@ func decideWriteBox(box screen.BoxState) (Outcome, bool) {
 	}
 }
 
-// Confirmation is what the injector observes after writing the doorbell.
+// Confirmation is what the injector observes before and after writing the
+// doorbell. Submission is confirmed only by a causal post-write transition,
+// never by a pre-existing frozen OSC working level.
 type Confirmation struct {
-	// Reports: the agent reported a program status before the write, so its
-	// silence afterwards means something.
-	Reports bool
-	// Started: the agent reported working after the write.
-	Started bool
+	// Pre-write snapshot captured before typing the doorbell.
+	PreTurnSeq    uint64
+	PreOSCWorking bool
+	PreOSCReports bool
+
+	// Post-write transitions observed while polling.
+	PostTurnSeq    uint64
+	PostOSCWorking bool
 	// EmptiedTwice: two consecutive polls after the write saw an empty box.
 	EmptiedTwice bool
-	Box          screen.Draft
+
+	Box screen.BoxState
 	// OursInBox: the unsent text on screen is the doorbell we wrote.
 	OursInBox bool
+}
+
+// Confirmed reports whether a causal post-write transition proves the doorbell
+// was submitted: a new turn opened in the hook ledger, external status rose
+// from non-working to working, or (when external status is absent or was
+// already stuck working before the write) two consecutive polls saw an empty box.
+// An observed still-pending doorbell in the input box disqualifies confirmation.
+func (c Confirmation) Confirmed() bool {
+	if c.Box == screen.BoxDraft && c.OursInBox {
+		return false
+	}
+	return c.PostTurnSeq > c.PreTurnSeq ||
+		(!c.PreOSCWorking && c.PostOSCWorking) ||
+		((!c.PreOSCReports || c.PreOSCWorking) && c.EmptiedTwice)
 }
 
 // Cleanup is what the injector must do after an unconfirmed write.
@@ -177,16 +197,22 @@ const (
 // a failure would strand the mail. A repeated doorbell costs one empty drain.
 func DecideConfirm(c Confirmation) (Outcome, Cleanup) {
 	switch {
-	case c.Started:
-		return Outcome{Progress: Accepted}, NoCleanup
-	case !c.Reports && c.EmptiedTwice:
-		// Without program status an emptied box is the only evidence of
-		// submission available; two observations rule out a paste the
-		// harness has not drawn yet.
-		return Outcome{Progress: Accepted, Code: "box_emptied", Note: "submitted; the agent reports no program status"}, NoCleanup
-	case c.Box == screen.Typed && c.OursInBox:
+	case c.Box == screen.BoxDraft && c.OursInBox:
 		return Outcome{Progress: Deferred, Code: "not_submitted", Note: "the doorbell stayed in the input box; cleared for a retry"}, ClearOurText
-	case c.Box == screen.Typed:
+	case c.PostTurnSeq > c.PreTurnSeq:
+		return Outcome{Progress: Accepted}, NoCleanup
+	case !c.PreOSCWorking && c.PostOSCWorking:
+		return Outcome{Progress: Accepted}, NoCleanup
+	case (!c.PreOSCReports || c.PreOSCWorking) && c.EmptiedTwice:
+		// Without an external rising edge (no OSC status, or OSC already stuck
+		// working before the write), two consecutive empty-box polls confirm
+		// submission while ruling out a paste the harness has not drawn yet.
+		note := "submitted; the agent reports no program status"
+		if c.PreOSCWorking {
+			note = "submitted; input box emptied while external status stayed working"
+		}
+		return Outcome{Progress: Accepted, Code: "box_emptied", Note: note}, NoCleanup
+	case c.Box == screen.BoxDraft:
 		return Outcome{Progress: Deferred, Code: CodeDraftInBox, Note: "someone typed into the box during delivery; left untouched"}, NoCleanup
 	}
 	return Outcome{Progress: Deferred, Code: "unconfirmed", Note: "the doorbell was written but the agent did not report starting"}, NoCleanup
