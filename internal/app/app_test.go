@@ -403,8 +403,27 @@ func TestCleanupSurvivesErrorsAndCancellationAfterTheWrite(t *testing.T) {
 func TestWorkingAgentIsNotTypedInto(t *testing.T) {
 	f := &fakeTerm{state: "working"}
 	e := fixture(t, f, "m1")
-	if o := inject(e); o.Progress != core.Deferred || o.Code != "agent_working" || len(f.writes) != 0 {
-		t.Fatalf("got %+v writes=%q", o, f.writes)
+	// Without a hook turn ledger, external working defers as working_unconfirmed
+	// (subject to watchdog StuckFor) and types nothing.
+	if o := inject(e); o.Progress != core.Deferred || o.Code != core.CodeWorkingUnconfirmed || len(f.writes) != 0 {
+		t.Fatalf("unbacked working: got %+v writes=%q", o, f.writes)
+	}
+	// With a live-incarnation TurnWorking ledger, deferral is ledger-backed agent_working.
+	rec, _, err := e.agentAt(block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Store.PutTurn(rec.Handle, store.TurnRecord{
+		Seq:         1,
+		Phase:       core.TurnWorking,
+		At:          e.Now().UTC(),
+		Incarnation: rec.lease.Incarnation,
+		SessionID:   rec.Session(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if o := inject(e); o.Progress != core.Deferred || o.Code != core.CodeAgentWorking || len(f.writes) != 0 {
+		t.Fatalf("ledger-backed working: got %+v writes=%q", o, f.writes)
 	}
 }
 

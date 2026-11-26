@@ -104,7 +104,15 @@ func (a *frozenAgyTerm) SendKeys(ctx context.Context, block string, keys ...stri
 
 func frozenAgyWorld(t *testing.T, submit bool) (Env, *frozenAgyTerm, agent, Session, *time.Time) {
 	t.Helper()
-	e, term, _, s, now, _ := healthWorld(t)
+	at := time.Date(2026, 11, 10, 2, 0, 0, 0, time.UTC)
+	now := &at
+	term := &fakeTerm{
+		fgPID:    os.Getpid(),
+		state:    "idle",
+		windows:  map[string]string{"block:g": "window:1", "block:agy": "window:1"},
+		sessions: map[string]string{"window:1": "session:s"},
+		fgs:      map[string]rex.Process{"block:agy": {PID: os.Getpid(), Name: "agy"}},
+	}
 	ft := &frozenAgyTerm{
 		fakeTerm: term,
 		block:    "block:agy",
@@ -117,9 +125,28 @@ func frozenAgyWorld(t *testing.T, submit bool) (Env, *frozenAgyTerm, agent, Sess
 		empty:  agyFixture(t, "rex-agy-empty"),
 		submit: submit,
 	}
-	e.Rex, e.RexOn = ft, func(string) Terminal { return ft }
-	term.windows["block:agy"] = "window:1"
-	term.fgs = map[string]rex.Process{"block:agy": {PID: os.Getpid(), Name: "agy"}}
+	paths := store.Paths{Home: t.TempDir()}
+	e := Env{
+		Paths:          paths,
+		Store:          store.Store{P: paths},
+		Rex:            ft,
+		RexOn:          func(string) Terminal { return ft },
+		AMQ:            &amq.Fake{},
+		SelfBin:        "/x/rex-amq-adapter",
+		Now:            func() time.Time { return *now },
+		TranscriptHome: t.TempDir(),
+		Notify:         func(string, string) {},
+	}
+	orchRec := seed{
+		Handle: "orch-01", Kind: core.Claude, Role: core.OrchestratorRole,
+		Server: "unix:///fake.sock", BlockID: "block:g", SessionID: "session:s", WindowID: "window:1",
+		AgentPID: os.Getpid(), AgentSessionID: "sid-g",
+		AdoptedAt: *now, FirstAdoptedAt: *now,
+	}
+	plant(t, e, orchRec)
+	if err := e.AMQ.EnsureMailbox(context.Background(), e.Paths.Root(), "orch-01"); err != nil {
+		t.Fatal(err)
+	}
 	rec := seed{
 		Handle: "agy-42", Kind: core.Agy, Server: "unix:///fake.sock",
 		BlockID: "block:agy", SessionID: "session:s", WindowID: "window:1",
@@ -476,8 +503,8 @@ func TestTurnLedgerHookFiltersContinuingAndIncarnation(t *testing.T) {
 	})
 
 	t.Run("Pi prompt and settle hooks update turn ledger", func(t *testing.T) {
-		e, _, _, _, now, _ := healthWorld(t)
-		e.Rex.(*fakeTerm).windows["block:pi"] = "window:1"
+		e, ft, _, _, now := frozenAgyWorld(t, true)
+		ft.windows["block:pi"] = "window:1"
 		piRec := seed{
 			Handle: "pi-07", Kind: core.Pi, Server: "unix:///fake.sock",
 			BlockID: "block:pi", SessionID: "session:s", WindowID: "window:1",
@@ -549,67 +576,110 @@ func TestTurnLedgerHookFiltersContinuingAndIncarnation(t *testing.T) {
 			t.Fatalf("aborted write left pending=%q ok=%v err=%v", pending, ok, err)
 		}
 
-		// Case 2: Competing turn increments Seq concurrently with Rex.Write while
-		// the doorbell stays unsubmitted in the box -> confirm must NOT accept.
+		// Cases 2, 3, 5 each wait out confirmFor (3s) on isolated worlds; set up
+		// worlds on the test goroutine and run their 3s waits concurrently.
 		e2, ft2, _, _, now2 := frozenAgyWorld(t, false)
-		if _, err := e2.Hook(context.Background(), EventPreInvocation, core.Agy, loc, HookInput{ConversationID: "conv-42"}); err != nil {
-			t.Fatal(err)
-		}
-		*now2 = now2.Add(2 * time.Second)
-		if _, err := e2.Hook(context.Background(), EventStop, core.Agy, loc, HookInput{ConversationID: "conv-42", TerminationReason: "NO_TOOL_CALL"}); err != nil {
-			t.Fatal(err)
-		}
-		if err := amq.Send(context.Background(), e2.AMQ, e2.Paths.Root(), "orch-01", "agy-42", "task", "ping"); err != nil {
-			t.Fatal(err)
-		}
-		ft2.onWrite = func(_, _ string) {
-			*now2 = now2.Add(time.Second)
-			_, _ = e2.Hook(context.Background(), EventPreInvocation, core.Agy, loc, HookInput{ConversationID: "conv-42"})
-		}
-		o2 := e2.Inject(context.Background(), InjectRequest{Handle: "agy-42", Root: e2.Paths.Root()})
-		if o2.Progress != core.Deferred || o2.Code != "not_submitted" {
-			t.Fatalf("concurrent competing turn with unsubmitted doorbell: got %+v, want deferred/not_submitted", o2)
-		}
-		if strings.Join(ft2.keys, ",") != "ctrl+u" || ft2.boxVal != "" {
-			t.Fatalf("leftover doorbell not cleared: keys=%v boxVal=%q", ft2.keys, ft2.boxVal)
-		}
-		if pending, ok, err := e2.Store.Pending("block:agy"); err != nil || ok {
-			t.Fatalf("cleared doorbell left pending=%q ok=%v err=%v", pending, ok, err)
-		}
-		if hist, err := e2.Store.InjectHistory("agy-42"); err != nil || len(hist) == 0 || hist[len(hist)-1].Progress != core.Deferred || hist[len(hist)-1].Code != "not_submitted" {
-			t.Fatalf("inject history did not record deferred/not_submitted: %+v err=%v", hist, err)
-		}
-
-		// Case 3: Competing turn increments Seq during Rex.Write while post-write
-		// CaptureVT fails -> must NOT promote Seq edge to Accepted and MUST keep Pending.
 		e3, ft3, _, _, now3 := frozenAgyWorld(t, false)
-		if _, err := e3.Hook(context.Background(), EventPreInvocation, core.Agy, loc, HookInput{ConversationID: "conv-42"}); err != nil {
-			t.Fatal(err)
-		}
-		*now3 = now3.Add(2 * time.Second)
-		if _, err := e3.Hook(context.Background(), EventStop, core.Agy, loc, HookInput{ConversationID: "conv-42", TerminationReason: "NO_TOOL_CALL"}); err != nil {
-			t.Fatal(err)
-		}
-		if err := amq.Send(context.Background(), e3.AMQ, e3.Paths.Root(), "orch-01", "agy-42", "task", "ping"); err != nil {
-			t.Fatal(err)
-		}
-		ft3.onWrite = func(_, _ string) {
-			ft3.fmu.Lock()
-			ft3.captureErr = errors.New("rex capture timed out")
-			ft3.fmu.Unlock()
-			*now3 = now3.Add(time.Second)
-			_, _ = e3.Hook(context.Background(), EventPreInvocation, core.Agy, loc, HookInput{ConversationID: "conv-42"})
-		}
-		o3 := e3.Inject(context.Background(), InjectRequest{Handle: "agy-42", Root: e3.Paths.Root()})
-		if o3.Progress == core.Accepted {
-			t.Fatalf("ambiguous Seq edge with capture error must not accept: got %+v", o3)
-		}
-		if pending, ok, err := e3.Store.Pending("block:agy"); err != nil || !ok || pending == "" {
-			t.Fatalf("capture error dropped Pending: pending=%q ok=%v err=%v", pending, ok, err)
-		}
+		e5, ft5, _, _, _ := frozenAgyWorld(t, false)
+		errs := make([]string, 3)
+		var wg sync.WaitGroup
+		wg.Add(3)
+		go func() {
+			defer wg.Done()
+			// Case 2: Competing turn increments Seq concurrently with Rex.Write while
+			// the doorbell stays unsubmitted in the box -> confirm must NOT accept.
+			if _, err := e2.Hook(context.Background(), EventPreInvocation, core.Agy, loc, HookInput{ConversationID: "conv-42"}); err != nil {
+				errs[0] = err.Error()
+				return
+			}
+			*now2 = now2.Add(2 * time.Second)
+			if _, err := e2.Hook(context.Background(), EventStop, core.Agy, loc, HookInput{ConversationID: "conv-42", TerminationReason: "NO_TOOL_CALL"}); err != nil {
+				errs[0] = err.Error()
+				return
+			}
+			if err := amq.Send(context.Background(), e2.AMQ, e2.Paths.Root(), "orch-01", "agy-42", "task", "ping"); err != nil {
+				errs[0] = err.Error()
+				return
+			}
+			ft2.onWrite = func(_, _ string) {
+				*now2 = now2.Add(time.Second)
+				_, _ = e2.Hook(context.Background(), EventPreInvocation, core.Agy, loc, HookInput{ConversationID: "conv-42"})
+			}
+			o2 := e2.Inject(context.Background(), InjectRequest{Handle: "agy-42", Root: e2.Paths.Root()})
+			if o2.Progress != core.Deferred || o2.Code != "not_submitted" {
+				errs[0] = "concurrent competing turn with unsubmitted doorbell: want deferred/not_submitted, got " + string(o2.Progress) + "/" + o2.Code
+				return
+			}
+			if strings.Join(ft2.keys, ",") != "ctrl+u" || ft2.boxVal != "" {
+				errs[0] = "leftover doorbell not cleared"
+				return
+			}
+			if pending, ok, err := e2.Store.Pending("block:agy"); err != nil || ok {
+				errs[0] = "cleared doorbell left pending: " + pending
+				return
+			}
+			if hist, err := e2.Store.InjectHistory("agy-42"); err != nil || len(hist) == 0 || hist[len(hist)-1].Progress != core.Deferred || hist[len(hist)-1].Code != "not_submitted" {
+				errs[0] = "inject history did not record deferred/not_submitted"
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			// Case 3: Competing turn increments Seq during Rex.Write while post-write
+			// CaptureVT fails -> must NOT promote Seq edge to Accepted and MUST keep Pending.
+			if _, err := e3.Hook(context.Background(), EventPreInvocation, core.Agy, loc, HookInput{ConversationID: "conv-42"}); err != nil {
+				errs[1] = err.Error()
+				return
+			}
+			*now3 = now3.Add(2 * time.Second)
+			if _, err := e3.Hook(context.Background(), EventStop, core.Agy, loc, HookInput{ConversationID: "conv-42", TerminationReason: "NO_TOOL_CALL"}); err != nil {
+				errs[1] = err.Error()
+				return
+			}
+			if err := amq.Send(context.Background(), e3.AMQ, e3.Paths.Root(), "orch-01", "agy-42", "task", "ping"); err != nil {
+				errs[1] = err.Error()
+				return
+			}
+			ft3.onWrite = func(_, _ string) {
+				ft3.fmu.Lock()
+				ft3.captureErr = errors.New("rex capture timed out")
+				ft3.fmu.Unlock()
+				*now3 = now3.Add(time.Second)
+				_, _ = e3.Hook(context.Background(), EventPreInvocation, core.Agy, loc, HookInput{ConversationID: "conv-42"})
+			}
+			o3 := e3.Inject(context.Background(), InjectRequest{Handle: "agy-42", Root: e3.Paths.Root()})
+			if o3.Progress == core.Accepted {
+				errs[1] = "ambiguous Seq edge with capture error must not accept"
+				return
+			}
+			if pending, ok, err := e3.Store.Pending("block:agy"); err != nil || !ok || pending == "" {
+				errs[1] = "capture error dropped Pending"
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			// Case 5: Competing OSC rise during Write with capture error retains Pending.
+			ft5.st = rex.Status{State: "idle", App: "antigravity"}
+			if err := amq.Send(context.Background(), e5.AMQ, e5.Paths.Root(), "orch-01", "agy-42", "task", "ping"); err != nil {
+				errs[2] = err.Error()
+				return
+			}
+			ft5.onWrite = func(_, _ string) {
+				ft5.fmu.Lock()
+				ft5.st = rex.Status{State: "working", App: "antigravity"}
+				ft5.captureErr = errors.New("rex capture timed out")
+				ft5.fmu.Unlock()
+			}
+			o5 := e5.Inject(context.Background(), InjectRequest{Handle: "agy-42", Root: e5.Paths.Root()})
+			if o5.Progress == core.Accepted {
+				errs[2] = "ambiguous OSC rise with capture error must not accept"
+				return
+			}
+			if pending, ok, err := e5.Store.Pending("block:agy"); err != nil || !ok || pending == "" {
+				errs[2] = "OSC rise + capture error dropped Pending"
+			}
+		}()
 
-		// Case 4: OSC-only competing rise (idle -> working) before Write aborts
-		// cleanly; during Write with unsubmitted doorbell and capture error retains Pending.
+		// Case 4: OSC-only competing rise (idle -> working) before Write aborts cleanly.
 		e4, ft4, _, _, _ := frozenAgyWorld(t, false)
 		ft4.st = rex.Status{State: "idle", App: "antigravity"}
 		if err := amq.Send(context.Background(), e4.AMQ, e4.Paths.Root(), "orch-01", "agy-42", "task", "ping"); err != nil {
@@ -633,23 +703,11 @@ func TestTurnLedgerHookFiltersContinuingAndIncarnation(t *testing.T) {
 			t.Fatalf("aborted OSC rise left pending=%q ok=%v err=%v", pending, ok, err)
 		}
 
-		e5, ft5, _, _, _ := frozenAgyWorld(t, false)
-		ft5.st = rex.Status{State: "idle", App: "antigravity"}
-		if err := amq.Send(context.Background(), e5.AMQ, e5.Paths.Root(), "orch-01", "agy-42", "task", "ping"); err != nil {
-			t.Fatal(err)
-		}
-		ft5.onWrite = func(_, _ string) {
-			ft5.fmu.Lock()
-			ft5.st = rex.Status{State: "working", App: "antigravity"}
-			ft5.captureErr = errors.New("rex capture timed out")
-			ft5.fmu.Unlock()
-		}
-		o5 := e5.Inject(context.Background(), InjectRequest{Handle: "agy-42", Root: e5.Paths.Root()})
-		if o5.Progress == core.Accepted {
-			t.Fatalf("ambiguous OSC rise with capture error must not accept: got %+v", o5)
-		}
-		if pending, ok, err := e5.Store.Pending("block:agy"); err != nil || !ok || pending == "" {
-			t.Fatalf("OSC rise + capture error dropped Pending: pending=%q ok=%v err=%v", pending, ok, err)
+		wg.Wait()
+		for i, msg := range errs {
+			if msg != "" {
+				t.Fatalf("concurrent confirm subcase %d failed: %s", i, msg)
+			}
 		}
 	})
 
@@ -692,6 +750,121 @@ func TestTurnLedgerHookFiltersContinuingAndIncarnation(t *testing.T) {
 		}
 		if o := e.Inject(context.Background(), InjectRequest{Handle: "agy-42", Root: e.Paths.Root()}); o.Progress != core.Accepted {
 			t.Fatalf("inject after failed-Stop recovery: got %+v, want accepted", o)
+		}
+	})
+
+	t.Run("PaneTitle agent_state=idle heals stale agy TurnWorking on Esc with active background task", func(t *testing.T) {
+		e, ft, rec, _, now := frozenAgyWorld(t, true)
+		e.Ancestors = func() ([]proc, error) { return []proc{{os.Getpid(), "agy"}}, nil }
+		// Startup idle before any turn must NOT fabricate a turn ledger.
+		if got := e.PaneTitle(loc, core.Agy, PaneTitleInput{Cwd: "/w/proj", AgentState: "idle", ConversationID: "conv-42"}); got != "agy-42" {
+			t.Fatalf("PaneTitle before turn: %q", got)
+		}
+		if tr, ok, err := e.Store.Turn("agy-42"); err != nil || ok {
+			t.Fatalf("PaneTitle fabricated ledger before turn: %+v ok=%v err=%v", tr, ok, err)
+		}
+
+		// Open Turn 1; simulate Esc with an active schedule timer (no Stop hook,
+		// OSC 7501 remains frozen at working).
+		if _, err := e.Hook(context.Background(), EventPreInvocation, core.Agy, loc, HookInput{ConversationID: "conv-42"}); err != nil {
+			t.Fatal(err)
+		}
+		// Non-idle, empty conversation_id, subagent conversation_id, wrong kind,
+		// and non-descendant process must NOT heal TurnWorking.
+		for _, bad := range []struct {
+			kind core.Kind
+			in   PaneTitleInput
+		}{
+			{core.Agy, PaneTitleInput{Cwd: "/w/proj", AgentState: "working", ConversationID: "conv-42"}},
+			{core.Agy, PaneTitleInput{Cwd: "/w/proj", AgentState: "idle", ConversationID: ""}},
+			{core.Agy, PaneTitleInput{Cwd: "/w/proj", AgentState: "idle", ConversationID: "subagent-99"}},
+			{core.Codex, PaneTitleInput{Cwd: "/w/proj", AgentState: "idle", ConversationID: "conv-42"}},
+		} {
+			_ = e.PaneTitle(loc, bad.kind, bad.in)
+			if tr, ok, _ := e.Store.Turn("agy-42"); !ok || tr.Phase != core.TurnWorking || tr.Seq != 1 {
+				t.Fatalf("invalid PaneTitle(%s, %+v) mutated ledger: %+v", bad.kind, bad.in, tr)
+			}
+		}
+		eForeign := e
+		eForeign.Ancestors = func() ([]proc, error) { return []proc{{os.Getpid() + 777, "agy"}}, nil }
+		_ = eForeign.PaneTitle(loc, core.Agy, PaneTitleInput{Cwd: "/w/proj", AgentState: "idle", ConversationID: "conv-42"})
+		if tr, ok, _ := e.Store.Turn("agy-42"); !ok || tr.Phase != core.TurnWorking || tr.Seq != 1 {
+			t.Fatalf("non-descendant PaneTitle mutated ledger: %+v", tr)
+		}
+
+		// Matching agy PaneTitle(idle, conv-42) heals TurnWorking -> TurnIdle preserving Seq=1.
+		*now = now.Add(3 * time.Second)
+		if got := e.PaneTitle(loc, core.Agy, PaneTitleInput{Cwd: "/w/proj", AgentState: "idle", ConversationID: "conv-42"}); got != "agy-42" {
+			t.Fatalf("PaneTitle on Esc idle: %q", got)
+		}
+		if tr, ok, err := e.Store.Turn("agy-42"); err != nil || !ok || tr.Phase != core.TurnIdle || tr.Seq != 1 {
+			t.Fatalf("PaneTitle did not heal TurnWorking to TurnIdle(Seq=1): %+v ok=%v err=%v", tr, ok, err)
+		}
+		// Pane is now unblocked for both unrest/shutdown and doorbell delivery.
+		if why, err := e.unrest(context.Background(), ft, rec); err != nil || why != "" {
+			t.Fatalf("unrest after PaneTitle idle heal: why=%q err=%v, want at rest", why, err)
+		}
+		if err := amq.Send(context.Background(), e.AMQ, e.Paths.Root(), "orch-01", "agy-42", "task", "ping"); err != nil {
+			t.Fatal(err)
+		}
+		ft.onWrite = func(_, _ string) {
+			*now = now.Add(time.Second)
+			_, _ = e.Hook(context.Background(), EventPreInvocation, core.Agy, loc, HookInput{ConversationID: "conv-42"})
+		}
+		if o := e.Inject(context.Background(), InjectRequest{Handle: "agy-42", Root: e.Paths.Root()}); o.Progress != core.Accepted {
+			t.Fatalf("inject after PaneTitle idle heal: got %+v, want accepted", o)
+		}
+
+		// Interleaving regression: Esc title callback observes Working/Seq 2,
+		// then the next prompt's PreInvocation (invocationNum=0) opens Working/Seq 3
+		// before the callback commits. CAS in healTurnIdleCAS must NOT overwrite
+		// Working/Seq 3 or roll back Seq.
+		obs, ok, err := e.Store.Turn("agy-42")
+		if err != nil || !ok || obs.Phase != core.TurnWorking || obs.Seq != 2 {
+			t.Fatalf("expected TurnWorking Seq=2 after doorbell confirm: %+v ok=%v err=%v", obs, ok, err)
+		}
+		escObservedAt := *now
+		zero := 0
+		*now = now.Add(time.Second)
+		if _, err := e.Hook(context.Background(), EventPreInvocation, core.Agy, loc, HookInput{ConversationID: "conv-42", InvocationNum: &zero}); err != nil {
+			t.Fatal(err)
+		}
+		e.healTurnIdleCAS(rec, "conv-42", escObservedAt, obs.Seq)
+		if after, ok, err := e.Store.Turn("agy-42"); err != nil || !ok || after.Phase != core.TurnWorking || after.Seq != 3 {
+			t.Fatalf("interleaved Esc PaneTitle overwrote newer turn: %+v ok=%v err=%v", after, ok, err)
+		}
+		// Delay-before-heal regression with a moving clock: PaneTitle enters
+		// before Turn 4 starts, pauses in ancestry lookup while the next
+		// PreInvocation (invocationNum=0) opens Working/Seq 4, then resumes.
+		// Because observedAt was captured at PaneTitle ingress before
+		// identity/ancestry I/O, Turn 4 must stay Working/Seq 4.
+		var clockMu sync.Mutex
+		tick := *now
+		movingNow := func() time.Time {
+			clockMu.Lock()
+			defer clockMu.Unlock()
+			tick = tick.Add(10 * time.Millisecond)
+			return tick
+		}
+		eRace := e
+		eRace.Now = movingNow
+		eHook := eRace
+		eHook.Ancestors = func() ([]proc, error) { return []proc{{os.Getpid(), "agy"}}, nil }
+		interleaved := false
+		eRace.Ancestors = func() ([]proc, error) {
+			if !interleaved {
+				interleaved = true
+				if _, err := eHook.Hook(context.Background(), EventPreInvocation, core.Agy, loc, HookInput{ConversationID: "conv-42", InvocationNum: &zero}); err != nil {
+					t.Errorf("interleaved PreInvocation: %v", err)
+				}
+			}
+			return []proc{{os.Getpid(), "agy"}}, nil
+		}
+		if got := eRace.PaneTitle(loc, core.Agy, PaneTitleInput{Cwd: "/w/proj", AgentState: "idle", ConversationID: "conv-42"}); got != "agy-42" {
+			t.Fatalf("interleaved PaneTitle returned %q, want agy-42", got)
+		}
+		if after, ok, err := e.Store.Turn("agy-42"); err != nil || !ok || after.Phase != core.TurnWorking || after.Seq != 4 {
+			t.Fatalf("PaneTitle delayed in ancestry lookup overwrote newer turn: %+v ok=%v err=%v", after, ok, err)
 		}
 	})
 }

@@ -477,7 +477,7 @@ func (s Store) ForgetIdentity(h core.Handle) error {
 		}
 		return err
 	}
-	for _, p := range []string{s.identityPath(h), s.ledgerPath(h), s.sentCursorPath(h), s.injectLog(h), s.titlePath(h), s.titleStatePath(h), s.taskAskedPath(h), s.turnErrorPath(h), s.turnPath(h)} {
+	for _, p := range []string{s.identityPath(h), s.ledgerPath(h), s.sentCursorPath(h), s.injectLog(h), s.titlePath(h), s.titleStatePath(h), s.taskAskedPath(h), s.turnErrorPath(h), s.turnPath(h), s.turnLockPath(h)} {
 		if err := os.Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}

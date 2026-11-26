@@ -229,8 +229,13 @@ func runWatch(server, session string, s out.Streams) int {
 // "title" command, with its status JSON on stdin). It always prints a line
 // and never fails: agy stops asking after repeated failures.
 func paneTitle(agent string, stdin io.Reader) string {
+	// Capture ingress time before stdin decode and identity/ancestry I/O so a
+	// delayed idle callback cannot settle a newer turn opened meanwhile.
+	observedAt := time.Now()
 	var status struct {
-		Cwd string `json:"cwd"`
+		Cwd            string `json:"cwd"`
+		AgentState     string `json:"agent_state"`
+		ConversationID string `json:"conversation_id"`
 	}
 	_ = json.NewDecoder(io.LimitReader(stdin, 1<<20)).Decode(&status)
 	kind, err := core.ParseKind(agent)
@@ -246,5 +251,10 @@ func paneTitle(agent string, stdin io.Reader) string {
 		return app.DirTitle(status.Cwd)
 	}
 	env := app.Env{Paths: paths, Store: store.Store{P: paths}}
-	return env.PaneTitle(loc, kind, status.Cwd)
+	return env.PaneTitle(loc, kind, app.PaneTitleInput{
+		Cwd:            status.Cwd,
+		AgentState:     status.AgentState,
+		ConversationID: status.ConversationID,
+		ObservedAt:     observedAt,
+	})
 }

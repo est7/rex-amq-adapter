@@ -122,16 +122,16 @@ func TestRenderCarriesTheTitle(t *testing.T) {
 func TestPaneTitleNamesOnlyAnAgentOfThatKind(t *testing.T) {
 	e := fixture(t, &fakeTerm{}) // a codex record in block
 	loc := Location{Block: block}
-	if got := e.PaneTitle(loc, core.Agy, "/w/proj"); got != "proj" {
+	if got := e.PaneTitle(loc, core.Agy, PaneTitleInput{Cwd: "/w/proj"}); got != "proj" {
 		t.Errorf("a Codex record titled agy's window %q", got)
 	}
 	if err := putSeed(e.Store, seed{Handle: "agy-01", Kind: core.Agy, Server: "unix:///fake.sock", BlockID: block, Task: "fix login"}); err != nil {
 		t.Fatal(err)
 	}
-	if got := e.PaneTitle(loc, core.Agy, "/w/proj"); got != "agy-01 | fix login" {
+	if got := e.PaneTitle(loc, core.Agy, PaneTitleInput{Cwd: "/w/proj"}); got != "agy-01 | fix login" {
 		t.Errorf("agy's own record: %q", got)
 	}
-	if got := e.PaneTitle(Location{Block: "block:none"}, core.Agy, "/w/proj"); got != "proj" {
+	if got := e.PaneTitle(Location{Block: "block:none"}, core.Agy, PaneTitleInput{Cwd: "/w/proj"}); got != "proj" {
 		t.Errorf("no record: %q", got)
 	}
 }
@@ -160,7 +160,7 @@ func TestPaneTitleIgnoresAnotherProcessesRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.Ancestors = func() ([]proc, error) { return []proc{{20000, "agy"}, {19999, "zsh"}}, nil }
-	if got := e.PaneTitle(Location{Block: block}, core.Agy, "/w/proj"); got != "proj" {
+	if got := e.PaneTitle(Location{Block: block}, core.Agy, PaneTitleInput{Cwd: "/w/proj"}); got != "proj" {
 		t.Errorf("a new agy process was titled with another agent's label %q", got)
 	}
 }

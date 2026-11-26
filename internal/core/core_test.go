@@ -85,7 +85,9 @@ func TestDecideWrite(t *testing.T) {
 		{AtPrompt{Box: screen.BoxEmpty, RawState: StateDone}, true, ""},
 		{AtPrompt{Box: screen.BoxEmpty, RawState: StateError}, true, ""},
 		{Unknown{Why: "no_signal", Box: screen.BoxEmpty}, true, ""},
-		{InTurn{}, false, "agent_working"},
+		{InTurn{Backed: true}, false, CodeAgentWorking},
+		{InTurn{Backed: false}, false, CodeWorkingUnconfirmed},
+		{Unknown{Why: "stale_quiet", Box: screen.BoxEmpty}, false, "agent_state_unknown"},
 		{AwaitingUser{Kind: "question"}, false, "agent_blocked"},
 		{AwaitingUser{}, false, "agent_blocked"}, // Codex approval: no kind
 		{Unknown{Why: "unknown_state:paused", Unrecognized: "paused", Box: screen.BoxEmpty}, false, "agent_state_unknown"},

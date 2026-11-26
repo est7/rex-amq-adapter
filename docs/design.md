@@ -52,8 +52,8 @@ uses them so that typing is the last resort, not the only channel.
 | Codex hook approval | New or changed hooks run only after the user approves them in a review screen; trust is keyed by source, event, position, and content hash | executed |
 | Codex `SessionEnd` timeout | Clamped to 3 s | executed (startup warning) |
 | Codex approval dialog | Program status `blocked` with no `kind`; the screen classifier reads the box as `typed`; both defer a doorbell | reproduced (independent review, hook-less Codex in a scratch tab) |
-| Antigravity (`agy` 1.4.2) program status | `app=antigravity`; `working` / `done` / `idle`, and `blocked kind=permission` with the command while it asks to run one | executed |
-| Antigravity hooks | `~/.gemini/config/hooks.json` (or a project's `.agents/hooks.json`) maps a hook name to events `SessionStart`, `PreInvocation` (before each model call), `PostToolUse`, `Stop`; camelCase JSON in and out; `injectSteps` adds context, Stop `{"decision":"continue","reason":…}` keeps the turn going; no `SessionEnd`, no `stop_hook_active`; Stop also runs on cancel and errors (`terminationReason`) | located (agy's bundled `agy-customizations/docs/hooks.md`); SessionStart, PreInvocation, and Stop executed |
+| Antigravity (`agy` 1.4.2–1.5.18) program status | `app=antigravity`; `working` / `done` / `idle`, and `blocked kind=permission` with the command while it asks to run one (or a passive `"Approve plan"` banner while the `>` prompt box remains interactive). In `agy` 1.5.18, OSC 7501 stays frozen at `working` after a turn finishes whenever a non-daemon background command or schedule timer remains active (`antigravity-cli#1915`), so `OSCWorkingIsTurn` is false for agy and the hook turn ledger owns turn activity | executed (`agy` 1.4.2, 1.5.18) |
+| Antigravity hooks & title command | `~/.gemini/config/hooks.json` (or a project's `.agents/hooks.json`) maps a hook name to events `SessionStart`, `PreInvocation` (before each model call, with `invocationNum` starting at 0 each turn), `PostToolUse`, `Stop`; camelCase JSON in and out; `injectSteps` adds context, Stop `{"decision":"continue","reason":…}` keeps the turn going; no `SessionEnd`. Live probing on `agy` 1.5.18 (2026-11-26) showed: (a) cancelling a turn with Esc while a schedule timer is active fires no `Stop` hook, while the `"title"` command (`__internal pane-title --agent agy`) still transitions `agent_state` to `"idle"` with `conversation_id`, which heals stale `TurnWorking` -> `TurnIdle` immediately when the adapter's title command is enabled in `~/.gemini/antigravity-cli/settings.json` (installations with `/title off` or a foreign title command kept by `install setup` retain `Profile.MaxQuiet` watchdog visibility); (b) `Stop`'s `continuationActive` remained `false` on `executionNum=1` after `{"decision":"continue"}` in both `-p` and interactive `-i` modes, so the adapter keeps `StopHookActive = true` as the safe loop guard | located (`agy-customizations/docs/hooks.md`); SessionStart, PreInvocation, Stop continuation, and Esc + `title` callback executed on `agy` 1.5.18 |
 | Pi (0.84.2) extensions | A JavaScript or TypeScript file in `~/.pi/agent/extensions/` (or `pi -e <file>`) runs in Pi's process: `pi.on("session_start" / "before_agent_start" / "agent_start" / "agent_before_settle" / "agent_settled" / "session_shutdown")`, `before_agent_start` may return a `message` that joins the starting run, `pi.sendMessage(msg, { triggerTurn })` starts a turn when idle, `{ deliverAs: "steer" }` lands in a running turn, `agent_before_settle` may return `{ entries, continue: true }`; `session_shutdown.reason` is `quit`, `reload`, `new`, `resume`, or `fork`; Pi reports OSC 7501 (`app=pi`) | located (bundled docs and `types.d.ts`); every path the adapter uses executed |
 | Antigravity input box | `>` under a rule, continued to the next rule (Claude's layout with another glyph); `ctrl+u` clears it; bracketed paste + CR submits | executed |
 
@@ -108,7 +108,7 @@ The agent's reported state chooses the channel:
 | `working`, between tool calls | `PostToolUse` hook adds a notice as `additionalContext` (Antigravity: `PreInvocation` injects an ephemeral step before the next model call) | The notice is in the model context |
 | `working`, about to end its turn | `Stop` hook returns `decision: block` with the notice | Same; the agent keeps working |
 | user submits a prompt | `UserPromptSubmit` hook adds the notice as `additionalContext` | Same |
-| `idle` / `done` / `error` at its prompt | Injector types a doorbell (section 5) | Status changes to `working` after the write |
+| `idle` / `done` / `error` at its prompt (assessed by `core.AssessActivity` from the hook turn ledger + external status + `screen.Inspect`) | Injector types a doorbell (section 5) | Causal post-write edge: turn-ledger `Seq` rises, external status rises from non-working to `working`, or (when external status is absent or already frozen `working`) two consecutive empty-box polls (`EmptiedTwice`), fenced against our doorbell still sitting in the box |
 | `blocked` (question, permission, auth) | Nothing; wait | — |
 | not running | Mail waits; the next `SessionStart` announces it | Same as hooks |
 | Pi, any state | Its extension watches the inbox and calls `pi.sendMessage`: a turn of its own when idle, `steer` into a running turn; `agent_before_settle` continues a run that would end with mail unread | The notice is in the model context; nothing is typed |
@@ -1055,9 +1055,15 @@ failing look is logged and swallowed, so it never stops the watcher.
 
 1. *Undelivered mail* (`watchdog.go`; not Pi, whose extension delivers its own
    mail). Mail counts as undelivered when it is unread and every doorbell has
-   deferred with the same reason for 30 s (`core.Stuck`). A run of
-   `agent_working` never counts: a working agent hears of mail through its own
-   hooks and drains it when its step ends. The watchdog fixes one shape
+   deferred with the same reason for 30 s (`core.Stuck`). Only a run of
+   ledger- or supervisor-backed `agent_working` is exempt: a working agent hears
+   of mail through its own hooks and drains it when its step ends, and a
+   ledger-backed turn that stays quiet past `Profile.MaxQuiet` (15 m) degrades
+   to `Unknown` (`stale_quiet`, deferred as `agent_state_unknown`) so it still
+   enters watchdog visibility and transcript stall detection. Unbacked external
+   working defers as `working_unconfirmed`, which is subject to `StuckFor` so a
+   frozen OSC signal never defers silently forever (wire `activity.state`
+   remains `working` / `idle` / `blocked` / `absent`). The watchdog fixes one shape
    itself: `box_not_found` on a pane under 8 rows or 40 columns
    (`core.MayMove`). On 2026-11-09 two Claude panes of 84x3 and 84x4 sat that way
    for 25 minutes and 2 hours, and drew their box again at 172x17. Under the
@@ -1292,23 +1298,36 @@ lease is collection's.
    exited agent process is `failed` (`agent_gone`); another process in the
    foreground is `deferred` (`agent_not_foreground`). The injector changes no
    identity or lease: a `failed` binding is collection's to park.
-2. **State.** Read program status (root record):
-   `working` → `deferred` (hooks deliver); `blocked` → `deferred`;
-   `idle`/`done`/`error`/absent → continue.
-3. **Input box.** `screen.Check(kind, capture vt)`: `typed` → `deferred`
-   (`draft_in_box`); trust dialog → `deferred`; `empty` → continue.
-4. **Write** one `write`: `ESC[200~` + notice + `ESC[201~` + `\r`.
-5. **Confirm.** Poll program status every 150 ms for up to 3 s. Only a report
-   of `working` is `accepted`: an agent at rest may refresh its status without
-   starting, and no turn completes inside one poll interval. An agent that
-   reported no status before the write is `accepted` once its box empties
-   (the only evidence available). Otherwise capture the box: if it holds
+2. **Activity & input box (`internal/app/activity.go`, `core.AssessActivity`).**
+   One unified observation boundary reads Claude's job supervisor or Rex's
+   `program_status`, reads the incarnation-fenced hook turn ledger
+   (`turn/<handle>.json`, lock-free), and inspects the VT screen via
+   `screen.Inspect` (`BoxEmpty` / `BoxDraft` / `BoxMissing`, `OursInBox`,
+   `TrustPhrase`, `SelfDenyingCountdown`). Precedence: supervisor and modal
+   blocked (except agy's passive `"Approve plan"` banner over an interactive
+   empty or draft box) and trust screens outrank working; `TurnWorking` →
+   `InTurn{Backed:true}` (`agent_working`, healed by strictly newer at-rest
+   external status and degraded to `Unknown(stale_quiet)` past `MaxQuiet`);
+   `TurnIdle` → `AtPrompt` (unless `Profile.OSCWorkingIsTurn` is true and
+   external `working` is strictly newer than `Turn.At`, yielding unbacked
+   `working_unconfirmed`); nil ledger falls back to external status with
+   `Backed:false`. Only `AtPrompt{BoxEmpty}` or `Unknown(no_signal, BoxEmpty)`
+   proceeds to write; right before writing, the injector re-checks readiness
+   against competing turns.
+3. **Write** one `write`: `ESC[200~` + notice + `ESC[201~` + `\r`.
+4. **Confirm (causal edge, `core.DecideConfirm`).** Capture pre-write
+   `(PreTurnSeq, PreOSCWorking, PreOSCReports)` and poll every 150 ms for up to
+   3 s. Submission is accepted only on a causal post-write transition —
+   `PostTurnSeq > PreTurnSeq`, `!PreOSCWorking && PostOSCWorking`, or
+   `(!PreOSCReports || PreOSCWorking) && EmptiedTwice` — never on a pre-existing
+   frozen `working` level, and never while `OursInBox` is still observed in the
+   input box. Otherwise capture the box: if it holds
    exactly our notice (`screen.BoxHolds`: the box only, whitespace ignored,
    never the transcript), clear it with `ctrl+u` and report `deferred`; if it
    holds anything else, leave it and report `deferred`. An unconfirmed write is
    never `failed`: amq does not retry a failed cohort until new mail arrives,
    and an idle agent fires no hook, so failing would strand the mail.
-6. Record the outcome in `<state>/inject/<handle>.jsonl`; on `accepted`, record
+5. Record the outcome in `<state>/inject/<handle>.jsonl`; on `accepted`, record
    the announced ids in the ledger.
 
 A doorbell deferred again and again is the one delivery failure that is
@@ -1789,6 +1808,7 @@ Overridable with `REX_AMQ_ADAPTER_HOME` (tests use a temporary directory).
 ├── identities/<handle>.json  who each handle is: kind, role, sessions, cwd, fence, last placement
 ├── activity/<handle>         touched at each prompt a personal agent submits: when the user last spoke to it
 ├── leases/<handle>.json      where a running handle's agent runs: block, incarnation, epoch (removed on departure)
+├── turn/<handle>.json        incarnation-fenced hook turn ledger (seq, working|idle, at, incarnation, session_id; writer-only flock `turn/.<handle>.lock`, lock-free atomic reads)
 ├── turn-error/<handle>.json  the agent's last turn error, which passes it over as a recipient
 ├── ledger/<handle>.json      announced message ids
 ├── ledger/<handle>.sent      the last sent message checked for a departed recipient
