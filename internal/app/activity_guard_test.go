@@ -4,7 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"os"
+	"io/fs"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -26,8 +26,9 @@ func programStatusCalls(fset *token.FileSet, f *ast.File) []token.Position {
 }
 
 // Only internal/app/activity.go may call .ProgramStatus( in production code
-// under internal/app: every other readiness, health, blocked, close, observe,
-// watchdog, and startup check goes through assessActivity.
+// across cmd/ and internal/ (internal/rex defines Client.ProgramStatus itself):
+// every readiness, health, blocked, close, observe, watchdog, and startup
+// check goes through assessActivity.
 func TestProgramStatusConfinedToActivityBoundary(t *testing.T) {
 	// Prove the guard catches a planted violation first.
 	fset := token.NewFileSet()
@@ -41,34 +42,40 @@ func bad(t Terminal) { _, _, _ = t.ProgramStatus(nil, "b") }
 		t.Fatalf("planted violation: found %d hits, want 1", len(hits))
 	}
 
-	entries, err := os.ReadDir(".")
+	repo, err := filepath.Abs("../..")
 	if err != nil {
 		t.Fatal(err)
 	}
-	scanned := 0
+	allowed := filepath.Join(repo, "internal", "app", "activity.go")
 	activityCalls := 0
-	for _, en := range entries {
-		name := en.Name()
-		if en.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		path := filepath.Join(".", name)
-		f, err := parser.ParseFile(fset, path, nil, 0)
+	for _, top := range []string{"cmd", "internal"} {
+		err := filepath.WalkDir(filepath.Join(repo, top), func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() && d.Name() == "testdata" {
+				return filepath.SkipDir
+			}
+			if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			f, err := parser.ParseFile(fset, path, nil, 0)
+			if err != nil {
+				return err
+			}
+			hits := programStatusCalls(fset, f)
+			if path == allowed {
+				activityCalls += len(hits)
+				return nil
+			}
+			for _, pos := range hits {
+				t.Errorf("%s: calls .ProgramStatus( outside internal/app/activity.go; route through assessActivity", pos)
+			}
+			return nil
+		})
 		if err != nil {
-			t.Fatalf("parse %s: %v", name, err)
+			t.Fatal(err)
 		}
-		scanned++
-		hits := programStatusCalls(fset, f)
-		if name == "activity.go" {
-			activityCalls += len(hits)
-			continue
-		}
-		for _, pos := range hits {
-			t.Errorf("%s: calls .ProgramStatus( outside internal/app/activity.go; route through assessActivity", pos)
-		}
-	}
-	if scanned < 20 {
-		t.Fatalf("scanned only %d files in internal/app", scanned)
 	}
 	if activityCalls == 0 {
 		t.Fatal("internal/app/activity.go has 0 .ProgramStatus( calls; guard may not be matching")

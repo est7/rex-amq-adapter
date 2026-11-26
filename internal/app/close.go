@@ -11,6 +11,7 @@ import (
 	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/core"
 	"github.com/est7/rex-amq-adapter/internal/rex"
+	"github.com/est7/rex-amq-adapter/internal/screen"
 	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
@@ -562,6 +563,9 @@ func (e Env) unrest(ctx context.Context, on Terminal, rec agent) (string, error)
 	}
 	switch a := snap.Activity.(type) {
 	case core.AtPrompt:
+		if a.Box == screen.BoxDraft {
+			return fmt.Sprintf("%s: draft in input box", rec.Handle), nil
+		}
 		// At rest; check unread mail below.
 	case core.InTurn:
 		return fmt.Sprintf("%s: working", rec.Handle), nil

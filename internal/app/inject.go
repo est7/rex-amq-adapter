@@ -243,32 +243,28 @@ func (e Env) erase(ctx context.Context, rec agent) (core.Outcome, bool) {
 func (e Env) confirm(ctx context.Context, rec agent, doorbell string, reports bool) core.Outcome {
 	c := core.Confirmation{Reports: reports}
 	empties := 0
-	policy := NoScreen
-	if !reports {
-		policy = FullScreen
-	}
 	for deadline := time.Now().Add(confirmFor); time.Now().Before(deadline) && !c.Started && !c.EmptiedTwice; {
 		if !sleep(ctx, pollEvery) {
 			break
 		}
-		snap, err := e.assessActivity(ctx, activityRequest{Agent: &rec, Block: rec.BlockID, Policy: policy})
-		if err == nil {
+		// Keep status/supervisor polling and the empty-box fallback independent
+		// so a failing status RPC never blocks two-empty-box confirmation for a
+		// statusless agent, and a failing VT capture never hides a working status.
+		if snap, err := e.assessActivity(ctx, activityRequest{Agent: &rec, Block: rec.BlockID, Policy: NoScreen}); err == nil {
 			if _, working := snap.Activity.(core.InTurn); working {
 				// Only working counts: an agent at rest may refresh its status
 				// without starting, and no turn completes inside one poll interval.
 				c.Started = true
 				break
 			}
-			if !reports {
-				if snap.Surface != nil && snap.Surface.Box == screen.BoxEmpty {
-					empties++
-				} else {
-					empties = 0
-				}
-				c.EmptiedTwice = empties >= 2
+		}
+		if !reports {
+			if surf, _, err := e.inspectSurface(ctx, e.Rex, rec.Kind, rec.BlockID, ""); err == nil && surf.Box == screen.BoxEmpty {
+				empties++
+			} else {
+				empties = 0
 			}
-		} else if !reports {
-			empties = 0
+			c.EmptiedTwice = empties >= 2
 		}
 	}
 	if !c.Started && !c.EmptiedTwice {

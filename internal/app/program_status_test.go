@@ -256,11 +256,18 @@ func TestObservedActivityOfAPassiveApprovePlanIsIdle(t *testing.T) {
 }
 
 func TestAPassiveApprovePlanIsAtRestForClose(t *testing.T) {
-	for _, c := range append(passiveCases(), passiveDraftCase()) {
+	for _, c := range passiveCases() {
 		e, term := agyEnv(t, c.kind, c.st, c.vt(t))
 		if why, err := e.unrest(context.Background(), term, recordNamed(t, e, "codex")); err != nil || why != "" {
 			t.Errorf("%s: %q %v, want at rest", c.name, why, err)
 		}
+	}
+	// A user draft observed under agy's passive Approve plan must still hold
+	// close/retire so the unsent draft is never silently discarded.
+	draft := passiveDraftCase()
+	eDraft, termDraft := agyEnv(t, draft.kind, draft.st, draft.vt(t))
+	if why, err := eDraft.unrest(context.Background(), termDraft, recordNamed(t, eDraft, "codex")); err != nil || !strings.Contains(why, "draft") {
+		t.Errorf("%s: %q %v, want draft refusal", draft.name, why, err)
 	}
 	for _, c := range blockedCases() {
 		e, term := agyEnv(t, c.kind, c.st, c.vt(t))
@@ -394,4 +401,15 @@ func TestHealthAndWatchdogRecoverHonorClaudeJobSupervisor(t *testing.T) {
 			t.Fatalf("recover on working Claude job: v=%v err=%v detaches=%v, want abort with 0 detaches", v, err, w.term.detaches)
 		}
 	})
+}
+
+// A statusless agent's two-empty-box confirmation stays independent of
+// post-write ProgramStatus errors: a status timeout must not block box_emptied.
+func TestStatuslessConfirmSurvivesPostWriteStatusErrors(t *testing.T) {
+	f := &fakeTerm{state: "", submit: true, statusErr: true}
+	e := fixture(t, f, "m1")
+	o := inject(e)
+	if o.Progress != core.Accepted || o.Code != "box_emptied" {
+		t.Fatalf("statusless agent with post-write statusErr: got %+v, want accepted/box_emptied", o)
+	}
 }
