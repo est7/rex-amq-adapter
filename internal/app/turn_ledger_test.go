@@ -622,4 +622,67 @@ func TestTurnLedgerHookFiltersContinuingAndIncarnation(t *testing.T) {
 			t.Fatalf("inject after failed-Stop recovery: got %+v, want accepted", o)
 		}
 	})
+
+	t.Run("PaneTitle agent_state=idle heals stale agy TurnWorking on Esc with active background task", func(t *testing.T) {
+		e, ft, rec, _, now := frozenAgyWorld(t, true)
+		e.Ancestors = func() ([]proc, error) { return []proc{{os.Getpid(), "agy"}}, nil }
+		// Startup idle before any turn must NOT fabricate a turn ledger.
+		if got := e.PaneTitle(loc, core.Agy, PaneTitleInput{Cwd: "/w/proj", AgentState: "idle", ConversationID: "conv-42"}); got != "agy-42" {
+			t.Fatalf("PaneTitle before turn: %q", got)
+		}
+		if tr, ok, err := e.Store.Turn("agy-42"); err != nil || ok {
+			t.Fatalf("PaneTitle fabricated ledger before turn: %+v ok=%v err=%v", tr, ok, err)
+		}
+
+		// Open Turn 1; simulate Esc with an active schedule timer (no Stop hook,
+		// OSC 7501 remains frozen at working).
+		if _, err := e.Hook(context.Background(), EventPreInvocation, core.Agy, loc, HookInput{ConversationID: "conv-42"}); err != nil {
+			t.Fatal(err)
+		}
+		// Non-idle, empty conversation_id, subagent conversation_id, wrong kind,
+		// and non-descendant process must NOT heal TurnWorking.
+		for _, bad := range []struct {
+			kind core.Kind
+			in   PaneTitleInput
+		}{
+			{core.Agy, PaneTitleInput{Cwd: "/w/proj", AgentState: "working", ConversationID: "conv-42"}},
+			{core.Agy, PaneTitleInput{Cwd: "/w/proj", AgentState: "idle", ConversationID: ""}},
+			{core.Agy, PaneTitleInput{Cwd: "/w/proj", AgentState: "idle", ConversationID: "subagent-99"}},
+			{core.Codex, PaneTitleInput{Cwd: "/w/proj", AgentState: "idle", ConversationID: "conv-42"}},
+		} {
+			_ = e.PaneTitle(loc, bad.kind, bad.in)
+			if tr, ok, _ := e.Store.Turn("agy-42"); !ok || tr.Phase != core.TurnWorking || tr.Seq != 1 {
+				t.Fatalf("invalid PaneTitle(%s, %+v) mutated ledger: %+v", bad.kind, bad.in, tr)
+			}
+		}
+		eForeign := e
+		eForeign.Ancestors = func() ([]proc, error) { return []proc{{os.Getpid() + 777, "agy"}}, nil }
+		_ = eForeign.PaneTitle(loc, core.Agy, PaneTitleInput{Cwd: "/w/proj", AgentState: "idle", ConversationID: "conv-42"})
+		if tr, ok, _ := e.Store.Turn("agy-42"); !ok || tr.Phase != core.TurnWorking || tr.Seq != 1 {
+			t.Fatalf("non-descendant PaneTitle mutated ledger: %+v", tr)
+		}
+
+		// Matching agy PaneTitle(idle, conv-42) heals TurnWorking -> TurnIdle preserving Seq=1.
+		*now = now.Add(3 * time.Second)
+		if got := e.PaneTitle(loc, core.Agy, PaneTitleInput{Cwd: "/w/proj", AgentState: "idle", ConversationID: "conv-42"}); got != "agy-42" {
+			t.Fatalf("PaneTitle on Esc idle: %q", got)
+		}
+		if tr, ok, err := e.Store.Turn("agy-42"); err != nil || !ok || tr.Phase != core.TurnIdle || tr.Seq != 1 {
+			t.Fatalf("PaneTitle did not heal TurnWorking to TurnIdle(Seq=1): %+v ok=%v err=%v", tr, ok, err)
+		}
+		// Pane is now unblocked for both unrest/shutdown and doorbell delivery.
+		if why, err := e.unrest(context.Background(), ft, rec); err != nil || why != "" {
+			t.Fatalf("unrest after PaneTitle idle heal: why=%q err=%v, want at rest", why, err)
+		}
+		if err := amq.Send(context.Background(), e.AMQ, e.Paths.Root(), "orch-01", "agy-42", "task", "ping"); err != nil {
+			t.Fatal(err)
+		}
+		ft.onWrite = func(_, _ string) {
+			*now = now.Add(time.Second)
+			_, _ = e.Hook(context.Background(), EventPreInvocation, core.Agy, loc, HookInput{ConversationID: "conv-42"})
+		}
+		if o := e.Inject(context.Background(), InjectRequest{Handle: "agy-42", Root: e.Paths.Root()}); o.Progress != core.Accepted {
+			t.Fatalf("inject after PaneTitle idle heal: got %+v, want accepted", o)
+		}
+	})
 }

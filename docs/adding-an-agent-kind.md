@@ -152,9 +152,15 @@ the process), run start / settle, and dialog open / close.
 
 Make the changes in this order; each step has tests before the next.
 
-1. **Kind** — `internal/core/identity.go`: add the constant, accept it in
+1. **Kind & activity profile** — `internal/core/identity.go`: add the constant, accept it in
    `ParseKind`, include it in `InProcess` if section 3 chose in-process, and in
    `Notifies` if the user's notification hooks reach it. Extend `TestParseKind`.
+   Add its `HarnessProfile` in `internal/core/activity.go` (`OSCWorkingIsTurn`:
+   whether OSC 7501 `working` strictly implies a foreground turn rather than
+   background tasks, `MaxQuiet`, passive-banner rules, and self-denying
+   countdown support); all production activity reads go through
+   `internal/app/activity.go` (`assessActivity`) rather than calling
+   `ProgramStatus` directly.
    Add its configuration directory to `core.Dirs` / `core.HarnessDirs` in
    `internal/core/harness.go`, its transcript reader (`Read`, `Cwd`) in
    `internal/transcript/transcript.go` if transcripts are stored on disk, and
@@ -176,11 +182,14 @@ Make the changes in this order; each step has tests before the next.
    for agy). Extend `core.ClassifyStop` (and the fields `abnormalStop` passes
    it) if its stop reasons differ: a cancel reports nothing, a limit is
    `turn_limit`, any other error `turn_error`.
-4. **Events** — if the agent's in-band event is new, add an `Event…` constant
+4. **Events & turn ledger** — if the agent's in-band event is new, add an `Event…` constant
    in `internal/app/hook.go`, route it in `Hook` with the `announcing` that
    matches how often it runs (`onPrompt`, `onModelCall`, `onToolCall`,
    `onTurnEnd`: whether it delivers window notes, and whether it retries a
-   failed adoption at once or waits out the back-off), and add its timeout to
+   failed adoption at once or waits out the back-off), wire turn-opening and
+   turn-settling events into `recordTurn` (writing `turn/<handle>.json` only
+   after `agySubagent`, `startedUnderOwner`, and `recordFit != foreign` filters;
+   never on `SessionStart` or continuing `Stop`/`Settle`), and add its timeout to
    `hookTimeouts` in `internal/install/install.go` (the adapter's budget is
    derived from it by `install.Budget`; never restate a timeout elsewhere).
 5. **Output** — `internal/app/hook.go` `Render`: one case per (kind, event)
@@ -268,8 +277,12 @@ first. Report residue you could not remove.
 - **Take screen fixtures from a real capture.** `rex capture --format=vt` draws
   the gap between words as `ESC[1C`, so a hand-written fixture with spaces
   passes while every real dialog goes unrecognized.
-- **`working` is the only proof of submission.** Agents refresh status at rest;
-  never accept on "updated after the write".
+- **A causal transition proves submission, never a pre-existing `working` level.**
+  Agents refresh status at rest and can leave OSC 7501 stuck at `working` while
+  background tasks run; `core.DecideConfirm` requires a post-write turn-ledger
+  `Seq` rise, an external non-working → `working` rising edge, or two empty-box
+  polls (`EmptiedTwice`) when external status is absent or already working, and
+  refuses confirmation whenever our doorbell is still visible in the box.
 - **An unconfirmed write is `deferred`, never `failed`.** amq does not retry a
   failed cohort until new mail arrives, then holds the waker 30–50 s.
 - **Record what you typed before typing it** (`store.SetPending`), so a crashed

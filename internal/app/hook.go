@@ -141,9 +141,11 @@ func (e Env) Hook(ctx context.Context, event string, kind core.Kind, loc Locatio
 }
 
 // normalize maps a harness's payload onto the fields the adapter reads.
-// Antigravity names the session conversationId and reports no
-// stop_hook_active; treating every agy stop as already continued means a
-// Stop blocks only for mail that was never announced, so it cannot loop.
+// Antigravity names the session conversationId. Live probing on agy v1.5.18
+// showed that Stop's continuationActive stays false even on executionNum=1
+// after a {"decision":"continue"} reply (both -p and interactive -i), so
+// treating every agy Stop as already continued remains the safe loop guard:
+// Stop blocks only for mail never yet announced and cannot loop.
 func normalize(kind core.Kind, in HookInput) HookInput {
 	if kind == core.Agy {
 		if in.SessionID == "" {

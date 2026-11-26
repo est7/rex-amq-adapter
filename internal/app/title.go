@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
 )
@@ -138,6 +139,14 @@ func (e Env) askTask(ctx context.Context, kind core.Kind, event string, rec agen
 	return ""
 }
 
+// PaneTitleInput is the subset of a harness's title-command JSON payload the
+// adapter consumes.
+type PaneTitleInput struct {
+	Cwd            string
+	AgentState     string
+	ConversationID string
+}
+
 // PaneTitle is the window title for a harness that asks for one
 // (Antigravity's settings.json "title" command, run on every change of the
 // agent's state): the pane label of its agent in loc. It names the terminal
@@ -147,11 +156,45 @@ func (e Env) askTask(ctx context.Context, kind core.Kind, event string, rec agen
 // SessionEnd, so a new agy finds the last one's record until its first turn),
 // or a record that cannot be read, gives the name of the directory it works
 // in, so the title never names another agent.
-func (e Env) PaneTitle(loc Location, kind core.Kind, cwd string) string {
+//
+// When agy reports agent_state="idle" for rec's active conversation, PaneTitle
+// also heals a stale TurnWorking ledger entry to TurnIdle: in agy v1.5.18,
+// cancelling a turn with Esc while a background task or schedule timer is
+// active fires no Stop hook and leaves OSC 7501 stuck at working, while the
+// title command still transitions agent_state to "idle".
+func (e Env) PaneTitle(loc Location, kind core.Kind, in PaneTitleInput) string {
 	if rec, ok, err := e.agentIn(loc); err == nil && ok && rec.Live() && rec.Kind == kind && e.descendsFrom(rec) {
+		if kind == core.Agy && in.AgentState == "idle" && in.ConversationID != "" && in.ConversationID == rec.Session() {
+			e.healTurnIdle(rec, in.ConversationID)
+		}
 		return core.PaneLabel(rec.Handle, rec.Role, rec.Task)
 	}
-	return DirTitle(cwd)
+	return DirTitle(in.Cwd)
+}
+
+// healTurnIdle settles an existing live-incarnation TurnWorking record for rec
+// to TurnIdle without incrementing Seq. It never creates a new ledger entry,
+// never mutates another incarnation or conversation, and ignores I/O errors so
+// PaneTitle never fails.
+func (e Env) healTurnIdle(rec agent, sessionID string) {
+	if rec.lease == nil {
+		return
+	}
+	tr, ok, err := e.Store.Turn(rec.Handle)
+	if err != nil || !ok || !tr.Incarnation.Same(rec.lease.Incarnation) || tr.Phase != core.TurnWorking {
+		return
+	}
+	if tr.SessionID != "" && tr.SessionID != sessionID {
+		return
+	}
+	now := time.Now()
+	if e.Now != nil {
+		now = e.Now()
+	}
+	tr.Phase = core.TurnIdle
+	tr.At = now.UTC()
+	tr.SessionID = sessionID
+	_ = e.Store.PutTurn(rec.Handle, tr)
 }
 
 // DirTitle is the window title of a harness the adapter knows nothing about.

@@ -10,7 +10,7 @@ import (
 // names the directory, or prints an empty line.
 func TestPaneTitleAlwaysAnswers(t *testing.T) {
 	t.Setenv("REX_BLOCK", "")
-	if got := paneTitle("agy", strings.NewReader(`{"cwd":"/w/proj","conversation_id":"c"}`)); got != "proj" {
+	if got := paneTitle("agy", strings.NewReader(`{"cwd":"/w/proj","conversation_id":"c","agent_state":"idle"}`)); got != "proj" {
 		t.Errorf("outside Rex: %q", got)
 	}
 	if got := paneTitle("nope", strings.NewReader(`{"cwd":"/w/proj"}`)); got != "proj" {

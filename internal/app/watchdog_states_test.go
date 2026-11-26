@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/core"
 )
 
@@ -209,4 +210,68 @@ func TestWatchdogReportsADraftTheResizeRevealedOncePlaced(t *testing.T) {
 	if body := mailBody(t, e, "orch-01", inbox[0]); !strings.Contains(body, "placed it in the "+core.OverflowTab+" tab") {
 		t.Fatalf("the draft report does not say the pane is placed:\n%s", body)
 	}
+}
+
+// Unbacked OSC working (working_unconfirmed) is subject to StuckFor so a
+// frozen external signal never defers silently forever; a ledger-backed turn
+// that stays quiet beyond Profile.MaxQuiet degrades to stale_quiet and enters
+// both watchdog visibility and transcript stall detection.
+func TestWatchdogReportsUnconfirmedWorkingAndStaleQuiet(t *testing.T) {
+	t.Run("working_unconfirmed reports undelivered after StuckFor", func(t *testing.T) {
+		e, term, orch, s, now := stuckWorld(t, "", "working", false)
+		for _, at := range []time.Time{now.Add(-40 * time.Second), now.Add(-10 * time.Second)} {
+			if err := e.Store.RecordInject("codex", core.Outcome{Progress: core.Deferred, Code: core.CodeWorkingUnconfirmed}, at); err != nil {
+				t.Fatal(err)
+			}
+		}
+		e.watchdog(context.Background(), orch, s)
+		if len(term.detaches) != 0 || len(term.writes) != 0 {
+			t.Fatalf("acted on working_unconfirmed: %s", acted(term))
+		}
+		if r := reported(t, e); r[core.ReportUndelivered].IsZero() {
+			t.Fatalf("working_unconfirmed not reported undelivered: %v", r)
+		}
+		inbox := goalInbox(t, e)
+		if len(inbox) != 1 || !strings.Contains(mailBody(t, e, "orch-01", inbox[0]), core.CodeWorkingUnconfirmed) {
+			t.Fatalf("unexpected orchestrator report: %v", inbox)
+		}
+	})
+
+	t.Run("ledger-backed TurnWorking quiet past MaxQuiet degrades to stale_quiet for inject and watchdog", func(t *testing.T) {
+		e, ft, rec, s, now := frozenAgyWorld(t, true)
+		orch := recordNamed(t, e, "orch-01")
+		loc := Location{Server: "unix:///fake.sock", Block: "block:agy"}
+		if _, err := e.Hook(context.Background(), EventPreInvocation, core.Agy, loc, HookInput{ConversationID: "conv-42"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := amq.Send(context.Background(), e.AMQ, e.Paths.Root(), "orch-01", "agy-42", "task", "ping"); err != nil {
+			t.Fatal(err)
+		}
+		// Within MaxQuiet: Inject defers with backed CodeAgentWorking.
+		if o := e.Inject(context.Background(), InjectRequest{Handle: "agy-42", Root: e.Paths.Root()}); o.Progress != core.Deferred || o.Code != core.CodeAgentWorking {
+			t.Fatalf("within MaxQuiet: got %+v, want deferred/agent_working", o)
+		}
+		// Advance past MaxQuiet without Stop or newer OSC idle: Inject degrades
+		// to agent_state_unknown, which watchdog surfaces after StuckFor.
+		*now = now.Add(core.ProfileFor(core.Agy).MaxQuiet + time.Minute)
+		o1 := e.Inject(context.Background(), InjectRequest{Handle: "agy-42", Root: e.Paths.Root()})
+		if o1.Progress != core.Deferred || o1.Code != "agent_state_unknown" {
+			t.Fatalf("past MaxQuiet: got %+v, want deferred/agent_state_unknown", o1)
+		}
+		*now = now.Add(core.StuckFor + 10*time.Second)
+		o2 := e.Inject(context.Background(), InjectRequest{Handle: "agy-42", Root: e.Paths.Root()})
+		if o2.Progress != core.Deferred || o2.Code != "agent_state_unknown" {
+			t.Fatalf("past MaxQuiet second attempt: got %+v, want deferred/agent_state_unknown", o2)
+		}
+		if len(ft.writes) != 0 {
+			t.Fatalf("stale_quiet typed into pane: writes=%d", len(ft.writes))
+		}
+		if err := e.watchPeer(context.Background(), orch, s, rec); err != nil {
+			t.Fatal(err)
+		}
+		inbox := inboxOf(t, e, "orch-01")
+		if len(inbox) == 0 {
+			t.Fatal("stale_quiet was not surfaced to orchestrator by watchdog")
+		}
+	})
 }

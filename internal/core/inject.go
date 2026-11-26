@@ -45,9 +45,14 @@ type Outcome struct {
 // Outcome codes that more than one site emits or matches. The values are
 // wire format (who, the events stream, e2e JSON).
 const (
-	// CodeAgentWorking is the deferral of a doorbell to a working agent,
-	// which its hooks tell about mail in-band instead.
+	// CodeAgentWorking is the deferral of a doorbell to a ledger- or
+	// supervisor-backed working agent, which its hooks tell about mail in-band.
 	CodeAgentWorking = "agent_working"
+	// CodeWorkingUnconfirmed is the deferral of a doorbell when only an
+	// unbacked external status reports working (no hook turn ledger or
+	// supervisor backing it); unlike CodeAgentWorking it is subject to
+	// watchdog StuckFor so a frozen OSC signal never defers silently forever.
+	CodeWorkingUnconfirmed = "working_unconfirmed"
 	// CodeBoxNotFound: no input box is on screen, so nothing can be typed.
 	CodeBoxNotFound = "box_not_found"
 	// CodeDraftInBox: the input box holds text someone else typed.
@@ -109,7 +114,10 @@ func CheckBinding(b Binding) (Outcome, bool) {
 func DecideWrite(act AgentActivity) (Outcome, bool) {
 	switch a := act.(type) {
 	case InTurn:
-		return Outcome{Progress: Deferred, Code: CodeAgentWorking, Note: "the agent is working; its hooks announce mail in-band"}, false
+		if a.Backed {
+			return Outcome{Progress: Deferred, Code: CodeAgentWorking, Note: "the agent is working; its hooks announce mail in-band"}, false
+		}
+		return Outcome{Progress: Deferred, Code: CodeWorkingUnconfirmed, Note: "external status reports working without a hook turn ledger"}, false
 	case AwaitingUser:
 		if a.Kind == "trust_screen" {
 			return Outcome{Progress: Deferred, Code: "trust_screen", Note: "a trust dialog is on screen"}, false

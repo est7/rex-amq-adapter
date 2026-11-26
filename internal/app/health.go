@@ -27,7 +27,12 @@ func (e Env) health(ctx context.Context, orch agent, s Session, rec agent) error
 	}
 	working := false
 	if snap, err := e.assessActivity(ctx, activityRequest{Agent: &rec, Block: rec.BlockID, Policy: NoScreen}); err == nil {
-		_, working = snap.Activity.(core.InTurn)
+		switch a := snap.Activity.(type) {
+		case core.InTurn:
+			working = true
+		case core.Unknown:
+			working = a.Why == "stale_quiet"
+		}
 	}
 	h := core.Assess(tail, working, e.Now())
 	if h.Hung == nil && !h.Stalled {

@@ -299,6 +299,12 @@ func AssessActivity(profile HarnessProfile, ev ActivityEvidence) AgentActivity {
 			if ext.Present() && ext.State.AtRest() && !ext.UpdatedAt.IsZero() && ext.UpdatedAt.After(ev.Turn.At) {
 				return AtPrompt{Box: box, Source: ext.Source, RawState: ext.State}
 			}
+			// A ledger-backed turn that stays quiet past Profile.MaxQuiet
+			// degrades to Unknown so watchdog visibility is never silenced
+			// indefinitely when a Stop hook was missed.
+			if profile.MaxQuiet > 0 && !ev.Now.IsZero() && !ev.Turn.At.IsZero() && ev.Now.Sub(ev.Turn.At) >= profile.MaxQuiet {
+				return Unknown{Why: "stale_quiet", Box: box, Source: SignalTurnLedger}
+			}
 			return InTurn{Since: ev.Turn.At, Backed: true, Source: SignalTurnLedger}
 		case TurnIdle:
 			// For harnesses whose OSC working implies an active foreground turn

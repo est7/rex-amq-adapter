@@ -237,5 +237,29 @@ func TestAssessActivity(t *testing.T) {
 		}); func() bool { ap, ok := got.(AtPrompt); return !ok || ap.Box != screen.BoxEmpty }() {
 			t.Errorf("codex TurnIdle with older OSC working must remain AtPrompt: got %#v", got)
 		}
+
+		// Rule 2b (MaxQuiet): TurnWorking quiet past Profile.MaxQuiet degrades
+		// to Unknown{Why:"stale_quiet"} and projects to backwards-compatible absent.
+		agyProf := ProfileFor(Agy)
+		if got := AssessActivity(agyProf, ActivityEvidence{
+			External: ExternalSignal{Source: SignalRexStatus, State: StateWorking, UpdatedAt: t0},
+			Turn:     &TurnLedger{Seq: 1, Phase: TurnWorking, At: t1},
+			Surface:  &screen.Surface{Box: screen.BoxEmpty},
+			Now:      t1.Add(agyProf.MaxQuiet - time.Second),
+		}); func() bool { it, ok := got.(InTurn); return !ok || !it.Backed }() {
+			t.Errorf("TurnWorking before MaxQuiet must stay backed InTurn: got %#v", got)
+		}
+		stale := AssessActivity(agyProf, ActivityEvidence{
+			External: ExternalSignal{Source: SignalRexStatus, State: StateWorking, UpdatedAt: t0},
+			Turn:     &TurnLedger{Seq: 1, Phase: TurnWorking, At: t1},
+			Surface:  &screen.Surface{Box: screen.BoxEmpty},
+			Now:      t1.Add(agyProf.MaxQuiet),
+		})
+		if u, ok := stale.(Unknown); !ok || u.Why != "stale_quiet" || u.Source != SignalTurnLedger {
+			t.Errorf("TurnWorking at MaxQuiet must degrade to Unknown(stale_quiet): got %#v", stale)
+		}
+		if obs := ActivityObservationFrom(stale, t1.Add(agyProf.MaxQuiet)); obs.State != StateAbsent {
+			t.Errorf("stale_quiet wire state=%q, want StateAbsent", obs.State)
+		}
 	})
 }

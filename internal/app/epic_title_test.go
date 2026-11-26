@@ -136,7 +136,7 @@ func TestEpicTitleUnsupportedForCodexAndAgy(t *testing.T) {
 		wantState(t, e, string(c.kind)+" task set", core.TitleState{Status: core.TitleUnsupported, Desired: head + " | [auth-refresh] fix login"})
 		if c.kind == core.Agy {
 			e.Ancestors = func() ([]proc, error) { return []proc{{rec.pid(), "agy"}}, nil }
-			if got := e.PaneTitle(Location{Block: block}, core.Agy, "/w/proj"); got != head+" | fix login" {
+			if got := e.PaneTitle(Location{Block: block}, core.Agy, PaneTitleInput{Cwd: "/w/proj"}); got != head+" | fix login" {
 				t.Errorf("agy's window title %q is not its pane label", got)
 			}
 		}

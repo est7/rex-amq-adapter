@@ -39,10 +39,13 @@ func TinyPane(columns, rows int) bool {
 // Stuck reports whether mail is undelivered: it is unread and every doorbell
 // for at least StuckFor deferred with the same code. code is that reason as
 // the injector recorded it (box_not_found, draft_in_box, agent_blocked,
-// trust_screen, …) and since when the run of outcomes began. Reports follow
-// from any code; a move follows only from box_not_found on a tiny pane. A run
-// of agent_working is never stuck: a working agent hears of mail through its
-// own hooks and drains it when its step ends.
+// trust_screen, working_unconfirmed, …) and since when the run of outcomes
+// began. Reports follow from any code; a move follows only from box_not_found
+// on a tiny pane. A run of CodeAgentWorking (backed by a hook turn ledger or
+// supervisor within Profile.MaxQuiet) is never stuck: a working agent hears of
+// mail through its own hooks and drains it when its step ends. Unbacked
+// CodeWorkingUnconfirmed and stale_quiet (agent_state_unknown) deferrals are
+// not exempt, bounding silent working deferrals.
 func Stuck(history []Attempt, unread int, now time.Time) (code string, since time.Time, ok bool) {
 	if unread == 0 {
 		return "", time.Time{}, false
