@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
+	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 // titleCarried reports whether a hook's reply can set its harness's own
@@ -173,28 +174,53 @@ func (e Env) PaneTitle(loc Location, kind core.Kind, in PaneTitleInput) string {
 }
 
 // healTurnIdle settles an existing live-incarnation TurnWorking record for rec
-// to TurnIdle without incrementing Seq. It never creates a new ledger entry,
-// never mutates another incarnation or conversation, and ignores I/O errors so
-// PaneTitle never fails.
+// to TurnIdle without incrementing Seq. It takes a lock-free fast path when
+// nothing needs healing, then serializes the write through Store.UpdateTurn
+// with a CAS guard on the observed Seq and timestamp so an interleaved
+// PreInvocation for the next turn can never be overwritten or have Seq rolled
+// back. I/O and lock errors are ignored because PaneTitle must always answer.
 func (e Env) healTurnIdle(rec agent, sessionID string) {
 	if rec.lease == nil {
 		return
 	}
-	tr, ok, err := e.Store.Turn(rec.Handle)
-	if err != nil || !ok || !tr.Incarnation.Same(rec.lease.Incarnation) || tr.Phase != core.TurnWorking {
-		return
-	}
-	if tr.SessionID != "" && tr.SessionID != sessionID {
-		return
-	}
-	now := time.Now()
+	observedAt := time.Now()
 	if e.Now != nil {
-		now = e.Now()
+		observedAt = e.Now()
 	}
-	tr.Phase = core.TurnIdle
-	tr.At = now.UTC()
-	tr.SessionID = sessionID
-	_ = e.Store.PutTurn(rec.Handle, tr)
+	initial, ok, err := e.Store.Turn(rec.Handle)
+	if err != nil || !ok || !initial.Incarnation.Same(rec.lease.Incarnation) || initial.Phase != core.TurnWorking {
+		return
+	}
+	if initial.SessionID != "" && initial.SessionID != sessionID {
+		return
+	}
+	if initial.At.After(observedAt) {
+		return
+	}
+	e.healTurnIdleCAS(rec, sessionID, observedAt, initial.Seq)
+}
+
+func (e Env) healTurnIdleCAS(rec agent, sessionID string, observedAt time.Time, expectedSeq uint64) {
+	if rec.lease == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	_ = e.Store.UpdateTurn(ctx, rec.Handle, func(prev store.TurnRecord, ok bool) (store.TurnRecord, bool) {
+		if !ok || !prev.Incarnation.Same(rec.lease.Incarnation) || prev.Phase != core.TurnWorking || prev.Seq != expectedSeq {
+			return store.TurnRecord{}, false
+		}
+		if prev.SessionID != "" && prev.SessionID != sessionID {
+			return store.TurnRecord{}, false
+		}
+		if prev.At.After(observedAt) {
+			return store.TurnRecord{}, false
+		}
+		prev.Phase = core.TurnIdle
+		prev.At = observedAt.UTC()
+		prev.SessionID = sessionID
+		return prev, true
+	})
 }
 
 // DirTitle is the window title of a harness the adapter knows nothing about.

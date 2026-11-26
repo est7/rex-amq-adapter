@@ -3,6 +3,9 @@ package app
 import (
 	"context"
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -272,6 +275,39 @@ func TestWatchdogReportsUnconfirmedWorkingAndStaleQuiet(t *testing.T) {
 		inbox := inboxOf(t, e, "orch-01")
 		if len(inbox) == 0 {
 			t.Fatal("stale_quiet was not surfaced to orchestrator by watchdog")
+		}
+		// Health must still report stalled once TurnWorking degrades to stale_quiet.
+		if _, err := exec.LookPath("sqlite3"); err == nil {
+			db := filepath.Join(e.TranscriptHome, ".gemini/antigravity-cli/conversations/conv-42.db")
+			if err := os.MkdirAll(filepath.Dir(db), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			sql := "create table steps (idx integer primary key, step_type integer, status integer, error_details blob); insert into steps values (1, 15, 3, null);"
+			if out, err := exec.Command("sqlite3", db, sql).CombinedOutput(); err != nil {
+				t.Fatalf("%v %s", err, out)
+			}
+			old := now.Add(-(core.StalledFor + 5*time.Minute))
+			if err := os.Chtimes(db, old, old); err != nil {
+				t.Fatal(err)
+			}
+			before := len(inboxOf(t, e, "orch-01"))
+			if err := e.health(context.Background(), orch, s, rec); err != nil {
+				t.Fatal(err)
+			}
+			after := inboxOf(t, e, "orch-01")
+			if len(after) != before+1 {
+				t.Fatalf("health did not report stalled under stale_quiet: before=%d after=%d", before, len(after))
+			}
+			foundStalled := false
+			for _, id := range after {
+				if strings.Contains(mailBody(t, e, "orch-01", id), core.NoticeStalled) {
+					foundStalled = true
+					break
+				}
+			}
+			if !foundStalled {
+				t.Fatalf("expected %s notice in orchestrator inbox %v", core.NoticeStalled, after)
+			}
 		}
 	})
 }

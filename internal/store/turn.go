@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,6 +30,32 @@ func (p Paths) turns() string { return filepath.Join(p.Home, "turn") }
 
 func (s Store) turnPath(h core.Handle) string {
 	return filepath.Join(s.P.turns(), fileKey(string(h))+".json")
+}
+
+func (s Store) turnLockPath(h core.Handle) string {
+	return filepath.Join(s.P.turns(), "."+fileKey(string(h))+".lock")
+}
+
+// UpdateTurn serializes turn-ledger writers for h under a writer-only flock
+// (readers call Turn lock-free against WriteAtomic snapshots), passes the
+// current record to fn, and atomically writes the returned record when write
+// is true.
+func (s Store) UpdateTurn(ctx context.Context, h core.Handle, fn func(prev TurnRecord, ok bool) (TurnRecord, bool)) error {
+	unlock, err := fsutil.Flock(ctx, s.turnLockPath(h))
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	prev, ok, err := s.Turn(h)
+	if err != nil {
+		ok = false
+		prev = TurnRecord{}
+	}
+	next, write := fn(prev, ok)
+	if !write {
+		return nil
+	}
+	return s.PutTurn(h, next)
 }
 
 // Turn reads h's turn ledger record; ok is false when none has been written.

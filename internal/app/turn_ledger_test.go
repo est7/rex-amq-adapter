@@ -814,5 +814,32 @@ func TestTurnLedgerHookFiltersContinuingAndIncarnation(t *testing.T) {
 		if o := e.Inject(context.Background(), InjectRequest{Handle: "agy-42", Root: e.Paths.Root()}); o.Progress != core.Accepted {
 			t.Fatalf("inject after PaneTitle idle heal: got %+v, want accepted", o)
 		}
+
+		// Interleaving regression: Esc title callback observes Working/Seq 2,
+		// then the next prompt's PreInvocation (invocationNum=0) opens Working/Seq 3
+		// before the callback commits. CAS in healTurnIdleCAS must NOT overwrite
+		// Working/Seq 3 or roll back Seq.
+		obs, ok, err := e.Store.Turn("agy-42")
+		if err != nil || !ok || obs.Phase != core.TurnWorking || obs.Seq != 2 {
+			t.Fatalf("expected TurnWorking Seq=2 after doorbell confirm: %+v ok=%v err=%v", obs, ok, err)
+		}
+		escObservedAt := *now
+		zero := 0
+		*now = now.Add(time.Second)
+		if _, err := e.Hook(context.Background(), EventPreInvocation, core.Agy, loc, HookInput{ConversationID: "conv-42", InvocationNum: &zero}); err != nil {
+			t.Fatal(err)
+		}
+		e.healTurnIdleCAS(rec, "conv-42", escObservedAt, obs.Seq)
+		if after, ok, err := e.Store.Turn("agy-42"); err != nil || !ok || after.Phase != core.TurnWorking || after.Seq != 3 {
+			t.Fatalf("interleaved Esc PaneTitle overwrote newer turn: %+v ok=%v err=%v", after, ok, err)
+		}
+		// Even a delayed PaneTitle whose captured observedAt predates Turn 3
+		// refuses to overwrite Turn 3.
+		eDelayed := e
+		eDelayed.Now = func() time.Time { return escObservedAt }
+		_ = eDelayed.PaneTitle(loc, core.Agy, PaneTitleInput{Cwd: "/w/proj", AgentState: "idle", ConversationID: "conv-42"})
+		if after, ok, err := e.Store.Turn("agy-42"); err != nil || !ok || after.Phase != core.TurnWorking || after.Seq != 3 {
+			t.Fatalf("delayed PaneTitle with stale observedAt overwrote newer turn: %+v ok=%v err=%v", after, ok, err)
+		}
 	})
 }
