@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/core"
@@ -101,6 +102,7 @@ func (e Env) Hook(ctx context.Context, event string, kind core.Kind, loc Locatio
 		if err := e.reportTurnError(ctx, kind, loc, in, core.NoticeTurnError, detail); err != nil {
 			fmt.Fprintf(Diagnostics, "report turn error: %v\n", err)
 		}
+		e.recordTurnIdleAt(kind, loc, in)
 		if err := e.SuperviseWaker(ctx, loc); err != nil {
 			fmt.Fprintf(Diagnostics, "supervise waker: %v\n", err)
 		}
@@ -112,6 +114,7 @@ func (e Env) Hook(ctx context.Context, event string, kind core.Kind, loc Locatio
 					fmt.Fprintf(Diagnostics, "report turn error: %v\n", err)
 				}
 			}
+			e.recordTurnIdleAt(kind, loc, in)
 			if err := e.SuperviseWaker(ctx, loc); err != nil {
 				fmt.Fprintf(Diagnostics, "supervise waker: %v\n", err)
 			}
@@ -270,6 +273,15 @@ func (e Env) announce(ctx context.Context, kind core.Kind, loc Location, in Hook
 	if hook == EventPrompt {
 		e.touchActivity(rec)
 	}
+	switch hook {
+	case EventPrompt:
+		e.recordTurn(rec, core.TurnWorking, in, true)
+	case EventPreInvocation:
+		forceOpen := in.InvocationNum != nil && *in.InvocationNum == 0
+		e.recordTurn(rec, core.TurnWorking, in, forceOpen)
+	case EventPostTool:
+		e.recordTurn(rec, core.TurnWorking, in, false)
+	}
 	var sent []string
 	if may.undelivered {
 		sent = e.checkableSent(ctx, rec)
@@ -287,8 +299,62 @@ func (e Env) announce(ctx context.Context, kind core.Kind, loc Location, in Hook
 		if ask := e.askTask(ctx, kind, hook, rec, in.SessionID); identity == nil {
 			r.Notice = joinNotices(r.Notice, ask)
 		}
+		if (hook == EventStop || hook == EventSettle) && r.Notice == "" {
+			e.recordTurn(rec, core.TurnIdle, in, false)
+		}
 	}
 	return r, err
+}
+
+// recordTurnIdleAt writes Phase=idle for the pane's live agent when the hook
+// passes recordFit != foreign (used on StopFailure and abnormal Stop/settle).
+func (e Env) recordTurnIdleAt(kind core.Kind, loc Location, in HookInput) {
+	rec, ok, err := e.agentIn(loc)
+	if err != nil || !ok || !rec.Live() || e.recordFit(kind, rec, in) == foreign {
+		return
+	}
+	e.recordTurn(rec, core.TurnIdle, in, false)
+}
+
+// recordTurn updates rec's hook turn ledger atomically. Seq increments on turn
+// open (transitioning from absent/idle/other-incarnation to working, or when
+// forceNewTurn signals an explicit new prompt/turn start).
+func (e Env) recordTurn(rec agent, phase core.TurnPhase, in HookInput, forceNewTurn bool) {
+	if rec.lease == nil {
+		return
+	}
+	inc := rec.lease.Incarnation
+	prev, ok, err := e.Store.Turn(rec.Handle)
+	if err != nil {
+		fmt.Fprintf(Diagnostics, "read turn ledger of %s: %v\n", rec.Handle, err)
+		ok = false
+	}
+	seq := uint64(0)
+	if ok {
+		seq = prev.Seq
+	}
+	if phase == core.TurnWorking {
+		if !ok || !prev.Incarnation.Same(inc) || prev.Phase != core.TurnWorking || forceNewTurn {
+			seq++
+		}
+	}
+	sid := in.SessionID
+	if sid == "" {
+		sid = rec.Session()
+	}
+	now := time.Now()
+	if e.Now != nil {
+		now = e.Now()
+	}
+	if err := e.Store.PutTurn(rec.Handle, store.TurnRecord{
+		Seq:         seq,
+		Phase:       phase,
+		At:          now.UTC(),
+		Incarnation: inc,
+		SessionID:   sid,
+	}); err != nil {
+		fmt.Fprintf(Diagnostics, "write turn ledger of %s: %v\n", rec.Handle, err)
+	}
 }
 
 // adoptOnce adopts the agent in loc, reporting whether it was. Adoption

@@ -106,24 +106,29 @@ func TestDecideWrite(t *testing.T) {
 
 func TestDecideConfirm(t *testing.T) {
 	cases := []struct {
+		name    string
 		c       Confirmation
 		want    Progress
+		code    string
 		cleanup Cleanup
 	}{
-		{Confirmation{Reports: true, Started: true}, Accepted, NoCleanup},
-		{Confirmation{Reports: true, Box: screen.Typed, OursInBox: true}, Deferred, ClearOurText},
-		{Confirmation{Reports: true, Box: screen.Typed}, Deferred, NoCleanup},
-		{Confirmation{Reports: true, Box: screen.Empty}, Deferred, NoCleanup},
+		{"OSC rising edge", Confirmation{PreOSCReports: true, PreOSCWorking: false, PostOSCWorking: true}, Accepted, "", NoCleanup},
+		{"turn ledger seq edge", Confirmation{PreTurnSeq: 1, PostTurnSeq: 2, PreOSCReports: true, PreOSCWorking: true}, Accepted, "", NoCleanup},
+		{"frozen OSC working level is never Accepted", Confirmation{PreTurnSeq: 1, PostTurnSeq: 1, PreOSCReports: true, PreOSCWorking: true, PostOSCWorking: true, Box: screen.BoxDraft, OursInBox: true}, Deferred, "not_submitted", ClearOurText},
+		{"frozen OSC working with empty box twice accepts via box_emptied", Confirmation{PreTurnSeq: 1, PostTurnSeq: 1, PreOSCReports: true, PreOSCWorking: true, PostOSCWorking: true, EmptiedTwice: true}, Accepted, "box_emptied", NoCleanup},
+		{"leftover doorbell erased", Confirmation{PreOSCReports: true, Box: screen.BoxDraft, OursInBox: true}, Deferred, "not_submitted", ClearOurText},
+		{"user draft left untouched", Confirmation{PreOSCReports: true, Box: screen.BoxDraft}, Deferred, CodeDraftInBox, NoCleanup},
+		{"OSC reporting empty without edge is unconfirmed", Confirmation{PreOSCReports: true, Box: screen.BoxEmpty}, Deferred, "unconfirmed", NoCleanup},
 		// Without status reports one empty poll may precede the harness drawing the paste.
-		{Confirmation{Reports: false, Box: screen.Empty}, Deferred, NoCleanup},
-		{Confirmation{Reports: false, Box: screen.Empty, EmptiedTwice: true}, Accepted, NoCleanup},
-		{Confirmation{Reports: true, Box: screen.Empty, EmptiedTwice: true}, Deferred, NoCleanup},
-		{Confirmation{Reports: false, Box: screen.Typed, OursInBox: true}, Deferred, ClearOurText},
+		{"statusless single empty poll is unconfirmed", Confirmation{PreOSCReports: false, Box: screen.BoxEmpty}, Deferred, "unconfirmed", NoCleanup},
+		{"statusless emptied twice accepts", Confirmation{PreOSCReports: false, Box: screen.BoxEmpty, EmptiedTwice: true}, Accepted, "box_emptied", NoCleanup},
+		{"OSC reporting idle with emptied twice does not accept", Confirmation{PreOSCReports: true, PreOSCWorking: false, Box: screen.BoxEmpty, EmptiedTwice: true}, Deferred, "unconfirmed", NoCleanup},
+		{"statusless leftover doorbell erased", Confirmation{PreOSCReports: false, Box: screen.BoxDraft, OursInBox: true}, Deferred, "not_submitted", ClearOurText},
 	}
-	for _, c := range cases {
-		o, cl := DecideConfirm(c.c)
-		if o.Progress != c.want || cl != c.cleanup {
-			t.Errorf("%+v: got %s/%v, want %s/%v", c.c, o.Progress, cl, c.want, c.cleanup)
+	for _, tc := range cases {
+		o, cl := DecideConfirm(tc.c)
+		if o.Progress != tc.want || o.Code != tc.code || cl != tc.cleanup {
+			t.Errorf("%s (%+v): got %s/%q/%v, want %s/%q/%v", tc.name, tc.c, o.Progress, o.Code, cl, tc.want, tc.code, tc.cleanup)
 		}
 	}
 }

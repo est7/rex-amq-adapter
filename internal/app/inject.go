@@ -103,9 +103,15 @@ func (e Env) inject(ctx context.Context, r InjectRequest, rec agent) core.Outcom
 		}
 		return rexOutcome(err)
 	}
-	reports := snap.External.ReportsStatus()
 	if o, ok := core.DecideWrite(snap.Activity); !ok {
 		return o
+	}
+	pre := confirmBaseline{
+		oscWorking: snap.External.Present() && snap.External.State == core.StateWorking,
+		oscReports: snap.External.ReportsStatus(),
+	}
+	if snap.Turn != nil {
+		pre.turnSeq = snap.Turn.Seq
 	}
 	unread, err := e.admit(ctx, rec)
 	if err != nil {
@@ -128,11 +134,17 @@ func (e Env) inject(ctx context.Context, r InjectRequest, rec agent) core.Outcom
 	}
 	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), ConfirmBudget)
 	defer cancel()
-	o := e.confirm(cctx, rec, doorbell, reports)
+	o := e.confirm(cctx, rec, doorbell, pre)
 	if o.Progress == core.Accepted {
 		e.markAnnounced(cctx, r.Root, r.Handle, unread)
 	}
 	return o
+}
+
+type confirmBaseline struct {
+	turnSeq    uint64
+	oscWorking bool
+	oscReports bool
 }
 
 // checkBinding confirms the block still runs the adopted agent process.
@@ -237,28 +249,39 @@ func (e Env) erase(ctx context.Context, rec agent) (core.Outcome, bool) {
 	return core.Outcome{}, true
 }
 
-// confirm waits for evidence that the doorbell was submitted, and erases a
-// doorbell left unsubmitted in the box. The pending record is dropped once
-// the doorbell is known to be submitted or erased.
-func (e Env) confirm(ctx context.Context, rec agent, doorbell string, reports bool) core.Outcome {
-	c := core.Confirmation{Reports: reports}
+// confirm waits for causal evidence that the doorbell was submitted, and
+// erases a doorbell left unsubmitted in the box. The pending record is dropped
+// once the doorbell is known to be submitted or erased.
+func (e Env) confirm(ctx context.Context, rec agent, doorbell string, pre confirmBaseline) core.Outcome {
+	c := core.Confirmation{
+		PreTurnSeq:    pre.turnSeq,
+		PreOSCWorking: pre.oscWorking,
+		PreOSCReports: pre.oscReports,
+		PostTurnSeq:   pre.turnSeq,
+	}
+	needScreen := !c.PreOSCReports || c.PreOSCWorking
 	empties := 0
-	for deadline := time.Now().Add(confirmFor); time.Now().Before(deadline) && !c.Started && !c.EmptiedTwice; {
+	for deadline := time.Now().Add(confirmFor); time.Now().Before(deadline) && !c.Confirmed(); {
 		if !sleep(ctx, pollEvery) {
 			break
 		}
-		// Keep status/supervisor polling and the empty-box fallback independent
-		// so a failing status RPC never blocks two-empty-box confirmation for a
-		// statusless agent, and a failing VT capture never hides a working status.
+		// 1. Causal hook turn-ledger edge (lock-free, independent of Rex RPCs).
+		if tr := e.readTurn(rec); tr != nil && tr.Seq > c.PreTurnSeq {
+			c.PostTurnSeq = tr.Seq
+			break
+		}
+		// 2. Causal external status rising edge (independent of VT capture).
 		if snap, err := e.assessActivity(ctx, activityRequest{Agent: &rec, Block: rec.BlockID, Policy: NoScreen}); err == nil {
-			if _, working := snap.Activity.(core.InTurn); working {
-				// Only working counts: an agent at rest may refresh its status
-				// without starting, and no turn completes inside one poll interval.
-				c.Started = true
-				break
+			if snap.External.Present() && snap.External.State == core.StateWorking {
+				c.PostOSCWorking = true
+				if !c.PreOSCWorking {
+					break
+				}
 			}
 		}
-		if !reports {
+		// 3. Two-empty-box fallback when external status is absent or was
+		// already stuck working before the write.
+		if needScreen {
 			if surf, _, err := e.inspectSurface(ctx, e.Rex, rec.Kind, rec.BlockID, ""); err == nil && surf.Box == screen.BoxEmpty {
 				empties++
 			} else {
@@ -267,12 +290,12 @@ func (e Env) confirm(ctx context.Context, rec agent, doorbell string, reports bo
 			c.EmptiedTwice = empties >= 2
 		}
 	}
-	if !c.Started && !c.EmptiedTwice {
+	if !c.Confirmed() {
 		surf, _, err := e.inspectSurface(ctx, e.Rex, rec.Kind, rec.BlockID, doorbell)
 		if err != nil {
 			return rexOutcome(err) // pending stays: the next attempt clears it
 		}
-		c.Box = draftFromBox(surf.Box)
+		c.Box = surf.Box
 		c.OursInBox = surf.OursInBox
 	}
 	o, cleanup := core.DecideConfirm(c)
@@ -284,17 +307,6 @@ func (e Env) confirm(ctx context.Context, rec agent, doorbell string, reports bo
 	// Here the doorbell was submitted, erased, or is not in the box.
 	_ = e.Store.ClearPending(rec.BlockID) // a stale pending only costs one extra screen check
 	return o
-}
-
-func draftFromBox(box screen.BoxState) screen.Draft {
-	switch box {
-	case screen.BoxEmpty:
-		return screen.Empty
-	case screen.BoxDraft:
-		return screen.Typed
-	default:
-		return screen.Unknown
-	}
 }
 
 // markAnnounced records ids as announced, keeping only ids still unread.
