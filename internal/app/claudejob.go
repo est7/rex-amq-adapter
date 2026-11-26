@@ -323,21 +323,21 @@ func onceATurn(event string) bool {
 	return event == EventSessionStart || event == EventPrompt || event == EventStop
 }
 
-// jobStatus is the program status a doorbell for rec reads. The terminal
-// client showing a background job reports none of its own, or a stale one
-// from before its conversation moved to the background, so a job's status is
-// its supervisor's state: working, or at rest. reports is false: an emptied
-// box, not a status, confirms the doorbell (core.DecideConfirm).
-func (e Env) jobStatus(rec agent) (status rex.Status, reports, isJob bool, err error) {
+// jobStatus is the supervisor signal for a Claude Code background job. The
+// terminal client showing a background job reports no OSC 7501 status of its
+// own, or a stale one from before its conversation moved to the background, so
+// a job's status comes from its supervisor state: working or idle.
+func (e Env) jobStatus(rec agent) (sig core.ExternalSignal, isJob bool, err error) {
 	if rec.Kind != core.Claude {
-		return rex.Status{}, false, false, nil
+		return core.ExternalSignal{}, false, nil
 	}
 	job, isJob, err := e.claudeJob(rec.Session())
 	if err != nil || !isJob {
-		return rex.Status{}, false, false, err
+		return core.ExternalSignal{}, false, err
 	}
+	state := core.StateIdle
 	if job.State == "working" {
-		return rex.Status{State: string(core.StateWorking)}, false, true, nil
+		state = core.StateWorking
 	}
-	return rex.Status{State: string(core.StateIdle)}, false, true, nil
+	return core.ExternalSignal{Source: core.SignalSupervisor, State: state}, true, nil
 }

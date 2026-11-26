@@ -26,8 +26,8 @@ func (e Env) health(ctx context.Context, orch agent, s Session, rec agent) error
 		return err
 	}
 	working := false
-	if st, ok, err := e.Rex.ProgramStatus(ctx, rec.BlockID); err == nil && ok {
-		working = core.AgentState(st.State) == core.StateWorking
+	if snap, err := e.assessActivity(ctx, activityRequest{Agent: &rec, Block: rec.BlockID, Policy: NoScreen}); err == nil {
+		_, working = snap.Activity.(core.InTurn)
 	}
 	h := core.Assess(tail, working, e.Now())
 	if h.Hung == nil && !h.Stalled {

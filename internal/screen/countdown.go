@@ -43,8 +43,12 @@ const (
 // anywhere else (the transcript, an earlier dialog, the command or
 // description the dialog asks about) does not count.
 func SelfDenyingCountdown(screen string) bool {
+	return selfDenyingCountdownFromPlain(PlainText(screen))
+}
+
+func selfDenyingCountdownFromPlain(plain string) bool {
 	var lines []string
-	for _, l := range strings.Split(PlainText(screen), "\n") {
+	for _, l := range strings.Split(plain, "\n") {
 		if l = strings.TrimSpace(l); l != "" {
 			lines = append(lines, l)
 		}

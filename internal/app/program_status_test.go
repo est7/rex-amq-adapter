@@ -79,6 +79,17 @@ func passiveCases() []statusCase {
 	return out
 }
 
+// A passive banner with a user draft in the input box: still at prompt with a
+// draft (draft_in_box), never a blocked permission prompt.
+func passiveDraftCase() statusCase {
+	return statusCase{
+		name: "draft in the box under passive Approve plan",
+		kind: core.Agy,
+		st:   approvePlan,
+		vt:   func(t *testing.T) string { return agyFixture(t, "rex-agy-draft") },
+	}
+}
+
 // Prompts that wait on the human, and statuses of other harnesses: each
 // stays blocked.
 func blockedCases() []statusCase {
@@ -86,7 +97,6 @@ func blockedCases() []statusCase {
 	with := func(f func(*rex.Status)) rex.Status { s := approvePlan; f(&s); return s }
 	return []statusCase{
 		{"artifact viewer open", core.Agy, approvePlan, func(*testing.T) string { return agyArtifactViewer }},
-		{"draft in the box", core.Agy, approvePlan, func(t *testing.T) string { return agyFixture(t, "rex-agy-draft") }},
 		{"trust screen", core.Agy, approvePlan, func(*testing.T) string { return agyTrust }},
 		{"tool permission", core.Agy, with(func(s *rex.Status) { s.Msg = "Approve bash: rm -rf" }), empty},
 		{"question", core.Agy, with(func(s *rex.Status) { s.Kind, s.Msg = "question", "Answer question" }), empty},
@@ -99,38 +109,58 @@ func blockedCases() []statusCase {
 
 func TestStatusFixturesShowTheBoxTheyClaim(t *testing.T) {
 	for _, c := range passiveCases() {
-		if got := screen.Check("agy", c.vt(t)); got != screen.Empty {
+		if got := screen.Inspect("agy", c.vt(t)).Box; got != screen.BoxEmpty {
 			t.Errorf("%s: box %v, want empty", c.name, got)
 		}
 	}
-	if got := screen.Check("agy", agyArtifactViewer); got != screen.Unknown {
-		t.Errorf("artifact viewer: box %v, want unknown", got)
+	if got := screen.Inspect("agy", passiveDraftCase().vt(t)).Box; got != screen.BoxDraft {
+		t.Errorf("draft fixture: box %v, want draft", got)
 	}
-	if _, trust := screen.TrustScreen("agy", agyTrust); !trust {
+	if got := screen.Inspect("agy", agyArtifactViewer).Box; got != screen.BoxMissing {
+		t.Errorf("artifact viewer: box %v, want missing", got)
+	}
+	if got := screen.Inspect("agy", agyTrust).TrustPhrase; got == "" {
 		t.Error("trust fixture: no trust screen")
 	}
 }
 
-func TestOnlyAgysPassiveApprovePlanIsIdle(t *testing.T) {
+func TestOnlyAgysPassiveApprovePlanIsAtPrompt(t *testing.T) {
+	assess := func(kind core.Kind, st rex.Status, vt string) core.AgentActivity {
+		sig := core.ExternalSignal{
+			Source: core.SignalRexStatus, State: core.AgentState(st.State),
+			Kind: st.Kind, App: st.App, EffectiveApp: st.EffectiveApp, Msg: st.Msg,
+		}
+		profile := core.ProfileForSignal(kind, sig)
+		surf := screen.Inspect(string(profile.Kind), vt)
+		return core.AssessActivity(profile, core.ActivityEvidence{External: sig, Surface: &surf})
+	}
 	for _, c := range passiveCases() {
-		got := normalizeProgramStatus(c.kind, c.st, c.vt(t))
-		if got.State != "idle" || got.Kind != "" || got.Msg != "" || got.App != "antigravity" {
-			t.Errorf("%s: %+v, want idle", c.name, got)
+		got := assess(c.kind, c.st, c.vt(t))
+		if ap, ok := got.(core.AtPrompt); !ok || ap.Box != screen.BoxEmpty {
+			t.Errorf("%s: %#v, want AtPrompt(empty)", c.name, got)
 		}
 	}
+	draft := passiveDraftCase()
+	wantDraft := core.AtPrompt{Box: screen.BoxDraft, Source: core.SignalRexStatus, RawState: core.StateIdle}
+	if got := assess(draft.kind, draft.st, draft.vt(t)); got != wantDraft {
+		t.Errorf("passive banner + draft: %#v, want AtPrompt(draft)", got)
+	}
 	// agy names itself in the status before adoption (kind "").
+	wantEmpty := core.AtPrompt{Box: screen.BoxEmpty, Source: core.SignalRexStatus, RawState: core.StateIdle}
 	for _, st := range []rex.Status{approvePlan, {State: "blocked", Kind: "permission", App: "antigravity", Msg: "Approve plan"}, {State: "blocked", Kind: "permission", EffectiveApp: "antigravity", Msg: "Approve plan"}} {
-		if got := normalizeProgramStatus("", st, agyFixture(t, "rex-agy-empty")); got.State != "idle" {
-			t.Errorf("unadopted %+v: %+v, want idle", st, got)
+		if got := assess("", st, agyFixture(t, "rex-agy-empty")); got != wantEmpty {
+			t.Errorf("unadopted %+v: %#v, want AtPrompt(empty)", st, got)
 		}
 	}
 	for _, c := range blockedCases() {
-		if got := normalizeProgramStatus(c.kind, c.st, c.vt(t)); got != c.st {
-			t.Errorf("%s: %+v, want unchanged", c.name, got)
+		got := assess(c.kind, c.st, c.vt(t))
+		if _, ok := got.(core.AwaitingUser); !ok {
+			t.Errorf("%s: %#v, want AwaitingUser", c.name, got)
 		}
 	}
-	if got := normalizeProgramStatus("", rex.Status{State: "blocked", Kind: "permission", Msg: "Approve plan"}, agyFixture(t, "rex-agy-empty")); got.State != "blocked" {
-		t.Errorf("unadopted, not agy: %+v", got)
+	gotOther := assess("", rex.Status{State: "blocked", Kind: "permission", Msg: "Approve plan"}, agyFixture(t, "rex-agy-empty"))
+	if _, ok := gotOther.(core.AwaitingUser); !ok {
+		t.Errorf("unadopted, not agy: %#v, want AwaitingUser", gotOther)
 	}
 }
 
@@ -153,6 +183,13 @@ func TestADoorbellReachesAgyUnderAPassiveApprovePlan(t *testing.T) {
 		if o := inject(e); o.Progress != core.Accepted || len(term.writes) != 1 {
 			t.Errorf("%s: %+v, writes %d", c.name, o, len(term.writes))
 		}
+	}
+	// Consistency fix (a): a user draft under agy's passive Approve plan defers
+	// with draft_in_box rather than agent_blocked.
+	draft := passiveDraftCase()
+	e, term := agyEnv(t, draft.kind, draft.st, draft.vt(t), "m1")
+	if o := inject(e); o.Progress != core.Deferred || o.Code != core.CodeDraftInBox || len(term.writes) != 0 {
+		t.Errorf("%s: %+v, writes %d; want deferred draft_in_box", draft.name, o, len(term.writes))
 	}
 	for _, c := range blockedCases() {
 		e, term := agyEnv(t, c.kind, c.st, c.vt(t), "m1")
@@ -179,7 +216,7 @@ func TestAPassiveApprovePlanIsNoBlockedEpisode(t *testing.T) {
 		}
 		return blockedLines(t, e), *dt, len(inboxOf(t, e, "orch-01"))
 	}
-	for _, c := range passiveCases() {
+	for _, c := range append(passiveCases(), passiveDraftCase()) {
 		if lines, desktop, n := run(c); len(lines) != 0 || len(desktop) != 0 || n != 0 {
 			t.Errorf("%s: blocked.log %v, desktop %v, orchestrator notices %d", c.name, lines, desktop, n)
 		}
@@ -200,7 +237,7 @@ func TestObservedActivityOfAPassiveApprovePlanIsIdle(t *testing.T) {
 		}
 		return a.State, term.captures
 	}
-	for _, c := range passiveCases() {
+	for _, c := range append(passiveCases(), passiveDraftCase()) {
 		if st, _ := look(c); st != core.StateIdle {
 			t.Errorf("%s: %s, want idle", c.name, st)
 		}
@@ -224,6 +261,13 @@ func TestAPassiveApprovePlanIsAtRestForClose(t *testing.T) {
 		if why, err := e.unrest(context.Background(), term, recordNamed(t, e, "codex")); err != nil || why != "" {
 			t.Errorf("%s: %q %v, want at rest", c.name, why, err)
 		}
+	}
+	// A user draft observed under agy's passive Approve plan must still hold
+	// close/retire so the unsent draft is never silently discarded.
+	draft := passiveDraftCase()
+	eDraft, termDraft := agyEnv(t, draft.kind, draft.st, draft.vt(t))
+	if why, err := eDraft.unrest(context.Background(), termDraft, recordNamed(t, eDraft, "codex")); err != nil || !strings.Contains(why, "draft") {
+		t.Errorf("%s: %q %v, want draft refusal", draft.name, why, err)
 	}
 	for _, c := range blockedCases() {
 		e, term := agyEnv(t, c.kind, c.st, c.vt(t))
@@ -251,9 +295,10 @@ func TestAStartingAgyUnderAPassiveApprovePlanIsNotBlocked(t *testing.T) {
 		}
 		return o
 	}
-	for _, c := range passiveCases() {
-		if o := observe(c.st, c.vt(t)); o.State != core.StateIdle || o.BlockedKind != "" {
-			t.Errorf("%s: %+v, want idle", c.name, o)
+	for _, c := range append(passiveCases(), passiveDraftCase()) {
+		o := observe(c.st, c.vt(t))
+		if _, ok := o.Activity.(core.AtPrompt); !ok {
+			t.Errorf("%s: %#v, want AtPrompt", c.name, o.Activity)
 		}
 	}
 	for _, c := range blockedCases() {
@@ -261,16 +306,17 @@ func TestAStartingAgyUnderAPassiveApprovePlanIsNotBlocked(t *testing.T) {
 		if c.kind != core.Agy {
 			st.App, st.EffectiveApp = "", "" // another harness does not name itself antigravity
 		}
-		if o := observe(st, c.vt(t)); o.State != core.StateBlocked {
-			t.Errorf("%s: %+v, want blocked", c.name, o)
+		o := observe(st, c.vt(t))
+		if _, ok := o.Activity.(core.AwaitingUser); !ok {
+			t.Errorf("%s: %#v, want AwaitingUser", c.name, o.Activity)
 		}
 	}
 }
 
-// The watchdog's stuck-mail look sees the passive banner as idle, so its
-// recovery is not skipped as the blocked look's to report.
+// The watchdog's stuck-mail look sees the passive banner as AtPrompt (Empty or
+// Draft), so its recovery/draft reporting is not skipped as a blocked dialog.
 func TestTheWatchdogLooksPastAPassiveApprovePlan(t *testing.T) {
-	look := func(c statusCase) core.AgentState {
+	look := func(c statusCase) core.AgentActivity {
 		e, _ := agyEnv(t, c.kind, c.st, c.vt(t))
 		history := []core.Attempt{
 			{At: e.Now().Add(-2 * core.StuckFor), Outcome: core.Outcome{Progress: core.Deferred, Code: "agent_blocked"}},
@@ -280,16 +326,90 @@ func TestTheWatchdogLooksPastAPassiveApprovePlan(t *testing.T) {
 		if err != nil || !stuck {
 			t.Fatalf("%s: stuck %v, %v", c.name, stuck, err)
 		}
-		return l.status
+		return l.activity
 	}
 	for _, c := range passiveCases() {
-		if st := look(c); st != core.StateIdle {
-			t.Errorf("%s: %s, want idle", c.name, st)
+		if ap, ok := look(c).(core.AtPrompt); !ok || ap.Box != screen.BoxEmpty {
+			t.Errorf("%s: %#v, want AtPrompt(empty)", c.name, look(c))
 		}
 	}
+	draft := passiveDraftCase()
+	if ap, ok := look(draft).(core.AtPrompt); !ok || ap.Box != screen.BoxDraft {
+		t.Errorf("%s: %#v, want AtPrompt(draft)", draft.name, look(draft))
+	}
 	for _, c := range blockedCases() {
-		if st := look(c); st != core.StateBlocked {
-			t.Errorf("%s: %s, want blocked", c.name, st)
+		act := look(c)
+		if _, ok := act.(core.AwaitingUser); !ok {
+			t.Errorf("%s: %#v, want AwaitingUser", c.name, act)
 		}
+	}
+}
+
+// Consistency fix (b): health() and watchdog recover() go through the unified
+// activity boundary and honor Claude Code's background-job supervisor status.
+func TestHealthAndWatchdogRecoverHonorClaudeJobSupervisor(t *testing.T) {
+	t.Run("health sees working Claude background job when terminal reports no OSC status", func(t *testing.T) {
+		e, term, orch, s, now, _ := healthWorld(t)
+		e.ClaudeDir = t.TempDir()
+		rec := claude04(t, e)
+		// Terminal client shows no OSC status, while Claude's supervisor says working.
+		term.states = map[string]rex.Status{"block:c": {}}
+		writeJSON(t, filepath.Join(e.ClaudeDir, "daemon", "roster.json"), map[string]any{
+			"workers": map[string]any{"job1": map[string]string{"sessionId": rec.Session()}},
+		})
+		writeJSON(t, filepath.Join(e.ClaudeDir, "jobs", "job1", "state.json"), map[string]string{"name": "bg", "state": "working"})
+
+		p := filepath.Join(e.TranscriptHome, ".claude/projects/-Users-x--app/sid-c4.jsonl")
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(strings.Replace(claudeOK, "01:58:00", "01:30:00", 1)+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		old := now.Add(-20 * time.Minute)
+		if err := os.Chtimes(p, old, old); err != nil {
+			t.Fatal(err)
+		}
+		if err := e.health(context.Background(), orch, s, rec); err != nil {
+			t.Fatal(err)
+		}
+		inbox := inboxOf(t, e, "orch-01")
+		if len(inbox) != 1 || !strings.Contains(mailBody(t, e, "orch-01", inbox[0]), core.NoticeStalled) {
+			t.Fatalf("expected stalled notice for working Claude background job, got inbox %v", inbox)
+		}
+	})
+
+	t.Run("watchdog recover aborts when Claude background job supervisor reports working", func(t *testing.T) {
+		w := newJobWorld(t)
+		w.jobHook(t, EventSessionStart)
+		rec, ok, err := w.e.liveRecordOf(core.Claude, jobSess)
+		if err != nil || !ok {
+			t.Fatalf("live job record: %v %v", ok, err)
+		}
+		writeJSON(t, filepath.Join(w.e.ClaudeDir, "jobs", "a1b2c3d4", "state.json"), map[string]string{"name": jobName, "state": "working"})
+		w.term.state = "" // terminal client reports no OSC status
+		w.term.rows = map[string]int{rec.BlockID: 3}
+		w.term.owner = map[string]string{rec.BlockID: "client:app"}
+		orch := w.tuiRecord(t)
+		s, err := w.e.FindSession(context.Background(), rec.BlockID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ep := core.Episode{ID: "ep-1", Handle: rec.Handle, Block: rec.BlockID, PID: rec.pid(), Session: s.id}
+		v, err := w.e.recover(context.Background(), orch, rec, &ep, s, look{window: w.term.windows[rec.BlockID]})
+		if err != nil || v != notReady || len(w.term.detaches) != 0 {
+			t.Fatalf("recover on working Claude job: v=%v err=%v detaches=%v, want abort with 0 detaches", v, err, w.term.detaches)
+		}
+	})
+}
+
+// A statusless agent's two-empty-box confirmation stays independent of
+// post-write ProgramStatus errors: a status timeout must not block box_emptied.
+func TestStatuslessConfirmSurvivesPostWriteStatusErrors(t *testing.T) {
+	f := &fakeTerm{state: "", submit: true, statusErr: true}
+	e := fixture(t, f, "m1")
+	o := inject(e)
+	if o.Progress != core.Accepted || o.Code != "box_emptied" {
+		t.Fatalf("statusless agent with post-write statusErr: got %+v, want accepted/box_emptied", o)
 	}
 }

@@ -41,7 +41,10 @@ func TrustScreen(kind, screen string) (string, bool) {
 	if Check(kind, screen) == Empty {
 		return "", false
 	}
-	plain := PlainText(screen)
+	return trustPhraseFromPlain(PlainText(screen))
+}
+
+func trustPhraseFromPlain(plain string) (string, bool) {
 	for _, p := range trustPhrases {
 		if strings.Contains(plain, p) {
 			return p, true
