@@ -127,6 +127,13 @@ func (e Env) inject(ctx context.Context, r InjectRequest, rec agent) core.Outcom
 	if err := e.Store.SetPending(rec.BlockID, doorbell); err != nil {
 		return deferredErr("state_unwritable", err)
 	}
+	// Re-check the hook turn ledger at the write boundary after admission and
+	// pending-state sync so a competing prompt submitted meanwhile aborts
+	// before typing instead of spoofing a post-write turn edge.
+	if cur := e.readTurn(rec); cur != nil && (cur.Seq > pre.turnSeq || ((snap.Turn == nil || snap.Turn.Phase != core.TurnWorking) && cur.Phase == core.TurnWorking)) {
+		_ = e.Store.ClearPending(rec.BlockID)
+		return core.Outcome{Progress: core.Deferred, Code: core.CodeAgentWorking, Note: "the agent started working before the doorbell was written"}
+	}
 	// One write, bracketed: Codex treats a burst of typed text followed by
 	// Enter as a paste and swallows the Enter.
 	if err := e.Rex.Write(ctx, rec.BlockID, bracketedPasteStart+doorbell+bracketedPasteEnd+"\r"); err != nil {
@@ -265,10 +272,19 @@ func (e Env) confirm(ctx context.Context, rec agent, doorbell string, pre confir
 		if !sleep(ctx, pollEvery) {
 			break
 		}
-		// 1. Causal hook turn-ledger edge (lock-free, independent of Rex RPCs).
+		// 1. Causal hook turn-ledger edge (lock-free, independent of Rex RPCs),
+		// fenced against a concurrent competing turn whose write left our
+		// doorbell unsubmitted in the input box.
 		if tr := e.readTurn(rec); tr != nil && tr.Seq > c.PreTurnSeq {
-			c.PostTurnSeq = tr.Seq
-			break
+			if surf, _, err := e.inspectSurface(ctx, e.Rex, rec.Kind, rec.BlockID, doorbell); err == nil && surf.Box == screen.BoxDraft && surf.OursInBox {
+				c.Box = surf.Box
+				c.OursInBox = true
+			} else {
+				c.PostTurnSeq = tr.Seq
+				c.Box = screen.BoxMissing
+				c.OursInBox = false
+				break
+			}
 		}
 		// 2. Causal external status rising edge (independent of VT capture).
 		if snap, err := e.assessActivity(ctx, activityRequest{Agent: &rec, Block: rec.BlockID, Policy: NoScreen}); err == nil {

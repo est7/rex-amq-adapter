@@ -90,6 +90,10 @@ func (e Env) assessActivity(ctx context.Context, req activityRequest) (activityS
 	}
 
 	profile := core.ProfileForSignal(kind, sig)
+	var turn *core.TurnLedger
+	if req.Agent != nil {
+		turn = e.readTurn(*req.Agent)
+	}
 	var (
 		surf *screen.Surface
 		vt   string
@@ -104,7 +108,8 @@ func (e Env) assessActivity(ctx context.Context, req activityRequest) (activityS
 		s := screen.Inspect(string(profile.Kind), vt, req.Ours)
 		surf = &s
 	case LazyScreen:
-		if profile.IsPassiveBanner(sig) {
+		needCapture := profile.IsPassiveBanner(sig) || (turn != nil && turn.Phase == core.TurnIdle && !sig.State.AtRest())
+		if needCapture {
 			if captured, err := term.CaptureVT(ctx, block); err == nil {
 				vt = captured
 				s := screen.Inspect(string(profile.Kind), vt, req.Ours)
@@ -116,10 +121,6 @@ func (e Env) assessActivity(ctx context.Context, req activityRequest) (activityS
 	now := time.Now()
 	if e.Now != nil {
 		now = e.Now()
-	}
-	var turn *core.TurnLedger
-	if req.Agent != nil {
-		turn = e.readTurn(*req.Agent)
 	}
 	act := core.AssessActivity(profile, core.ActivityEvidence{
 		External: sig,

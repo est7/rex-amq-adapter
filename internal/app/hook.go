@@ -299,9 +299,11 @@ func (e Env) announce(ctx context.Context, kind core.Kind, loc Location, in Hook
 		if ask := e.askTask(ctx, kind, hook, rec, in.SessionID); identity == nil {
 			r.Notice = joinNotices(r.Notice, ask)
 		}
-		if (hook == EventStop || hook == EventSettle) && r.Notice == "" {
-			e.recordTurn(rec, core.TurnIdle, in, false)
-		}
+	}
+	// On Stop/Settle, record idle whenever no continuation will be returned,
+	// including when mail announcement errors (runHook replies {} on error).
+	if (hook == EventStop || hook == EventSettle) && (err != nil || r.Notice == "") {
+		e.recordTurn(rec, core.TurnIdle, in, false)
 	}
 	return r, err
 }

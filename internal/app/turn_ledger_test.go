@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,13 +24,16 @@ import (
 // is visible and empty at the prompt.
 type frozenAgyTerm struct {
 	*fakeTerm
-	block   string
-	st      rex.Status
-	empty   string // VT of empty agy > box
-	boxVal  string // text currently in the agy > box
-	submit  bool   // when true, Write submits and leaves box empty; when false, doorbell stays in box
-	onWrite func(block, data string)
-	fmu     sync.Mutex
+	block        string
+	st           rex.Status
+	empty        string // VT of empty agy > box
+	boxVal       string // text currently in the agy > box
+	submit       bool   // when true, Write submits and leaves box empty; when false, doorbell stays in box
+	captureErr   error
+	captureCalls int
+	onCapture    func()
+	onWrite      func(block, data string)
+	fmu          sync.Mutex
 }
 
 func (a *frozenAgyTerm) ProgramStatus(ctx context.Context, block string) (rex.Status, bool, error) {
@@ -46,9 +50,18 @@ func (a *frozenAgyTerm) CaptureVT(ctx context.Context, block string) (string, er
 		return a.fakeTerm.CaptureVT(ctx, block)
 	}
 	a.fmu.Lock()
+	a.captureCalls++
+	cerr := a.captureErr
 	val := a.boxVal
 	empty := a.empty
+	cb := a.onCapture
 	a.fmu.Unlock()
+	if cb != nil {
+		cb()
+	}
+	if cerr != nil {
+		return "", cerr
+	}
 	if val == "" {
 		return empty, nil
 	}
@@ -234,7 +247,7 @@ func TestAgyTurnLedgerFixesFrozenOSCDeadlock(t *testing.T) {
 		}
 	})
 
-	t.Run("close and retire unrest allows shutdown after Stop with frozen OSC working", func(t *testing.T) {
+	t.Run("close and retire unrest allows empty box and refuses draft or capture error under frozen OSC working", func(t *testing.T) {
 		e, ft, rec, _, now := frozenAgyWorld(t, true)
 		if _, err := e.Hook(context.Background(), EventPreInvocation, core.Agy, loc, HookInput{ConversationID: "conv-42"}); err != nil {
 			t.Fatal(err)
@@ -243,8 +256,39 @@ func TestAgyTurnLedgerFixesFrozenOSCDeadlock(t *testing.T) {
 		if _, err := e.Hook(context.Background(), EventStop, core.Agy, loc, HookInput{ConversationID: "conv-42", TerminationReason: "NO_TOOL_CALL"}); err != nil {
 			t.Fatal(err)
 		}
+		// Empty prompt box allows shutdown.
 		if why, err := e.unrest(context.Background(), ft, rec); err != nil || why != "" {
-			t.Fatalf("unrest after Stop with frozen working OSC: why=%q err=%v, want at rest", why, err)
+			t.Fatalf("unrest with empty box after Stop + frozen working OSC: why=%q err=%v, want at rest", why, err)
+		}
+		// Unsent user draft must refuse shutdown even when TurnIdle overrides frozen working OSC.
+		ft.fmu.Lock()
+		ft.boxVal = "half-written prompt"
+		ft.fmu.Unlock()
+		if why, err := e.unrest(context.Background(), ft, rec); err != nil || !strings.Contains(why, "draft") {
+			t.Fatalf("unrest with user draft under frozen working OSC: why=%q err=%v, want draft refusal", why, err)
+		}
+		// Failed VT capture under frozen working OSC must refuse shutdown.
+		ft.fmu.Lock()
+		ft.boxVal = ""
+		ft.captureErr = errors.New("vt capture unavailable")
+		ft.fmu.Unlock()
+		if why, err := e.unrest(context.Background(), ft, rec); err != nil || !strings.Contains(why, "empty input box") {
+			t.Fatalf("unrest with capture error under frozen working OSC: why=%q err=%v, want refusal", why, err)
+		}
+		// Ordinary idle OSC preserves the zero-capture LazyScreen path.
+		ft.fmu.Lock()
+		ft.captureErr = nil
+		ft.captureCalls = 0
+		ft.st.State = "idle"
+		ft.fmu.Unlock()
+		if why, err := e.unrest(context.Background(), ft, rec); err != nil || why != "" {
+			t.Fatalf("unrest with ordinary idle OSC: why=%q err=%v, want at rest", why, err)
+		}
+		ft.fmu.Lock()
+		calls := ft.captureCalls
+		ft.fmu.Unlock()
+		if calls != 0 {
+			t.Fatalf("ordinary idle OSC captured VT %d times, want 0", calls)
 		}
 	})
 
@@ -468,6 +512,114 @@ func TestTurnLedgerHookFiltersContinuingAndIncarnation(t *testing.T) {
 		}
 		if tr, ok, _ := e.Store.Turn("pi-07"); !ok || tr.Phase != core.TurnIdle || tr.Seq != 1 {
 			t.Fatalf("Pi aborted settle: %+v", tr)
+		}
+	})
+
+	t.Run("competing turn opened before or during Write never false-accepts unsubmitted doorbell", func(t *testing.T) {
+		// Case 1: Competing prompt opens after assessActivity and before Rex.Write ->
+		// write-boundary check aborts before typing a single byte.
+		e, ft, _, _, now := frozenAgyWorld(t, false)
+		if _, err := e.Hook(context.Background(), EventPreInvocation, core.Agy, loc, HookInput{ConversationID: "conv-42"}); err != nil {
+			t.Fatal(err)
+		}
+		*now = now.Add(2 * time.Second)
+		if _, err := e.Hook(context.Background(), EventStop, core.Agy, loc, HookInput{ConversationID: "conv-42", TerminationReason: "NO_TOOL_CALL"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := amq.Send(context.Background(), e.AMQ, e.Paths.Root(), "orch-01", "agy-42", "task", "ping"); err != nil {
+			t.Fatal(err)
+		}
+		fired := false
+		ft.onCapture = func() {
+			if fired {
+				return
+			}
+			fired = true
+			*now = now.Add(time.Second)
+			_, _ = e.Hook(context.Background(), EventPreInvocation, core.Agy, loc, HookInput{ConversationID: "conv-42"})
+		}
+		o := e.Inject(context.Background(), InjectRequest{Handle: "agy-42", Root: e.Paths.Root()})
+		if o.Progress != core.Deferred || o.Code != core.CodeAgentWorking {
+			t.Fatalf("pre-write competing turn: got %+v, want deferred/agent_working", o)
+		}
+		if len(ft.writes) != 0 {
+			t.Fatalf("pre-write competing turn still wrote %d times", len(ft.writes))
+		}
+		if pending, ok, err := e.Store.Pending("block:agy"); err != nil || ok {
+			t.Fatalf("aborted write left pending=%q ok=%v err=%v", pending, ok, err)
+		}
+
+		// Case 2: Competing turn increments Seq concurrently with Rex.Write while
+		// the doorbell stays unsubmitted in the box -> confirm must NOT accept.
+		e2, ft2, _, _, now2 := frozenAgyWorld(t, false)
+		if _, err := e2.Hook(context.Background(), EventPreInvocation, core.Agy, loc, HookInput{ConversationID: "conv-42"}); err != nil {
+			t.Fatal(err)
+		}
+		*now2 = now2.Add(2 * time.Second)
+		if _, err := e2.Hook(context.Background(), EventStop, core.Agy, loc, HookInput{ConversationID: "conv-42", TerminationReason: "NO_TOOL_CALL"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := amq.Send(context.Background(), e2.AMQ, e2.Paths.Root(), "orch-01", "agy-42", "task", "ping"); err != nil {
+			t.Fatal(err)
+		}
+		ft2.onWrite = func(_, _ string) {
+			*now2 = now2.Add(time.Second)
+			_, _ = e2.Hook(context.Background(), EventPreInvocation, core.Agy, loc, HookInput{ConversationID: "conv-42"})
+		}
+		o2 := e2.Inject(context.Background(), InjectRequest{Handle: "agy-42", Root: e2.Paths.Root()})
+		if o2.Progress != core.Deferred || o2.Code != "not_submitted" {
+			t.Fatalf("concurrent competing turn with unsubmitted doorbell: got %+v, want deferred/not_submitted", o2)
+		}
+		if strings.Join(ft2.keys, ",") != "ctrl+u" || ft2.boxVal != "" {
+			t.Fatalf("leftover doorbell not cleared: keys=%v boxVal=%q", ft2.keys, ft2.boxVal)
+		}
+		if pending, ok, err := e2.Store.Pending("block:agy"); err != nil || ok {
+			t.Fatalf("cleared doorbell left pending=%q ok=%v err=%v", pending, ok, err)
+		}
+		if hist, err := e2.Store.InjectHistory("agy-42"); err != nil || len(hist) == 0 || hist[len(hist)-1].Progress != core.Deferred || hist[len(hist)-1].Code != "not_submitted" {
+			t.Fatalf("inject history did not record deferred/not_submitted: %+v err=%v", hist, err)
+		}
+	})
+
+	t.Run("Stop that fails mail announcement still records idle so restored I/O is not deadlocked", func(t *testing.T) {
+		e, ft, rec, _, now := frozenAgyWorld(t, true)
+		if _, err := e.Hook(context.Background(), EventPreInvocation, core.Agy, loc, HookInput{ConversationID: "conv-42"}); err != nil {
+			t.Fatal(err)
+		}
+		// Break inbox/new so announceMail fails os.ReadDir while Stop fires.
+		inboxNew := amq.Inbox(e.Paths.Root(), "agy-42")
+		if err := os.RemoveAll(inboxNew); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(inboxNew, []byte("not-a-dir"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		*now = now.Add(2 * time.Second)
+		if _, err := e.Hook(context.Background(), EventStop, core.Agy, loc, HookInput{ConversationID: "conv-42", TerminationReason: "NO_TOOL_CALL"}); err == nil {
+			t.Fatal("expected Stop announcement error on broken inbox/new")
+		}
+		if tr, ok, err := e.Store.Turn("agy-42"); err != nil || !ok || tr.Phase != core.TurnIdle {
+			t.Fatalf("failed Stop announcement left ledger non-idle: %+v ok=%v err=%v", tr, ok, err)
+		}
+		// Restore inbox/new while OSC remains frozen working: unrest and Inject recover cleanly.
+		if err := os.Remove(inboxNew); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(inboxNew, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if why, err := e.unrest(context.Background(), ft, rec); err != nil || why != "" {
+			t.Fatalf("unrest after restored I/O with frozen working OSC: why=%q err=%v, want at rest", why, err)
+		}
+		if err := amq.Send(context.Background(), e.AMQ, e.Paths.Root(), "orch-01", "agy-42", "task", "ping"); err != nil {
+			t.Fatal(err)
+		}
+		ft.onWrite = func(_, _ string) {
+			*now = now.Add(time.Second)
+			_, _ = e.Hook(context.Background(), EventPreInvocation, core.Agy, loc, HookInput{ConversationID: "conv-42"})
+		}
+		if o := e.Inject(context.Background(), InjectRequest{Handle: "agy-42", Root: e.Paths.Root()}); o.Progress != core.Accepted {
+			t.Fatalf("inject after failed-Stop recovery: got %+v, want accepted", o)
 		}
 	})
 }

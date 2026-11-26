@@ -169,7 +169,11 @@ type Confirmation struct {
 // was submitted: a new turn opened in the hook ledger, external status rose
 // from non-working to working, or (when external status is absent or was
 // already stuck working before the write) two consecutive polls saw an empty box.
+// An observed still-pending doorbell in the input box disqualifies confirmation.
 func (c Confirmation) Confirmed() bool {
+	if c.Box == screen.BoxDraft && c.OursInBox {
+		return false
+	}
 	return c.PostTurnSeq > c.PreTurnSeq ||
 		(!c.PreOSCWorking && c.PostOSCWorking) ||
 		((!c.PreOSCReports || c.PreOSCWorking) && c.EmptiedTwice)
@@ -193,6 +197,8 @@ const (
 // a failure would strand the mail. A repeated doorbell costs one empty drain.
 func DecideConfirm(c Confirmation) (Outcome, Cleanup) {
 	switch {
+	case c.Box == screen.BoxDraft && c.OursInBox:
+		return Outcome{Progress: Deferred, Code: "not_submitted", Note: "the doorbell stayed in the input box; cleared for a retry"}, ClearOurText
 	case c.PostTurnSeq > c.PreTurnSeq:
 		return Outcome{Progress: Accepted}, NoCleanup
 	case !c.PreOSCWorking && c.PostOSCWorking:
@@ -206,8 +212,6 @@ func DecideConfirm(c Confirmation) (Outcome, Cleanup) {
 			note = "submitted; input box emptied while external status stayed working"
 		}
 		return Outcome{Progress: Accepted, Code: "box_emptied", Note: note}, NoCleanup
-	case c.Box == screen.BoxDraft && c.OursInBox:
-		return Outcome{Progress: Deferred, Code: "not_submitted", Note: "the doorbell stayed in the input box; cleared for a retry"}, ClearOurText
 	case c.Box == screen.BoxDraft:
 		return Outcome{Progress: Deferred, Code: CodeDraftInBox, Note: "someone typed into the box during delivery; left untouched"}, NoCleanup
 	}

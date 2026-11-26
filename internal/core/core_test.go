@@ -114,6 +114,7 @@ func TestDecideConfirm(t *testing.T) {
 	}{
 		{"OSC rising edge", Confirmation{PreOSCReports: true, PreOSCWorking: false, PostOSCWorking: true}, Accepted, "", NoCleanup},
 		{"turn ledger seq edge", Confirmation{PreTurnSeq: 1, PostTurnSeq: 2, PreOSCReports: true, PreOSCWorking: true}, Accepted, "", NoCleanup},
+		{"competing turn seq edge with our doorbell still in box is never Accepted", Confirmation{PreTurnSeq: 1, PostTurnSeq: 2, PreOSCReports: true, PreOSCWorking: true, Box: screen.BoxDraft, OursInBox: true}, Deferred, "not_submitted", ClearOurText},
 		{"frozen OSC working level is never Accepted", Confirmation{PreTurnSeq: 1, PostTurnSeq: 1, PreOSCReports: true, PreOSCWorking: true, PostOSCWorking: true, Box: screen.BoxDraft, OursInBox: true}, Deferred, "not_submitted", ClearOurText},
 		{"frozen OSC working with empty box twice accepts via box_emptied", Confirmation{PreTurnSeq: 1, PostTurnSeq: 1, PreOSCReports: true, PreOSCWorking: true, PostOSCWorking: true, EmptiedTwice: true}, Accepted, "box_emptied", NoCleanup},
 		{"leftover doorbell erased", Confirmation{PreOSCReports: true, Box: screen.BoxDraft, OursInBox: true}, Deferred, "not_submitted", ClearOurText},
