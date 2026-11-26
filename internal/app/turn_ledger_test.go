@@ -833,13 +833,38 @@ func TestTurnLedgerHookFiltersContinuingAndIncarnation(t *testing.T) {
 		if after, ok, err := e.Store.Turn("agy-42"); err != nil || !ok || after.Phase != core.TurnWorking || after.Seq != 3 {
 			t.Fatalf("interleaved Esc PaneTitle overwrote newer turn: %+v ok=%v err=%v", after, ok, err)
 		}
-		// Even a delayed PaneTitle whose captured observedAt predates Turn 3
-		// refuses to overwrite Turn 3.
-		eDelayed := e
-		eDelayed.Now = func() time.Time { return escObservedAt }
-		_ = eDelayed.PaneTitle(loc, core.Agy, PaneTitleInput{Cwd: "/w/proj", AgentState: "idle", ConversationID: "conv-42"})
-		if after, ok, err := e.Store.Turn("agy-42"); err != nil || !ok || after.Phase != core.TurnWorking || after.Seq != 3 {
-			t.Fatalf("delayed PaneTitle with stale observedAt overwrote newer turn: %+v ok=%v err=%v", after, ok, err)
+		// Delay-before-heal regression with a moving clock: PaneTitle enters
+		// before Turn 4 starts, pauses in ancestry lookup while the next
+		// PreInvocation (invocationNum=0) opens Working/Seq 4, then resumes.
+		// Because observedAt was captured at PaneTitle ingress before
+		// identity/ancestry I/O, Turn 4 must stay Working/Seq 4.
+		var clockMu sync.Mutex
+		tick := *now
+		movingNow := func() time.Time {
+			clockMu.Lock()
+			defer clockMu.Unlock()
+			tick = tick.Add(10 * time.Millisecond)
+			return tick
+		}
+		eRace := e
+		eRace.Now = movingNow
+		eHook := eRace
+		eHook.Ancestors = func() ([]proc, error) { return []proc{{os.Getpid(), "agy"}}, nil }
+		interleaved := false
+		eRace.Ancestors = func() ([]proc, error) {
+			if !interleaved {
+				interleaved = true
+				if _, err := eHook.Hook(context.Background(), EventPreInvocation, core.Agy, loc, HookInput{ConversationID: "conv-42", InvocationNum: &zero}); err != nil {
+					t.Errorf("interleaved PreInvocation: %v", err)
+				}
+			}
+			return []proc{{os.Getpid(), "agy"}}, nil
+		}
+		if got := eRace.PaneTitle(loc, core.Agy, PaneTitleInput{Cwd: "/w/proj", AgentState: "idle", ConversationID: "conv-42"}); got != "agy-42" {
+			t.Fatalf("interleaved PaneTitle returned %q, want agy-42", got)
+		}
+		if after, ok, err := e.Store.Turn("agy-42"); err != nil || !ok || after.Phase != core.TurnWorking || after.Seq != 4 {
+			t.Fatalf("PaneTitle delayed in ancestry lookup overwrote newer turn: %+v ok=%v err=%v", after, ok, err)
 		}
 	})
 }

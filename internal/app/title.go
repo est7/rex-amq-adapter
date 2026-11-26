@@ -146,6 +146,10 @@ type PaneTitleInput struct {
 	Cwd            string
 	AgentState     string
 	ConversationID string
+	// ObservedAt is when the callback entered the adapter (before identity and
+	// ancestry I/O). When zero, PaneTitle captures it at entry before reading
+	// any store or process state.
+	ObservedAt time.Time
 }
 
 // PaneTitle is the window title for a harness that asks for one
@@ -164,9 +168,17 @@ type PaneTitleInput struct {
 // active fires no Stop hook and leaves OSC 7501 stuck at working, while the
 // title command still transitions agent_state to "idle".
 func (e Env) PaneTitle(loc Location, kind core.Kind, in PaneTitleInput) string {
+	observedAt := in.ObservedAt
+	if observedAt.IsZero() {
+		if e.Now != nil {
+			observedAt = e.Now()
+		} else {
+			observedAt = time.Now()
+		}
+	}
 	if rec, ok, err := e.agentIn(loc); err == nil && ok && rec.Live() && rec.Kind == kind && e.descendsFrom(rec) {
 		if kind == core.Agy && in.AgentState == "idle" && in.ConversationID != "" && in.ConversationID == rec.Session() {
-			e.healTurnIdle(rec, in.ConversationID)
+			e.healTurnIdle(rec, in.ConversationID, observedAt)
 		}
 		return core.PaneLabel(rec.Handle, rec.Role, rec.Task)
 	}
@@ -176,16 +188,13 @@ func (e Env) PaneTitle(loc Location, kind core.Kind, in PaneTitleInput) string {
 // healTurnIdle settles an existing live-incarnation TurnWorking record for rec
 // to TurnIdle without incrementing Seq. It takes a lock-free fast path when
 // nothing needs healing, then serializes the write through Store.UpdateTurn
-// with a CAS guard on the observed Seq and timestamp so an interleaved
-// PreInvocation for the next turn can never be overwritten or have Seq rolled
-// back. I/O and lock errors are ignored because PaneTitle must always answer.
-func (e Env) healTurnIdle(rec agent, sessionID string) {
+// with a CAS guard on the observed Seq and ingress observedAt so a callback
+// delayed in identity/ancestry lookup or before commit can never overwrite a
+// newer PreInvocation turn or roll back Seq. I/O and lock errors are ignored
+// because PaneTitle must always answer.
+func (e Env) healTurnIdle(rec agent, sessionID string, observedAt time.Time) {
 	if rec.lease == nil {
 		return
-	}
-	observedAt := time.Now()
-	if e.Now != nil {
-		observedAt = e.Now()
 	}
 	initial, ok, err := e.Store.Turn(rec.Handle)
 	if err != nil || !ok || !initial.Incarnation.Same(rec.lease.Incarnation) || initial.Phase != core.TurnWorking {
