@@ -579,6 +579,78 @@ func TestTurnLedgerHookFiltersContinuingAndIncarnation(t *testing.T) {
 		if hist, err := e2.Store.InjectHistory("agy-42"); err != nil || len(hist) == 0 || hist[len(hist)-1].Progress != core.Deferred || hist[len(hist)-1].Code != "not_submitted" {
 			t.Fatalf("inject history did not record deferred/not_submitted: %+v err=%v", hist, err)
 		}
+
+		// Case 3: Competing turn increments Seq during Rex.Write while post-write
+		// CaptureVT fails -> must NOT promote Seq edge to Accepted and MUST keep Pending.
+		e3, ft3, _, _, now3 := frozenAgyWorld(t, false)
+		if _, err := e3.Hook(context.Background(), EventPreInvocation, core.Agy, loc, HookInput{ConversationID: "conv-42"}); err != nil {
+			t.Fatal(err)
+		}
+		*now3 = now3.Add(2 * time.Second)
+		if _, err := e3.Hook(context.Background(), EventStop, core.Agy, loc, HookInput{ConversationID: "conv-42", TerminationReason: "NO_TOOL_CALL"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := amq.Send(context.Background(), e3.AMQ, e3.Paths.Root(), "orch-01", "agy-42", "task", "ping"); err != nil {
+			t.Fatal(err)
+		}
+		ft3.onWrite = func(_, _ string) {
+			ft3.fmu.Lock()
+			ft3.captureErr = errors.New("rex capture timed out")
+			ft3.fmu.Unlock()
+			*now3 = now3.Add(time.Second)
+			_, _ = e3.Hook(context.Background(), EventPreInvocation, core.Agy, loc, HookInput{ConversationID: "conv-42"})
+		}
+		o3 := e3.Inject(context.Background(), InjectRequest{Handle: "agy-42", Root: e3.Paths.Root()})
+		if o3.Progress == core.Accepted {
+			t.Fatalf("ambiguous Seq edge with capture error must not accept: got %+v", o3)
+		}
+		if pending, ok, err := e3.Store.Pending("block:agy"); err != nil || !ok || pending == "" {
+			t.Fatalf("capture error dropped Pending: pending=%q ok=%v err=%v", pending, ok, err)
+		}
+
+		// Case 4: OSC-only competing rise (idle -> working) before Write aborts
+		// cleanly; during Write with unsubmitted doorbell and capture error retains Pending.
+		e4, ft4, _, _, _ := frozenAgyWorld(t, false)
+		ft4.st = rex.Status{State: "idle", App: "antigravity"}
+		if err := amq.Send(context.Background(), e4.AMQ, e4.Paths.Root(), "orch-01", "agy-42", "task", "ping"); err != nil {
+			t.Fatal(err)
+		}
+		flipped := false
+		ft4.onCapture = func() {
+			if flipped {
+				return
+			}
+			flipped = true
+			ft4.fmu.Lock()
+			ft4.st = rex.Status{State: "working", App: "antigravity"}
+			ft4.fmu.Unlock()
+		}
+		o4 := e4.Inject(context.Background(), InjectRequest{Handle: "agy-42", Root: e4.Paths.Root()})
+		if o4.Progress != core.Deferred || len(ft4.writes) != 0 {
+			t.Fatalf("pre-write competing OSC rise: got %+v writes=%d, want deferred with 0 writes", o4, len(ft4.writes))
+		}
+		if pending, ok, err := e4.Store.Pending("block:agy"); err != nil || ok {
+			t.Fatalf("aborted OSC rise left pending=%q ok=%v err=%v", pending, ok, err)
+		}
+
+		e5, ft5, _, _, _ := frozenAgyWorld(t, false)
+		ft5.st = rex.Status{State: "idle", App: "antigravity"}
+		if err := amq.Send(context.Background(), e5.AMQ, e5.Paths.Root(), "orch-01", "agy-42", "task", "ping"); err != nil {
+			t.Fatal(err)
+		}
+		ft5.onWrite = func(_, _ string) {
+			ft5.fmu.Lock()
+			ft5.st = rex.Status{State: "working", App: "antigravity"}
+			ft5.captureErr = errors.New("rex capture timed out")
+			ft5.fmu.Unlock()
+		}
+		o5 := e5.Inject(context.Background(), InjectRequest{Handle: "agy-42", Root: e5.Paths.Root()})
+		if o5.Progress == core.Accepted {
+			t.Fatalf("ambiguous OSC rise with capture error must not accept: got %+v", o5)
+		}
+		if pending, ok, err := e5.Store.Pending("block:agy"); err != nil || !ok || pending == "" {
+			t.Fatalf("OSC rise + capture error dropped Pending: pending=%q ok=%v err=%v", pending, ok, err)
+		}
 	})
 
 	t.Run("Stop that fails mail announcement still records idle so restored I/O is not deadlocked", func(t *testing.T) {
