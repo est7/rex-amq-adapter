@@ -127,10 +127,24 @@ func (e Env) inject(ctx context.Context, r InjectRequest, rec agent) core.Outcom
 	if err := e.Store.SetPending(rec.BlockID, doorbell); err != nil {
 		return deferredErr("state_unwritable", err)
 	}
-	// Re-check the hook turn ledger at the write boundary after admission and
-	// pending-state sync so a competing prompt submitted meanwhile aborts
-	// before typing instead of spoofing a post-write turn edge.
-	if cur := e.readTurn(rec); cur != nil && (cur.Seq > pre.turnSeq || ((snap.Turn == nil || snap.Turn.Phase != core.TurnWorking) && cur.Phase == core.TurnWorking)) {
+	// Re-check readiness and refresh the edge baseline at the write boundary
+	// (after admission and pending-state sync) so a competing prompt or status
+	// rise submitted meanwhile aborts before typing instead of spoofing a
+	// post-write transition.
+	if cur, err := e.assessActivity(ctx, activityRequest{Agent: &rec, Block: rec.BlockID, Policy: NoScreen}); err == nil {
+		if _, working := cur.Activity.(core.InTurn); working || (cur.Turn != nil && cur.Turn.Seq > pre.turnSeq) {
+			_ = e.Store.ClearPending(rec.BlockID)
+			if o, ok := core.DecideWrite(cur.Activity); !ok {
+				return o
+			}
+			return core.Outcome{Progress: core.Deferred, Code: core.CodeAgentWorking, Note: "the agent started working before the doorbell was written"}
+		}
+		pre.oscWorking = cur.External.Present() && cur.External.State == core.StateWorking
+		pre.oscReports = cur.External.ReportsStatus()
+		if cur.Turn != nil {
+			pre.turnSeq = cur.Turn.Seq
+		}
+	} else if tr := e.readTurn(rec); tr != nil && (tr.Seq > pre.turnSeq || ((snap.Turn == nil || snap.Turn.Phase != core.TurnWorking) && tr.Phase == core.TurnWorking)) {
 		_ = e.Store.ClearPending(rec.BlockID)
 		return core.Outcome{Progress: core.Deferred, Code: core.CodeAgentWorking, Note: "the agent started working before the doorbell was written"}
 	}
@@ -273,25 +287,36 @@ func (e Env) confirm(ctx context.Context, rec agent, doorbell string, pre confir
 			break
 		}
 		// 1. Causal hook turn-ledger edge (lock-free, independent of Rex RPCs),
-		// fenced against a concurrent competing turn whose write left our
-		// doorbell unsubmitted in the input box.
+		// promoted only once a live surface capture proves our doorbell is no
+		// longer sitting unsubmitted in the input box. A capture error leaves
+		// the edge unpromoted so Pending stays intact if the box stays unreadable.
 		if tr := e.readTurn(rec); tr != nil && tr.Seq > c.PreTurnSeq {
-			if surf, _, err := e.inspectSurface(ctx, e.Rex, rec.Kind, rec.BlockID, doorbell); err == nil && surf.Box == screen.BoxDraft && surf.OursInBox {
-				c.Box = surf.Box
-				c.OursInBox = true
-			} else {
-				c.PostTurnSeq = tr.Seq
-				c.Box = screen.BoxMissing
-				c.OursInBox = false
-				break
+			if surf, _, err := e.inspectSurface(ctx, e.Rex, rec.Kind, rec.BlockID, doorbell); err == nil {
+				if surf.Box == screen.BoxDraft && surf.OursInBox {
+					c.Box = surf.Box
+					c.OursInBox = true
+				} else {
+					c.PostTurnSeq = tr.Seq
+					c.Box = screen.BoxMissing
+					c.OursInBox = false
+					break
+				}
 			}
 		}
-		// 2. Causal external status rising edge (independent of VT capture).
+		// 2. Causal external status rising edge, using the same live surface
+		// fence so a competing rise or capture error cannot drop Pending.
 		if snap, err := e.assessActivity(ctx, activityRequest{Agent: &rec, Block: rec.BlockID, Policy: NoScreen}); err == nil {
-			if snap.External.Present() && snap.External.State == core.StateWorking {
-				c.PostOSCWorking = true
-				if !c.PreOSCWorking {
-					break
+			if snap.External.Present() && snap.External.State == core.StateWorking && !c.PreOSCWorking {
+				if surf, _, err := e.inspectSurface(ctx, e.Rex, rec.Kind, rec.BlockID, doorbell); err == nil {
+					if surf.Box == screen.BoxDraft && surf.OursInBox {
+						c.Box = surf.Box
+						c.OursInBox = true
+					} else {
+						c.PostOSCWorking = true
+						c.Box = screen.BoxMissing
+						c.OursInBox = false
+						break
+					}
 				}
 			}
 		}
