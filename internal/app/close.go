@@ -551,38 +551,32 @@ func (e Env) unsettled(ctx context.Context, on Terminal, epic core.SessionKey) (
 // unrest says, "<handle>: <why>", how rec's agent is not at rest: working,
 // waiting on a dialog, with unread mail, or reporting no state, which cannot
 // be told from working. It is "" at rest, and when its block is gone, which
-// leaves nothing in the way. A local Claude Code background job is judged by
-// its supervisor's state (jobStatus): the client showing it reports none of
-// its own, or a stale one.
+// leaves nothing in the way.
 func (e Env) unrest(ctx context.Context, on Terminal, rec agent) (string, error) {
-	var st rex.Status
-	isJob := false
-	if localServer(rec.Server) {
-		var err error
-		if st, _, isJob, err = e.jobStatus(rec); err != nil {
-			return fmt.Sprintf("%s: state unknown (%v)", rec.Handle, err), nil
-		}
-	}
-	if !isJob {
-		var ok bool
-		var err error
-		st, ok, err = on.ProgramStatus(ctx, rec.BlockID)
-		switch {
-		case errors.Is(err, rex.ErrNotFound):
+	snap, err := e.assessActivity(ctx, activityRequest{Terminal: on, Agent: &rec, Block: rec.BlockID, Policy: LazyScreen})
+	if err != nil {
+		if errors.Is(err, rex.ErrNotFound) {
 			return "", nil
-		case err != nil:
-			return fmt.Sprintf("%s: state unknown (%v)", rec.Handle, err), nil
-		case !ok:
+		}
+		return fmt.Sprintf("%s: state unknown (%v)", rec.Handle, err), nil
+	}
+	switch a := snap.Activity.(type) {
+	case core.AtPrompt:
+		// At rest; check unread mail below.
+	case core.InTurn:
+		return fmt.Sprintf("%s: working", rec.Handle), nil
+	case core.AwaitingUser:
+		return fmt.Sprintf("%s: blocked", rec.Handle), nil
+	case core.Unknown:
+		if a.Why == "no_signal" {
 			return fmt.Sprintf("%s: reports no state", rec.Handle), nil
 		}
-		if isAgyApprovePlan(rec.Kind, st) {
-			if vt, err := on.CaptureVT(ctx, rec.BlockID); err == nil {
-				st = normalizeProgramStatus(rec.Kind, st, vt)
-			}
+		if a.Unrecognized != "" {
+			return fmt.Sprintf("%s: %s", rec.Handle, a.Unrecognized), nil
 		}
-	}
-	if !core.AgentState(st.State).AtRest() {
-		return fmt.Sprintf("%s: %s", rec.Handle, st.State), nil
+		return fmt.Sprintf("%s: %s", rec.Handle, a.Why), nil
+	default:
+		return fmt.Sprintf("%s: reports no state", rec.Handle), nil
 	}
 	unread, err := amq.Unread(e.Paths.Root(), string(rec.Handle))
 	if err != nil {

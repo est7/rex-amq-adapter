@@ -103,37 +103,46 @@ func CheckBinding(b Binding) (Outcome, bool) {
 	return Outcome{Progress: Deferred, Code: "agent_not_foreground", Note: "another process holds the agent's terminal"}, false
 }
 
-// Readiness is what the injector observes before typing.
-type Readiness struct {
-	State       AgentState
-	BlockedKind string
-	Box         screen.Draft
-	Trust       bool
-}
-
 // DecideWrite says whether a doorbell may be typed now. Typing happens only
-// when the agent is at rest (or reports nothing) and its input box is on
-// screen and empty. A working agent is reached by its hooks instead.
-func DecideWrite(r Readiness) (Outcome, bool) {
-	switch {
-	case r.State == StateWorking:
+// when the agent is at its prompt (or reports no signal at all) and its input
+// box is on screen and empty. A working agent is reached by its hooks instead.
+func DecideWrite(act AgentActivity) (Outcome, bool) {
+	switch a := act.(type) {
+	case InTurn:
 		return Outcome{Progress: Deferred, Code: CodeAgentWorking, Note: "the agent is working; its hooks announce mail in-band"}, false
-	case r.State == StateBlocked:
+	case AwaitingUser:
+		if a.Kind == "trust_screen" {
+			return Outcome{Progress: Deferred, Code: "trust_screen", Note: "a trust dialog is on screen"}, false
+		}
 		note := "the agent waits on the user"
-		if r.BlockedKind != "" {
-			note += " (" + r.BlockedKind + ")"
+		if a.Kind != "" {
+			note += " (" + a.Kind + ")"
 		}
 		return Outcome{Progress: Deferred, Code: "agent_blocked", Note: note}, false
-	case !r.State.AtRest() && r.State != StateAbsent:
-		return Outcome{Progress: Deferred, Code: "agent_state_unknown", Note: "unrecognised program status " + string(r.State)}, false
-	case r.Trust:
-		return Outcome{Progress: Deferred, Code: "trust_screen", Note: "a trust dialog is on screen"}, false
-	case r.Box == screen.Typed:
+	case AtPrompt:
+		return decideWriteBox(a.Box)
+	case Unknown:
+		if a.Why == "no_signal" {
+			return decideWriteBox(a.Box)
+		}
+		if a.Unrecognized != "" {
+			return Outcome{Progress: Deferred, Code: "agent_state_unknown", Note: "unrecognised program status " + string(a.Unrecognized)}, false
+		}
+		return Outcome{Progress: Deferred, Code: "agent_state_unknown", Note: "agent activity unknown: " + a.Why}, false
+	default:
+		return Outcome{Progress: Deferred, Code: "agent_state_unknown", Note: "agent activity unknown"}, false
+	}
+}
+
+func decideWriteBox(box screen.BoxState) (Outcome, bool) {
+	switch box {
+	case screen.BoxEmpty:
+		return Outcome{}, true
+	case screen.BoxDraft:
 		return Outcome{Progress: Deferred, Code: CodeDraftInBox, Note: "the input box holds unsent text"}, false
-	case r.Box != screen.Empty:
+	default:
 		return Outcome{Progress: Deferred, Code: CodeBoxNotFound, Note: "the input box is not on screen"}, false
 	}
-	return Outcome{}, true
 }
 
 // Confirmation is what the injector observes after writing the doorbell.

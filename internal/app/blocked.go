@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
-	"github.com/est7/rex-amq-adapter/internal/screen"
 )
 
 // The watchdog's third look, at every live agent of an orchestrator session, the
@@ -26,32 +25,15 @@ import (
 // desktop. Zero keys.
 
 func (e Env) blocked(ctx context.Context, orch agent, s Session, rec agent) error {
-	st, reports, err := e.Rex.ProgramStatus(ctx, rec.BlockID)
+	snap, err := e.assessActivity(ctx, activityRequest{Agent: &rec, Block: rec.BlockID, Policy: FullScreen})
 	if err != nil {
 		return err
 	}
-	vt, err := e.Rex.CaptureVT(ctx, rec.BlockID)
-	if err != nil {
-		return err
-	}
-	st = normalizeProgramStatus(rec.Kind, st, vt)
 	what := ""
-	blocked := reports && core.AgentState(st.State) == core.StateBlocked
-	switch {
-	case blocked && rec.Kind == core.Claude && screen.SelfDenyingCountdown(vt):
-		// Claude Code's unattended permission dialog blocks the request
-		// itself when its clock runs out: nobody needs to answer it.
-	case blocked:
-		what = "its status reports blocked"
-		if st.Kind != "" {
-			what += " (" + st.Kind + ")"
-		}
-	case !reports || core.AgentState(st.State) != core.StateWorking:
-		if phrase, ok := screen.TrustScreen(string(rec.Kind), vt); ok {
-			what = "a trust screen is up: " + phrase
-		}
+	if awaiting, ok := snap.Activity.(core.AwaitingUser); ok && !awaiting.SelfDenying {
+		what = awaiting.What
 	}
-	desktop, err := e.tellBlocked(ctx, orch, s, rec, what, vt)
+	desktop, err := e.tellBlocked(ctx, orch, s, rec, what, snap.VT)
 	for _, text := range desktop {
 		e.desktop("rex-amq-adapter", text)
 	}

@@ -95,30 +95,16 @@ func (e Env) inject(ctx context.Context, r InjectRequest, rec agent) core.Outcom
 	if o, ok := e.clearLeftover(ctx, rec); !ok {
 		return o
 	}
-	status, reports, err := e.Rex.ProgramStatus(ctx, rec.BlockID)
+	snap, err := e.assessActivity(ctx, activityRequest{Agent: &rec, Block: rec.BlockID, Policy: FullScreen})
 	if err != nil {
+		var jerr jobStateError
+		if errors.As(err, &jerr) {
+			return deferredErr("state_unreadable", jerr.err)
+		}
 		return rexOutcome(err)
 	}
-	jobStatus, jobReports, isJob, err := e.jobStatus(rec)
-	if err != nil {
-		return deferredErr("state_unreadable", err)
-	} else if isJob {
-		status, reports = jobStatus, jobReports
-	}
-	vt, err := e.Rex.CaptureVT(ctx, rec.BlockID)
-	if err != nil {
-		return rexOutcome(err)
-	}
-	if !isJob && reports {
-		status = normalizeProgramStatus(rec.Kind, status, vt)
-	}
-	_, trust := screen.TrustScreen(string(rec.Kind), vt)
-	if o, ok := core.DecideWrite(core.Readiness{
-		State:       core.AgentState(status.State),
-		BlockedKind: status.Kind,
-		Box:         screen.Check(string(rec.Kind), vt),
-		Trust:       trust,
-	}); !ok {
+	reports := snap.External.ReportsStatus()
+	if o, ok := core.DecideWrite(snap.Activity); !ok {
 		return o
 	}
 	unread, err := e.admit(ctx, rec)
@@ -257,33 +243,41 @@ func (e Env) erase(ctx context.Context, rec agent) (core.Outcome, bool) {
 func (e Env) confirm(ctx context.Context, rec agent, doorbell string, reports bool) core.Outcome {
 	c := core.Confirmation{Reports: reports}
 	empties := 0
+	policy := NoScreen
+	if !reports {
+		policy = FullScreen
+	}
 	for deadline := time.Now().Add(confirmFor); time.Now().Before(deadline) && !c.Started && !c.EmptiedTwice; {
 		if !sleep(ctx, pollEvery) {
 			break
 		}
-		st, ok, err := e.Rex.ProgramStatus(ctx, rec.BlockID)
-		if err == nil && ok && st.State == string(core.StateWorking) {
-			// Only working counts: an agent at rest may refresh its status
-			// without starting, and no turn completes inside one poll interval.
-			c.Started = true
-			break
-		}
-		if !reports {
-			if vt, err := e.Rex.CaptureVT(ctx, rec.BlockID); err == nil && screen.Check(string(rec.Kind), vt) == screen.Empty {
-				empties++
-			} else {
-				empties = 0
+		snap, err := e.assessActivity(ctx, activityRequest{Agent: &rec, Block: rec.BlockID, Policy: policy})
+		if err == nil {
+			if _, working := snap.Activity.(core.InTurn); working {
+				// Only working counts: an agent at rest may refresh its status
+				// without starting, and no turn completes inside one poll interval.
+				c.Started = true
+				break
 			}
-			c.EmptiedTwice = empties >= 2
+			if !reports {
+				if snap.Surface != nil && snap.Surface.Box == screen.BoxEmpty {
+					empties++
+				} else {
+					empties = 0
+				}
+				c.EmptiedTwice = empties >= 2
+			}
+		} else if !reports {
+			empties = 0
 		}
 	}
 	if !c.Started && !c.EmptiedTwice {
-		vt, err := e.Rex.CaptureVT(ctx, rec.BlockID)
+		surf, _, err := e.inspectSurface(ctx, e.Rex, rec.Kind, rec.BlockID, doorbell)
 		if err != nil {
 			return rexOutcome(err) // pending stays: the next attempt clears it
 		}
-		c.Box = screen.Check(string(rec.Kind), vt)
-		c.OursInBox = screen.BoxHolds(string(rec.Kind), vt, doorbell)
+		c.Box = draftFromBox(surf.Box)
+		c.OursInBox = surf.OursInBox
 	}
 	o, cleanup := core.DecideConfirm(c)
 	if cleanup == core.ClearOurText {
@@ -294,6 +288,17 @@ func (e Env) confirm(ctx context.Context, rec agent, doorbell string, reports bo
 	// Here the doorbell was submitted, erased, or is not in the box.
 	_ = e.Store.ClearPending(rec.BlockID) // a stale pending only costs one extra screen check
 	return o
+}
+
+func draftFromBox(box screen.BoxState) screen.Draft {
+	switch box {
+	case screen.BoxEmpty:
+		return screen.Empty
+	case screen.BoxDraft:
+		return screen.Typed
+	default:
+		return screen.Unknown
+	}
 }
 
 // markAnnounced records ids as announced, keeping only ids still unread.

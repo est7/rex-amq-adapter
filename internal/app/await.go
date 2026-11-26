@@ -7,7 +7,6 @@ import (
 
 	"github.com/est7/rex-amq-adapter/internal/core"
 	"github.com/est7/rex-amq-adapter/internal/rex"
-	"github.com/est7/rex-amq-adapter/internal/screen"
 )
 
 const awaitEvery = 250 * time.Millisecond
@@ -49,21 +48,14 @@ func (e Env) observeStartup(ctx context.Context, block string) (core.StartupObse
 	} else if err != nil {
 		return o, err
 	}
-	status, _, err := e.Rex.ProgramStatus(ctx, block)
+	var liveRec *agent
+	if ok && rec.Live() {
+		liveRec = &rec
+	}
+	snap, err := e.assessActivity(ctx, activityRequest{Agent: liveRec, Block: block, Policy: FullScreen})
 	if err != nil {
 		return o, err
 	}
-	vt, err := e.Rex.CaptureVT(ctx, block)
-	if err != nil {
-		return o, err
-	}
-	var kind core.Kind // "" before adoption
-	if ok {
-		kind = rec.Kind
-	}
-	status = normalizeProgramStatus(kind, status, vt)
-	o.State, o.BlockedKind = core.AgentState(status.State), status.Kind
-	// The kind is unknown before adoption: any agent's dialog counts.
-	o.TrustPhrase, _ = screen.TrustScreen("", vt)
+	o.Activity = snap.Activity
 	return o, nil
 }

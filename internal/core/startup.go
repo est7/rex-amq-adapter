@@ -28,11 +28,9 @@ type Startup struct {
 
 // StartupObservation is one look at a block an agent was started in.
 type StartupObservation struct {
-	Handle      Handle // of the block's live record, if any
-	BlockGone   bool
-	State       AgentState
-	BlockedKind string
-	TrustPhrase string
+	Handle    Handle // of the block's live record, if any
+	BlockGone bool
+	Activity  AgentActivity // assessed activity before adoption, if observed
 }
 
 // HooksReviewPhrase is the line Codex draws while hooks wait for the user's
@@ -47,16 +45,20 @@ func DecideStartup(o StartupObservation) (Startup, bool) {
 		return Startup{Status: StartupAdopted, Handle: o.Handle}, true
 	case o.BlockGone:
 		return Startup{Status: StartupExited, Note: "the block closed before the agent was adopted"}, true
-	case o.TrustPhrase == HooksReviewPhrase:
-		return Startup{Status: StartupTrust, Note: "Codex stopped on \"Hooks need review\": the user must approve the hooks with /hooks in that pane (nobody approves them for the user); until then it runs none of the adapter's hooks and is never adopted. A summon without --harness passes over a Codex whose hooks are unapproved"}, true
-	case o.TrustPhrase != "":
-		return Startup{Status: StartupTrust, Note: fmt.Sprintf("the user must answer %q in that pane", o.TrustPhrase)}, true
-	case o.State == StateBlocked:
-		note := "the agent waits on the user"
-		if o.BlockedKind != "" {
-			note += " (" + o.BlockedKind + ")"
+	}
+	if awaiting, ok := o.Activity.(AwaitingUser); ok {
+		switch {
+		case awaiting.TrustPhrase == HooksReviewPhrase:
+			return Startup{Status: StartupTrust, Note: "Codex stopped on \"Hooks need review\": the user must approve the hooks with /hooks in that pane (nobody approves them for the user); until then it runs none of the adapter's hooks and is never adopted. A summon without --harness passes over a Codex whose hooks are unapproved"}, true
+		case awaiting.TrustPhrase != "":
+			return Startup{Status: StartupTrust, Note: fmt.Sprintf("the user must answer %q in that pane", awaiting.TrustPhrase)}, true
+		default:
+			note := "the agent waits on the user"
+			if awaiting.Kind != "" {
+				note += " (" + awaiting.Kind + ")"
+			}
+			return Startup{Status: StartupBlocked, Note: note}, true
 		}
-		return Startup{Status: StartupBlocked, Note: note}, true
 	}
 	return Startup{}, false
 }

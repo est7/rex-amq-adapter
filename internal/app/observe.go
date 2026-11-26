@@ -165,36 +165,28 @@ func (e Env) observeAgents(v view, recs []agent, activity map[core.Handle]*core.
 	return out, nil
 }
 
-// observeActivity asks what each live agent of recs is doing: a Claude Code
-// background job's supervisor, else Rex's program status of its block. A
-// failed look is reported as such, not as a state.
+// observeActivity asks what each live agent of recs is doing through the
+// unified activity boundary (Claude supervisor or Rex program status, with
+// lazy VT capture only for passive-banner candidates). A failed look is
+// reported as such, not as a state.
 func (e Env) observeActivity(ctx context.Context, recs []agent) map[core.Handle]*core.ActivityObservation {
 	out := map[core.Handle]*core.ActivityObservation{}
 	for _, r := range recs {
 		if !r.Live() {
 			continue
 		}
-		a := &core.ActivityObservation{At: e.Now().UTC()}
-		if st, _, isJob, err := e.jobStatus(r); err == nil && isJob {
-			a.State, a.Source = core.AgentState(st.State), "supervisor"
-			out[r.Handle] = a
+		at := e.Now().UTC()
+		snap, err := e.assessActivity(ctx, activityRequest{
+			Terminal: e.RexOn(r.Server),
+			Agent:    &r,
+			Block:    r.BlockID,
+			Policy:   LazyScreen,
+		})
+		if err != nil {
+			out[r.Handle] = &core.ActivityObservation{Source: string(core.SignalRexStatus), Err: true, At: at}
 			continue
 		}
-		a.Source = "rex_status"
-		st, ok, err := e.RexOn(r.Server).ProgramStatus(ctx, r.BlockID)
-		switch {
-		case err != nil:
-			a.Err = true
-		case ok:
-			// Only agy's "Approve plan" needs the screen: other polls capture nothing.
-			if isAgyApprovePlan(r.Kind, st) {
-				if vt, err := e.RexOn(r.Server).CaptureVT(ctx, r.BlockID); err == nil {
-					st = normalizeProgramStatus(r.Kind, st, vt)
-				}
-			}
-			a.State, a.Kind = core.AgentState(st.State), st.Kind
-		}
-		out[r.Handle] = a
+		out[r.Handle] = core.ActivityObservationFrom(snap.Activity, at)
 	}
 	return out
 }

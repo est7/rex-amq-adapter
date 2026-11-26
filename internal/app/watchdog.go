@@ -67,18 +67,16 @@ func (e Env) watchdog(ctx context.Context, orch agent, s Session) {
 
 // look is what the watchdog saw of one agent.
 type look struct {
-	unread  int
-	code    string // the injector's deferral reason
-	since   time.Time
-	status  core.AgentState
-	kind    string
-	box     screen.Draft
-	trust   string
-	columns int
-	rows    int
-	owner   string
-	lines   []string
-	window  string // "" when detached
+	unread   int
+	code     string // the injector's deferral reason
+	since    time.Time
+	activity core.AgentActivity
+	box      screen.BoxState
+	columns  int
+	rows     int
+	owner    string
+	lines    []string
+	window   string // "" when detached
 }
 
 func (e Env) observe(ctx context.Context, rec agent, unread int, history []core.Attempt) (look, bool, error) {
@@ -87,19 +85,15 @@ func (e Env) observe(ctx context.Context, rec agent, unread int, history []core.
 	if l.code, l.since, stuck = core.Stuck(history, unread, e.Now()); !stuck {
 		return l, false, nil
 	}
-	status, _, err := e.Rex.ProgramStatus(ctx, rec.BlockID)
+	snap, err := e.assessActivity(ctx, activityRequest{Agent: &rec, Block: rec.BlockID, Policy: FullScreen})
 	if err != nil {
 		return l, false, err
 	}
-	vt, err := e.Rex.CaptureVT(ctx, rec.BlockID)
-	if err != nil {
-		return l, false, err
+	l.activity = snap.Activity
+	if snap.Surface != nil {
+		l.box = snap.Surface.Box
 	}
-	status = normalizeProgramStatus(rec.Kind, status, vt)
-	l.status, l.kind = core.AgentState(status.State), status.Kind
-	l.box = screen.Check(string(rec.Kind), vt)
-	l.trust, _ = screen.TrustScreen(string(rec.Kind), vt)
-	l.lines = lastLines(vt, core.ReportLines)
+	l.lines = lastLines(snap.VT, core.ReportLines)
 	size, err := e.Rex.Size(ctx, rec.BlockID)
 	if err != nil {
 		return l, false, err
@@ -167,16 +161,18 @@ func (e Env) stepPeer(ctx context.Context, orch agent, s Session, rec agent) err
 		now := e.Now()
 		ep = core.Episode{ID: fmt.Sprintf("%s-%d", rec.Handle, now.Unix()), Handle: rec.Handle, Block: rec.BlockID, PID: rec.pid(), Session: s.id, StartedAt: now, Reported: map[string]time.Time{}}
 	}
-	e.wdLog(orch, rec, "observe", ep.ID, fmt.Sprintf("unread %d, deferred %s since %s, %dx%d owner %q in %q, status %s/%s, box %s", l.unread, l.code, core.Ago(e.Now().Sub(l.since)), l.columns, l.rows, l.owner, l.window, l.status, l.kind, l.box))
+	obs := core.ActivityObservationFrom(l.activity, e.Now())
+	e.wdLog(orch, rec, "observe", ep.ID, fmt.Sprintf("unread %d, deferred %s since %s, %dx%d owner %q in %q, status %s/%s, box %s", l.unread, l.code, core.Ago(e.Now().Sub(l.since)), l.columns, l.rows, l.owner, l.window, obs.State, obs.Kind, l.box))
 
+	_, awaiting := l.activity.(core.AwaitingUser)
 	switch {
 	case ep.Placement == core.Theirs:
 		return e.report(ctx, orch, s, rec, &ep, core.ReportMovedByUser, fmt.Sprintf("Its pane is no longer where the watchdog put it (the %s tab), so the watchdog leaves it alone.", core.OverflowTab), l.lines)
 	// Zero keystrokes on any dialog or draft. A trust screen or a blocked
 	// prompt is the blocked look's to report (blocked.go), mail or not.
-	case l.trust != "", l.status == core.StateBlocked:
+	case awaiting:
 		return nil
-	case l.box == screen.Typed:
+	case l.box == screen.BoxDraft:
 		return e.report(ctx, orch, s, rec, &ep, core.ReportDraft, "Its input box holds a draft, so no doorbell can be typed.", l.lines)
 	case ep.Moved() && l.code == core.CodeBoxNotFound:
 		return e.continueRecovery(ctx, orch, s, rec, &ep, l)
@@ -296,12 +292,22 @@ func (e Env) recover(ctx context.Context, orch agent, rec agent, ep *core.Episod
 		e.wdLog(orch, rec, "abort", ep.ID, "the pane does not show the agent: "+o.Code)
 		return notReady, nil
 	}
-	status, _, err := e.Rex.ProgramStatus(ctx, rec.BlockID)
+	snap, err := e.assessActivity(ctx, activityRequest{Agent: &rec, Block: rec.BlockID, Policy: FullScreen})
 	if err != nil {
 		return notReady, err
 	}
-	if st := core.AgentState(status.State); st == core.StateWorking || st == core.StateBlocked {
-		e.wdLog(orch, rec, "abort", ep.ID, "the agent is "+status.State)
+	switch snap.Activity.(type) {
+	case core.InTurn:
+		e.wdLog(orch, rec, "abort", ep.ID, "the agent is working")
+		return notReady, nil
+	case core.AwaitingUser:
+		e.wdLog(orch, rec, "abort", ep.ID, "the agent is blocked")
+		return notReady, nil
+	}
+	// At this size the box cannot be seen, so a draft cannot be ruled out
+	// here; the capture after the resize is the gate that matters (verify).
+	if snap.Surface != nil && snap.Surface.Box == screen.BoxDraft {
+		e.wdLog(orch, rec, "abort", ep.ID, "a dialog or draft appeared")
 		return notReady, nil
 	}
 	size, err := e.Rex.Size(ctx, rec.BlockID)
@@ -310,16 +316,6 @@ func (e Env) recover(ctx context.Context, orch agent, rec agent, ep *core.Episod
 	}
 	if !core.TinyPane(size.Columns, size.Rows) {
 		e.wdLog(orch, rec, "abort", ep.ID, fmt.Sprintf("the pane grew to %dx%d on its own", size.Columns, size.Rows))
-		return notReady, nil
-	}
-	vt, err := e.Rex.CaptureVT(ctx, rec.BlockID)
-	if err != nil {
-		return notReady, err
-	}
-	// At this size the box cannot be seen, so a draft cannot be ruled out
-	// here; the capture after the resize is the gate that matters (verify).
-	if _, trust := screen.TrustScreen(string(rec.Kind), vt); trust || screen.Check(string(rec.Kind), vt) == screen.Typed {
-		e.wdLog(orch, rec, "abort", ep.ID, "a dialog or draft appeared")
 		return notReady, nil
 	}
 	if pending, ok, _ := e.Store.Pending(rec.BlockID); ok && pending != "" {

@@ -207,7 +207,7 @@ func (e Env) paneOfRetired(ctx context.Context, on Terminal, rec agent) (pane, n
 	}
 	isJob := false
 	if localServer(rec.Server) {
-		if _, _, isJob, err = e.jobStatus(rec); err != nil {
+		if _, isJob, err = e.jobStatus(rec); err != nil {
 			return "", "", err
 		}
 	}

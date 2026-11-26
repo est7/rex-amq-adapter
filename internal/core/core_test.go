@@ -77,29 +77,29 @@ func TestCheckBinding(t *testing.T) {
 
 func TestDecideWrite(t *testing.T) {
 	cases := []struct {
-		r     Readiness
+		act   AgentActivity
 		write bool
 		code  string
 	}{
-		{Readiness{State: StateIdle, Box: screen.Empty}, true, ""},
-		{Readiness{State: StateDone, Box: screen.Empty}, true, ""},
-		{Readiness{State: StateError, Box: screen.Empty}, true, ""},
-		{Readiness{State: StateAbsent, Box: screen.Empty}, true, ""},
-		{Readiness{State: StateWorking, Box: screen.Empty}, false, "agent_working"},
-		{Readiness{State: StateBlocked, BlockedKind: "question", Box: screen.Unknown}, false, "agent_blocked"},
-		{Readiness{State: StateBlocked, Box: screen.Typed}, false, "agent_blocked"}, // Codex approval: no kind
-		{Readiness{State: "paused", Box: screen.Empty}, false, "agent_state_unknown"},
-		{Readiness{State: StateIdle, Box: screen.Typed}, false, "draft_in_box"},
-		{Readiness{State: StateIdle, Box: screen.Unknown}, false, "box_not_found"},
-		{Readiness{State: StateIdle, Box: screen.Empty, Trust: true}, false, "trust_screen"},
+		{AtPrompt{Box: screen.BoxEmpty, RawState: StateIdle}, true, ""},
+		{AtPrompt{Box: screen.BoxEmpty, RawState: StateDone}, true, ""},
+		{AtPrompt{Box: screen.BoxEmpty, RawState: StateError}, true, ""},
+		{Unknown{Why: "no_signal", Box: screen.BoxEmpty}, true, ""},
+		{InTurn{}, false, "agent_working"},
+		{AwaitingUser{Kind: "question"}, false, "agent_blocked"},
+		{AwaitingUser{}, false, "agent_blocked"}, // Codex approval: no kind
+		{Unknown{Why: "unknown_state:paused", Unrecognized: "paused", Box: screen.BoxEmpty}, false, "agent_state_unknown"},
+		{AtPrompt{Box: screen.BoxDraft}, false, "draft_in_box"},
+		{AtPrompt{Box: screen.BoxMissing}, false, "box_not_found"},
+		{AwaitingUser{Kind: "trust_screen", TrustPhrase: "Trust this folder?"}, false, "trust_screen"},
 	}
 	for _, c := range cases {
-		o, write := DecideWrite(c.r)
+		o, write := DecideWrite(c.act)
 		if write != c.write || o.Code != c.code {
-			t.Errorf("%+v: got write=%v code=%q, want write=%v code=%q", c.r, write, o.Code, c.write, c.code)
+			t.Errorf("%#v: got write=%v code=%q, want write=%v code=%q", c.act, write, o.Code, c.write, c.code)
 		}
 		if !write && o.Progress != Deferred {
-			t.Errorf("%+v: refusal must defer, got %s", c.r, o.Progress)
+			t.Errorf("%#v: refusal must defer, got %s", c.act, o.Progress)
 		}
 	}
 }
@@ -221,10 +221,10 @@ func TestOnlyPiDeliversInProcess(t *testing.T) {
 }
 
 func TestBlockedNoteNamesTheKindOnlyWhenKnown(t *testing.T) {
-	if o, _ := DecideWrite(Readiness{State: StateBlocked}); o.Note != "the agent waits on the user" {
+	if o, _ := DecideWrite(AwaitingUser{}); o.Note != "the agent waits on the user" {
 		t.Errorf("no kind: %q", o.Note)
 	}
-	if o, _ := DecideWrite(Readiness{State: StateBlocked, BlockedKind: "permission"}); o.Note != "the agent waits on the user (permission)" {
+	if o, _ := DecideWrite(AwaitingUser{Kind: "permission"}); o.Note != "the agent waits on the user (permission)" {
 		t.Errorf("with kind: %q", o.Note)
 	}
 }
@@ -344,11 +344,11 @@ func TestDecideStartup(t *testing.T) {
 		want StartupStatus
 		done bool
 	}{
-		{"adopted wins over a stale dialog on screen", StartupObservation{Handle: "claude-01", TrustPhrase: "Hooks need review"}, StartupAdopted, true},
+		{"adopted wins over a stale dialog on screen", StartupObservation{Handle: "claude-01", Activity: AwaitingUser{Kind: "trust_screen", TrustPhrase: HooksReviewPhrase}}, StartupAdopted, true},
 		{"block gone", StartupObservation{BlockGone: true}, StartupExited, true},
-		{"trust dialog", StartupObservation{TrustPhrase: "Trust this folder?", State: StateBlocked}, StartupTrust, true},
-		{"blocked", StartupObservation{State: StateBlocked, BlockedKind: "permission"}, StartupBlocked, true},
-		{"working: keep waiting", StartupObservation{State: StateWorking}, "", false},
+		{"trust dialog", StartupObservation{Activity: AwaitingUser{Kind: "permission", TrustPhrase: "Trust this folder?"}}, StartupTrust, true},
+		{"blocked", StartupObservation{Activity: AwaitingUser{Kind: "permission"}}, StartupBlocked, true},
+		{"working: keep waiting", StartupObservation{Activity: InTurn{}}, "", false},
 		{"nothing yet: keep waiting", StartupObservation{}, "", false},
 	}
 	for _, c := range cases {
@@ -610,11 +610,11 @@ var bareAmq = regexp.MustCompile(`\bamq (drain|send|reply)\b`)
 // Codex's hook review gets a note of its own: the user approves the hooks
 // with /hooks; any other dialog keeps the generic note.
 func TestStartupHooksNeedReviewNamesTheFix(t *testing.T) {
-	got, done := DecideStartup(StartupObservation{TrustPhrase: HooksReviewPhrase})
+	got, done := DecideStartup(StartupObservation{Activity: AwaitingUser{Kind: "trust_screen", TrustPhrase: HooksReviewPhrase}})
 	if !done || got.Status != StartupTrust || !strings.Contains(got.Note, "/hooks") || !strings.Contains(got.Note, "--harness") {
 		t.Fatalf("%+v %v", got, done)
 	}
-	got, _ = DecideStartup(StartupObservation{TrustPhrase: "Trust this folder?"})
+	got, _ = DecideStartup(StartupObservation{Activity: AwaitingUser{Kind: "trust_screen", TrustPhrase: "Trust this folder?"}})
 	if strings.Contains(got.Note, "/hooks") || !strings.Contains(got.Note, `"Trust this folder?"`) {
 		t.Fatalf("folder trust note: %+v", got)
 	}
