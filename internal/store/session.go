@@ -33,9 +33,14 @@ import (
 //   - sessions/<session_id>/lifecycle.json: the Epic's lifecycle
 //     (EpicLifecycle, epic_lifecycle.go).
 
+// SessionsDir is the directory holding every per-session extension folder.
+func (p Paths) SessionsDir() string {
+	return filepath.Join(p.Extensions(), "sessions")
+}
+
 // SessionDir is the extension directory of Rex session id.
 func (p Paths) SessionDir(id string) string {
-	return filepath.Join(p.Extensions(), "sessions", fileKey(id))
+	return filepath.Join(p.SessionsDir(), fileKey(id))
 }
 
 // ViewPath is where the view of Rex session id is kept.

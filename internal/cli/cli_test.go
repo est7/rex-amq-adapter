@@ -134,6 +134,12 @@ func TestParseDuration(t *testing.T) {
 			t.Errorf("%q accepted as %v", in, d)
 		}
 	}
+	if d, err := ParseDurationBounded("168h", 720*time.Hour); err != nil || d != 168*time.Hour {
+		t.Errorf("ParseDurationBounded(168h, 720h) = %v, %v", d, err)
+	}
+	if _, err := ParseDurationBounded("721h", 720*time.Hour); err == nil {
+		t.Error("ParseDurationBounded accepted 721h over 720h cap")
+	}
 }
 
 // A list's snippet is one clean line of at most n runes: control, ANSI,

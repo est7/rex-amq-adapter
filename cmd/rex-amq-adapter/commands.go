@@ -317,12 +317,20 @@ func commands() []*cli.Command {
 			Run:        epicRevive,
 		},
 		{
-			Path: path("epic", "list"), Summary: "the Epics linked to a personal agent: lifecycle, hand-back, whether a view exists",
-			Flags: []cli.Flag{f("hub", cli.KindDir, "outside a personal agent's pane: the Hub directory (default: the default Hub)"), f("personal", cli.KindHandle, "only Epics this personal agent opened or prefers (outside its pane: names its Hub)")},
-			Tier:  cli.TierRead, Audience: cli.AudienceAgent, Roles: []string{"operator"}, Guard: cli.GuardOperator, List: true,
-			Result:   "a list of Epics {session_id, name, dir, lifecycle, hand_back, has_view}",
-			Examples: []string{"rex-amq-adapter epic list", "rex-amq-adapter epic list --personal claude-01 --fields session_id,lifecycle,hand_back"},
-			Run:      epicList,
+			Path: path("epic", "list"), Summary: "the Epics linked to a Hub: lifecycle, hand-back, narrative, Slice progress, and optional recent closed Epics",
+			Flags: []cli.Flag{
+				f("hub", cli.KindDir, "outside a personal agent's pane: the Hub directory (default: the default Hub)"),
+				f("personal", cli.KindHandle, "only Epics this personal agent opened or prefers (outside its pane: names its Hub)"),
+				b("include-closed", "also include recently closed Epics of the Hub from existing lifecycle.json/view.json (default: live only)"),
+				{Name: "closed-within", Value: cli.Value{Kind: cli.KindDuration, MaxDuration: "720h"}, Help: "window for --include-closed (default 24h when --include-closed is set, max 720h; requires --include-closed)"},
+			},
+			Tier: cli.TierRead, Audience: cli.AudienceAgent, Roles: []string{"operator"}, Guard: cli.GuardOperator, List: true, FieldModel: epicPage{},
+			Result: "a list of Epics {session_id, name, dir, lifecycle, hand_back, goal_path, narrative, progress, has_view}; progress is null when unrecorded",
+			Examples: []string{
+				"rex-amq-adapter epic list --fields session_id,name,dir,lifecycle,goal_path,narrative,progress",
+				"rex-amq-adapter epic list --include-closed --closed-within 24h --fields session_id,name,lifecycle,progress",
+			},
+			Run: epicList,
 		},
 		{
 			Path: path("epic", "show"), Summary: "a session's view: members, obligations, recent mail, coverage gaps, hand-back, lifecycle",

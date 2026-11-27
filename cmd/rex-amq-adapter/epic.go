@@ -143,13 +143,26 @@ func epicRevive(c *cli.Ctx, in cli.Input) (cli.Result, error) {
 // personal agent's pane the one --hub names, the Hub of the personal agent
 // --personal names (a filter too), or the default Hub (app.ReadCockpitView).
 func epicList(c *cli.Ctx, in cli.Input) (cli.Result, error) {
+	includeClosed := in.Bool("include-closed")
+	if in.Has("closed-within") && !includeClosed {
+		return cli.Result{}, cli.Usage(c.Cmd, "--closed-within requires --include-closed")
+	}
+	var closedWithin time.Duration
+	if includeClosed {
+		closedWithin = in.Duration("closed-within", app.DefaultClosedWithin)
+	}
 	env, err := app.NewEnv(c.Getenv("REX_SERVER"))
 	if err != nil {
 		return cli.Result{}, err
 	}
 	ctx, cancel := within(c, 30*time.Second)
 	defer cancel()
-	raw, err := env.ReadCockpitView(ctx, c.Getenv, app.CockpitViewRequest{Personal: in.Str("personal"), Hub: in.Str("hub")})
+	raw, err := env.ReadCockpitView(ctx, c.Getenv, app.CockpitViewRequest{
+		Personal:      in.Str("personal"),
+		Hub:           in.Str("hub"),
+		IncludeClosed: includeClosed,
+		ClosedWithin:  closedWithin,
+	})
 	if err != nil {
 		return cli.Result{}, err
 	}
@@ -157,7 +170,11 @@ func epicList(c *cli.Ctx, in cli.Input) (cli.Result, error) {
 	if err := json.Unmarshal(raw, &v); err != nil {
 		return cli.Result{}, err
 	}
-	page, err := cli.Page(v.Epics, in, "epic list|"+v.Hub+"|"+string(v.Personal)+"|"+v.SessionID)
+	scope := "epic list|" + v.Hub + "|" + string(v.Personal) + "|" + v.SessionID
+	if includeClosed {
+		scope += "|closed=" + closedWithin.String()
+	}
+	page, err := cli.Page(v.Epics, in, scope)
 	if err != nil {
 		return cli.Result{}, err
 	}

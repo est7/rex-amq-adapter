@@ -201,6 +201,36 @@ func (s Store) PutEpicLifecycle(l EpicLifecycle) error {
 	return writeJSON(s.P.lifecyclePath(l.SessionID), l)
 }
 
+// EpicLifecycles scans every recorded lifecycle.json under SessionsDir,
+// sorted by SessionID. Sessions without a lifecycle.json are skipped; an
+// unreadable or malformed lifecycle.json returns an error.
+func (s Store) EpicLifecycles() ([]EpicLifecycle, error) {
+	entries, err := os.ReadDir(s.P.SessionsDir())
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list Epic lifecycles: %w", err)
+	}
+	var out []EpicLifecycle
+	for _, ent := range entries {
+		if !ent.IsDir() || strings.HasPrefix(ent.Name(), ".") {
+			continue
+		}
+		var lc EpicLifecycle
+		ok, err := readJSON(filepath.Join(s.P.SessionsDir(), ent.Name(), "lifecycle.json"), &lc)
+		if err != nil {
+			return nil, fmt.Errorf("the lifecycle in %s: %w", ent.Name(), err)
+		}
+		if !ok {
+			continue
+		}
+		out = append(out, lc)
+	}
+	slices.SortFunc(out, func(a, b EpicLifecycle) int { return strings.Compare(a.SessionID, b.SessionID) })
+	return out, nil
+}
+
 // Epic operation kinds.
 const (
 	EpicOpOpen   = "open"

@@ -215,7 +215,13 @@ func (s Value) check(v string) (string, error) {
 			return "", bad("%s is not inbox:<id> or timer:<id>", q(v))
 		}
 	case KindDuration:
-		d, err := ParseDuration(v)
+		maxD := 24 * time.Hour
+		if s.MaxDuration != "" {
+			if parsed, err := time.ParseDuration(s.MaxDuration); err == nil && parsed > 0 {
+				maxD = parsed
+			}
+		}
+		d, err := ParseDurationBounded(v, maxD)
 		if err != nil {
 			return "", err
 		}
@@ -355,8 +361,14 @@ func CheckArtifactName(rel string) error {
 	return nil
 }
 
-// ParseDuration reads a positive duration (90s, 2m) or bare seconds (60).
+// ParseDuration reads a positive duration (90s, 2m) or bare seconds (60), up to 24h.
 func ParseDuration(s string) (time.Duration, error) {
+	return ParseDurationBounded(s, 24*time.Hour)
+}
+
+// ParseDurationBounded reads a positive duration (90s, 2m) or bare seconds (60),
+// bounded above by maxD.
+func ParseDurationBounded(s string, maxD time.Duration) (time.Duration, error) {
 	d, err := time.ParseDuration(s)
 	if err != nil {
 		secs, perr := strconv.ParseFloat(s, 64)
@@ -368,8 +380,8 @@ func ParseDuration(s string) (time.Duration, error) {
 	if d <= 0 {
 		return 0, bad("%s: a duration must be positive", q(s))
 	}
-	if d > 24*time.Hour {
-		return 0, bad("%s: a duration is at most 24h", q(s))
+	if d > maxD {
+		return 0, bad("%s: a duration is at most %s", q(s), maxD)
 	}
 	return d, nil
 }
