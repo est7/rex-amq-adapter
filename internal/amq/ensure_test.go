@@ -136,8 +136,9 @@ func TestEnsureMailboxNamesAnAmqTooOldForAdd(t *testing.T) {
 
 // A root created by someone else while this maker bootstraps (amq run
 // outside the adapter) refuses the plain init; the handle is then added.
-// A bootstrap that fails with no root made is an error, after one try, and
-// so is a root that vanished before --add ran (exit 3): no retry loop.
+// A bootstrap that fails with no root made is an error, after one try. A
+// root that vanished before --add ran (exit 3) is created again once, and
+// nothing loops: at most --add, a plain init, and a last --add.
 func TestEnsureMailboxBootstrapsOnce(t *testing.T) {
 	t.Run("another creator won", func(t *testing.T) {
 		root := t.TempDir()
@@ -164,9 +165,33 @@ esac`)
 		}
 	})
 	t.Run("root gone before --add", func(t *testing.T) {
-		script, calls := stubAmq(t, "echo 'no AMQ queue at the root' >&2; exit 3")
 		root := t.TempDir()
-		// A fixture standing in for the root amq made.
+		cfg := filepath.Join(root, "meta", "config.json")
+		script, calls := stubAmq(t, `case "$*" in
+*--add) rm -f '`+cfg+`'; echo 'no AMQ queue at the root' >&2; exit 3 ;;
+*) exit 0 ;;
+esac`)
+		// A fixture standing in for the root amq made, which the stub's
+		// --add then removes, as an outside process could.
+		if err := os.MkdirAll(filepath.Dir(cfg), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(cfg, []byte(`{"agents":["x"]}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := EnsureMailbox(context.Background(), script, root, "alice"); err != nil {
+			t.Fatal(err)
+		}
+		if got := calls(); len(got) != 2 || !strings.HasSuffix(got[0], "--add") || strings.HasSuffix(got[1], "--add") {
+			t.Fatalf("amq calls %q: want --add, then one plain init", got)
+		}
+	})
+	t.Run("no queue, ever", func(t *testing.T) {
+		script, calls := stubAmq(t, `case "$*" in
+*--add) echo 'no AMQ queue at the root' >&2; exit 3 ;;
+*) echo 'config already exists' >&2; exit 1 ;;
+esac`)
+		root := t.TempDir()
 		if err := os.MkdirAll(filepath.Join(root, "meta"), 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -177,8 +202,8 @@ esac`)
 		if err == nil || !strings.Contains(err.Error(), "no AMQ queue") {
 			t.Fatalf("err %v, want amq's", err)
 		}
-		if got := calls(); len(got) != 1 || !strings.HasSuffix(got[0], "--add") {
-			t.Fatalf("amq calls %q: want one --add", got)
+		if got := calls(); len(got) > 3 {
+			t.Fatalf("amq calls %q: want at most --add, init, --add", got)
 		}
 	})
 }

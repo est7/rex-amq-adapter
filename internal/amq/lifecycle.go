@@ -134,12 +134,16 @@ func wakes(t WakeTarget, handle, root string) bool {
 // make a mailbox in an existing root.
 var ErrAmqTooOld = errors.New("amq is too old: rex-amq-adapter needs amq >= 0.172.0 (amq init --add); run `brew update && brew upgrade amq`")
 
+// errNoQueue is `amq init --add` finding no meta/config.json (exit 3).
+var errNoQueue = errors.New("no amq queue at the root")
+
 // EnsureMailbox makes handle a registered member of root with its mailbox
 // made. A handle already listed in meta/config.json whose mailbox is in
 // place (mailboxPresent) is done with no lock and no amq run. Otherwise,
 // under the registry lock, `amq init --add` registers it and makes (or
 // repairs) its mailbox, touching no other handle; a root with no queue yet
-// is created by a plain `amq init`. amq stays the only writer of
+// (or one removed under the adapter, which --add finds gone) is created
+// once by a plain `amq init`. amq stays the only writer of
 // meta/config.json and the mailboxes.
 func EnsureMailbox(ctx context.Context, amqBin, root, handle string) error {
 	// A config that cannot be read or decoded is amq's to judge: --add
@@ -156,21 +160,34 @@ func EnsureMailbox(ctx context.Context, amqBin, root, handle string) error {
 	if err != nil {
 		return err
 	}
-	if !exists {
-		out, _, initErr := runInit(ctx, amqBin, root, handle)
-		if initErr == nil {
-			return nil
-		}
-		// A root created meanwhile by amq run outside the adapter refuses
-		// the plain init; it only needs handle added.
-		if exists, err = configExists(root); err != nil {
+	if exists {
+		if err := addMailbox(ctx, amqBin, root, handle); !errors.Is(err, errNoQueue) {
 			return err
 		}
-		if !exists {
-			return fmt.Errorf("amq init %s: %w: %s", root, initErr, out)
-		}
+	}
+	created, err := createQueue(ctx, amqBin, root, handle)
+	if err != nil || created {
+		return err
 	}
 	return addMailbox(ctx, amqBin, root, handle)
+}
+
+// createQueue runs a plain `amq init` for handle when root has no
+// meta/config.json, and reports whether it did. False with no error is a
+// root that has one now: created meanwhile by amq run outside the adapter,
+// which the plain init refuses, so handle only needs adding.
+func createQueue(ctx context.Context, amqBin, root, handle string) (bool, error) {
+	if exists, err := configExists(root); err != nil || exists {
+		return false, err
+	}
+	out, _, initErr := runInit(ctx, amqBin, root, handle)
+	if initErr == nil {
+		return true, nil
+	}
+	if exists, err := configExists(root); err != nil || exists {
+		return false, err
+	}
+	return false, fmt.Errorf("amq init %s: %w: %s", root, initErr, out)
 }
 
 // addMailbox runs `amq init --add` for handle in an existing root.
@@ -179,6 +196,8 @@ func addMailbox(ctx context.Context, amqBin, root, handle string) error {
 	switch {
 	case err == nil:
 		return nil
+	case code == 3:
+		return fmt.Errorf("amq init --add %s: %w: %s", root, errNoQueue, out)
 	case code == 2 && strings.Contains(out, "flag provided but not defined: -add"):
 		return fmt.Errorf("%w: amq init --add %s: %s", ErrAmqTooOld, root, out)
 	}

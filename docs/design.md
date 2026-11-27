@@ -967,9 +967,10 @@ registers the handle and makes or repairs its mailbox, checking only that
 handle (and the reserved `user`) for mailbox directories: amq still decodes
 the roster and rewrites it when it appends, but keeps its order, creation
 time, and unknown keys, and a new handle goes at its end. A root with no
-`meta/config.json` is created by a plain `amq init` under the same lock; a
-root another process created meanwhile, which the plain init refuses, only
-needs `--add`, and nothing is retried beyond that. amq's own
+`meta/config.json`, or one removed under the adapter that `--add` finds gone
+(exit 3), is created once by a plain `amq init` under the same lock; a root
+another process created meanwhile, which the plain init refuses, only needs
+one last `--add`, and nothing loops (at most `--add`, a plain init, `--add`). amq's own
 `meta/config.lock` serialises the writes; the registry lock is kept for
 older adapters, which read the roster under it and later rewrite all of it
 with a full init: one still running during an upgrade (a detached session
@@ -1639,9 +1640,13 @@ unread mail), and a handle with no identity is refused as a recipient
 before `amq send` runs (`core.CanExchange`, `ReasonUnplaced`). A retired
 peer whose identity is kept for its narrator is still a placed recipient, so
 a managed `mail send --strict` (amq's "error on unknown handles") also
-refuses a recipient with no mailbox directory, which amq, still listing the
-handle, would not (`TestManagedStrictSendRefusesARetiredPeersRemovedMailbox`,
-seen failing first). Making the mailbox again (a resume,
+refuses a recipient that departed for good (retired, or its Epic closed)
+and whose mailbox directory is gone, which amq, still listing the handle,
+would make again; a departed agent that may be resumed still gets its
+missing mailbox made by the delivery. The check and the delivery hold the
+recipients' handle locks, so a retirement cannot remove a mailbox in
+between (`TestManagedStrictSend*`, the refusal seen failing first and the
+lock and the resumable case each ablated). Making the mailbox again (a resume,
 or a reused name) repairs just that handle's. Each handle is checked and
 removed under its own lock (`handles/<h>.lock`), one at a time, and its
 identity is then forgotten under the lifecycle lock; every mailbox maker
