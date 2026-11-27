@@ -2507,7 +2507,13 @@ What was not read is listed in `coverage_gaps` (`peer_mail_body_not_read`,
 `unverified_provenance` for mail sent without the adapter, `other_session`,
 `not_found`, truncation), never guessed. The view (`sessions/<id>/view.json`:
 `as_of` cursor, Epic label, members, obligations, activity, control-plane
-excerpts, gaps, limits, the narrator's own `--summary`, and the
+excerpts, gaps, limits, the narrator's own `--summary`, optional declarative
+Slice `progress` (`store.EpicProgress`: strictly validated before I/O, Go-derived
+`total_slices`, `done_slices`, `counts`, `percent`, monotonic `revision`, and
+idempotent `updated_at`, updated atomically with `--summary` via `--input -`,
+`--progress`, or `--clear-progress`, previewable with `--dry-run`, and serialized
+across concurrent refreshes via `Store.LockView` locking `SessionDir` directly
+with zero extra lock files), and the
 orchestrator's recorded `hand_back`, uncut) is written whole; the
 narrator, the session's orchestrator, a pane with no agent in that session,
 and a personal agent linked to the Epic read it with `epic show`; anyone else is
@@ -2516,9 +2522,20 @@ place in memory.
 
 ### Cockpit
 
-`epic list [--personal H] [--hub DIR]`, and `epic show S [--personal H]
+`epic list [--personal H] [--hub DIR] [--include-closed] [--closed-within D]`,
+and `epic show S [--personal H]
 [--hub DIR]` run outside Rex (`app.Env.ReadCockpitView`), are the human's,
-or a Hub personal agent's, read-only view of a Hub's Epics. Inside Rex,
+or a Hub personal agent's, read-only view of a Hub's Epics. Each `CockpitEpic`
+projects `goal_path`, `narrative`, and `progress` (`null` when unrecorded, never
+fabricated `0%`) directly from existing `grant.json` and `view.json` with zero
+N+1 fan-out; `--include-closed` additionally scans existing closed
+`sessions/*/lifecycle.json` within `--closed-within` (default `24h`, max `720h`)
+under the same Hub and `--personal` scope. Closed unlinked Epics are authorized
+strictly from `closed_links` captured on `epic-ops` / `lifecycle.json` before
+the first unlink (pre-upgrade tombstones lacking `closed_links` fail closed
+unless a surviving link still exists), and any closed Epic that still carries a
+surviving link is excluded from the default live list and gated by
+`--include-closed` + `--closed-within`. Inside Rex,
 `epic show [S]` takes another path (`ReadSessionView`, below). Its scope is the Epics linked to one
 Hub (`core.LinkMatchesPersonal`), whichever of the Hub's personal agents are
 live and however many; it moves no mail, writes no receipt, and starts

@@ -49,16 +49,14 @@ same id for another request is refused.
 ## Watch and read
 
 ```bash
-rex-amq-adapter epic list --fields session_id,name,lifecycle,hand_back
+rex-amq-adapter epic list --fields session_id,name,dir,lifecycle,goal_path,narrative,progress
+rex-amq-adapter epic list --include-closed --closed-within 24h --fields session_id,name,lifecycle,progress
 rex-amq-adapter epic show <session_id> --fields lifecycle,obligations,hand_back
 rex-amq-adapter epic link <session_id>        # let this session and an Epic's narrator exchange mail
 rex-amq-adapter epic unlink <session_id>      # revoke that link
 ```
 
-`epic show` is the session's view: members, obligations, recent mail, coverage
-gaps, hand-back, lifecycle; narrow it with `--fields`. `lifecycle_state` moves
-`partial_start`, `opened`, `hand_back`, `closed`. Outside a personal agent's
-pane, pass `--hub <dir>` or `--personal <handle>`.
+`epic list` projects `goal_path`, `narrative`, and `progress` (`null` if unset) in one call; `--include-closed` adds recently closed Epics within `--closed-within` (default `24h`, max `720h`). `epic show` is one session's view (`partial_start`, `opened`, `hand_back`, `closed`). Outside a personal pane, pass `--hub` or `--personal`.
 
 ## The lead's hand-back and design artifacts
 
@@ -114,8 +112,8 @@ ended (`timeout`, `trust_screen`, `blocked`, `exited`); not all ready exits 7.
 ## Narrator-only commands
 
 ```bash
-rex-amq-adapter epic refresh --summary @summary.md   # rebuild the view, keeping or replacing its narrative
-rex-amq-adapter epic messages --ids <id>,<id> --max-body-bytes 4096   # read its session's messages, receipt-free
+rex-amq-adapter epic refresh --input - --fields as_of,progress     # atomic summary + Slice progress (--progress, --clear-progress, --dry-run)
+rex-amq-adapter epic messages --ids <id>,<id> --max-body-bytes 4096   # read session mail, receipt-free
 ```
 
 ## Hub
