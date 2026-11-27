@@ -7,15 +7,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
-	"sync"
 	"testing"
-	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/core"
-	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 // managedWorld is three agents on a real amq: two members of Epic a, one of
@@ -284,104 +280,5 @@ func TestManagedMailNarratorControlReachesOnlyTheOrchestrator(t *testing.T) {
 	kept, err := e.admit(context.Background(), orch)
 	if err != nil || len(kept) != 1 || kept[0] != sent.ID {
 		t.Fatalf("the orchestrator's gate kept %v (%v), want %s", kept, err, sent.ID)
-	}
-}
-
-// A strict send names only handles with a mailbox: a peer retired from the
-// Epic, whose mailbox the roster retirement removed (its identity kept for
-// the narrator), is unknown to it, and no mailbox is made again for it. A
-// departed peer that may be resumed keeps its mailbox and still gets mail.
-func TestManagedStrictSendRefusesARetiredPeersRemovedMailbox(t *testing.T) {
-	e, ctx := managedWorld(t)
-	needsAmq(t, e, "amq send --strict")
-	past := time.Now().Add(-time.Hour)
-	put(t, e,
-		seed{Handle: "codex-03", Kind: core.Codex, SessionID: "session:a", AdoptedAt: past, DepartedAt: &past, DepartReason: store.DepartRetired},
-		seed{Handle: "codex-04", Kind: core.Codex, SessionID: "session:a", AdoptedAt: past, DepartedAt: &past, DepartReason: store.DepartSessionEnd},
-	)
-	for _, h := range []string{"codex-03", "codex-04"} {
-		if err := e.AMQ.EnsureMailbox(ctx, e.Paths.Root(), h); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if rep, err := e.retireRoster(ctx, []core.Handle{"codex-03", "codex-04"}, nil); err != nil || !slices.Equal(rep.Pruned, []core.Handle{"codex-03"}) {
-		t.Fatalf("setup: %+v %v", rep, err)
-	}
-	if _, ok, _ := e.agentOf("codex-03"); !ok {
-		t.Fatal("setup: the retired peer's identity is gone")
-	}
-	if _, _, err := run(t, e, ctx, "claude-02", "send", "--strict", "--to", "codex-03", "--subject", "s", "--body", "b"); err == nil {
-		t.Fatal("a strict send to the retired peer was accepted")
-	}
-	if inRoster(t, e, "codex-03") {
-		t.Fatal("the strict send made the retired peer's mailbox again")
-	}
-	if _, _, err := run(t, e, ctx, "claude-02", "send", "--strict", "--to", "codex-04", "--subject", "s", "--body", "b"); err != nil {
-		t.Fatalf("a strict send to a resumable peer: %v", err)
-	}
-	if ids, _ := amq.Unread(e.Paths.Root(), "codex-04"); len(ids) != 1 {
-		t.Fatalf("the resumable peer's unread: %v", ids)
-	}
-}
-
-// A retirement that starts while a strict send is being delivered waits for
-// it: it then finds the delivered mail and keeps the mailbox, instead of
-// removing it between the check and the delivery (which amq would then
-// make again for the handle it still lists).
-func TestManagedStrictSendFencesARetirementOfItsRecipient(t *testing.T) {
-	e, ctx := managedWorld(t)
-	needsAmq(t, e, "amq send --strict")
-	past := time.Now().Add(-time.Hour)
-	put(t, e, seed{Handle: "codex-03", Kind: core.Codex, SessionID: "session:a", AdoptedAt: past, DepartedAt: &past, DepartReason: store.DepartRetired})
-	if err := e.AMQ.EnsureMailbox(ctx, e.Paths.Root(), "codex-03"); err != nil {
-		t.Fatal(err)
-	}
-	type retired struct {
-		rep RosterReport
-		err error
-	}
-	done := make(chan retired, 1)
-	var once sync.Once
-	plain := e.AMQ
-	e.AMQ = hookQueue{Queue: plain, beforePost: func(string, []string) error {
-		once.Do(func() {
-			go func() {
-				rep, err := e.retireRoster(ctx, []core.Handle{"codex-03"}, nil)
-				done <- retired{rep, err}
-			}()
-			time.Sleep(300 * time.Millisecond)
-		})
-		return nil
-	}}
-	if _, _, err := run(t, e, ctx, "claude-02", "send", "--strict", "--to", "codex-03", "--subject", "s", "--body", "b"); err != nil {
-		t.Fatalf("the strict send, checked while the mailbox was there: %v", err)
-	}
-	r := <-done
-	if r.err != nil || len(r.rep.Pruned) != 0 || r.rep.Kept["codex-03"] == "" {
-		t.Fatalf("the retirement removed the mailbox under the send: %+v %v", r.rep, r.err)
-	}
-	if ids, _ := amq.Unread(e.Paths.Root(), "codex-03"); len(ids) != 1 {
-		t.Fatalf("codex-03's unread: %v", ids)
-	}
-}
-
-// A strict send to a departed peer that may be resumed makes its missing
-// mailbox again, as amq does for a handle it lists.
-func TestManagedStrictSendRepairsAResumablePeersMailbox(t *testing.T) {
-	e, ctx := managedWorld(t)
-	needsAmq(t, e, "amq send --strict")
-	past := time.Now().Add(-time.Hour)
-	put(t, e, seed{Handle: "codex-04", Kind: core.Codex, SessionID: "session:a", AdoptedAt: past, DepartedAt: &past, DepartReason: store.DepartSessionEnd})
-	if err := e.AMQ.EnsureMailbox(ctx, e.Paths.Root(), "codex-04"); err != nil {
-		t.Fatal(err)
-	}
-	if r, err := e.AMQ.RemoveMailbox(ctx, e.Paths.Root(), "codex-04"); err != nil || !r.Removed {
-		t.Fatalf("setup: %+v %v", r, err)
-	}
-	if _, _, err := run(t, e, ctx, "claude-02", "send", "--strict", "--to", "codex-04", "--subject", "s", "--body", "b"); err != nil {
-		t.Fatalf("a strict send to a resumable peer: %v", err)
-	}
-	if ids, _ := amq.Unread(e.Paths.Root(), "codex-04"); len(ids) != 1 {
-		t.Fatalf("the resumable peer's unread: %v", ids)
 	}
 }

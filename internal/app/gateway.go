@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
-	"slices"
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/core"
@@ -247,13 +246,6 @@ type Outgoing struct {
 	// Check applies the gateway before sending: an agent's own send. The
 	// adapter's notices in an agent's name are judged on arrival only.
 	Check bool
-	// Strict (amq's --strict, which errors on unknown handles) also refuses
-	// a recipient that will never be resumed and whose mailbox is gone: amq
-	// keeps such a handle in its roster after its mailbox is removed
-	// (roster.go), so it would make the mailbox again. The check and the
-	// delivery hold the recipients' handle locks, which a roster retirement
-	// removes a mailbox under.
-	Strict bool
 }
 
 // post sends o through amq, recording its provenance first under a token
@@ -273,52 +265,9 @@ func (e Env) checkedRecipients(from core.Endpoint, to []core.Handle, o Outgoing,
 				return nil, refusedSend(from, ep, d)
 			}
 		}
-		if o.Strict {
-			if gone, err := e.retiredWithoutMailbox(h); err != nil || gone {
-				if err != nil {
-					return nil, err
-				}
-				return nil, fault.New(fault.NotFound, "%s was retired and its mailbox removed; --strict refuses it", h).With("kind", "mailbox")
-			}
-		}
 		eps = append(eps, ep)
 	}
 	return eps, nil
-}
-
-// retiredWithoutMailbox reports whether h departed for good (retired, or
-// its Epic closed) and its mailbox is gone. A departed agent that may be
-// resumed is not: amq makes its missing mailbox again on delivery.
-func (e Env) retiredWithoutMailbox(h core.Handle) (bool, error) {
-	rec, ok, err := e.agentOf(h)
-	if err != nil || !ok || rec.Live() {
-		return false, err
-	}
-	p := rec.departure()
-	return p != nil && quietDeparture(p.DepartReason) && !mailboxExists(e.Paths.Root(), h), nil
-}
-
-// lockHandles takes the locks of hs, sorted and once each, so two holders
-// never wait for each other's in turn; the returned func releases them.
-func (e Env) lockHandles(ctx context.Context, hs []core.Handle) (func(), error) {
-	hs = slices.Clone(hs)
-	slices.Sort(hs)
-	hs = slices.Compact(hs)
-	var unlocks []func()
-	release := func() {
-		for i := len(unlocks) - 1; i >= 0; i-- {
-			unlocks[i]()
-		}
-	}
-	for _, h := range hs {
-		unlock, err := e.Store.LockHandle(ctx, h)
-		if err != nil {
-			release()
-			return nil, err
-		}
-		unlocks = append(unlocks, unlock)
-	}
-	return release, nil
 }
 
 // admits is post's gateway check of send o, run before anything is sent.
@@ -373,13 +322,6 @@ func (e Env) post(ctx context.Context, o Outgoing) (amq.Sent, []byte, error) {
 		return amq.Sent{}, nil, err
 	}
 	p := store.Provenance{Token: token, Op: o.Op.Kind, ControlRequestID: o.Op.ControlRequestID, System: o.Op.System, Hub: o.Op.Hub, From: from, At: e.Now().UTC()}
-	if o.Strict {
-		unlock, err := e.lockHandles(ctx, to)
-		if err != nil {
-			return amq.Sent{}, nil, err
-		}
-		defer unlock()
-	}
 	if p.To, err = e.checkedRecipients(from, to, o, links); err != nil {
 		return amq.Sent{}, nil, err
 	}

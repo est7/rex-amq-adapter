@@ -1637,16 +1637,7 @@ mail, dead letters, or extension data, or held by a live wake, and says why;
 bounded by the peak number of names held at once (live agents, departed
 ones reserved for a resume, launch reservations, and mailboxes holding
 unread mail), and a handle with no identity is refused as a recipient
-before `amq send` runs (`core.CanExchange`, `ReasonUnplaced`). A retired
-peer whose identity is kept for its narrator is still a placed recipient, so
-a managed `mail send --strict` (amq's "error on unknown handles") also
-refuses a recipient that departed for good (retired, or its Epic closed)
-and whose mailbox directory is gone, which amq, still listing the handle,
-would make again; a departed agent that may be resumed still gets its
-missing mailbox made by the delivery. The check and the delivery hold the
-recipients' handle locks, so a retirement cannot remove a mailbox in
-between (`TestManagedStrictSend*`, the refusal seen failing first and the
-lock and the resumable case each ablated). Making the mailbox again (a resume,
+before `amq send` runs (`core.CanExchange`, `ReasonUnplaced`). Making the mailbox again (a resume,
 or a reused name) repairs just that handle's. Each handle is checked and
 removed under its own lock (`handles/<h>.lock`), one at a time, and its
 identity is then forgotten under the lifecycle lock; every mailbox maker
