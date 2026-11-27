@@ -956,23 +956,32 @@ parent, depth, target) that the launched agent carries as `REX_AMQ_SUMMON`.
 agent starts, under the handle's lock (`handles/<h>.lock`, the lock a roster
 sweep removes a mailbox under), so `amq init --add` runs outside the hook
 budgets and the agent's first hook takes `EnsureMailbox`'s fast path.
-`EnsureMailbox` (`internal/amq/lifecycle.go`) has three stages. A handle
-listed in `meta/config.json` whose mailbox and inbox are real directories
-(`Lstat`: a symlink is not) is done with no lock and no `amq` run. Otherwise
-`amq init --root R --agents <h> --add` registers the handle and makes or
-repairs its mailbox under amq's own `meta/config.lock`, checking only that
-handle (and the reserved `user`): the roster keeps its order, creation time,
-and unknown keys, and a new handle goes at its end. A root with no
-`meta/config.json` (`--add` exits 3) is created once by a plain `amq init`
-under the adapter's bootstrap lock (`meta/.adapter-registry.lock`, the file
-older adapters took for every roster write, so one still running during an
-upgrade serialises with it); a root another process created meanwhile, which
-the plain init refuses, only needs `--add`. An amq without `--add` (before
-0.172.0, exit 2, `flag provided but not defined: -add`) fails with
-`ErrAmqTooOld`, naming `amq >= 0.172.0` and `brew update && brew upgrade
-amq`; nothing falls back to rewriting the roster. A wrapper-script test pins
-the argv (`TestEnsureMailboxAddsToAnExistingRootAndNeverForces`), and
-holding the bootstrap lock does not block the fast path
+`EnsureMailbox` (`internal/amq/lifecycle.go`) has a fast path and a slow
+one. A handle listed in `meta/config.json` whose mailbox directory
+`agents/<h>`, its `inbox`, and `inbox/new` are real directories (`Lstat`: a
+symlink is not) is done with no lock and no `amq` run; no other leaf is
+checked, so a mailbox missing another of amq's directories passes until amq
+next runs for it. Otherwise, under the adapter's registry lock
+(`meta/.adapter-registry.lock`), `amq init --root R --agents <h> --add`
+registers the handle and makes or repairs its mailbox, checking only that
+handle (and the reserved `user`) for mailbox directories: amq still decodes
+the roster and rewrites it when it appends, but keeps its order, creation
+time, and unknown keys, and a new handle goes at its end. A root with no
+`meta/config.json` is created by a plain `amq init` under the same lock; a
+root another process created meanwhile, which the plain init refuses, only
+needs `--add`, and nothing is retried beyond that. amq's own
+`meta/config.lock` serialises the writes; the registry lock is kept for
+older adapters, which read the roster under it and later rewrite all of it
+with a full init: one still running during an upgrade (a detached session
+watcher of the previous release) would otherwise write back a roster read
+before a handle was added (executed in
+`TestEnsureMailboxSurvivesAnOlderRosterWriter`, seen failing with `--add`
+outside the lock). An amq without `--add` (before 0.172.0, exit 2, `flag
+provided but not defined: -add`) fails with `ErrAmqTooOld`, naming `amq >=
+0.172.0` and `brew update && brew upgrade amq`; nothing falls back to
+rewriting the roster. A wrapper-script test pins the argv
+(`TestEnsureMailboxAddsToAnExistingRootAndNeverForces`), and holding the
+registry lock does not block the fast path
 (`TestEnsureMailboxFastPathTakesNoLock`, seen failing first). A resume (`agent summon` of a departed agent,
 `epic revive`) makes its own handle's mailbox. A start (`agent summon` of a
 role, a council seat, both agents of `epic open`) first names the handle,
@@ -1613,18 +1622,21 @@ mailed. Each retry has 1 s. "Left" notes are advice and go once.
 (`amq init --force` with the merged list, before 0.172.0's `--add`) is what
 made a new mailbox take 8-10 s under write load once the roster had grown to
 366 handles (2026-11-23, 313 of them closed Epics' and 4 retired peers'
-against 15 live leases). `amq init --add` checks only the handles it is
-given, so the roster's length no longer costs a new mailbox anything, and the
-adapter no longer rewrites the roster at all. A handle that will never be
+against 15 live leases). `amq init --add` makes and fsyncs mailbox
+directories only for the handles it is given, so that work no longer grows
+with the roster (amq still reads the roster and rewrites the file when it
+appends), and the adapter no longer asks for the whole roster to be
+rewritten. A handle that will never be
 resumed loses its mailbox: one departed `epic_closed`, and a peer retired as
 finished whose pane closed. amq stays the single owner of its files: `amq
 cleanup --mailbox <handle>` removes the mailbox (amq keeps one holding unread
 mail, dead letters, or extension data, or held by a live wake, and says why;
 `internal/amq/roster.go`). The handle's entry in `meta/config.json` stays:
-the roster is bounded by the peak number of agents that ran at once, since
-`core.NameHandle` reuses the lowest free `<kind>-<NN>`, and a handle with no
-identity is refused as a recipient before `amq send` runs
-(`core.CanExchange`, `ReasonUnplaced`). Making the mailbox again (a resume,
+`core.NameHandle` reuses the lowest free `<kind>-<NN>`, so the roster is
+bounded by the peak number of names held at once (live agents, departed
+ones reserved for a resume, launch reservations, and mailboxes holding
+unread mail), and a handle with no identity is refused as a recipient
+before `amq send` runs (`core.CanExchange`, `ReasonUnplaced`). Making the mailbox again (a resume,
 or a reused name) repairs just that handle's. Each handle is checked and
 removed under its own lock (`handles/<h>.lock`), one at a time, and its
 identity is then forgotten under the lifecycle lock; every mailbox maker
@@ -1632,7 +1644,7 @@ identity is then forgotten under the lifecycle lock; every mailbox maker
 lock, so a conversation taken back meanwhile gets its mailbox made again
 after the removal (executed in
 `TestASweepRacingAResumeLeavesTheResumedAgentItsMailbox`). Lock order:
-`handles/<h>`, then `lifecycle`; the bootstrap lock is taken under a handle
+`handles/<h>`, then `lifecycle`; the registry lock is taken under a handle
 lock and takes none. A handle stays
 while it runs, while its departure is unfinished, while a launch reserves
 it, while it may be resumed (any other departure: `ReserveFor`), and while
@@ -2776,7 +2788,7 @@ and Claude Code 2.1.316, adapter state isolated by `REX_AMQ_ADAPTER_HOME`:
 | An agy subagent takes its parent's identity, reads its mail, or is kept from stopping | A hook whose conversation agy lists as a subagent does nothing (executed in `agy_subagent_test.go`); a subagent not yet listed is kept off the pane's handle by the same-process claim (`resume_test.go`) |
 | A resumed agent loses its handle, and its peer writes to nobody | The handle belongs to the agent session, not the pane; collection runs before adoption so the closed pane's record is parked and claimable; reservations last 7 days (executed in `resume_test.go`) |
 | A handle names the wrong harness (`codex-…` running Claude) | The kind is never read from a label; a pane that changes kind keeps only its role |
-| Two agents claim one handle | Adoption commits under the lifecycle lock; mailbox registration is amq's `init --add` under its `meta/config.lock`, and only a root's creation holds the adapter's bootstrap lock |
+| Two agents claim one handle | Adoption commits under the lifecycle lock; mailbox registration is amq's `init --add` under its `meta/config.lock` and the adapter's registry lock; the fast path takes neither |
 | Installing hooks invalidates Codex trust | Append-only placement |
 | A waker dies and an idle agent never hears of mail | Every `Stop` checks the waker and revives a dead one, `mail send` does so for each live recipient after it delivers, and `agent collect` for its session; nothing in Rex would notice (executed by the independent review, fixed and tested) |
 | A hook dies between writing a record and finishing | `lease.adopting` or `last_placement.unfinished` marks the transition and a later hook or collection finishes it (executed in `transition_test.go`) |

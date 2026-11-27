@@ -134,32 +134,43 @@ func wakes(t WakeTarget, handle, root string) bool {
 // make a mailbox in an existing root.
 var ErrAmqTooOld = errors.New("amq is too old: rex-amq-adapter needs amq >= 0.172.0 (amq init --add); run `brew update && brew upgrade amq`")
 
-// errNoQueue is `amq init --add` finding no meta/config.json (exit 3).
-var errNoQueue = errors.New("no amq queue at the root")
-
 // EnsureMailbox makes handle a registered member of root with its mailbox
-// made. A handle already listed in meta/config.json whose inbox is a real
-// directory is done with no lock and no amq. Otherwise `amq init --add`
-// registers it and makes (or repairs) its mailbox under amq's own lock,
-// touching no other handle; a root with no queue yet is created by the
-// first maker, under the bootstrap lock. amq stays the only writer of
+// made. A handle already listed in meta/config.json whose mailbox is in
+// place (mailboxPresent) is done with no lock and no amq run. Otherwise,
+// under the registry lock, `amq init --add` registers it and makes (or
+// repairs) its mailbox, touching no other handle; a root with no queue yet
+// is created by a plain `amq init`. amq stays the only writer of
 // meta/config.json and the mailboxes.
 func EnsureMailbox(ctx context.Context, amqBin, root, handle string) error {
-	b, err := os.ReadFile(configPath(root))
-	if errors.Is(err, fs.ErrNotExist) {
-		return bootstrapMailbox(ctx, amqBin, root, handle)
-	}
 	// A config that cannot be read or decoded is amq's to judge: --add
 	// validates it and says what is wrong.
-	if err == nil && listed(b, handle) && mailboxPresent(root, handle) {
+	if b, err := os.ReadFile(configPath(root)); err == nil && listed(b, handle) && mailboxPresent(root, handle) {
 		return nil
 	}
-	err = addMailbox(ctx, amqBin, root, handle)
-	if errors.Is(err, errNoQueue) {
-		// The root was there and is gone again: create it, once.
-		return bootstrapMailbox(ctx, amqBin, root, handle)
+	unlock, err := lockRegistry(ctx, root)
+	if err != nil {
+		return err
 	}
-	return err
+	defer unlock()
+	exists, err := configExists(root)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		out, _, initErr := runInit(ctx, amqBin, root, handle)
+		if initErr == nil {
+			return nil
+		}
+		// A root created meanwhile by amq run outside the adapter refuses
+		// the plain init; it only needs handle added.
+		if exists, err = configExists(root); err != nil {
+			return err
+		}
+		if !exists {
+			return fmt.Errorf("amq init %s: %w: %s", root, initErr, out)
+		}
+	}
+	return addMailbox(ctx, amqBin, root, handle)
 }
 
 // addMailbox runs `amq init --add` for handle in an existing root.
@@ -168,46 +179,10 @@ func addMailbox(ctx context.Context, amqBin, root, handle string) error {
 	switch {
 	case err == nil:
 		return nil
-	case code == 3:
-		return fmt.Errorf("amq init --add %s: %w: %s", root, errNoQueue, out)
 	case code == 2 && strings.Contains(out, "flag provided but not defined: -add"):
 		return fmt.Errorf("%w: amq init --add %s: %s", ErrAmqTooOld, root, out)
 	}
 	return fmt.Errorf("amq init --add %s: %w: %s", root, err, out)
-}
-
-// bootstrapMailbox creates root's queue with handle as its first member,
-// under the bootstrap lock so two adapter makers do not both try. A root
-// created meanwhile (by another maker, or by amq run outside the adapter,
-// which a refused init finds) only needs handle added.
-func bootstrapMailbox(ctx context.Context, amqBin, root, handle string) error {
-	created, err := createQueue(ctx, amqBin, root, handle)
-	if err != nil || created {
-		return err
-	}
-	return addMailbox(ctx, amqBin, root, handle)
-}
-
-// createQueue runs a plain `amq init` for handle when root has no
-// meta/config.json, and reports whether it did; false with no error is a
-// root that has one now.
-func createQueue(ctx context.Context, amqBin, root, handle string) (bool, error) {
-	unlock, err := lockBootstrap(ctx, root)
-	if err != nil {
-		return false, err
-	}
-	defer unlock()
-	if exists, err := configExists(root); err != nil || exists {
-		return false, err
-	}
-	out, _, initErr := runInit(ctx, amqBin, root, handle)
-	if initErr == nil {
-		return true, nil
-	}
-	if exists, err := configExists(root); err != nil || exists {
-		return false, err
-	}
-	return false, fmt.Errorf("amq init %s: %w: %s", root, initErr, out)
 }
 
 // runInit runs `amq init` for handle under root with extra flags, and
@@ -263,8 +238,11 @@ func listed(configJSON []byte, handle string) bool {
 	return json.Unmarshal(configJSON, &cfg) == nil && slices.Contains(cfg.Agents, handle)
 }
 
-// mailboxPresent reports whether handle's mailbox and its inbox are real
-// directories; a symlink is not, and is left to amq to refuse or repair.
+// mailboxPresent reports whether handle's mailbox directory, its inbox,
+// and inbox/new are real directories (Lstat: a symlink is not). It checks
+// no other leaf: a mailbox missing another of amq's directories, or one
+// whose directories hold symlinks further down, passes, and is amq's to
+// repair when it next runs for the handle.
 func mailboxPresent(root, handle string) bool {
 	for _, d := range []string{filepath.Join(root, "agents", handle), filepath.Join(root, "agents", handle, "inbox"), Inbox(root, handle)} {
 		st, err := os.Lstat(d)
@@ -275,11 +253,12 @@ func mailboxPresent(root, handle string) bool {
 	return true
 }
 
-// lockBootstrap serialises the adapter's creators of a root's queue. The
-// file keeps the name of the registry lock older adapters took around every
-// roster write, so one still running during an upgrade waits for a
-// bootstrap here and this one for its writes.
-func lockBootstrap(ctx context.Context, root string) (func(), error) {
+// lockRegistry serialises the adapter's runs of `amq init` on root. amq's
+// own lock serialises the writes; this one is for older adapters, which
+// read the roster and later rewrite all of it under this same lock, so an
+// older one still running during an upgrade cannot write back a roster
+// read before a handle was added here. The fast path never takes it.
+func lockRegistry(ctx context.Context, root string) (func(), error) {
 	dir := filepath.Join(root, "meta")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err

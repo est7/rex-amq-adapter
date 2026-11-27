@@ -1,11 +1,13 @@
 package amq
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -134,7 +136,8 @@ func TestEnsureMailboxNamesAnAmqTooOldForAdd(t *testing.T) {
 
 // A root created by someone else while this maker bootstraps (amq run
 // outside the adapter) refuses the plain init; the handle is then added.
-// A bootstrap that fails with no root made is an error, after one try.
+// A bootstrap that fails with no root made is an error, after one try, and
+// so is a root that vanished before --add ran (exit 3): no retry loop.
 func TestEnsureMailboxBootstrapsOnce(t *testing.T) {
 	t.Run("another creator won", func(t *testing.T) {
 		root := t.TempDir()
@@ -160,6 +163,24 @@ esac`)
 			t.Fatalf("amq calls %q: want one plain init", got)
 		}
 	})
+	t.Run("root gone before --add", func(t *testing.T) {
+		script, calls := stubAmq(t, "echo 'no AMQ queue at the root' >&2; exit 3")
+		root := t.TempDir()
+		// A fixture standing in for the root amq made.
+		if err := os.MkdirAll(filepath.Join(root, "meta"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, "meta", "config.json"), []byte(`{"agents":["x"]}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		err := EnsureMailbox(context.Background(), script, root, "alice")
+		if err == nil || !strings.Contains(err.Error(), "no AMQ queue") {
+			t.Fatalf("err %v, want amq's", err)
+		}
+		if got := calls(); len(got) != 1 || !strings.HasSuffix(got[0], "--add") {
+			t.Fatalf("amq calls %q: want one --add", got)
+		}
+	})
 }
 
 // Adding a handle keeps everything amq keeps: the roster's order, its
@@ -176,8 +197,10 @@ func TestEnsureMailboxKeepsTheConfig(t *testing.T) {
 			}
 			path := filepath.Join(root, "meta", "config.json")
 			cfg := readConfig(t, path)
-			// A fixture: a key a newer amq might write.
-			cfg["x_extra"] = map[string]any{"k": 1.0}
+			// A fixture: an old creation time, and a key a newer amq might
+			// write, holding an integer a float64 cannot carry.
+			cfg["created_utc"] = "2020-01-02T03:04:05Z"
+			cfg["x_extra"] = map[string]any{"k": json.Number("9007199254740993")}
 			b, _ := json.Marshal(cfg)
 			if err := os.WriteFile(path, b, 0o600); err != nil {
 				t.Fatal(err)
@@ -192,7 +215,7 @@ func TestEnsureMailboxKeepsTheConfig(t *testing.T) {
 			if after["created_utc"] != cfg["created_utc"] || after["version"] != cfg["version"] {
 				t.Errorf("created_utc/version changed: %v -> %v", cfg, after)
 			}
-			if fmt.Sprint(after["x_extra"]) != "map[k:1]" {
+			if fmt.Sprint(after["x_extra"]) != "map[k:9007199254740993]" {
 				t.Errorf("the unknown key was lost: %v", after)
 			}
 		})
@@ -248,9 +271,52 @@ func readConfig(t *testing.T, path string) map[string]any {
 	if err != nil {
 		t.Fatal(err)
 	}
+	d := json.NewDecoder(bytes.NewReader(b))
+	d.UseNumber()
 	var cfg map[string]any
-	if err := json.Unmarshal(b, &cfg); err != nil {
+	if err := d.Decode(&cfg); err != nil {
 		t.Fatal(err)
 	}
 	return cfg
+}
+
+// An older adapter still running during an upgrade rewrites the whole
+// roster from a copy it read under the registry lock. A handle added
+// meanwhile must not be lost to that write: adding waits for the lock.
+func TestEnsureMailboxSurvivesAnOlderRosterWriter(t *testing.T) {
+	bin := realAmq(t)
+	ctx := context.Background()
+	root := filepath.Join(t.TempDir(), "root")
+	for _, h := range []string{"claude-01", "codex-01"} {
+		if err := EnsureMailbox(ctx, bin, root, h); err != nil {
+			t.Fatal(err)
+		}
+	}
+	unlock, err := fsutil.Flock(ctx, filepath.Join(root, "meta", ".adapter-registry.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := Agents(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	added := make(chan error, 1)
+	go func() {
+		wait, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		added <- EnsureMailbox(wait, bin, root, "pi-01")
+	}()
+	time.Sleep(500 * time.Millisecond)
+	// The older adapter's write: the roster it read, rewritten whole.
+	old := exec.Command(bin, "--no-update-check", "init", "--root", root, "--agents", strings.Join(snapshot, ","), "--force")
+	if out, err := old.CombinedOutput(); err != nil {
+		t.Fatalf("the older writer: %v: %s", err, out)
+	}
+	unlock()
+	if err := <-added; err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := Agents(root); !slices.Contains(got, "pi-01") || !mailboxPresent(root, "pi-01") {
+		t.Fatalf("roster %v: pi-01 was lost to the older writer", got)
+	}
 }

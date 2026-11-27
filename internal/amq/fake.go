@@ -1,6 +1,7 @@
 package amq
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -99,7 +100,10 @@ func (f *Fake) EnsureMailbox(ctx context.Context, root, handle string) error {
 	}
 	cfg := map[string]any{"version": 1, "created_utc": time.Now().UTC().Format(time.RFC3339), "agents": []any{}}
 	if b != nil {
-		if err := json.Unmarshal(b, &cfg); err != nil {
+		// Numbers stay as amq wrote them, however large.
+		d := json.NewDecoder(bytes.NewReader(b))
+		d.UseNumber()
+		if err := d.Decode(&cfg); err != nil {
 			return fmt.Errorf("decode %s: %w", path, err)
 		}
 	}
