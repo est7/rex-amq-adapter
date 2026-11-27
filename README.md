@@ -561,11 +561,12 @@ goes to the lead through the narrator and comes back as the next `seq`.
 
 `rex-amq-adapter epic list` is the read-only cockpit of a Hub: its linked
 Epics (lifecycle, hand-back, goal path, narrative, Slice progress — `null` when
-unrecorded — and whether the narrator has written a view; `--include-closed`
-with optional `--closed-within`, default `24h`, also includes recently closed
-Epics of the Hub), and `epic show <session>` one of them (its view, or its
-lifecycle alone before the narrator writes one). Neither moves mail or starts
-anything. A personal
+unrecorded — and whether the narrator has written a view); `--include-closed`
+with optional `--closed-within` (default `24h`, max `720h`) also appends
+archived projections of recently closed Epics of the Hub. `epic show <session>`
+opens one linked Epic (its view, or its lifecycle alone before the narrator
+writes one; unlinked closed Epics are read from `epic list --include-closed`).
+Neither moves mail or starts anything. A personal
 agent runs them in its own pane; you run them from outside Rex, with
 `--hub <dir>` or `--personal <handle>` to pick the Hub (default: the default
 Hub). The answer does not depend on how many personal agents are live.
