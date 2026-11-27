@@ -760,8 +760,8 @@ func (e Env) noteWindow(ctx context.Context, h core.Handle, note string) error {
 // takenHandles are the handles a new name must avoid: every record's (live,
 // or reserved for a departed session), every launcher's unexpired
 // reservation but except's (the adopting agent's own), and every mailbox
-// holding undrained mail, so a new agent never inherits someone else's
-// unread messages.
+// directory holding undrained mail, listed or not in amq's roster, so a new
+// agent never inherits someone else's unread messages.
 func (e Env) takenHandles(recs []agent, except string) (map[core.Handle]bool, error) {
 	taken := map[core.Handle]bool{}
 	for _, r := range recs {
@@ -776,11 +776,11 @@ func (e Env) takenHandles(recs []agent, except string) (map[core.Handle]bool, er
 			taken[r.Handle] = true
 		}
 	}
-	agents, err := amq.Agents(e.Paths.Root())
+	boxes, err := mailboxDirs(e.Paths.Root())
 	if err != nil {
 		return nil, err
 	}
-	for _, a := range agents {
+	for _, a := range boxes {
 		h := core.Handle(a)
 		if taken[h] {
 			continue

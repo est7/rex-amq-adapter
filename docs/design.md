@@ -953,10 +953,37 @@ A passing launch reserves its place with a token (`summons/<token>.json`,
 parent, depth, target) that the launched agent carries as `REX_AMQ_SUMMON`.
 
 **Pre-provisioning.** Every launcher makes the agent's mailbox before the
-agent starts, so `amq init --force` (which rewrites the root's roster and
-fsyncs each mailbox's directories, 8-10 s at 370 handles under write load)
-runs outside the hook budgets and the agent's first hook takes
-`EnsureMailbox`'s fast path. A resume (`agent summon` of a departed agent,
+agent starts, under the handle's lock (`handles/<h>.lock`, the lock a roster
+sweep removes a mailbox under), so `amq init --add` runs outside the hook
+budgets and the agent's first hook takes `EnsureMailbox`'s fast path.
+`EnsureMailbox` (`internal/amq/lifecycle.go`) has a fast path and a slow
+one. A handle listed in `meta/config.json` whose mailbox directory
+`agents/<h>`, its `inbox`, and `inbox/new` are real directories (`Lstat`: a
+symlink is not) is done with no lock and no `amq` run; no other leaf is
+checked, so a mailbox missing another of amq's directories passes until amq
+next runs for it. Otherwise, under the adapter's registry lock
+(`meta/.adapter-registry.lock`), `amq init --root R --agents <h> --add`
+registers the handle and makes or repairs its mailbox, checking only that
+handle (and the reserved `user`) for mailbox directories: amq still decodes
+the roster and rewrites it when it appends, but keeps its order, creation
+time, and unknown keys, and a new handle goes at its end. A root with no
+`meta/config.json`, or one removed under the adapter that `--add` finds gone
+(exit 3), is created once by a plain `amq init` under the same lock; a root
+another process created meanwhile, which the plain init refuses, only needs
+one last `--add`, and nothing loops (at most `--add`, a plain init, `--add`). amq's own
+`meta/config.lock` serialises the writes; the registry lock is kept for
+older adapters, which read the roster under it and later rewrite all of it
+with a full init: one still running during an upgrade (a detached session
+watcher of the previous release) would otherwise write back a roster read
+before a handle was added (executed in
+`TestEnsureMailboxSurvivesAnOlderRosterWriter`, seen failing with `--add`
+outside the lock). An amq without `--add` (before 0.172.0, exit 2, `flag
+provided but not defined: -add`) fails with `ErrAmqTooOld`, naming `amq >=
+0.172.0` and `brew update && brew upgrade amq`; nothing falls back to
+rewriting the roster. A wrapper-script test pins the argv
+(`TestEnsureMailboxAddsToAnExistingRootAndNeverForces`), and holding the
+registry lock does not block the fast path
+(`TestEnsureMailboxFastPathTakesNoLock`, seen failing first). A resume (`agent summon` of a departed agent,
 `epic revive`) makes its own handle's mailbox. A start (`agent summon` of a
 role, a council seat, both agents of `epic open`) first names the handle,
 under the lifecycle lock, and records it as a reservation
@@ -1452,7 +1479,7 @@ collection belongs to the session watcher and `agent collect`.
 A failed adoption is tried again by the next hook, whichever it is: there is
 no back-off. One used to be needed because every adoption collected every
 record and held the lifecycle lock across `rex` and `amq` calls, so agents
-started together queued behind each other and `amq init --force` under write
+started together queued behind each other and a full roster rewrite under write
 load (8-10 s, 2026-11-23, **reproduced**) was killed at the hook's timeout and
 left every other pane's hook waiting for the lock. Adoption now asks Rex a
 fixed number of questions with no lock held and takes the lock for local file
@@ -1486,10 +1513,11 @@ on the host waits for, never covers a `rex`, `amq`, or `ps` call:
    its session and window, at the next epoch and marked `adopting` (I3);
    the lead claim; the summon token consumed.
 3. **Reconcile**, with no lifecycle lock: settle the replaced agents'
-   departures; start the session watcher; `amq init --force` with the merged
-   agent list under the root registry lock (port from herdr), skipped when
-   the handle is registered and its mailbox exists, as it is for every agent
-   the adapter launches (below); the doorbell holds; the
+   departures; start the session watcher; under the handle's lock,
+   `EnsureMailbox` (`amq init --add` for this handle only, skipped with no
+   lock or `amq` run when the handle is registered and its mailbox exists, as
+   it is for every agent the adapter launches; Pre-provisioning); the
+   doorbell holds; the
    waker (`reconcileWaker`, below); then list the session's blocks to find
    the session-mates and queue join notes; the labels; the arrival gate,
    under the handle's lock (it reads, and may quarantine, every unread
@@ -1591,21 +1619,34 @@ adoption of an agent already adopted tells nobody. A departure finishes when
 the agent's waker is retired, its notes are dropped, and any orchestrator is
 mailed. Each retry has 1 s. "Left" notes are advice and go once.
 
-**Roster retirement.** amq's roster (`meta/config.json`) lists every handle
-`amq init --force` was given, and each init rewrites it and fsyncs every
-listed mailbox's directories: a roster that only grew (366 handles on
-2026-11-23, 313 of them closed Epics' and 4 retired peers' against 15 live
-leases) is what made a new mailbox take 8-10 s under write load. A handle
-that will never be resumed leaves it: one departed `epic_closed`, and a peer
-retired as finished whose pane closed. amq stays the single owner of its
-files: `amq cleanup --mailbox <handle>` removes the mailbox (amq keeps one
-holding unread mail, dead letters, or extension data, or held by a live
-wake, and says why), and `amq init --force` with the remaining handles
-rewrites the roster (`internal/amq/roster.go`; a roster is never emptied).
-Each handle is checked and removed under its own lock (`handles/<h>.lock`),
-which an adoption holds while it makes its mailbox, so a conversation taken
-back meanwhile gets its mailbox made again after the removal (executed in
-`TestASweepRacingAResumeLeavesTheResumedAgentItsMailbox`). A handle stays
+**Roster retirement.** A roster rewrite that fsynced every listed mailbox
+(`amq init --force` with the merged list, before 0.172.0's `--add`) is what
+made a new mailbox take 8-10 s under write load once the roster had grown to
+366 handles (2026-11-23, 313 of them closed Epics' and 4 retired peers'
+against 15 live leases). `amq init --add` makes and fsyncs mailbox
+directories only for the handles it is given, so that work no longer grows
+with the roster (amq still reads the roster and rewrites the file when it
+appends), and the adapter no longer asks for the whole roster to be
+rewritten. A handle that will never be
+resumed loses its mailbox: one departed `epic_closed`, and a peer retired as
+finished whose pane closed. amq stays the single owner of its files: `amq
+cleanup --mailbox <handle>` removes the mailbox (amq keeps one holding unread
+mail, dead letters, or extension data, or held by a live wake, and says why;
+`internal/amq/roster.go`). The handle's entry in `meta/config.json` stays:
+`core.NameHandle` reuses the lowest free `<kind>-<NN>`, so the roster is
+bounded by the peak number of names held at once (live agents, departed
+ones reserved for a resume, launch reservations, and mailboxes holding
+unread mail), and a handle with no identity is refused as a recipient
+before `amq send` runs (`core.CanExchange`, `ReasonUnplaced`). Making the mailbox again (a resume,
+or a reused name) repairs just that handle's. Each handle is checked and
+removed under its own lock (`handles/<h>.lock`), one at a time, and its
+identity is then forgotten under the lifecycle lock; every mailbox maker
+(an adoption, and each launcher's pre-provisioning) holds the same handle
+lock, so a conversation taken back meanwhile gets its mailbox made again
+after the removal (executed in
+`TestASweepRacingAResumeLeavesTheResumedAgentItsMailbox`). Lock order:
+`handles/<h>`, then `lifecycle`; the registry lock is taken under a handle
+lock and takes none. A handle stays
 while it runs, while its departure is unfinished, while a launch reserves
 it, while it may be resumed (any other departure: `ReserveFor`), and while
 its mailbox holds mail. It leaves on its event (an Epic's close takes its
@@ -1613,11 +1654,16 @@ handles and forgets their identities; a retire takes the peer's handle and
 keeps its record) and on a sweep (`SweepRoster`): `agent collect` from
 outside Rex runs one and reports it as `roster` (`pruned`, `forgotten`,
 `kept` with each reason), and each session watcher runs one at most every
-10 minutes host-wide (`roster-swept`, `roster-sweep.lock`). The sweep also
-takes roster entries of adapter-named handles (`<kind>-<NN>`) that have no
-identity left, such as those collection forgot after `ReserveFor`, and
-forgets a retired peer's record once its Epic is closed. Other names are
-left alone.
+10 minutes host-wide (`roster-swept`, `roster-sweep.lock`). The sweep
+reads mailboxes from `agents/`, not from `meta/config.json`: it takes the
+mailboxes of adapter-named handles (`<kind>-<NN>`) that have no identity
+left, such as those collection forgot after `ReserveFor`, and forgets a
+retired peer's record once its Epic is closed. A handle whose mailbox is
+gone is not looked at again (a second sweep runs no `amq cleanup` for it),
+and other names are left alone. A new name likewise avoids every mailbox
+directory under `agents/` that holds unread mail, listed in the roster or
+not (`takenHandles`; amq makes a mailbox for mail sent to an unregistered
+handle).
 
 **Garbage collection** runs on `rex-amq-adapter agent collect` (and `hub
 notify`); a session watcher runs it only for its session, and it finishes
@@ -2634,7 +2680,8 @@ drives amq through `Env.AMQ` (`Queue`, the way `Env.Rex` is a `Terminal`):
 `amq.Fake` writes amq's mailbox files and keeps wakers in memory, so the suite
 runs where amq is not installed; `REX_AMQ_REAL=1` runs the same suite against
 amq itself. `TestQueueContract` runs one set of scenarios against both, so the
-fake cannot drift from amq. A test of what only amq does (its read verbs, open
+fake cannot drift from amq; under `REX_AMQ_REAL=1` an amq that cannot be
+found fails these tests instead of skipping them. A test of what only amq does (its read verbs, open
 obligations, a real waker typing a doorbell) calls `needsAmq` and runs only
 with `REX_AMQ_REAL=1`. An end-to-end
 script drives real agents in scratch Rex tabs.
@@ -2742,7 +2789,7 @@ and Claude Code 2.1.316, adapter state isolated by `REX_AMQ_ADAPTER_HOME`:
 | An agy subagent takes its parent's identity, reads its mail, or is kept from stopping | A hook whose conversation agy lists as a subagent does nothing (executed in `agy_subagent_test.go`); a subagent not yet listed is kept off the pane's handle by the same-process claim (`resume_test.go`) |
 | A resumed agent loses its handle, and its peer writes to nobody | The handle belongs to the agent session, not the pane; collection runs before adoption so the closed pane's record is parked and claimable; reservations last 7 days (executed in `resume_test.go`) |
 | A handle names the wrong harness (`codex-…` running Claude) | The kind is never read from a label; a pane that changes kind keeps only its role |
-| Two agents claim one handle | Adoption commits under the lifecycle lock; mailbox registration holds the root registry lock |
+| Two agents claim one handle | Adoption commits under the lifecycle lock; mailbox registration is amq's `init --add` under its `meta/config.lock` and the adapter's registry lock; the fast path takes neither |
 | Installing hooks invalidates Codex trust | Append-only placement |
 | A waker dies and an idle agent never hears of mail | Every `Stop` checks the waker and revives a dead one, `mail send` does so for each live recipient after it delivers, and `agent collect` for its session; nothing in Rex would notice (executed by the independent review, fixed and tested) |
 | A hook dies between writing a record and finishing | `lease.adopting` or `last_placement.unfinished` marks the transition and a later hook or collection finishes it (executed in `transition_test.go`) |

@@ -1,6 +1,7 @@
 package amq
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -76,44 +77,49 @@ func (f *Fake) fail(op string, args ...string) error {
 	return f.Fail(op, args)
 }
 
-// EnsureMailbox registers handle in root's meta/config.json and creates its
-// mailbox directories, as `amq init --force` does. Like the CLI's, it runs
-// that "init" step only when the handle is unregistered or its mailbox is
-// missing.
+// EnsureMailbox registers handle in root's meta/config.json and makes its
+// mailbox, as `amq init --add` does (a plain `amq init` for a root with no
+// queue yet): the roster keeps its order and every key it has, a new handle
+// goes at its end, and only handle's mailbox (and the reserved user's) is
+// made, never another removed one. Like the CLI's, it runs that "init" step
+// only when the handle is unlisted or its mailbox is missing.
 func (f *Fake) EnsureMailbox(ctx context.Context, root, handle string) error {
 	fs := f.state()
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
-	if agents, err := Agents(root); err == nil && slices.Contains(agents, handle) && mailboxPresent(root, handle) {
+	path := configPath(root)
+	b, err := os.ReadFile(path)
+	if err == nil && listed(b, handle) && mailboxPresent(root, handle) {
 		return nil
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
 	if err := f.fail("init", root, handle); err != nil {
 		return err
 	}
-	cfg := struct {
-		Agents     []string `json:"agents"`
-		CreatedUTC string   `json:"created_utc"`
-		Version    int      `json:"version"`
-	}{Version: 1, CreatedUTC: time.Now().UTC().Format(time.RFC3339)}
-	path := filepath.Join(root, "meta", "config.json")
-	if b, err := os.ReadFile(path); err == nil {
-		if err := json.Unmarshal(b, &cfg); err != nil {
+	cfg := map[string]any{"version": 1, "created_utc": time.Now().UTC().Format(time.RFC3339), "agents": []any{}}
+	if b != nil {
+		// Numbers stay as amq wrote them, however large.
+		d := json.NewDecoder(bytes.NewReader(b))
+		d.UseNumber()
+		if err := d.Decode(&cfg); err != nil {
 			return fmt.Errorf("decode %s: %w", path, err)
 		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
 	}
-	if !slices.Contains(cfg.Agents, handle) {
-		cfg.Agents = append(cfg.Agents, handle)
-	}
-	sort.Strings(cfg.Agents) // amq writes the merged list sorted
-	for _, h := range cfg.Agents {
+	agents, _ := cfg["agents"].([]any)
+	known := b != nil && slices.Contains(agents, any(handle))
+	for _, h := range []string{handle, "user"} {
 		for _, d := range []string{"inbox/new", "inbox/cur", "inbox/tmp", "outbox/sent", "dlq/new", "dlq/cur", "receipts"} {
 			if err := os.MkdirAll(filepath.Join(root, "agents", h, d), 0o700); err != nil {
 				return err
 			}
 		}
 	}
+	if known {
+		return nil
+	}
+	cfg["agents"] = append(agents, handle)
 	return writeJSON(path, cfg)
 }
 
@@ -513,42 +519,4 @@ func (f *Fake) RemoveMailbox(ctx context.Context, root, handle string) (MailboxR
 		return MailboxRemoval{}, err
 	}
 	return MailboxRemoval{Removed: true}, nil
-}
-
-// PruneAgents rewrites root's roster without drop, as `amq init --force`
-// with the remaining agents does; a roster that would be left empty stays.
-func (f *Fake) PruneAgents(ctx context.Context, root string, drop []string) ([]string, error) {
-	fs := f.state()
-	fs.mu.Lock()
-	defer fs.mu.Unlock()
-	path := filepath.Join(root, "meta", "config.json")
-	b, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	var cfg map[string]any
-	if err := json.Unmarshal(b, &cfg); err != nil {
-		return nil, fmt.Errorf("decode %s: %w", path, err)
-	}
-	agents, _ := cfg["agents"].([]any)
-	var keep, pruned []string
-	for _, a := range agents {
-		s, _ := a.(string)
-		if slices.Contains(drop, s) {
-			pruned = append(pruned, s)
-		} else {
-			keep = append(keep, s)
-		}
-	}
-	if len(pruned) == 0 || len(keep) == 0 {
-		return nil, nil
-	}
-	if err := f.fail("init", root, strings.Join(keep, ",")); err != nil {
-		return nil, err
-	}
-	cfg["agents"] = keep
-	return pruned, writeJSON(path, cfg)
 }

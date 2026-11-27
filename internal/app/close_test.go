@@ -79,12 +79,12 @@ func TestCloseEpicKillsParksAndUnlinks(t *testing.T) {
 	if !slices.Equal(res.Parked, want) {
 		t.Errorf("parked %v, want %v", res.Parked, want)
 	}
-	// A closed Epic is never revived: its agents' handles leave the amq
-	// roster, their mailboxes go, and so do their identities.
-	roster, _ := amq.Agents(e.Paths.Root())
+	// A closed Epic is never revived: its agents' mailboxes go, and so do
+	// their identities.
 	for _, h := range want {
-		if _, ok, _ := e.agentOf(h); ok || slices.Contains(roster, string(h)) || wakerLive(t, e, string(h)) {
-			t.Errorf("%s after the close: identity kept=%v in roster=%v waker=%v", h, ok, slices.Contains(roster, string(h)), wakerLive(t, e, string(h)))
+		_, err := os.Lstat(filepath.Join(e.Paths.Root(), "agents", string(h)))
+		if _, ok, _ := e.agentOf(h); ok || err == nil || wakerLive(t, e, string(h)) {
+			t.Errorf("%s after the close: identity kept=%v mailbox kept=%v waker=%v", h, ok, err == nil, wakerLive(t, e, string(h)))
 		}
 	}
 	if r := recordOf(t, e, other); !r.Live() {
@@ -99,8 +99,8 @@ func TestCloseEpicKillsParksAndUnlinks(t *testing.T) {
 	if _, ok, _ := e.Store.ReadView("session:epic"); !ok {
 		t.Error("the Epic's view was removed")
 	}
-	if r := recordOf(t, e, other); !slices.Contains(roster, string(r.Handle)) {
-		t.Errorf("an agent of another session left the roster: %v", roster)
+	if r := recordOf(t, e, other); !mailboxMade(e, r.Handle) {
+		t.Errorf("an agent of another session lost its mailbox: %s", r.Handle)
 	}
 }
 

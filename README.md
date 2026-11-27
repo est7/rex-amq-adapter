@@ -43,8 +43,9 @@ is erased only when the box holds exactly that doorbell. See
 
 ## Install
 
-Requirements: Rex (macOS), `amq` on `PATH` (tested with 0.139.0; needs
-`amq send --labels`, `amq wake check --json-schema 2`, and `retire --if-generation`),
+Requirements: Rex (macOS), `amq` >= 0.172.0 on `PATH` (tested with 0.172.0; needs
+`amq init --add`, `amq send --labels`, `amq wake check --json-schema 2`, and
+`retire --if-generation`; an older amq is named as too old with the command to upgrade it),
 Go to build, and Claude Code (2.1.318), Codex (0.166.0), Antigravity CLI
 (1.5.1), or Pi (1.4.0) — the versions tested.
 
@@ -383,9 +384,9 @@ personal agent, which reads `hand_back` and tells you what was handed back and
 asks whether to close it. A pane label that reads `hand-back: …` signals
 nothing. Only on your words does it run `rex-amq-adapter epic close
 <session_id> --asked "<your words>"`, which kills the Epic's Rex session (what
-its panes showed is gone), parks its agents as `epic_closed`, takes their
-handles out of the amq roster with their identities (a closed Epic is never
-revived), and unlinks it. A personal agent closes only an Epic linked to its
+its panes showed is gone), parks its agents as `epic_closed`, removes their
+mailboxes and forgets their identities (a closed Epic is never revived), and
+unlinks it. A personal agent closes only an Epic linked to its
 Hub or session; another Operator closes any Epic the records know (`--hub DIR`
 narrows it to one Hub's), never a Hub's session. Unless `--force`, it refuses
 one whose agents are still working, waiting on a dialog, report no state, or
@@ -621,7 +622,7 @@ rex-amq-adapter epic show --fields lifecycle,obligations,hand_back   # a session
 rex-amq-adapter stream events       # stream this session's agents and mail as NDJSON (read-only; --tab, --session S, --all: every session, offline handles included)
 rex-amq-adapter stream panel        # (you, not an agent) events of this session plus its panel: label, crew, attention, view, cockpit
 rex-amq-adapter agent await <block> # wait for an agent you started; prints its outcome
-rex-amq-adapter agent collect       # reconcile this session with Rex: park agents whose pane closed or process died, bring back dead wakers; outside Rex, every record, then sweep the amq roster of handles never to be resumed
+rex-amq-adapter agent collect       # reconcile this session with Rex: park agents whose pane closed or process died, bring back dead wakers; outside Rex, every record, then sweep the amq root of the mailboxes of handles never to be resumed
 rex-amq-adapter agent retire <handle>   # close a finished peer's pane without a crash report (not rex block close)
 ```
 
@@ -724,7 +725,7 @@ false`). A notice still over budget then is cut before its tail, which stays who
 | Agent's first hook runs | Handle chosen (`<kind>-<NN>`; the role, from the pane label, kept in its identity), mailbox created, `amq wake` started, pane relabeled `<role>(<handle>)` (then `… \| <task>` once the agent names its task); it is told its session-mates and its crew and role briefing, and its session-mates are told it joined |
 | Agent exits | `SessionEnd` retires its waker and tells its session-mates it left; the handle stays reserved for its session for 7 days |
 | Agent crashes or its pane closes | The next adoption or `agent collect` notices and does the same, as does a send to it, or within seconds an orchestrator there |
-| A finished peer is retired (`rex-amq-adapter agent retire <handle> [--force]`) | Its lease is released as `retired` (waker retired, no "left" mail or urgent narrator notice), then its pane closes (it stays open when it no longer shows the agent, `"pane":"left_open"`); its `SessionEnd`, late hooks, and collection then change nothing. A closed pane's handle leaves the amq roster, its mailbox removed unless it holds mail; its record stays for the narrator until the Epic closes. An orchestrator uses this instead of `rex block close`, which reads as a crash. Refused for itself, a narrator, personal, or orchestrator agent, an agent of another session, and, unless `--force`, one still working or holding unread mail |
+| A finished peer is retired (`rex-amq-adapter agent retire <handle> [--force]`) | Its lease is released as `retired` (waker retired, no "left" mail or urgent narrator notice), then its pane closes (it stays open when it no longer shows the agent, `"pane":"left_open"`); its `SessionEnd`, late hooks, and collection then change nothing. A closed pane's handle loses its mailbox unless it holds mail; its record stays for the narrator until the Epic closes. An orchestrator uses this instead of `rex block close`, which reads as a crash. Refused for itself, a narrator, personal, or orchestrator agent, an agent of another session, and, unless `--force`, one still working or holding unread mail |
 | Session resumed (`claude --resume`, `codex resume`), in any pane | Gets its handle back, with the mail that arrived meanwhile; so does a Claude conversation that moved to a new session id, found through its transcript, and an agy conversation `/resume`d by a new agy in the same pane, whose next hook adopts it |
 | Mail sent to an agent that left | The sender's next hook says so once, naming who now runs in that pane and who is in its session |
 | New session in a used pane | Gets a new handle; the previous session keeps its own. `/clear` in the same process keeps the handle, and `agent list --fields handle,agent_session_id` shows the new session |

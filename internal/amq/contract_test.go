@@ -17,7 +17,6 @@ import (
 type queue interface {
 	EnsureMailbox(ctx context.Context, root, handle string) error
 	RemoveMailbox(ctx context.Context, root, handle string) (MailboxRemoval, error)
-	PruneAgents(ctx context.Context, root string, drop []string) ([]string, error)
 	Ensure(ctx context.Context, w Waker, logDir string) (WakeState, WakeDecision, error)
 	RetireHandle(ctx context.Context, root, handle string) (bool, error)
 	ConfigureHolds(ctx context.Context, root, handle string, normal, low time.Duration) error
@@ -44,7 +43,11 @@ func targets(t *testing.T) []contractTarget {
 	out := []contractTarget{{"fake", f,
 		func(_ context.Context, root, h string) (WakeState, error) { return f.Waker(root, h), nil },
 		func(_ *testing.T, root, h string) { f.Kill(root, h) }}}
-	if bin, err := ResolveBin(); err == nil {
+	bin, err := ResolveBin()
+	if err != nil && os.Getenv("REX_AMQ_REAL") == "1" {
+		t.Fatalf("REX_AMQ_REAL=1 but %v", err)
+	}
+	if err == nil {
 		out = append(out, contractTarget{"amq", CLI{Bin: bin},
 			func(ctx context.Context, root, h string) (WakeState, error) { return WakeCheck(ctx, bin, root, h) },
 			func(t *testing.T, root, h string) {
@@ -82,8 +85,8 @@ func TestQueueContract(t *testing.T) {
 					t.Fatalf("mailbox %s: %v", h, err)
 				}
 			}
-			if got, err := Agents(root); err != nil || strings.Join(got, ",") != "alice,bob" {
-				t.Fatalf("registered agents: %v %v (want alice,bob once each, sorted)", got, err)
+			if got, err := Agents(root); err != nil || strings.Join(got, ",") != "bob,alice" {
+				t.Fatalf("registered agents: %v %v (want bob,alice once each, in the order they came)", got, err)
 			}
 			if !mailboxPresent(root, "alice") || !mailboxPresent(root, "bob") {
 				t.Fatal("mailbox directories missing after EnsureMailbox")
@@ -360,9 +363,10 @@ func TestQueueContractDoesNotRecoverAWakerWithABrokenInjector(t *testing.T) {
 	}
 }
 
-// A handle leaves the roster in two steps amq owns: its mailbox removed
-// (kept, with amq's reason, while it holds mail), then the roster rewritten
-// without it. Neither touches another handle, and a roster is never emptied.
+// A handle leaves the root by its mailbox, which amq removes (or keeps, with
+// its reason, while it holds mail) without touching another handle. Its
+// roster entry stays, and making its mailbox again repairs just that
+// mailbox: the other removed ones stay gone.
 func TestRosterRetirementContract(t *testing.T) {
 	for _, tc := range targets(t) {
 		t.Run(tc.name, func(t *testing.T) {
@@ -387,17 +391,20 @@ func TestRosterRetirementContract(t *testing.T) {
 			if r, err := q.RemoveMailbox(ctx, root, "bob"); err != nil || r.Gone() || r.Refusal == "" || !mailboxPresent(root, "bob") {
 				t.Fatalf("removing bob's mailbox, which holds mail: %+v %v", r, err)
 			}
-			if got, err := q.PruneAgents(ctx, root, []string{"carol", "zed"}); err != nil || !slices.Equal(got, []string{"carol"}) {
-				t.Fatalf("pruned %v %v, want carol", got, err)
+			if got, err := Agents(root); err != nil || !slices.Contains(got, "carol") || len(got) != 3 {
+				t.Fatalf("roster after removing carol's mailbox: %v %v (want her entry kept)", got, err)
 			}
-			if got, err := Agents(root); err != nil || strings.Join(got, ",") != "alice,bob" {
-				t.Fatalf("roster after the prune: %v %v", got, err)
+			if r, err := q.RemoveMailbox(ctx, root, "alice"); err != nil || !r.Removed {
+				t.Fatalf("removing alice's empty mailbox: %+v %v", r, err)
 			}
-			if got, err := q.PruneAgents(ctx, root, []string{"alice", "bob"}); err != nil || len(got) != 0 {
-				t.Fatalf("a prune that would empty the roster: %v %v", got, err)
+			if err := q.EnsureMailbox(ctx, root, "carol"); err != nil || !mailboxPresent(root, "carol") {
+				t.Fatalf("making carol's removed mailbox again: %v", err)
 			}
-			if got, _ := Agents(root); strings.Join(got, ",") != "alice,bob" {
-				t.Fatalf("the roster was emptied: %v", got)
+			if mailboxPresent(root, "alice") {
+				t.Fatal("repairing carol's mailbox brought back alice's")
+			}
+			if ids, err := Unread(root, "bob"); err != nil || len(ids) != 1 {
+				t.Fatalf("bob's mail after the repair: %v %v", ids, err)
 			}
 		})
 	}
