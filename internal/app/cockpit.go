@@ -165,81 +165,127 @@ func (e Env) ReadCockpitView(ctx context.Context, getenv func(string) string, re
 	if scope.self != nil {
 		out.Personal, out.SessionID = scope.self.Handle, scope.self.SessionID
 	}
-	seenIDs := map[string]bool{}
+	var cutoff time.Time
+	if req.IncludeClosed {
+		within := req.ClosedWithin
+		if within <= 0 {
+			within = DefaultClosedWithin
+		}
+		now := time.Now().UTC()
+		if e.Now != nil {
+			now = e.Now().UTC()
+		}
+		cutoff = now.Add(-within)
+	}
+	type closedCandidate struct {
+		epic     CockpitEpic
+		closedAt time.Time
+	}
+	seenLive := map[string]bool{}
+	seenClosed := map[string]bool{}
+	var closedMatched []closedCandidate
 	for _, l := range linked {
 		c, err := e.cockpitEpic(l.Epic)
 		if err != nil {
 			return nil, err
 		}
 		c.PreferredPersonal = l.PreferredPersonal
-		seenIDs[l.Epic.SessionID] = true
+		// A closed Epic that still carries a link from another Hub/session is
+		// no longer live: exclude it from default `epic list` and apply the
+		// same --include-closed + --closed-within gate while honoring its link.
+		if c.Lifecycle != nil && c.Lifecycle.State == store.EpicClosed {
+			if req.IncludeClosed && !seenClosed[l.Epic.SessionID] {
+				closedAt := closedTimestamp(*c.Lifecycle)
+				if !closedAt.IsZero() && !closedAt.Before(cutoff) {
+					seenClosed[l.Epic.SessionID] = true
+					closedMatched = append(closedMatched, closedCandidate{epic: c, closedAt: closedAt})
+				}
+			}
+			continue
+		}
+		seenLive[l.Epic.SessionID] = true
 		out.Epics = append(out.Epics, c)
 	}
 	if req.IncludeClosed {
-		closed, err := e.closedCockpitEpics(scope, seenIDs, req.ClosedWithin)
+		archived, err := e.archivedClosedEpics(scope, seenLive, seenClosed, cutoff)
 		if err != nil {
 			return nil, err
 		}
-		out.Epics = append(out.Epics, closed...)
+		for _, a := range archived {
+			closedMatched = append(closedMatched, closedCandidate{epic: a.epic, closedAt: a.closedAt})
+		}
+		sort.Slice(closedMatched, func(i, j int) bool {
+			if !closedMatched[i].closedAt.Equal(closedMatched[j].closedAt) {
+				return closedMatched[i].closedAt.After(closedMatched[j].closedAt)
+			}
+			return closedMatched[i].epic.SessionID < closedMatched[j].epic.SessionID
+		})
+		for _, m := range closedMatched {
+			out.Epics = append(out.Epics, m.epic)
+		}
 	}
 	b, err := json.MarshalIndent(out, "", "  ")
 	return append(b, '\n'), err
 }
 
-func (e Env) closedCockpitEpics(scope cockpitScope, seenIDs map[string]bool, within time.Duration) ([]CockpitEpic, error) {
-	if within <= 0 {
-		within = DefaultClosedWithin
-	}
-	now := time.Now().UTC()
-	if e.Now != nil {
-		now = e.Now().UTC()
-	}
-	cutoff := now.Add(-within)
+type archivedClosedEpic struct {
+	epic     CockpitEpic
+	closedAt time.Time
+}
+
+func (e Env) archivedClosedEpics(scope cockpitScope, seenLive, seenClosed map[string]bool, cutoff time.Time) ([]archivedClosedEpic, error) {
 	lcs, err := e.Store.EpicLifecycles()
 	if err != nil {
 		return nil, err
 	}
-	type candidate struct {
-		lc       store.EpicLifecycle
-		closedAt time.Time
-	}
-	var matched []candidate
+	var out []archivedClosedEpic
 	for _, lc := range lcs {
-		if lc.SessionID == "" || lc.State != store.EpicClosed || seenIDs[lc.SessionID] {
+		if lc.SessionID == "" || lc.State != store.EpicClosed || seenLive[lc.SessionID] || seenClosed[lc.SessionID] {
 			continue
 		}
 		closedAt := closedTimestamp(lc)
 		if closedAt.IsZero() || closedAt.Before(cutoff) {
 			continue
 		}
-		syn := core.Link{
-			Hub:               lc.Hub,
-			Personal:          core.SessionKey{Server: lc.Server, SessionID: lc.PersonalSessionID},
-			Epic:              core.SessionKey{Server: lc.Server, SessionID: lc.SessionID},
-			PreferredPersonal: lc.PersonalHandle,
-		}
-		if !scope.matches(e, syn) {
+		matched, ok := e.closedGrantMatch(scope, lc)
+		if !ok {
 			continue
 		}
-		seenIDs[lc.SessionID] = true
-		matched = append(matched, candidate{lc: lc, closedAt: closedAt})
-	}
-	sort.Slice(matched, func(i, j int) bool {
-		if !matched[i].closedAt.Equal(matched[j].closedAt) {
-			return matched[i].closedAt.After(matched[j].closedAt)
-		}
-		return matched[i].lc.SessionID < matched[j].lc.SessionID
-	})
-	out := make([]CockpitEpic, 0, len(matched))
-	for _, m := range matched {
-		c, err := e.cockpitEpic(core.SessionKey{Server: m.lc.Server, SessionID: m.lc.SessionID})
+		seenClosed[lc.SessionID] = true
+		c, err := e.cockpitEpic(matched.Epic)
 		if err != nil {
 			return nil, err
 		}
-		c.PreferredPersonal = m.lc.PersonalHandle
-		out = append(out, c)
+		c.PreferredPersonal = matched.PreferredPersonal
+		out = append(out, archivedClosedEpic{epic: c, closedAt: closedAt})
 	}
 	return out, nil
+}
+
+// closedGrantMatch checks whether scope was authorized for lc when lc closed.
+// Modern tombstones record ClosedLinks (captured before finishClose unlinked
+// them), so revoked opener grants never regain access and the closing Hub keeps
+// its archived row. Legacy tombstones with ClosedLinks == nil fall back to the
+// tombstone's recorded Hub/personal metadata.
+func (e Env) closedGrantMatch(scope cockpitScope, lc store.EpicLifecycle) (core.Link, bool) {
+	if lc.ClosedLinks != nil {
+		for _, l := range *lc.ClosedLinks {
+			if scope.matches(e, l) {
+				return l, true
+			}
+		}
+		return core.Link{}, false
+	}
+	syn := core.Link{
+		Hub:               lc.Hub,
+		Personal:          core.SessionKey{Server: lc.Server, SessionID: lc.PersonalSessionID},
+		Epic:              core.SessionKey{Server: lc.Server, SessionID: lc.SessionID},
+		PreferredPersonal: lc.PersonalHandle,
+	}
+	if scope.matches(e, syn) {
+		return syn, true
+	}
+	return core.Link{}, false
 }
 
 func closedTimestamp(lc store.EpicLifecycle) time.Time {

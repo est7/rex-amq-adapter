@@ -437,3 +437,157 @@ func TestCockpitEpicListProgressAndIncludeClosed(t *testing.T) {
 	// 5. Pure read: zero new files or mutations anywhere in state dir.
 	sameState(t, "epic list --include-closed", before, stateFiles(t, e))
 }
+
+// Regression tests for S2-1 and S2-2:
+//  1. When Hub A opens an Epic, Hub B links it, Hub A unlinks it, and Hub B
+//     closes it, Hub A must NOT regain archived visibility via historical opener
+//     metadata while Hub B (who held the grant at close) MUST see the archived row.
+//  2. When both Hub A and Hub B hold links and Hub A closes the Epic (leaving
+//     Hub B's link intact), Hub B's default `epic list` must NOT return the
+//     closed Epic, `--include-closed --closed-within` must enforce the cutoff,
+//     and unlinking Hub B afterwards revokes Hub B's archived access.
+func TestCockpitClosedAccessFollowsGrantsAtCloseAndExcludesClosedFromDefault(t *testing.T) {
+	term := &fakeTerm{state: "idle", statusGone: true, windows: map[string]string{}}
+	e := realAmqEnv(t, term)
+	noOpenObligations(e)
+	e.Ancestors = func() ([]proc, error) { return []proc{{PID: 9001}}, nil }
+	ctx := context.Background()
+	now := time.Date(2026, 11, 27, 15, 0, 0, 0, time.UTC)
+	e.Now = func() time.Time { return now }
+
+	hubA, err := resolvedDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hubB, err := resolvedDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hubAKey := core.NewHubKey(fakeServer, hubA)
+	hubBKey := core.NewHubKey(fakeServer, hubB)
+
+	put(t, e,
+		seed{Handle: "pi-a", Kind: core.Pi, Role: core.PersonalRole, BlockID: "block:pa", SessionID: "session:hub-a", Cwd: hubA, AgentPID: 801, AgentSessionID: "s-pa"},
+		seed{Handle: "pi-b", Kind: core.Pi, Role: core.PersonalRole, BlockID: "block:pb", SessionID: "session:hub-b", Cwd: hubB, AgentPID: 802, AgentSessionID: "s-pb"},
+	)
+	if err := e.Store.PutSessionPolicy(store.SessionPolicy{Kind: store.PolicyHub, SessionID: "session:hub-a", Server: fakeServer, HubKey: hubAKey}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Store.PutSessionPolicy(store.SessionPolicy{Kind: store.PolicyHub, SessionID: "session:hub-b", Server: fakeServer, HubKey: hubBKey}); err != nil {
+		t.Fatal(err)
+	}
+
+	listIDs := func(block string, req CockpitViewRequest) []string {
+		t.Helper()
+		b, err := e.ReadCockpitView(ctx, cockpitEnv(map[string]string{"REX_BLOCK": block}), req)
+		if err != nil {
+			t.Fatalf("list %s %+v: %v", block, req, err)
+		}
+		var v CockpitView
+		if err := json.Unmarshal(b, &v); err != nil {
+			t.Fatal(err)
+		}
+		ids := make([]string, 0, len(v.Epics))
+		for _, ep := range v.Epics {
+			ids = append(ids, ep.SessionID)
+		}
+		return ids
+	}
+
+	// --- Scenario 1 (S2-1): A opens E1, B links E1, A unlinks E1, B closes E1. ---
+	e1 := core.SessionKey{Server: fakeServer, SessionID: "session:e1"}
+	if err := e.Store.PutEpicLifecycle(store.EpicLifecycle{
+		SessionID: e1.SessionID, Server: fakeServer, Hub: hubAKey, Name: "e1",
+		PersonalHandle: "pi-a", PersonalSessionID: "session:hub-a", State: store.EpicOpened, OpenedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Store.PutView(e1.SessionID, SessionView{
+		Schema: ViewSchema, Session: ViewSession{Server: fakeServer, SessionID: e1.SessionID, Epic: "e1"},
+		Narrative: &ViewNarrative{Text: "sensitive e1 narrative", At: now},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range []core.Link{
+		{Hub: hubAKey, Personal: core.SessionKey{Server: fakeServer, SessionID: "session:hub-a"}, PreferredPersonal: "pi-a", Epic: e1},
+		{Hub: hubBKey, Personal: core.SessionKey{Server: fakeServer, SessionID: "session:hub-b"}, PreferredPersonal: "pi-b", Epic: e1},
+	} {
+		if err := e.Store.PutLink(l); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Hub A revokes its grant.
+	if _, _, err := e.Link(ctx, Location{Block: "block:pa"}, e1.SessionID, false); err != nil {
+		t.Fatalf("Hub A unlink: %v", err)
+	}
+	if got := listIDs("block:pa", CockpitViewRequest{}); len(got) != 0 {
+		t.Fatalf("Hub A after unlink still sees live %v", got)
+	}
+	// Hub B closes E1.
+	if _, err := e.CloseEpic(ctx, Location{Block: "block:pb"}, CloseRequest{Session: e1.SessionID, Asked: "close e1"}); err != nil {
+		t.Fatalf("Hub B close: %v", err)
+	}
+	// Revoked Hub A MUST NOT regain access via historical opener metadata (both personal and outside-Rex --hub).
+	if got := listIDs("block:pa", CockpitViewRequest{IncludeClosed: true}); len(got) != 0 {
+		t.Errorf("revoked Hub A regained closed epic via opener metadata: %v", got)
+	}
+	if raw, err := e.ReadCockpitView(ctx, cockpitEnv(nil), CockpitViewRequest{Hub: hubA, IncludeClosed: true}); err != nil {
+		t.Fatal(err)
+	} else if strings.Contains(string(raw), e1.SessionID) {
+		t.Errorf("outside-Rex --hub A regained closed epic: %s", raw)
+	}
+	// Hub B (who held the effective grant at close) MUST see E1 in --include-closed.
+	if got := listIDs("block:pb", CockpitViewRequest{IncludeClosed: true}); len(got) != 1 || got[0] != e1.SessionID {
+		t.Errorf("closing Hub B lost closed epic: %v", got)
+	}
+	if raw, err := e.ReadCockpitView(ctx, cockpitEnv(nil), CockpitViewRequest{Hub: hubB, IncludeClosed: true}); err != nil {
+		t.Fatal(err)
+	} else if !strings.Contains(string(raw), e1.SessionID) || !strings.Contains(string(raw), "sensitive e1 narrative") {
+		t.Errorf("outside-Rex --hub B missing closed epic or narrative: %s", raw)
+	}
+
+	// --- Scenario 2 (S2-2): A and B both link E2; A closes E2 (B's link remains). ---
+	e2 := core.SessionKey{Server: fakeServer, SessionID: "session:e2"}
+	if err := e.Store.PutEpicLifecycle(store.EpicLifecycle{
+		SessionID: e2.SessionID, Server: fakeServer, Hub: hubAKey, Name: "e2",
+		PersonalHandle: "pi-a", PersonalSessionID: "session:hub-a", State: store.EpicOpened, OpenedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range []core.Link{
+		{Hub: hubAKey, Personal: core.SessionKey{Server: fakeServer, SessionID: "session:hub-a"}, PreferredPersonal: "pi-a", Epic: e2},
+		{Hub: hubBKey, Personal: core.SessionKey{Server: fakeServer, SessionID: "session:hub-b"}, PreferredPersonal: "pi-b", Epic: e2},
+	} {
+		if err := e.Store.PutLink(l); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := e.CloseEpic(ctx, Location{Block: "block:pa"}, CloseRequest{Session: e2.SessionID, Asked: "close e2"}); err != nil {
+		t.Fatalf("Hub A close e2: %v", err)
+	}
+	// Advance clock by 10 seconds so --closed-within 1s excludes E2.
+	now = now.Add(10 * time.Second)
+	// Hub B still holds its link, yet default epic list MUST exclude closed E2.
+	if got := listIDs("block:pb", CockpitViewRequest{}); len(got) != 0 {
+		t.Errorf("Hub B default epic list leaked closed E2 via remaining link: %v", got)
+	}
+	// Hub B with --include-closed --closed-within 1s MUST respect the cutoff (excludes E1 and E2).
+	if got := listIDs("block:pb", CockpitViewRequest{IncludeClosed: true, ClosedWithin: time.Second}); len(got) != 0 {
+		t.Errorf("Hub B --closed-within 1s bypassed cutoff for remaining link: %v", got)
+	}
+	// Hub B with --include-closed (24h) sees both E1 and E2.
+	if got := listIDs("block:pb", CockpitViewRequest{IncludeClosed: true}); len(got) != 2 {
+		t.Errorf("Hub B --include-closed 24h got %v, want [e1, e2]", got)
+	}
+	// Hub A with --include-closed sees E2 (not E1!).
+	if got := listIDs("block:pa", CockpitViewRequest{IncludeClosed: true}); len(got) != 1 || got[0] != e2.SessionID {
+		t.Errorf("Hub A --include-closed got %v, want [%s]", got, e2.SessionID)
+	}
+	// If Hub B later unlinks E2, Hub B stops seeing E2 even with --include-closed.
+	if _, _, err := e.Link(ctx, Location{Block: "block:pb"}, e2.SessionID, false); err != nil {
+		t.Fatalf("Hub B unlink e2: %v", err)
+	}
+	if got := listIDs("block:pb", CockpitViewRequest{IncludeClosed: true}); len(got) != 1 || got[0] != e1.SessionID {
+		t.Errorf("Hub B after unlinking closed E2 got %v, want only [%s]", got, e1.SessionID)
+	}
+}
