@@ -100,6 +100,12 @@ type EpicLifecycle struct {
 	ClosedAt          *time.Time    `json:"closed_at,omitempty"`
 	UpdatedAt         time.Time     `json:"updated_at"`
 	HandBacks         []HandBackRef `json:"hand_backs,omitempty"`
+	// ClosedLinks records the grants that were effective and automatically
+	// unlinked when the Epic closed, so `epic list --include-closed` authorizes
+	// archived views strictly from grants effective at close rather than
+	// historical opener metadata. Pre-upgrade tombstones lack this field and
+	// remain visible only through surviving links.
+	ClosedLinks []core.Link `json:"closed_links,omitempty"`
 }
 
 // Advance moves the lifecycle to state at, unless it is already as far or
@@ -201,6 +207,36 @@ func (s Store) PutEpicLifecycle(l EpicLifecycle) error {
 	return writeJSON(s.P.lifecyclePath(l.SessionID), l)
 }
 
+// EpicLifecycles scans every recorded lifecycle.json under SessionsDir,
+// sorted by SessionID. Sessions without a lifecycle.json are skipped; an
+// unreadable or malformed lifecycle.json returns an error.
+func (s Store) EpicLifecycles() ([]EpicLifecycle, error) {
+	entries, err := os.ReadDir(s.P.SessionsDir())
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list Epic lifecycles: %w", err)
+	}
+	var out []EpicLifecycle
+	for _, ent := range entries {
+		if !ent.IsDir() || strings.HasPrefix(ent.Name(), ".") {
+			continue
+		}
+		var lc EpicLifecycle
+		ok, err := readJSON(filepath.Join(s.P.SessionsDir(), ent.Name(), "lifecycle.json"), &lc)
+		if err != nil {
+			return nil, fmt.Errorf("the lifecycle in %s: %w", ent.Name(), err)
+		}
+		if !ok {
+			continue
+		}
+		out = append(out, lc)
+	}
+	slices.SortFunc(out, func(a, b EpicLifecycle) int { return strings.Compare(a.SessionID, b.SessionID) })
+	return out, nil
+}
+
 // Epic operation kinds.
 const (
 	EpicOpOpen   = "open"
@@ -235,7 +271,13 @@ type EpicOpRecord struct {
 	// HubDirs are the Hubs a close's Epic was of when it was recorded, by
 	// its lifecycle and its links: what a retry's --hub is held to after
 	// the close's unlink removed the links.
-	HubDirs           []string    `json:"hub_dirs,omitempty"`
+	HubDirs []string `json:"hub_dirs,omitempty"`
+	// ClosedLinks are the links that granted the close's caller once close
+	// enters its unlink phase (after KillSession and parkClosed), persisted
+	// before the first DeleteLink so a retry after a crash still records them
+	// on the closed lifecycle tombstone without snapshotting pre-kill grants
+	// that may later be explicitly unlinked.
+	ClosedLinks       []core.Link `json:"closed_links,omitempty"`
 	PersonalHandle    core.Handle `json:"personal_handle"`
 	PersonalSessionID string      `json:"personal_session_id"`
 	OrchestratorBlock string      `json:"orchestrator_block,omitempty"`

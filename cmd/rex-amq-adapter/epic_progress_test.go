@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/app"
 	"github.com/est7/rex-amq-adapter/internal/cli"
@@ -247,5 +248,177 @@ func TestEpicRefreshRejectsUnknownFieldsBeforeMutation(t *testing.T) {
 	}
 	if string(after) != string(before) {
 		t.Fatalf("epic refresh mutated view.json before rejecting --fields:\nbefore: %s\nafter:  %s", before, after)
+	}
+}
+
+// epic list projects goal_path, narrative, and progress (null when absent)
+// in one call with zero Rex/amq fan-out, supports --fields including optional
+// omitted fields, and filters closed Epics with --include-closed / --closed-within.
+func TestEpicListCLIProgressProjectionAndClosedFiltering(t *testing.T) {
+	isolate(t)
+	marker := filepath.Join(t.TempDir(), "touched")
+	stub := filepath.Join(t.TempDir(), "stub")
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\ntouch "+marker+"\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("REX_AMQ_REX", stub)
+	t.Setenv("REX_AMQ_AMQ", stub)
+
+	hub, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := store.Store{P: store.Paths{Home: os.Getenv("REX_AMQ_ADAPTER_HOME")}}
+	srv := "unix:///t.sock"
+	hubKey := core.NewHubKey(srv, hub)
+	otherHub, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherHubKey := core.NewHubKey(srv, otherHub)
+
+	sLive1 := "session:01a1eac4-f222-7d79-9291-9a8a86d39e01"
+	sLive2 := "session:01a1eac4-f222-7d79-9291-9a8a86d39e02"
+	sClosedRecent := "session:01a1eac4-f222-7d79-9291-9a8a86d39e03"
+	sClosedOld := "session:01a1eac4-f222-7d79-9291-9a8a86d39e04"
+	sClosedOther := "session:01a1eac4-f222-7d79-9291-9a8a86d39e05"
+	sClosedLegacy := "session:01a1eac4-f222-7d79-9291-9a8a86d39e06"
+
+	now := time.Now().UTC()
+	recentAt := now.Add(-2 * time.Hour)
+	oldAt := now.Add(-48 * time.Hour)
+
+	for _, l := range []core.Link{
+		{Hub: hubKey, Epic: core.SessionKey{Server: srv, SessionID: sLive1}},
+		{Hub: hubKey, Epic: core.SessionKey{Server: srv, SessionID: sLive2}},
+	} {
+		if err := s.PutLink(l); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, lc := range []store.EpicLifecycle{
+		{SessionID: sLive1, Server: srv, Hub: hubKey, Name: "live-with-progress", Dir: "/repo/a", State: store.EpicOpened, UpdatedAt: now},
+		{SessionID: sLive2, Server: srv, Hub: hubKey, Name: "live-no-progress", Dir: "/repo/b", State: store.EpicOpened, UpdatedAt: now},
+		{SessionID: sClosedRecent, Server: srv, Hub: hubKey, Name: "closed-recent", Dir: "/repo/c", State: store.EpicClosed, ClosedAt: &recentAt, UpdatedAt: recentAt, ClosedLinks: []core.Link{{Hub: hubKey, Epic: core.SessionKey{Server: srv, SessionID: sClosedRecent}}}},
+		{SessionID: sClosedOld, Server: srv, Hub: hubKey, Name: "closed-old", Dir: "/repo/d", State: store.EpicClosed, ClosedAt: &oldAt, UpdatedAt: oldAt, ClosedLinks: []core.Link{{Hub: hubKey, Epic: core.SessionKey{Server: srv, SessionID: sClosedOld}}}},
+		{SessionID: sClosedOther, Server: srv, Hub: otherHubKey, Name: "closed-other-hub", Dir: "/repo/e", State: store.EpicClosed, ClosedAt: &recentAt, UpdatedAt: recentAt, ClosedLinks: []core.Link{{Hub: otherHubKey, Epic: core.SessionKey{Server: srv, SessionID: sClosedOther}}}},
+		{SessionID: sClosedLegacy, Server: srv, Hub: hubKey, Name: "closed-legacy-no-grant", Dir: "/repo/f", State: store.EpicClosed, ClosedAt: &recentAt, UpdatedAt: recentAt},
+	} {
+		if err := s.PutEpicLifecycle(lc); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.PutGrant(store.Grant{SessionID: sLive1, RelayedBy: "agy-01", RelayedAt: now, Contract: "/me/epics/01.md", ContractSHA256: "abc"}); err != nil {
+		t.Fatal(err)
+	}
+	pct30, pct100 := 30, 100
+	if err := s.PutView(sLive1, app.SessionView{
+		Schema:    app.ViewSchema,
+		Session:   app.ViewSession{Server: srv, SessionID: sLive1, Epic: "live-with-progress"},
+		Narrative: &app.ViewNarrative{Text: "S1 implementing", At: now},
+		Progress: &store.EpicProgress{
+			PlanComplete: true,
+			Slices:       []store.SliceProgress{{ID: "S1", Title: "Core", Stage: store.StageImplementing}},
+			TotalSlices:  1,
+			Counts:       store.StageCounts{Implementing: 1},
+			Percent:      &pct30,
+			Revision:     1,
+			UpdatedAt:    now,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutView(sClosedRecent, app.SessionView{
+		Schema:  app.ViewSchema,
+		Session: app.ViewSession{Server: srv, SessionID: sClosedRecent, Epic: "closed-recent"},
+		Progress: &store.EpicProgress{
+			PlanComplete: true,
+			Slices:       []store.SliceProgress{{ID: "S1", Title: "Done", Stage: store.StageDone}},
+			TotalSlices:  1,
+			DoneSlices:   1,
+			Counts:       store.StageCounts{Done: 1},
+			Percent:      &pct100,
+			Revision:     2,
+			UpdatedAt:    recentAt,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Flag validation errors.
+	check(t, []want{
+		{[]string{"epic", "list", "--hub", hub, "--closed-within", "12h"}, 2, "usage"},
+		{[]string{"epic", "list", "--hub", hub, "--include-closed", "--closed-within", "721h"}, 2, "invalid_input"},
+		{[]string{"epic", "list", "--hub", hub, "--include-closed", "--closed-within", "0"}, 2, "invalid_input"},
+		{[]string{"epic", "list", "--hub", hub, "--fields", "session_id,nonesuch"}, 2, "invalid_input"},
+	})
+
+	// Single-call projected read of live Epics: --fields works with omitted optional fields and explicit null progress.
+	code, env := machine(t, "epic", "list", "--hub", hub, "--fields", "session_id,name,dir,lifecycle,goal_path,narrative,progress")
+	if code != 0 {
+		t.Fatalf("epic list --fields: exit %d %+v", code, env.Error)
+	}
+	var page struct {
+		Items []map[string]any `json:"items"`
+		Total int              `json:"total"`
+	}
+	if err := json.Unmarshal(env.Data, &page); err != nil || page.Total != 2 || len(page.Items) != 2 {
+		t.Fatalf("live page: %s %v", env.Data, err)
+	}
+	for _, it := range page.Items {
+		switch it["session_id"] {
+		case sLive1:
+			p, _ := it["progress"].(map[string]any)
+			if it["goal_path"] != "/me/epics/01.md" || p == nil || p["percent"] != float64(30) {
+				t.Errorf("live1 item: %+v", it)
+			}
+		case sLive2:
+			val, present := it["progress"]
+			if !present || val != nil {
+				t.Errorf("live2 progress present=%v val=%v, want explicit null", present, val)
+			}
+		default:
+			t.Errorf("unexpected live item: %v", it["session_id"])
+		}
+	}
+
+	// --include-closed defaults to 24h: includes sClosedRecent, excludes sClosedOld and sClosedOther.
+	code, env = machine(t, "epic", "list", "--hub", hub, "--include-closed", "--fields", "session_id,lifecycle,progress")
+	if code != 0 {
+		t.Fatalf("epic list --include-closed: exit %d %+v", code, env.Error)
+	}
+	page.Items, page.Total = nil, 0
+	if err := json.Unmarshal(env.Data, &page); err != nil || page.Total != 3 {
+		t.Fatalf("include-closed 24h: %s %v", env.Data, err)
+	}
+	if page.Items[2]["session_id"] != sClosedRecent {
+		t.Errorf("expected sClosedRecent third, got %+v", page.Items)
+	}
+
+	// --include-closed --closed-within 72h includes sClosedOld too (still excludes sClosedOther).
+	code, env = machine(t, "epic", "list", "--hub", hub, "--include-closed", "--closed-within", "72h", "--fields", "session_id")
+	if code != 0 {
+		t.Fatalf("epic list --include-closed 72h: exit %d %+v", code, env.Error)
+	}
+	page.Items, page.Total = nil, 0
+	if err := json.Unmarshal(env.Data, &page); err != nil || page.Total != 4 {
+		t.Fatalf("include-closed 72h: %s %v", env.Data, err)
+	}
+
+	// Cursor from live-only listing is rejected on --include-closed listing.
+	code, env = machine(t, "epic", "list", "--hub", hub, "--limit", "1")
+	if code != 0 {
+		t.Fatalf("live page 1: exit %d %+v", code, env.Error)
+	}
+	var paged struct {
+		NextCursor string `json:"next_cursor"`
+	}
+	if err := json.Unmarshal(env.Data, &paged); err != nil || paged.NextCursor == "" {
+		t.Fatalf("missing next_cursor: %s", env.Data)
+	}
+	check(t, []want{{[]string{"epic", "list", "--hub", hub, "--include-closed", "--limit", "1", "--cursor", paged.NextCursor}, 2, "invalid_input"}})
+
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("epic list invoked rex or amq")
 	}
 }

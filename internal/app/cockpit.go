@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
+	"github.com/est7/rex-amq-adapter/internal/fault"
 	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
@@ -29,10 +32,16 @@ import (
 // personal agent; Personal narrows to the Epics that personal agent opened
 // or prefers (and names its Hub when Hub is not given).
 type CockpitViewRequest struct {
-	Session  string
-	Personal string
-	Hub      string
+	Session       string
+	Personal      string
+	Hub           string
+	IncludeClosed bool
+	ClosedWithin  time.Duration
 }
+
+// DefaultClosedWithin is the lookback window for `epic list --include-closed`
+// when --closed-within is omitted.
+const DefaultClosedWithin = 24 * time.Hour
 
 // CockpitView is the summary of a Hub's linked Epics. Personal and
 // SessionID are the personal agent read for, when there is one: the caller,
@@ -45,10 +54,12 @@ type CockpitView struct {
 	Epics     []CockpitEpic `json:"epics"`
 }
 
-// CockpitEpic is one linked Epic in the summary. HasView says its narrator
-// has written its view (read it with --session). Obligation is what the
-// Epic still asks of its Hub, from its lifecycle alone, whatever mail was
-// read: hand_back from the lead's hand-back until the Epic is closed.
+// CockpitEpic is one linked (or recently closed, under --include-closed) Epic
+// in the summary. HasView says its narrator has written its view (read it with
+// --session). Progress is nil (serialized as null, never fabricated 0%) when
+// the narrator has not recorded Slice progress. Obligation is what the Epic
+// still asks of its Hub, from its lifecycle alone, whatever mail was read:
+// hand_back from the lead's hand-back until the Epic is closed.
 type CockpitEpic struct {
 	SessionID         string               `json:"session_id"`
 	Server            string               `json:"server,omitempty"`
@@ -58,6 +69,9 @@ type CockpitEpic struct {
 	Obligation        string               `json:"obligation,omitempty"`
 	Lifecycle         *store.EpicLifecycle `json:"lifecycle,omitempty"`
 	HandBack          *store.HandBack      `json:"hand_back,omitempty"`
+	GoalPath          string               `json:"goal_path,omitempty"`
+	Narrative         *ViewNarrative       `json:"narrative,omitempty"`
+	Progress          *store.EpicProgress  `json:"progress"`
 	HasView           bool                 `json:"has_view"`
 }
 
@@ -103,6 +117,12 @@ func (c cockpitScope) matches(e Env, l core.Link) bool {
 // the view of req.Session, an Epic linked to the Hub in scope, or without
 // req.Session the summary of every Epic linked to it.
 func (e Env) ReadCockpitView(ctx context.Context, getenv func(string) string, req CockpitViewRequest) (json.RawMessage, error) {
+	if req.ClosedWithin != 0 && !req.IncludeClosed {
+		return nil, fmt.Errorf("%w: --closed-within requires --include-closed", ErrUsage)
+	}
+	if req.ClosedWithin < 0 {
+		return nil, fault.New(fault.InvalidInput, "--closed-within must be positive")
+	}
 	op, err := e.ResolveOperator(getenv)
 	if err != nil {
 		return nil, err
@@ -145,16 +165,122 @@ func (e Env) ReadCockpitView(ctx context.Context, getenv func(string) string, re
 	if scope.self != nil {
 		out.Personal, out.SessionID = scope.self.Handle, scope.self.SessionID
 	}
+	var cutoff time.Time
+	if req.IncludeClosed {
+		within := req.ClosedWithin
+		if within <= 0 {
+			within = DefaultClosedWithin
+		}
+		now := time.Now().UTC()
+		if e.Now != nil {
+			now = e.Now().UTC()
+		}
+		cutoff = now.Add(-within)
+	}
+	type closedCandidate struct {
+		epic     CockpitEpic
+		closedAt time.Time
+	}
+	seenLive := map[string]bool{}
+	seenClosed := map[string]bool{}
+	var closedMatched []closedCandidate
 	for _, l := range linked {
 		c, err := e.cockpitEpic(l.Epic)
 		if err != nil {
 			return nil, err
 		}
 		c.PreferredPersonal = l.PreferredPersonal
+		// A closed Epic that still carries a link from another Hub/session is
+		// no longer live: exclude it from default `epic list` and apply the
+		// same --include-closed + --closed-within gate while honoring its link.
+		if c.Lifecycle != nil && c.Lifecycle.State == store.EpicClosed {
+			if req.IncludeClosed && !seenClosed[l.Epic.SessionID] {
+				closedAt := closedTimestamp(*c.Lifecycle)
+				if !closedAt.IsZero() && !closedAt.Before(cutoff) {
+					seenClosed[l.Epic.SessionID] = true
+					closedMatched = append(closedMatched, closedCandidate{epic: c, closedAt: closedAt})
+				}
+			}
+			continue
+		}
+		seenLive[l.Epic.SessionID] = true
 		out.Epics = append(out.Epics, c)
+	}
+	if req.IncludeClosed {
+		archived, err := e.archivedClosedEpics(scope, seenLive, seenClosed, cutoff)
+		if err != nil {
+			return nil, err
+		}
+		for _, a := range archived {
+			closedMatched = append(closedMatched, closedCandidate{epic: a.epic, closedAt: a.closedAt})
+		}
+		sort.Slice(closedMatched, func(i, j int) bool {
+			if !closedMatched[i].closedAt.Equal(closedMatched[j].closedAt) {
+				return closedMatched[i].closedAt.After(closedMatched[j].closedAt)
+			}
+			return closedMatched[i].epic.SessionID < closedMatched[j].epic.SessionID
+		})
+		for _, m := range closedMatched {
+			out.Epics = append(out.Epics, m.epic)
+		}
 	}
 	b, err := json.MarshalIndent(out, "", "  ")
 	return append(b, '\n'), err
+}
+
+type archivedClosedEpic struct {
+	epic     CockpitEpic
+	closedAt time.Time
+}
+
+func (e Env) archivedClosedEpics(scope cockpitScope, seenLive, seenClosed map[string]bool, cutoff time.Time) ([]archivedClosedEpic, error) {
+	lcs, err := e.Store.EpicLifecycles()
+	if err != nil {
+		return nil, err
+	}
+	var out []archivedClosedEpic
+	for _, lc := range lcs {
+		if lc.SessionID == "" || lc.State != store.EpicClosed || seenLive[lc.SessionID] || seenClosed[lc.SessionID] {
+			continue
+		}
+		closedAt := closedTimestamp(lc)
+		if closedAt.IsZero() || closedAt.Before(cutoff) {
+			continue
+		}
+		matched, ok := e.closedGrantMatch(scope, lc)
+		if !ok {
+			continue
+		}
+		seenClosed[lc.SessionID] = true
+		c, err := e.cockpitEpic(matched.Epic)
+		if err != nil {
+			return nil, err
+		}
+		c.PreferredPersonal = matched.PreferredPersonal
+		out = append(out, archivedClosedEpic{epic: c, closedAt: closedAt})
+	}
+	return out, nil
+}
+
+// closedGrantMatch checks whether scope was authorized for lc when lc closed.
+// Only positive grant evidence recorded in lc.ClosedLinks authorizes an
+// unlinked closed Epic; pre-upgrade tombstones without ClosedLinks cannot prove
+// an opener's grant was still effective at close, so they remain visible only
+// through surviving links (handled in ReadCockpitView's linked loop).
+func (e Env) closedGrantMatch(scope cockpitScope, lc store.EpicLifecycle) (core.Link, bool) {
+	for _, l := range lc.ClosedLinks {
+		if scope.matches(e, l) {
+			return l, true
+		}
+	}
+	return core.Link{}, false
+}
+
+func closedTimestamp(lc store.EpicLifecycle) time.Time {
+	if lc.ClosedAt != nil && !lc.ClosedAt.IsZero() {
+		return lc.ClosedAt.UTC()
+	}
+	return lc.UpdatedAt.UTC()
 }
 
 func cockpitWhose(s cockpitScope) string {
@@ -348,13 +474,16 @@ func (e Env) cockpitSession(epic core.SessionKey) (json.RawMessage, error) {
 	return append(out, '\n'), err
 }
 
-// cockpitEpic is the summary of the linked Epic epic.
+// cockpitEpic is the summary of the linked (or recently closed) Epic epic.
 func (e Env) cockpitEpic(epic core.SessionKey) (CockpitEpic, error) {
 	c := CockpitEpic{SessionID: epic.SessionID, Server: epic.Server}
 	if lc, ok, err := e.Store.EpicLifecycle(epic.SessionID); err != nil {
 		return c, err
 	} else if ok {
 		c.Lifecycle, c.Name, c.Dir = &lc, lc.Name, lc.Dir
+		if c.Server == "" {
+			c.Server = lc.Server
+		}
 		if lc.State == store.EpicHandBack {
 			c.Obligation = ObligationHandBack
 		}
@@ -364,15 +493,27 @@ func (e Env) cockpitEpic(epic core.SessionKey) (CockpitEpic, error) {
 	} else if ok {
 		c.HandBack = &hb
 	}
+	if g, ok, err := e.Store.Grant(epic.SessionID); err != nil {
+		return c, err
+	} else if ok && g.Contract != "" {
+		c.GoalPath = g.Contract
+	}
 	b, ok, err := e.Store.ReadView(epic.SessionID)
 	if err != nil {
 		return c, err
 	}
 	c.HasView = ok
-	if ok && c.Name == "" {
+	if ok {
 		var v SessionView
 		if json.Unmarshal(b, &v) == nil {
-			c.Name = v.Session.Epic
+			if c.Name == "" {
+				c.Name = v.Session.Epic
+			}
+			if c.GoalPath == "" {
+				c.GoalPath = v.GoalPath
+			}
+			c.Narrative = v.Narrative
+			c.Progress = v.Progress
 		}
 	}
 	return c, nil

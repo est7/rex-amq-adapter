@@ -54,10 +54,11 @@ const (
 
 // Value is the declared kind of an argument or flag value.
 type Value struct {
-	Kind Kind     `json:"kind"`
-	Enum []string `json:"enum,omitempty"`
-	Min  int      `json:"min,omitempty"`
-	Max  int      `json:"max,omitempty"`
+	Kind        Kind     `json:"kind"`
+	Enum        []string `json:"enum,omitempty"`
+	Min         int      `json:"min,omitempty"`
+	Max         int      `json:"max,omitempty"`
+	MaxDuration string   `json:"max_duration,omitempty"`
 }
 
 // Arg is one positional argument. A Rest arg takes every remaining word and

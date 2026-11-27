@@ -2,6 +2,8 @@ package store
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -248,5 +250,39 @@ func TestDeriveProgressWeightsRoundingAndIdempotency(t *testing.T) {
 	}
 	if !changed || dropped.Revision != 3 || dropped.TotalSlices != 1 || dropped.Percent == nil || *dropped.Percent != 100 {
 		t.Errorf("drop slice: %+v changed=%v", dropped, changed)
+	}
+}
+
+func TestEpicLifecyclesScan(t *testing.T) {
+	s := Store{P: Paths{Home: t.TempDir()}}
+	// Empty / missing sessions dir returns nil, nil.
+	if got, err := s.EpicLifecycles(); err != nil || len(got) != 0 {
+		t.Fatalf("empty scan: %+v %v", got, err)
+	}
+	now := time.Date(2026, 11, 27, 2, 0, 0, 0, time.UTC)
+	if err := s.PutEpicLifecycle(EpicLifecycle{SessionID: "session:b", State: EpicClosed, ClosedAt: &now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutEpicLifecycle(EpicLifecycle{SessionID: "session:a", State: EpicOpened, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	// A session directory holding only view.json (no lifecycle.json) is skipped.
+	if err := s.PutView("session:noviewlc", map[string]any{"schema": 1}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.EpicLifecycles()
+	if err != nil || len(got) != 2 || got[0].SessionID != "session:a" || got[1].SessionID != "session:b" {
+		t.Fatalf("scan result: %+v %v", got, err)
+	}
+	// A corrupt lifecycle.json fails loudly.
+	badDir := filepath.Join(s.P.SessionsDir(), "session_corrupt")
+	if err := os.MkdirAll(badDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(badDir, "lifecycle.json"), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.EpicLifecycles(); err == nil {
+		t.Error("corrupt lifecycle.json was silently skipped")
 	}
 }

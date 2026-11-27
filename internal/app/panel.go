@@ -59,10 +59,9 @@ type PanelCrew struct {
 // and open obligations wait in it.
 type PanelEpic struct {
 	CockpitEpic
-	Narrative       *ViewNarrative `json:"narrative,omitempty"`
-	ActiveMembers   int            `json:"active_members"`
-	OpenAttention   int            `json:"open_attention"`
-	OpenObligations int            `json:"open_obligations"`
+	ActiveMembers   int `json:"active_members"`
+	OpenAttention   int `json:"open_attention"`
+	OpenObligations int `json:"open_obligations"`
 }
 
 // panelState is what a panel stream told last.
@@ -250,7 +249,7 @@ func (e Env) panelCockpit(personal agent, all []agent) ([]PanelEpic, error) {
 			if err := json.Unmarshal(b, &v); err != nil {
 				return nil, fmt.Errorf("decode the view of %s: %w", l.Epic.SessionID, err)
 			}
-			pe.Narrative, pe.OpenObligations = v.Narrative, len(v.Obligations)
+			pe.OpenObligations = len(v.Obligations)
 		}
 		for _, r := range all {
 			if !r.Live() || r.Server != l.Epic.Server || r.SessionID != l.Epic.SessionID {
