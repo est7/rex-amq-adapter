@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,13 +11,15 @@ import (
 	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
+	"github.com/est7/rex-amq-adapter/internal/fsutil"
 )
 
 // A session's narrator state lives beside the gateway's, in the AMQ root's
 // extension area, which amq cleanup leaves alone:
 //
 //   - sessions/<session_id>/view.json: the session's view, which its narrator
-//     writes and its linked personal agent reads (written whole, atomically).
+//     writes and its linked personal agent reads (written whole, atomically),
+//     including optional derived Slice progress (EpicProgress, progress.go).
 //   - sessions/<session_id>/pulse.json: the pulse the session's watcher last
 //     told the narrator about, and the notice that told it (PulseCursor).
 //   - sessions/<session_id>/crew.json: the crew the session works as
@@ -105,6 +108,13 @@ func (s Store) PutSessionCrew(id string, c SessionCrew) error {
 		return errors.New("a session crew needs its session and its crew")
 	}
 	return writeJSON(s.P.crewPath(id), c)
+}
+
+// LockView serialises the read-merge-write of session id's view.json across
+// concurrent refreshes and revives by locking the existing session directory
+// itself (zero new files on disk). Callers keep Rex and AMQ reads outside it.
+func (s Store) LockView(ctx context.Context, id string) (func(), error) {
+	return fsutil.FlockDir(ctx, s.P.SessionDir(id))
 }
 
 // PutView writes session id's view whole: a reader sees the old view or the

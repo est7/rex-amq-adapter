@@ -864,7 +864,7 @@ func (e Env) settleRevived(ctx context.Context, key core.SessionKey, res *Revive
 			fmt.Fprintf(Diagnostics, "the watcher of %s: %v\n", key.SessionID, err)
 		}
 		if r.Role == core.NarratorRole && !res.ViewRefreshed {
-			if _, err := e.refreshView(ctx, r, key, ""); err != nil {
+			if _, err := e.refreshView(ctx, r, key, RefreshRequest{}); err != nil {
 				fmt.Fprintf(Diagnostics, "refresh the view of %s: %v\n", key.SessionID, err)
 			} else {
 				res.ViewRefreshed = true

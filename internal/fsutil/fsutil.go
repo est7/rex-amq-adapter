@@ -23,6 +23,19 @@ func FlockShared(ctx context.Context, path string) (func(), error) {
 	return flock(ctx, path, syscall.LOCK_SH)
 }
 
+// FlockDir takes an exclusive lock on directory dir itself (creating dir if
+// absent), polling until ctx ends, without creating any lock file on disk.
+func FlockDir(ctx context.Context, dir string) (func(), error) {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	f, err := os.Open(dir)
+	if err != nil {
+		return nil, err
+	}
+	return flockFD(ctx, f, dir, syscall.LOCK_EX)
+}
+
 func flock(ctx context.Context, path string, how int) (func(), error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
@@ -31,6 +44,10 @@ func flock(ctx context.Context, path string, how int) (func(), error) {
 	if err != nil {
 		return nil, err
 	}
+	return flockFD(ctx, f, path, how)
+}
+
+func flockFD(ctx context.Context, f *os.File, path string, how int) (func(), error) {
 	for {
 		err := syscall.Flock(int(f.Fd()), how|syscall.LOCK_NB)
 		if err == nil {

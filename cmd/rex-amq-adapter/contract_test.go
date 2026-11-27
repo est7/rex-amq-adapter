@@ -152,6 +152,8 @@ func sample(t *testing.T, v cli.Value) string {
 		return v.Enum[0]
 	case cli.KindFields:
 		return "handle"
+	case cli.KindJSON:
+		return `{"plan_complete":false,"slices":[]}`
 	case cli.KindCommand:
 		return "errors"
 	}
@@ -238,6 +240,8 @@ func TestPreIOValidation(t *testing.T) {
 				values = hostileText
 			case s.kind == cli.KindBody:
 				values = []string{"a\x1b[31mb", "a\u202eb", "a\x07b"}
+			case s.kind == cli.KindJSON:
+				values = []string{"not-json", "[1,2]", `{"unknown":1}`, "@/nonexistent/progress.json", "a\x07b"}
 			case s.kind == cli.KindDir || s.kind == cli.KindFile:
 				values = []string{"/nonexistent/x", "a\x07b"}
 			default:

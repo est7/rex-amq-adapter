@@ -194,6 +194,64 @@ func TestProject(t *testing.T) {
 	if got, err := Project(map[string]any{"x": 1, "y": 2}, []string{"y"}, true); err != nil || sprint(&buf, got) != `{"y":2}` {
 		t.Errorf("object: %v %v", got, err)
 	}
+	type item struct {
+		ID   string `json:"id"`
+		Note string `json:"note,omitempty"`
+	}
+	list := List[item]{Items: []item{{ID: "1"}}, Total: 1}
+	if _, err := Project(list, []string{"id", "note"}, true); err != nil {
+		t.Errorf("declared omitempty field on list item rejected: %v", err)
+	}
+	if _, err := Project(list, []string{"id", "nope"}, true); err == nil {
+		t.Error("undeclared field on list item accepted")
+	}
+}
+
+func TestInputJSONObjectAndSnakeCaseFlag(t *testing.T) {
+	c := &Command{Path: []string{"t"}, Input: true,
+		Flags: []Flag{
+			{Name: "progress", Value: Value{Kind: KindJSON}},
+			{Name: "clear-progress", Value: Value{Kind: KindBool}},
+			{Name: "input", Value: Value{Kind: KindInput}},
+		}}
+	merge := func(raw string, args ...string) (Input, error) {
+		in, err := c.parse(append(args, "--input", raw))
+		if err != nil {
+			return in, err
+		}
+		b, err := readInput(in.Str("input"), strings.NewReader(raw))
+		if err != nil {
+			return in, err
+		}
+		return c.mergeInput(in, b)
+	}
+	in, err := merge(`{"progress":{"plan_complete":true,"slices":[]}}`)
+	if err != nil || in.Str("progress") != `{"plan_complete":true,"slices":[]}` {
+		t.Fatalf("json object in --input: %+v %v", in, err)
+	}
+	in, err = merge(`{"clear_progress":true}`)
+	if err != nil || !in.Bool("clear-progress") {
+		t.Fatalf("snake_case bool flag in --input: %+v %v", in, err)
+	}
+	if _, err := merge(`{"clear_progress":true,"clear-progress":false}`); err == nil {
+		t.Error("duplicate snake/kebab flag in --input accepted")
+	}
+	if _, err := merge(`{"clear_progress":true}`, "--clear-progress"); err == nil {
+		t.Error("flag on CLI and snake_case in --input accepted")
+	}
+	if _, err := merge(`{"progress":null}`); err == nil {
+		t.Error("null progress in --input accepted")
+	}
+	if _, err := merge(`{"clear_progress":null}`); err == nil {
+		t.Error("null clear_progress in --input accepted")
+	}
+	if _, err := ReadJSON("-", strings.NewReader("   ")); err == nil {
+		t.Error("empty stdin accepted by ReadJSON")
+	}
+	p := file(t, `{"plan_complete":false,"slices":[]}`)
+	if b, err := ReadJSON("@"+p, nil); err != nil || string(b) != `{"plan_complete":false,"slices":[]}` {
+		t.Fatalf("ReadJSON @file: %q %v", b, err)
+	}
 }
 
 func sprint(b *bytes.Buffer, v any) string {

@@ -11,10 +11,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/est7/rex-amq-adapter/internal/fault"
 	"github.com/est7/rex-amq-adapter/internal/out"
@@ -83,6 +85,12 @@ func (r *Registry) Finish() error {
 		}
 		if c.Fields {
 			c.Flags = append(c.Flags, flagFields)
+			if c.FieldModel != nil {
+				c.allowedFields = declaredJSONFields(c.FieldModel)
+			}
+			if c.Mutating && len(c.allowedFields) == 0 {
+				return fmt.Errorf("%s: a mutating command with --fields must declare FieldModel", c.Name())
+			}
 		}
 		if c.Mutating && !c.DryRun && c.Tier != TierUndoable {
 			return fmt.Errorf("%s: a mutating command beyond undoable must declare --dry-run", c.Name())
@@ -262,8 +270,27 @@ func (r *Registry) Execute(ctx *Ctx, args []string) int {
 			return p.Fail(asFault(err))
 		}
 	}
+	if cmd.Fields && in.Has("fields") && len(cmd.allowedFields) > 0 {
+		if err := checkAllowedFields(strings.Split(in.Str("fields"), ","), cmd.allowedFields); err != nil {
+			return p.Fail(asFault(err))
+		}
+	}
 	res, err := cmd.Run(ctx, in)
 	return r.emit(ctx, cmd, in, res, err)
+}
+
+func checkAllowedFields(fields []string, allowed map[string]bool) error {
+	for _, f := range fields {
+		if !allowed[f] {
+			known := make([]string, 0, len(allowed))
+			for k := range allowed {
+				known = append(known, k)
+			}
+			sort.Strings(known)
+			return fault.New(fault.InvalidInput, "--fields: no field %s; there are %s", q(f), strings.Join(known, ", ")).With("field", f).With("available", known)
+		}
+	}
+	return nil
 }
 
 func (r *Registry) classify(err error) *fault.Error {
@@ -517,16 +544,56 @@ func ReadBody(v string, stdin io.Reader) (string, error) {
 	return string(b), nil
 }
 
-// mergeInput folds a --input object into in: keys are arg and flag names,
+// ReadJSON resolves a JSON-object flag value: inline JSON, @FILE, or - for
+// stdin, bounded by BodyMax. Empty stdin returns a usage error (exit 2).
+func ReadJSON(v string, stdin io.Reader) ([]byte, error) {
+	var b []byte
+	var err error
+	switch {
+	case v == "-":
+		if stdin == nil {
+			return nil, fault.New(fault.Usage, "- reads stdin, and there is none")
+		}
+		b, err = io.ReadAll(io.LimitReader(stdin, BodyMax+1))
+		if err != nil {
+			return nil, fault.New(fault.InvalidInput, "read stdin: %v", err)
+		}
+		if len(b) > BodyMax {
+			return nil, fault.New(fault.InvalidInput, "stdin JSON is over %d bytes", BodyMax)
+		}
+		if len(bytes.TrimSpace(b)) == 0 {
+			return nil, fault.New(fault.Usage, "- read no JSON object on stdin")
+		}
+		return b, nil
+	case strings.HasPrefix(v, "@"):
+		b, err = readBounded(v[1:], BodyMax)
+		if err != nil {
+			return nil, fault.New(fault.InvalidInput, "read %s: %v", Visible(v), err)
+		}
+		return b, nil
+	default:
+		if len(v) > BodyMax {
+			return nil, fault.New(fault.InvalidInput, "JSON value is over %d bytes", BodyMax)
+		}
+		return []byte(v), nil
+	}
+}
+
+// mergeInput folds a --input object into in: keys are arg and flag names
+// (snake_case flag aliases like clear_progress map to clear-progress),
 // unknown keys and keys also on the command line are usage errors, and the
 // result is checked as the command line is.
 func (c *Command) mergeInput(in Input, raw []byte) (Input, error) {
+	if !utf8.Valid(raw) {
+		return in, fault.New(fault.InvalidInput, "--input is not valid UTF-8")
+	}
 	var obj map[string]json.RawMessage
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	if err := dec.Decode(&obj); err != nil || obj == nil {
 		return in, Usage(c, "--input must be one JSON object")
 	}
-	if dec.More() {
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
 		return in, Usage(c, "--input must be exactly one JSON object")
 	}
 	keys := make([]string, 0, len(obj))
@@ -534,12 +601,18 @@ func (c *Command) mergeInput(in Input, raw []byte) (Input, error) {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
+	seenFlags := map[string]bool{}
 	for _, key := range keys {
 		val := obj[key]
 		if key == "input" {
 			return in, Usage(c, "--input cannot set input")
 		}
 		a, f := c.arg(key), c.flag(key)
+		if a == nil && f == nil && strings.Contains(key, "_") {
+			if kebab := strings.ReplaceAll(key, "_", "-"); kebab != "input" {
+				f = c.flag(kebab)
+			}
+		}
 		switch {
 		case a != nil:
 			if len(in.Args[key]) > 0 {
@@ -563,42 +636,74 @@ func (c *Command) mergeInput(in Input, raw []byte) (Input, error) {
 			}
 			in.Args[key] = []string{s}
 		case f != nil:
-			if len(in.Flags[key]) > 0 {
-				return in, Usage(c, "--%s is given both on the command line and in --input", key)
+			name := f.Name
+			if seenFlags[name] {
+				return in, Usage(c, "--input sets %s more than once", name)
+			}
+			seenFlags[name] = true
+			if len(in.Flags[name]) > 0 {
+				return in, Usage(c, "--%s is given both on the command line and in --input", name)
 			}
 			switch {
 			case f.Kind == KindBool:
-				var b bool
-				if json.Unmarshal(val, &b) != nil {
+				trimmed := bytes.TrimSpace(val)
+				if !bytes.Equal(trimmed, []byte("true")) && !bytes.Equal(trimmed, []byte("false")) {
 					return in, Usage(c, "--input %s must be true or false", key)
 				}
-				if b {
-					in.Flags[key] = []string{"true"}
+				if bytes.Equal(trimmed, []byte("true")) {
+					in.Flags[name] = []string{"true"}
 				}
 			case f.Kind == KindInt:
+				trimmed := bytes.TrimSpace(val)
+				if bytes.Equal(trimmed, []byte("null")) {
+					return in, Usage(c, "--input %s must be an integer", key)
+				}
 				var n json.Number
-				d := json.NewDecoder(bytes.NewReader(val))
+				d := json.NewDecoder(bytes.NewReader(trimmed))
 				d.UseNumber()
 				if d.Decode(&n) != nil {
 					return in, Usage(c, "--input %s must be an integer", key)
 				}
-				in.Flags[key] = []string{n.String()}
+				in.Flags[name] = []string{n.String()}
+			case f.Kind == KindJSON:
+				trimmed := bytes.TrimSpace(val)
+				if len(trimmed) > 0 && trimmed[0] == '{' {
+					in.Flags[name] = []string{string(trimmed)}
+					continue
+				}
+				if len(trimmed) > 0 && trimmed[0] == '"' {
+					var s string
+					if json.Unmarshal(trimmed, &s) != nil {
+						return in, Usage(c, "--input %s must be a JSON object or string", key)
+					}
+					in.Flags[name] = []string{s}
+					continue
+				}
+				return in, invalidInput(c, "--"+name, f.Kind, bad("must be a JSON object"))
 			case f.Repeat:
+				trimmed := bytes.TrimSpace(val)
+				if bytes.Equal(trimmed, []byte("null")) {
+					return in, Usage(c, "--input %s must be a string or a list of strings", key)
+				}
 				var list []string
-				if json.Unmarshal(val, &list) != nil {
+				if json.Unmarshal(trimmed, &list) != nil {
 					var one string
-					if json.Unmarshal(val, &one) != nil {
+					if json.Unmarshal(trimmed, &one) != nil {
 						return in, Usage(c, "--input %s must be a string or a list of strings", key)
 					}
 					list = []string{one}
 				}
-				in.Flags[key] = list
+				in.Flags[name] = list
 			default:
-				var s string
-				if json.Unmarshal(val, &s) != nil {
+				trimmed := bytes.TrimSpace(val)
+				if bytes.Equal(trimmed, []byte("null")) {
 					return in, Usage(c, "--input %s must be a string", key)
 				}
-				in.Flags[key] = []string{s}
+				var s string
+				if json.Unmarshal(trimmed, &s) != nil {
+					return in, Usage(c, "--input %s must be a string", key)
+				}
+				in.Flags[name] = []string{s}
 			}
 		default:
 			return in, Usage(c, "--input has unknown field %s", q(key))
@@ -635,15 +740,17 @@ func Project(data any, fields []string, strict bool) (any, error) {
 		return o
 	}
 	have := map[string]bool{}
-	var known []string
+	declared := declaredJSONFields(data)
+	knownSet := map[string]bool{}
+	for k := range declared {
+		knownSet[k] = true
+	}
 	if items, ok := m["items"].([]any); ok {
 		for i, it := range items {
 			if obj, ok := it.(map[string]any); ok {
 				items[i] = keep(obj, have)
-				if len(known) == 0 {
-					for k := range obj {
-						known = append(known, k)
-					}
+				for k := range obj {
+					knownSet[k] = true
 				}
 			}
 		}
@@ -653,17 +760,114 @@ func Project(data any, fields []string, strict bool) (any, error) {
 		m["items"] = items
 	} else {
 		for k := range m {
-			known = append(known, k)
+			knownSet[k] = true
 		}
 		m = keep(m, have)
 	}
 	for _, f := range fields {
-		if strict && !have[f] && len(known) > 0 {
+		if strict && !have[f] && !declared[f] && len(knownSet) > 0 {
+			known := make([]string, 0, len(knownSet))
+			for k := range knownSet {
+				known = append(known, k)
+			}
 			sort.Strings(known)
 			return nil, fault.New(fault.InvalidInput, "--fields: no field %s; there are %s", q(f), strings.Join(known, ", ")).With("field", f).With("available", known)
 		}
 	}
 	return m, nil
+}
+
+// declaredJSONFields returns the JSON field names declared on data's struct
+// (or on its `items` slice element struct for list responses), so strict
+// --fields accepts valid optional fields omitted by omitempty.
+func declaredJSONFields(data any) map[string]bool {
+	if data == nil {
+		return nil
+	}
+	t := derefType(reflect.TypeOf(data))
+	if t.Kind() != reflect.Struct {
+		return nil
+	}
+	if elem, ok := itemsElemStruct(t); ok {
+		out := map[string]bool{}
+		collectStructJSONFields(elem, out)
+		return out
+	}
+	out := map[string]bool{}
+	collectStructJSONFields(t, out)
+	return out
+}
+
+func derefType(t reflect.Type) reflect.Type {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	return t
+}
+
+func itemsElemStruct(t reflect.Type) (reflect.Type, bool) {
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+		name, _, skip := parseJSONTag(f)
+		if skip {
+			continue
+		}
+		if f.Anonymous && f.Tag.Get("json") == "" {
+			if ft := derefType(f.Type); ft.Kind() == reflect.Struct {
+				if elem, ok := itemsElemStruct(ft); ok {
+					return elem, true
+				}
+			}
+			continue
+		}
+		if name == "items" && f.Type.Kind() == reflect.Slice {
+			if et := derefType(f.Type.Elem()); et.Kind() == reflect.Struct {
+				return et, true
+			}
+		}
+	}
+	return nil, false
+}
+
+func collectStructJSONFields(t reflect.Type, dst map[string]bool) {
+	t = derefType(t)
+	if t.Kind() != reflect.Struct {
+		return
+	}
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+		name, explicit, skip := parseJSONTag(f)
+		if skip {
+			continue
+		}
+		if f.Anonymous && !explicit {
+			if ft := derefType(f.Type); ft.Kind() == reflect.Struct {
+				collectStructJSONFields(ft, dst)
+				continue
+			}
+		}
+		dst[name] = true
+	}
+}
+
+func parseJSONTag(f reflect.StructField) (name string, explicit, skip bool) {
+	tag := f.Tag.Get("json")
+	if tag == "-" {
+		return "", false, true
+	}
+	if tag != "" {
+		head, _, _ := strings.Cut(tag, ",")
+		if head != "" {
+			return head, true, false
+		}
+	}
+	return f.Name, false, false
 }
 
 // Page is the page of items the invocation asks for: --limit items from
