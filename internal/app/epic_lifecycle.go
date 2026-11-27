@@ -175,6 +175,21 @@ func (e Env) advanceEpic(seed store.EpicLifecycle, state string, op *store.EpicO
 	fill(&lc.Crew, seed.Crew)
 	fill(&lc.OpenOpID, seed.OpenOpID)
 	fill(&lc.CloseOpID, seed.CloseOpID)
+	if seed.ClosedLinks != nil {
+		if lc.ClosedLinks == nil {
+			cp := slices.Clone(*seed.ClosedLinks)
+			if cp == nil {
+				cp = []core.Link{}
+			}
+			lc.ClosedLinks = &cp
+		} else {
+			for _, l := range *seed.ClosedLinks {
+				if !slices.ContainsFunc(*lc.ClosedLinks, func(e core.Link) bool { return e.SameGrant(l) }) {
+					*lc.ClosedLinks = append(*lc.ClosedLinks, l)
+				}
+			}
+		}
+	}
 	if lc.OpenedAt.IsZero() && (state == store.EpicPartialStart || state == store.EpicOpened) {
 		lc.OpenedAt = now
 	}
@@ -436,7 +451,11 @@ func (e Env) finishClose(ctx context.Context, on Terminal, epic core.SessionKey,
 		}
 	}
 	res.Unlinked = true
-	seed := store.EpicLifecycle{SessionID: epic.SessionID, Server: epic.Server, Hub: c.me.Hub, PersonalHandle: c.personalHandle(), PersonalSessionID: c.personalSession()}
+	closedLinks := slices.Clone(links)
+	if closedLinks == nil {
+		closedLinks = []core.Link{}
+	}
+	seed := store.EpicLifecycle{SessionID: epic.SessionID, Server: epic.Server, Hub: c.me.Hub, PersonalHandle: c.personalHandle(), PersonalSessionID: c.personalSession(), ClosedLinks: &closedLinks}
 	if op != nil {
 		seed.CloseOpID = op.OpID
 	}

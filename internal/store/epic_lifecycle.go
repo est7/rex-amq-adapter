@@ -100,6 +100,11 @@ type EpicLifecycle struct {
 	ClosedAt          *time.Time    `json:"closed_at,omitempty"`
 	UpdatedAt         time.Time     `json:"updated_at"`
 	HandBacks         []HandBackRef `json:"hand_backs,omitempty"`
+	// ClosedLinks records the grants that were effective and automatically
+	// unlinked when the Epic closed, so `epic list --include-closed` authorizes
+	// archived views from grants effective at close rather than historical
+	// opener metadata. nil only on legacy tombstones predating this field.
+	ClosedLinks *[]core.Link `json:"closed_links,omitempty"`
 }
 
 // Advance moves the lifecycle to state at, unless it is already as far or
