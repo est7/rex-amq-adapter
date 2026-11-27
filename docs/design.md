@@ -2530,7 +2530,12 @@ projects `goal_path`, `narrative`, and `progress` (`null` when unrecorded, never
 fabricated `0%`) directly from existing `grant.json` and `view.json` with zero
 N+1 fan-out; `--include-closed` additionally scans existing closed
 `sessions/*/lifecycle.json` within `--closed-within` (default `24h`, max `720h`)
-under the same Hub and `--personal` scope. Inside Rex,
+under the same Hub and `--personal` scope. Closed unlinked Epics are authorized
+strictly from `closed_links` captured on `epic-ops` / `lifecycle.json` before
+the first unlink (pre-upgrade tombstones lacking `closed_links` fail closed
+unless a surviving link still exists), and any closed Epic that still carries a
+surviving link is excluded from the default live list and gated by
+`--include-closed` + `--closed-within`. Inside Rex,
 `epic show [S]` takes another path (`ReadSessionView`, below). Its scope is the Epics linked to one
 Hub (`core.LinkMatchesPersonal`), whichever of the Hub's personal agents are
 live and however many; it moves no mail, writes no receipt, and starts
