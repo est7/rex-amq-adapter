@@ -272,9 +272,11 @@ type EpicOpRecord struct {
 	// its lifecycle and its links: what a retry's --hub is held to after
 	// the close's unlink removed the links.
 	HubDirs []string `json:"hub_dirs,omitempty"`
-	// ClosedLinks are the links that granted the close's caller before the
-	// close unlinked them, persisted before the first DeleteLink so a retry
-	// after a crash still records them on the closed lifecycle tombstone.
+	// ClosedLinks are the links that granted the close's caller once close
+	// enters its unlink phase (after KillSession and parkClosed), persisted
+	// before the first DeleteLink so a retry after a crash still records them
+	// on the closed lifecycle tombstone without snapshotting pre-kill grants
+	// that may later be explicitly unlinked.
 	ClosedLinks       []core.Link `json:"closed_links,omitempty"`
 	PersonalHandle    core.Handle `json:"personal_handle"`
 	PersonalSessionID string      `json:"personal_session_id"`
