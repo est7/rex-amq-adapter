@@ -7,11 +7,14 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/core"
+	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
 // managedWorld is three agents on a real amq: two members of Epic a, one of
@@ -280,5 +283,42 @@ func TestManagedMailNarratorControlReachesOnlyTheOrchestrator(t *testing.T) {
 	kept, err := e.admit(context.Background(), orch)
 	if err != nil || len(kept) != 1 || kept[0] != sent.ID {
 		t.Fatalf("the orchestrator's gate kept %v (%v), want %s", kept, err, sent.ID)
+	}
+}
+
+// A strict send names only handles with a mailbox: a peer retired from the
+// Epic, whose mailbox the roster retirement removed (its identity kept for
+// the narrator), is unknown to it, and no mailbox is made again for it. A
+// departed peer that may be resumed keeps its mailbox and still gets mail.
+func TestManagedStrictSendRefusesARetiredPeersRemovedMailbox(t *testing.T) {
+	e, ctx := managedWorld(t)
+	needsAmq(t, e, "amq send --strict")
+	past := time.Now().Add(-time.Hour)
+	put(t, e,
+		seed{Handle: "codex-03", Kind: core.Codex, SessionID: "session:a", AdoptedAt: past, DepartedAt: &past, DepartReason: store.DepartRetired},
+		seed{Handle: "codex-04", Kind: core.Codex, SessionID: "session:a", AdoptedAt: past, DepartedAt: &past, DepartReason: store.DepartSessionEnd},
+	)
+	for _, h := range []string{"codex-03", "codex-04"} {
+		if err := e.AMQ.EnsureMailbox(ctx, e.Paths.Root(), h); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if rep, err := e.retireRoster(ctx, []core.Handle{"codex-03", "codex-04"}, nil); err != nil || !slices.Equal(rep.Pruned, []core.Handle{"codex-03"}) {
+		t.Fatalf("setup: %+v %v", rep, err)
+	}
+	if _, ok, _ := e.agentOf("codex-03"); !ok {
+		t.Fatal("setup: the retired peer's identity is gone")
+	}
+	if _, _, err := run(t, e, ctx, "claude-02", "send", "--strict", "--to", "codex-03", "--subject", "s", "--body", "b"); err == nil {
+		t.Fatal("a strict send to the retired peer was accepted")
+	}
+	if inRoster(t, e, "codex-03") {
+		t.Fatal("the strict send made the retired peer's mailbox again")
+	}
+	if _, _, err := run(t, e, ctx, "claude-02", "send", "--strict", "--to", "codex-04", "--subject", "s", "--body", "b"); err != nil {
+		t.Fatalf("a strict send to a resumable peer: %v", err)
+	}
+	if ids, _ := amq.Unread(e.Paths.Root(), "codex-04"); len(ids) != 1 {
+		t.Fatalf("the resumable peer's unread: %v", ids)
 	}
 }

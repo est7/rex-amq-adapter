@@ -102,7 +102,7 @@ func (m managed) post(ctx context.Context, verb string, args []string) (int, err
 	fs.String("priority", "", "Message priority")
 	fs.String("labels", "", "Labels, comma-separated")
 	allowEmpty := fs.Bool("allow-empty", false, "Allow a blank body")
-	fs.Bool("strict", false, "Error on unknown handles")
+	strict := fs.Bool("strict", false, "Error on unknown handles")
 	fs.String("wait-for", "", "Wait for a receipt stage")
 	fs.Duration("wait-timeout", 2*time.Minute, "Receipt wait timeout")
 	if help, err := parseMailFlags(fs, args); help || err != nil {
@@ -111,7 +111,7 @@ func (m managed) post(ctx context.Context, verb string, args []string) (int, err
 		}
 		return 2, err
 	}
-	o := Outgoing{From: m.rec.Handle, Check: true, Op: core.Operation{Kind: core.OpSend}}
+	o := Outgoing{From: m.rec.Handle, Check: true, Strict: *strict, Op: core.Operation{Kind: core.OpSend}}
 	if verb == "reply" {
 		o.Op.Kind = core.OpReply
 		if replyTo == "" {

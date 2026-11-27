@@ -246,6 +246,10 @@ type Outgoing struct {
 	// Check applies the gateway before sending: an agent's own send. The
 	// adapter's notices in an agent's name are judged on arrival only.
 	Check bool
+	// Strict (amq's --strict, which errors on unknown handles) also refuses
+	// a recipient with no mailbox: amq keeps a retired handle in its roster
+	// after its mailbox is removed (roster.go), so it would not.
+	Strict bool
 }
 
 // post sends o through amq, recording its provenance first under a token
@@ -264,6 +268,9 @@ func (e Env) checkedRecipients(from core.Endpoint, to []core.Handle, o Outgoing,
 			if d := core.CanExchange(from, ep, o.Op, links); !d.Allow {
 				return nil, refusedSend(from, ep, d)
 			}
+		}
+		if o.Strict && !mailboxExists(e.Paths.Root(), h) {
+			return nil, fault.New(fault.NotFound, "%s has no mailbox (retired, or never registered); --strict refuses it", h).With("kind", "mailbox")
 		}
 		eps = append(eps, ep)
 	}
