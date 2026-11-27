@@ -300,9 +300,18 @@ func TestCockpitEpicListProgressAndIncludeClosed(t *testing.T) {
 	closed48h := now.Add(-48 * time.Hour)
 	closed1h := now.Add(-1 * time.Hour)
 	for _, lc := range []store.EpicLifecycle{
-		{SessionID: "session:closed-recent", Server: fakeServer, Hub: hubAKey, Name: "shipped-today", Dir: "/repo/x", PersonalHandle: "pi-05", PersonalSessionID: "session:p", State: store.EpicClosed, ClosedAt: &closed2h, UpdatedAt: closed2h},
-		{SessionID: "session:closed-old", Server: fakeServer, Hub: hubAKey, Name: "shipped-2d-ago", Dir: "/repo/x", PersonalHandle: "pi-05", PersonalSessionID: "session:p", State: store.EpicClosed, ClosedAt: &closed48h, UpdatedAt: closed48h},
-		{SessionID: "session:closed-other-hub", Server: fakeServer, Hub: hubBKey, Name: "other-hub", Dir: "/repo/y", PersonalHandle: "pi-06", PersonalSessionID: "session:q", State: store.EpicClosed, ClosedAt: &closed1h, UpdatedAt: closed1h},
+		{
+			SessionID: "session:closed-recent", Server: fakeServer, Hub: hubAKey, Name: "shipped-today", Dir: "/repo/x", PersonalHandle: "pi-05", PersonalSessionID: "session:p", State: store.EpicClosed, ClosedAt: &closed2h, UpdatedAt: closed2h,
+			ClosedLinks: []core.Link{{Hub: hubAKey, Personal: core.SessionKey{Server: fakeServer, SessionID: "session:p"}, PreferredPersonal: "pi-05", Epic: core.SessionKey{Server: fakeServer, SessionID: "session:closed-recent"}}},
+		},
+		{
+			SessionID: "session:closed-old", Server: fakeServer, Hub: hubAKey, Name: "shipped-2d-ago", Dir: "/repo/x", PersonalHandle: "pi-05", PersonalSessionID: "session:p", State: store.EpicClosed, ClosedAt: &closed48h, UpdatedAt: closed48h,
+			ClosedLinks: []core.Link{{Hub: hubAKey, Personal: core.SessionKey{Server: fakeServer, SessionID: "session:p"}, PreferredPersonal: "pi-05", Epic: core.SessionKey{Server: fakeServer, SessionID: "session:closed-old"}}},
+		},
+		{
+			SessionID: "session:closed-other-hub", Server: fakeServer, Hub: hubBKey, Name: "other-hub", Dir: "/repo/y", PersonalHandle: "pi-06", PersonalSessionID: "session:q", State: store.EpicClosed, ClosedAt: &closed1h, UpdatedAt: closed1h,
+			ClosedLinks: []core.Link{{Hub: hubBKey, Personal: core.SessionKey{Server: fakeServer, SessionID: "session:q"}, PreferredPersonal: "pi-06", Epic: core.SessionKey{Server: fakeServer, SessionID: "session:closed-other-hub"}}},
+		},
 		{SessionID: "session:closed-unlinked", Server: fakeServer, Name: "orphan", State: store.EpicClosed, ClosedAt: &closed1h, UpdatedAt: closed1h},
 	} {
 		if err := e.Store.PutEpicLifecycle(lc); err != nil {
@@ -589,5 +598,183 @@ func TestCockpitClosedAccessFollowsGrantsAtCloseAndExcludesClosedFromDefault(t *
 	}
 	if got := listIDs("block:pb", CockpitViewRequest{IncludeClosed: true}); len(got) != 1 || got[0] != e1.SessionID {
 		t.Errorf("Hub B after unlinking closed E2 got %v, want only [%s]", got, e1.SessionID)
+	}
+
+	// --- Scenario 3 (S2-1 legacy tombstone): ClosedLinks == nil fails closed ---
+	// A pre-upgrade tombstone records opener Hub A in lc.Hub but lacks ClosedLinks.
+	// Revoked Hub A MUST NOT regain access; a surviving link for Hub B still works
+	// under --include-closed and disappears once Hub B unlinks.
+	eLegacy := core.SessionKey{Server: fakeServer, SessionID: "session:e-legacy"}
+	closedAt := now.Add(-5 * time.Minute)
+	if err := e.Store.PutEpicLifecycle(store.EpicLifecycle{
+		SessionID: eLegacy.SessionID, Server: fakeServer, Hub: hubAKey, Name: "e-legacy",
+		PersonalHandle: "pi-a", PersonalSessionID: "session:hub-a",
+		State: store.EpicClosed, OpenedAt: now.Add(-time.Hour), ClosedAt: &closedAt, UpdatedAt: closedAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Store.PutView(eLegacy.SessionID, SessionView{
+		Schema: ViewSchema, Session: ViewSession{Server: fakeServer, SessionID: eLegacy.SessionID, Epic: "e-legacy"},
+		Narrative: &ViewNarrative{Text: "legacy secret", At: closedAt},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Revoked Hub A sees nothing for e-legacy.
+	if got := listIDs("block:pa", CockpitViewRequest{IncludeClosed: true}); len(got) != 1 || got[0] != e2.SessionID {
+		t.Errorf("revoked Hub A regained legacy archived row: %v", got)
+	}
+	if raw, err := e.ReadCockpitView(ctx, cockpitEnv(nil), CockpitViewRequest{Hub: hubA, IncludeClosed: true}); err != nil {
+		t.Fatal(err)
+	} else if strings.Contains(string(raw), eLegacy.SessionID) {
+		t.Errorf("outside-Rex --hub A regained legacy archived row: %s", raw)
+	}
+	// Surviving link for Hub B still authorizes e-legacy under --include-closed, not default list.
+	if err := e.Store.PutLink(core.Link{Hub: hubBKey, Personal: core.SessionKey{Server: fakeServer, SessionID: "session:hub-b"}, PreferredPersonal: "pi-b", Epic: eLegacy}); err != nil {
+		t.Fatal(err)
+	}
+	if got := listIDs("block:pb", CockpitViewRequest{}); len(got) != 0 {
+		t.Errorf("Hub B default list leaked closed legacy epic: %v", got)
+	}
+	if got := listIDs("block:pb", CockpitViewRequest{IncludeClosed: true}); len(got) != 2 {
+		t.Errorf("Hub B surviving link missed legacy epic: %v", got)
+	}
+	if _, _, err := e.Link(ctx, Location{Block: "block:pb"}, eLegacy.SessionID, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := listIDs("block:pb", CockpitViewRequest{IncludeClosed: true}); len(got) != 1 || got[0] != e1.SessionID {
+		t.Errorf("Hub B after unlinking legacy epic got %v, want only [%s]", got, e1.SessionID)
+	}
+}
+
+// Regression test for S2-3: `epic close --op-id` persists ClosedLinks before the
+// first unlink and writes lifecycle.json before marking the op closed, so replay
+// after a failure between unlink and lifecycle write (or a legacy pre-upgrade
+// EpicClosing op replay) always preserves the closer's archived row.
+func TestCloseEpicOpIDPreservesClosedArchiveAcrossCrashAndReplay(t *testing.T) {
+	term := &fakeTerm{state: "idle", statusGone: true, windows: map[string]string{}}
+	e := realAmqEnv(t, term)
+	noOpenObligations(e)
+	e.Ancestors = func() ([]proc, error) { return []proc{{PID: 9001}}, nil }
+	ctx := context.Background()
+	now := time.Date(2026, 11, 27, 16, 0, 0, 0, time.UTC)
+	e.Now = func() time.Time { return now }
+
+	hubDir, err := resolvedDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hubKey := core.NewHubKey(fakeServer, hubDir)
+	put(t, e, seed{Handle: "pi-c", Kind: core.Pi, Role: core.PersonalRole, BlockID: "block:pc", SessionID: "session:hub-c", Cwd: hubDir, AgentPID: 811, AgentSessionID: "s-pc"})
+	if err := e.Store.PutSessionPolicy(store.SessionPolicy{Kind: store.PolicyHub, SessionID: "session:hub-c", Server: fakeServer, HubKey: hubKey}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Subcase 1: lifecycle.json write fails after DeleteLink; op MUST stay closing
+	// (never prematurely closed) and replay restores the archived row.
+	eCrash := core.SessionKey{Server: fakeServer, SessionID: "session:e-crash"}
+	if err := e.Store.PutLink(core.Link{Hub: hubKey, Personal: core.SessionKey{Server: fakeServer, SessionID: "session:hub-c"}, PreferredPersonal: "pi-c", Epic: eCrash}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Store.PutView(eCrash.SessionID, SessionView{
+		Schema: ViewSchema, Session: ViewSession{Server: fakeServer, SessionID: eCrash.SessionID, Epic: "e-crash"},
+		Narrative: &ViewNarrative{Text: "survived crash replay", At: now},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Block PutEpicLifecycle by placing a directory at lifecycle.json;
+	// EpicLifecycle returns an error if read fails, so inject the directory via
+	// KillSession hook right after EpicLifecycle's initial read and before DeleteLink/advanceEpic.
+	lcPath := filepath.Join(e.Paths.SessionDir(eCrash.SessionID), "lifecycle.json")
+	if err := os.MkdirAll(filepath.Dir(lcPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// First run: fail lifecycle.json write inside advanceEpic after DeleteLink.
+	// Since eCrash has no pre-existing lifecycle.json, creating lcPath as a non-empty
+	// dir makes writeJSON fail on rename while EpicLifecycle only hits it when
+	// reading. Instead simulate a crash right after PutEpicOp + DeleteLink by
+	// failing writeJSON via read-only session dir after link deletion.
+	// Wait: test both (a) real CloseEpic --op-id failing at PutEpicLifecycle (session dir chmod 0o500),
+	// and (b) pre-upgrade EpicClosing op replay after manual unlink.
+	if err := os.Chmod(filepath.Dir(lcPath), 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Dir(lcPath), 0o700) })
+
+	req1 := CloseRequest{Session: eCrash.SessionID, Asked: "close e-crash", OpID: "close-crash-1"}
+	if _, err := e.CloseEpic(ctx, Location{Block: "block:pc"}, req1); err == nil {
+		t.Fatal("first close unexpectedly succeeded with read-only session dir")
+	}
+	// Link was deleted, lifecycle.json could not be written, and op MUST remain closing with ClosedLinks.
+	opRec, ok, err := e.Store.EpicOp(store.EpicOpClose, req1.OpID)
+	if err != nil || !ok {
+		t.Fatalf("read op after failed lifecycle write: ok=%v err=%v", ok, err)
+	}
+	if opRec.State != store.EpicClosing {
+		t.Fatalf("op marked %q before lifecycle.json became durable, want %q", opRec.State, store.EpicClosing)
+	}
+	if len(opRec.ClosedLinks) != 1 || opRec.ClosedLinks[0].Epic != eCrash {
+		t.Fatalf("op missing pre-unlink ClosedLinks snapshot: %+v", opRec.ClosedLinks)
+	}
+	if links, err := e.Store.Links(); err != nil || len(links) != 0 {
+		t.Fatalf("expected link already unlinked before failure, got %+v %v", links, err)
+	}
+
+	// Repair directory permissions and replay the exact same --op-id.
+	if err := os.Chmod(filepath.Dir(lcPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	res1, err := e.CloseEpic(ctx, Location{Block: "block:pc"}, req1)
+	if err != nil || !res1.Replayed || res1.LifecycleState != store.EpicClosed {
+		t.Fatalf("replay after lifecycle failure: %+v %v", res1, err)
+	}
+	opRec, _, _ = e.Store.EpicOp(store.EpicOpClose, req1.OpID)
+	if opRec.State != store.EpicClosed {
+		t.Fatalf("op after replay = %q, want closed", opRec.State)
+	}
+	raw, err := e.ReadCockpitView(ctx, cockpitEnv(map[string]string{"REX_BLOCK": "block:pc"}), CockpitViewRequest{IncludeClosed: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), eCrash.SessionID) || !strings.Contains(string(raw), "survived crash replay") {
+		t.Errorf("epic list --include-closed missing replayed close archive: %s", raw)
+	}
+
+	// Subcase 2: legacy pre-upgrade EpicClosing op (no ClosedLinks on op) replayed
+	// after links were deleted still records the closing personal agent's grant.
+	eLegacyOp := core.SessionKey{Server: fakeServer, SessionID: "session:e-legacy-op"}
+	if err := e.Store.PutView(eLegacyOp.SessionID, SessionView{
+		Schema: ViewSchema, Session: ViewSession{Server: fakeServer, SessionID: eLegacyOp.SessionID, Epic: "e-legacy-op"},
+		Narrative: &ViewNarrative{Text: "legacy op replay", At: now},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	meRec := recordOf(t, e, "pi-c")
+	ep, err := e.gatewayEndpoint(meRec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req2 := CloseRequest{Session: eLegacyOp.SessionID, Asked: "close legacy op", OpID: "close-legacy-op"}
+	hash, _, err := e.closeHashes(closer{op: Operator{Agent: &meRec}, me: ep}, req2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Store.PutEpicOp(store.EpicOpRecord{
+		Kind: store.EpicOpClose, OpID: req2.OpID, RequestHash: hash,
+		SessionID: eLegacyOp.SessionID, Server: fakeServer,
+		PersonalHandle: meRec.Handle, PersonalSessionID: meRec.SessionID,
+		State: store.EpicClosing, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	res2, err := e.CloseEpic(ctx, Location{Block: "block:pc"}, req2)
+	if err != nil || !res2.Replayed || res2.LifecycleState != store.EpicClosed {
+		t.Fatalf("legacy op replay: %+v %v", res2, err)
+	}
+	raw2, err := e.ReadCockpitView(ctx, cockpitEnv(map[string]string{"REX_BLOCK": "block:pc"}), CockpitViewRequest{IncludeClosed: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw2), eLegacyOp.SessionID) || !strings.Contains(string(raw2), "legacy op replay") {
+		t.Errorf("epic list --include-closed missing legacy op replay archive: %s", raw2)
 	}
 }

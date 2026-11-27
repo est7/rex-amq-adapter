@@ -263,27 +263,15 @@ func (e Env) archivedClosedEpics(scope cockpitScope, seenLive, seenClosed map[st
 }
 
 // closedGrantMatch checks whether scope was authorized for lc when lc closed.
-// Modern tombstones record ClosedLinks (captured before finishClose unlinked
-// them), so revoked opener grants never regain access and the closing Hub keeps
-// its archived row. Legacy tombstones with ClosedLinks == nil fall back to the
-// tombstone's recorded Hub/personal metadata.
+// Only positive grant evidence recorded in lc.ClosedLinks authorizes an
+// unlinked closed Epic; pre-upgrade tombstones without ClosedLinks cannot prove
+// an opener's grant was still effective at close, so they remain visible only
+// through surviving links (handled in ReadCockpitView's linked loop).
 func (e Env) closedGrantMatch(scope cockpitScope, lc store.EpicLifecycle) (core.Link, bool) {
-	if lc.ClosedLinks != nil {
-		for _, l := range *lc.ClosedLinks {
-			if scope.matches(e, l) {
-				return l, true
-			}
+	for _, l := range lc.ClosedLinks {
+		if scope.matches(e, l) {
+			return l, true
 		}
-		return core.Link{}, false
-	}
-	syn := core.Link{
-		Hub:               lc.Hub,
-		Personal:          core.SessionKey{Server: lc.Server, SessionID: lc.PersonalSessionID},
-		Epic:              core.SessionKey{Server: lc.Server, SessionID: lc.SessionID},
-		PreferredPersonal: lc.PersonalHandle,
-	}
-	if scope.matches(e, syn) {
-		return syn, true
 	}
 	return core.Link{}, false
 }
