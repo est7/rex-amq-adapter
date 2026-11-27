@@ -495,9 +495,9 @@ func TestAJobIsNeverAdoptedIntoAPaneThatDoesNotShowIt(t *testing.T) {
 	// with that pane's foreground pid.
 	const stale = "block:stale"
 	w.term.windows[stale] = "window:3"
-	w.term.fgs[stale] = rex.Process{PID: 4242, Name: "claude"}
+	w.term.fgs[stale] = rex.Process{PID: exitedPID, Name: "claude"}
 	w.term.titles[stale] = "✳ another conversation"
-	if err := putSeed(w.e.Store, seed{Handle: "claude-old", Kind: core.Claude, Server: "unix:///fake.sock", BlockID: stale, AgentPID: 4242, AgentSessionID: jobSess}); err != nil {
+	if err := putSeed(w.e.Store, seed{Handle: "claude-old", Kind: core.Claude, Server: "unix:///fake.sock", BlockID: stale, AgentPID: exitedPID, AgentSessionID: jobSess}); err != nil {
 		t.Fatal(err)
 	}
 	w.jobHook(t, EventPostTool)
@@ -522,9 +522,9 @@ func TestAStaleJobRecordIsMovedByAToolCall(t *testing.T) {
 	w := newJobWorld(t)
 	const stale = "block:stale"
 	w.term.windows[stale] = "window:3"
-	w.term.fgs[stale] = rex.Process{PID: 4242, Name: "claude"}
+	w.term.fgs[stale] = rex.Process{PID: exitedPID, Name: "claude"}
 	w.term.titles[stale] = "✳ another conversation"
-	if err := putSeed(w.e.Store, seed{Handle: "claude-old", Kind: core.Claude, Server: "unix:///fake.sock", BlockID: stale, AgentPID: 4242, AgentSessionID: jobSess}); err != nil {
+	if err := putSeed(w.e.Store, seed{Handle: "claude-old", Kind: core.Claude, Server: "unix:///fake.sock", BlockID: stale, AgentPID: exitedPID, AgentSessionID: jobSess}); err != nil {
 		t.Fatal(err)
 	}
 	w.jobHook(t, EventPostTool)
