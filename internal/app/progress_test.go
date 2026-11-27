@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -164,5 +166,74 @@ func TestRefreshSessionViewProgressLifecycle(t *testing.T) {
 	// 9. Second clear-progress is idempotent.
 	if rCleared2, err := e.RefreshSessionViewWith(ctx, narr, RefreshRequest{ClearProgress: true}); err != nil || rCleared2.Progress != nil {
 		t.Fatalf("idempotent second clear: %+v %v", rCleared2.Progress, err)
+	}
+}
+
+// Concurrent refreshes of the same session serialize their view.json
+// read-derive-write section so every distinct update gets a unique,
+// monotonically increasing revision and the final stored revision never
+// moves backward.
+func TestRefreshSessionViewProgressConcurrentRevisionsMonotonic(t *testing.T) {
+	e := viewWorld(t)
+	noOpenObligations(e)
+	ctx := context.Background()
+	narr := Location{Block: "block:pi-04"}
+
+	seed := store.ProgressInput{
+		PlanComplete: true,
+		Slices:       []store.SliceProgress{{ID: "S1", Title: "seed", Stage: store.StageQueued}},
+	}
+	if r, err := e.RefreshSessionViewWith(ctx, narr, RefreshRequest{Progress: &seed}); err != nil || r.Progress == nil || r.Progress.Revision != 1 {
+		t.Fatalf("seed refresh: %+v %v", r.Progress, err)
+	}
+
+	const n = 20
+	revs := make([]int, n)
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := range n {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			<-start
+			in := store.ProgressInput{
+				PlanComplete: true,
+				Slices:       []store.SliceProgress{{ID: "S1", Title: fmt.Sprintf("update-%02d", idx), Stage: store.StageImplementing}},
+			}
+			r, err := e.RefreshSessionViewWith(ctx, narr, RefreshRequest{Progress: &in})
+			errs[idx] = err
+			if err == nil && r.Progress != nil {
+				revs[idx] = r.Progress.Revision
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	seen := make(map[int]bool, n)
+	for i := range n {
+		if errs[i] != nil {
+			t.Fatalf("worker %d failed: %v", i, errs[i])
+		}
+		if revs[i] < 2 || revs[i] > n+1 {
+			t.Fatalf("worker %d got out-of-range revision %d", i, revs[i])
+		}
+		if seen[revs[i]] {
+			t.Fatalf("duplicate revision %d across concurrent refreshes: %v", revs[i], revs)
+		}
+		seen[revs[i]] = true
+	}
+
+	raw, ok, err := e.Store.ReadView("session:a")
+	if err != nil || !ok {
+		t.Fatalf("read final view: ok=%v err=%v", ok, err)
+	}
+	var final SessionView
+	if err := json.Unmarshal(raw, &final); err != nil {
+		t.Fatal(err)
+	}
+	if final.Progress == nil || final.Progress.Revision != n+1 {
+		t.Fatalf("final stored revision = %+v, want %d", final.Progress, n+1)
 	}
 }

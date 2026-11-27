@@ -242,6 +242,9 @@ func TestInputJSONObjectAndSnakeCaseFlag(t *testing.T) {
 	if _, err := merge(`{"progress":null}`); err == nil {
 		t.Error("null progress in --input accepted")
 	}
+	if _, err := merge(`{"clear_progress":null}`); err == nil {
+		t.Error("null clear_progress in --input accepted")
+	}
 	if _, err := ReadJSON("-", strings.NewReader("   ")); err == nil {
 		t.Error("empty stdin accepted by ReadJSON")
 	}

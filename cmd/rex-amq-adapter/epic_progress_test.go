@@ -56,6 +56,11 @@ func TestEpicRefreshPreIOValidationAndInputContracts(t *testing.T) {
 		{"input_unknown_key", `{"unknown":1}`, []string{"epic", "refresh", "--input", "-"}, "usage"},
 		{"input_duplicate_alias", `{"clear_progress":true,"clear-progress":false}`, []string{"epic", "refresh", "--input", "-"}, "usage"},
 		{"input_progress_null", `{"progress":null}`, []string{"epic", "refresh", "--input", "-"}, "invalid_input"},
+		{"input_clear_null", `{"clear_progress":null}`, []string{"epic", "refresh", "--input", "-"}, "usage"},
+		{"progress_missing_plan_complete", `{"progress":{"slices":[]}}`, []string{"epic", "refresh", "--input", "-"}, "invalid_input"},
+		{"progress_null_plan_complete", `{"progress":{"plan_complete":null,"slices":[{"id":"S1","title":"Model","stage":"done"}]}}`, []string{"epic", "refresh", "--input", "-"}, "invalid_input"},
+		{"progress_line_separator", "", []string{"epic", "refresh", "--progress", `{"plan_complete":true,"slices":[{"id":"S1","title":"a\u2028b","stage":"queued"}]}`}, "invalid_input"},
+		{"progress_raw_invalid_utf8", "{\"plan_complete\":true,\"slices\":[{\"id\":\"S1\",\"title\":\"bad\xfftitle\",\"stage\":\"queued\"}]}", []string{"epic", "refresh", "--progress", "-"}, "invalid_input"},
 		{"progress_derived_percent", "", []string{"epic", "refresh", "--progress", `{"plan_complete":true,"percent":80,"slices":[]}`}, "invalid_input"},
 		{"progress_unknown_field_input", `{"progress":{"plan_complete":true,"foo":1,"slices":[]}}`, []string{"epic", "refresh", "--input", "-"}, "invalid_input"},
 		{"progress_bad_file", "", []string{"epic", "refresh", "--progress", "@" + badFile}, "invalid_input"},
@@ -189,5 +194,57 @@ func TestEpicRefreshCLINarratorOnlyGuard(t *testing.T) {
 	}
 	if _, ok, _ := s.ReadView("session:e1"); ok {
 		t.Error("non-narrator epic refresh wrote view.json")
+	}
+}
+
+// An unknown --fields name on mutating `epic refresh` is rejected BEFORE
+// the handler runs, so an existing view.json (and its progress snapshot)
+// survives byte-for-byte untouched.
+func TestEpicRefreshRejectsUnknownFieldsBeforeMutation(t *testing.T) {
+	isolate(t)
+	stubTools(t)
+	home := os.Getenv("REX_AMQ_ADAPTER_HOME")
+	s := store.Store{P: store.Paths{Home: home}}
+	if err := putAgent(s, testAgent{
+		Handle: "agy-04", Kind: core.Agy, Role: core.NarratorRole,
+		Server: "unix:///t.sock", BlockID: "block:narr", SessionID: "session:e1",
+		WindowID: "window:2", AgentPID: 999997,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	pct := 100
+	saved := app.SessionView{
+		Schema:   app.ViewSchema,
+		Session:  app.ViewSession{Server: "unix:///t.sock", SessionID: "session:e1", Epic: "demo"},
+		Narrator: "agy-04",
+		Progress: &store.EpicProgress{
+			PlanComplete: true,
+			Slices:       []store.SliceProgress{{ID: "S1", Title: "Core", Stage: store.StageDone}},
+			TotalSlices:  1,
+			DoneSlices:   1,
+			Counts:       store.StageCounts{Done: 1},
+			Percent:      &pct,
+			Revision:     2,
+		},
+	}
+	if err := s.PutView("session:e1", saved); err != nil {
+		t.Fatal(err)
+	}
+	before, ok, err := s.ReadView("session:e1")
+	if err != nil || !ok {
+		t.Fatalf("seed view: ok=%v err=%v", ok, err)
+	}
+	t.Setenv("REX_BLOCK", "block:narr")
+
+	code, env := machine(t, "epic", "refresh", "--clear-progress", "--fields", "as_of,progres")
+	if code != 2 || env.code() != "invalid_input" {
+		t.Fatalf("bad --fields: exit %d %q (%+v), want 2 invalid_input", code, env.code(), env.Error)
+	}
+	after, ok, err := s.ReadView("session:e1")
+	if err != nil || !ok {
+		t.Fatalf("read view after error: ok=%v err=%v", ok, err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("epic refresh mutated view.json before rejecting --fields:\nbefore: %s\nafter:  %s", before, after)
 	}
 }

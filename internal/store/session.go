@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
+	"github.com/est7/rex-amq-adapter/internal/fsutil"
 )
 
 // A session's narrator state lives beside the gateway's, in the AMQ root's
@@ -106,6 +108,12 @@ func (s Store) PutSessionCrew(id string, c SessionCrew) error {
 		return errors.New("a session crew needs its session and its crew")
 	}
 	return writeJSON(s.P.crewPath(id), c)
+}
+
+// LockView serialises the read-merge-write of session id's view.json across
+// concurrent refreshes and revives. Callers keep Rex and AMQ reads outside it.
+func (s Store) LockView(ctx context.Context, id string) (func(), error) {
+	return fsutil.Flock(ctx, filepath.Join(s.P.Home, "views", fileKey(id)+".lock"))
 }
 
 // PutView writes session id's view whole: a reader sees the old view or the

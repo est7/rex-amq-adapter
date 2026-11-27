@@ -20,7 +20,7 @@ func LineClean(s string) error {
 	}
 	for _, r := range s {
 		switch {
-		case r < 0x20 || r == 0x7f || c1(r):
+		case r < 0x20 || r == 0x7f || c1(r) || r == 0x2028 || r == 0x2029:
 			return fmt.Errorf("holds a control character (%U)", r)
 		case cfBidi(r):
 			return fmt.Errorf("holds a bidi control (%U)", r)

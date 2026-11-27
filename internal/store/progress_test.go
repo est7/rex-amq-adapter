@@ -76,6 +76,8 @@ func TestParseProgressInputRejectsInvalid(t *testing.T) {
 		{"trailing_object", `{"plan_complete":false,"slices":[]} {"plan_complete":true,"slices":[]}`},
 		{"missing_slices", `{"plan_complete":true}`},
 		{"null_slices", `{"plan_complete":true,"slices":null}`},
+		{"missing_plan_complete", `{"slices":[]}`},
+		{"null_plan_complete", `{"plan_complete":null,"slices":[{"id":"S1","title":"ok","stage":"done"}]}`},
 		{"unknown_top_field_percent", `{"plan_complete":true,"percent":50,"slices":[]}`},
 		{"unknown_top_field_done_slices", `{"plan_complete":true,"done_slices":1,"slices":[]}`},
 		{"unknown_top_field_revision", `{"plan_complete":true,"revision":2,"slices":[]}`},
@@ -101,6 +103,8 @@ func TestParseProgressInputRejectsInvalid(t *testing.T) {
 		{"title_bidi_override", `{"plan_complete":true,"slices":[{"id":"S1","title":"a\u202eb","stage":"queued"}]}`},
 		{"title_bidi_isolate", `{"plan_complete":true,"slices":[{"id":"S1","title":"a\u2066b","stage":"queued"}]}`},
 		{"title_zero_width", `{"plan_complete":true,"slices":[{"id":"S1","title":"a\u200bb","stage":"queued"}]}`},
+		{"title_line_sep", `{"plan_complete":true,"slices":[{"id":"S1","title":"a\u2028b","stage":"queued"}]}`},
+		{"title_para_sep", `{"plan_complete":true,"slices":[{"id":"S1","title":"a\u2029b","stage":"queued"}]}`},
 		{"branch_newline", `{"plan_complete":true,"slices":[{"id":"S1","title":"ok","branch":"a\nb","stage":"queued"}]}`},
 		{"note_bidi", `{"plan_complete":true,"slices":[{"id":"S1","title":"ok","note":"a\u202eb","stage":"queued"}]}`},
 		{"note_bom", `{"plan_complete":true,"slices":[{"id":"S1","title":"ok","note":"a\ufeffb","stage":"queued"}]}`},
@@ -109,6 +113,12 @@ func TestParseProgressInputRejectsInvalid(t *testing.T) {
 		if got, err := ParseProgressInput([]byte(tc.raw)); err == nil {
 			t.Errorf("%s: accepted as %+v, want error", tc.name, got)
 		}
+	}
+	// Raw invalid UTF-8 bytes are rejected before JSON decoding can replace them with U+FFFD.
+	rawInvalidUTF8 := append([]byte(`{"plan_complete":true,"slices":[{"id":"S1","title":"bad`), 0xff)
+	rawInvalidUTF8 = append(rawInvalidUTF8, []byte(`title","stage":"queued"}]}`)...)
+	if _, err := ParseProgressInput(rawInvalidUTF8); err == nil {
+		t.Error("raw invalid UTF-8 JSON was accepted")
 	}
 	// Invalid UTF-8 rejected directly via NormalizeProgressInput.
 	if _, err := NormalizeProgressInput(ProgressInput{

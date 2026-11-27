@@ -340,7 +340,7 @@ func commands() []*cli.Command {
 				f("progress", cli.KindJSON, "declarative Slice progress JSON object: inline, @FILE, or - (replaces previous progress)"),
 				b("clear-progress", "clear any recorded Slice progress back to null (mutually exclusive with --progress)"),
 			},
-			Tier: cli.TierUndoable, Mutating: true, Idempotent: true, DryRun: true, Input: true, Fields: true, Audience: cli.AudienceAgent, Roles: []string{"narrator"},
+			Tier: cli.TierUndoable, Mutating: true, Idempotent: true, DryRun: true, Input: true, Fields: true, FieldModel: app.RefreshResult{}, Audience: cli.AudienceAgent, Roles: []string{"narrator"},
 			Result: "the rebuilt view (or preview with --dry-run); narrow with --fields as_of,progress",
 			Guardrails: []string{
 				"only the session's live narrator writes its view; workers and other roles are refused",

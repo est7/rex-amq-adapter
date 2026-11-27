@@ -338,10 +338,19 @@ func (e Env) RefreshSessionViewWith(ctx context.Context, loc Location, req Refre
 
 // refreshView rebuilds the view of key, narr's session, applying req's
 // narrative and progress updates, and writes view.json unless req.DryRun.
+// Rex and AMQ reads stay outside Store.LockView; only the previous-view read,
+// merge/derivation, and atomic commit run under the per-session view lock.
 func (e Env) refreshView(ctx context.Context, narr agent, key core.SessionKey, req RefreshRequest) (RefreshResult, error) {
 	v, err := e.buildView(ctx, narr, key)
 	if err != nil {
 		return RefreshResult{}, err
+	}
+	if !req.DryRun {
+		unlock, err := e.Store.LockView(ctx, key.SessionID)
+		if err != nil {
+			return RefreshResult{}, err
+		}
+		defer unlock()
 	}
 	var prev SessionView
 	if b, ok, err := e.Store.ReadView(key.SessionID); err == nil && ok {

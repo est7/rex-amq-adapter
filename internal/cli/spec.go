@@ -104,6 +104,10 @@ type Command struct {
 	DefaultLimit int  `json:"default_limit,omitempty"`
 	MaxLimit     int  `json:"max_limit,omitempty"`
 	Fields       bool `json:"fields,omitempty"`
+	// FieldModel is a zero value of the struct (or list) data type this
+	// command returns, used to validate --fields before mutating handlers run.
+	FieldModel    any             `json:"-"`
+	allowedFields map[string]bool // populated in Registry.Finish from FieldModel
 	// DefaultFields is the projection without --fields.
 	DefaultFields []string `json:"default_fields,omitempty"`
 	Doc           bool     `json:"document,omitempty"`

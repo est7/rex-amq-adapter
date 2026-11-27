@@ -84,6 +84,12 @@ func (r *Registry) Finish() error {
 		}
 		if c.Fields {
 			c.Flags = append(c.Flags, flagFields)
+			if c.FieldModel != nil {
+				c.allowedFields = declaredJSONFields(c.FieldModel)
+			}
+			if c.Mutating && len(c.allowedFields) == 0 {
+				return fmt.Errorf("%s: a mutating command with --fields must declare FieldModel", c.Name())
+			}
 		}
 		if c.Mutating && !c.DryRun && c.Tier != TierUndoable {
 			return fmt.Errorf("%s: a mutating command beyond undoable must declare --dry-run", c.Name())
@@ -263,8 +269,27 @@ func (r *Registry) Execute(ctx *Ctx, args []string) int {
 			return p.Fail(asFault(err))
 		}
 	}
+	if cmd.Fields && in.Has("fields") && len(cmd.allowedFields) > 0 {
+		if err := checkAllowedFields(strings.Split(in.Str("fields"), ","), cmd.allowedFields); err != nil {
+			return p.Fail(asFault(err))
+		}
+	}
 	res, err := cmd.Run(ctx, in)
 	return r.emit(ctx, cmd, in, res, err)
+}
+
+func checkAllowedFields(fields []string, allowed map[string]bool) error {
+	for _, f := range fields {
+		if !allowed[f] {
+			known := make([]string, 0, len(allowed))
+			for k := range allowed {
+				known = append(known, k)
+			}
+			sort.Strings(known)
+			return fault.New(fault.InvalidInput, "--fields: no field %s; there are %s", q(f), strings.Join(known, ", ")).With("field", f).With("available", known)
+		}
+	}
+	return nil
 }
 
 func (r *Registry) classify(err error) *fault.Error {
@@ -617,16 +642,20 @@ func (c *Command) mergeInput(in Input, raw []byte) (Input, error) {
 			}
 			switch {
 			case f.Kind == KindBool:
-				var b bool
-				if json.Unmarshal(val, &b) != nil {
+				trimmed := bytes.TrimSpace(val)
+				if !bytes.Equal(trimmed, []byte("true")) && !bytes.Equal(trimmed, []byte("false")) {
 					return in, Usage(c, "--input %s must be true or false", key)
 				}
-				if b {
+				if bytes.Equal(trimmed, []byte("true")) {
 					in.Flags[name] = []string{"true"}
 				}
 			case f.Kind == KindInt:
+				trimmed := bytes.TrimSpace(val)
+				if bytes.Equal(trimmed, []byte("null")) {
+					return in, Usage(c, "--input %s must be an integer", key)
+				}
 				var n json.Number
-				d := json.NewDecoder(bytes.NewReader(val))
+				d := json.NewDecoder(bytes.NewReader(trimmed))
 				d.UseNumber()
 				if d.Decode(&n) != nil {
 					return in, Usage(c, "--input %s must be an integer", key)
@@ -648,18 +677,26 @@ func (c *Command) mergeInput(in Input, raw []byte) (Input, error) {
 				}
 				return in, invalidInput(c, "--"+name, f.Kind, bad("must be a JSON object"))
 			case f.Repeat:
+				trimmed := bytes.TrimSpace(val)
+				if bytes.Equal(trimmed, []byte("null")) {
+					return in, Usage(c, "--input %s must be a string or a list of strings", key)
+				}
 				var list []string
-				if json.Unmarshal(val, &list) != nil {
+				if json.Unmarshal(trimmed, &list) != nil {
 					var one string
-					if json.Unmarshal(val, &one) != nil {
+					if json.Unmarshal(trimmed, &one) != nil {
 						return in, Usage(c, "--input %s must be a string or a list of strings", key)
 					}
 					list = []string{one}
 				}
 				in.Flags[name] = list
 			default:
+				trimmed := bytes.TrimSpace(val)
+				if bytes.Equal(trimmed, []byte("null")) {
+					return in, Usage(c, "--input %s must be a string", key)
+				}
 				var s string
-				if json.Unmarshal(val, &s) != nil {
+				if json.Unmarshal(trimmed, &s) != nil {
 					return in, Usage(c, "--input %s must be a string", key)
 				}
 				in.Flags[name] = []string{s}

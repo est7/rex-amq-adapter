@@ -99,6 +99,9 @@ type EpicProgress struct {
 // ParseProgressInput strictly decodes raw JSON into a validated, normalized
 // ProgressInput with DisallowUnknownFields() before any disk I/O.
 func ParseProgressInput(raw []byte) (ProgressInput, error) {
+	if !utf8.Valid(raw) {
+		return ProgressInput{}, errors.New("progress JSON is not valid UTF-8")
+	}
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 {
 		return ProgressInput{}, errors.New("progress JSON is empty")
@@ -106,17 +109,28 @@ func ParseProgressInput(raw []byte) (ProgressInput, error) {
 	if trimmed[0] != '{' {
 		return ProgressInput{}, errors.New("progress must be a JSON object")
 	}
-	var in ProgressInput
+	var wire struct {
+		GoalID       string          `json:"goal_id,omitempty"`
+		PlanComplete *bool           `json:"plan_complete"`
+		Slices       []SliceProgress `json:"slices"`
+	}
 	dec := json.NewDecoder(bytes.NewReader(trimmed))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&in); err != nil {
+	if err := dec.Decode(&wire); err != nil {
 		return ProgressInput{}, fmt.Errorf("decode progress: %w", err)
 	}
 	var extra any
 	if err := dec.Decode(&extra); err != io.EOF {
 		return ProgressInput{}, errors.New("progress must be exactly one JSON object")
 	}
-	return NormalizeProgressInput(in)
+	if wire.PlanComplete == nil {
+		return ProgressInput{}, errors.New("plan_complete is required and must be a boolean")
+	}
+	return NormalizeProgressInput(ProgressInput{
+		GoalID:       wire.GoalID,
+		PlanComplete: *wire.PlanComplete,
+		Slices:       wire.Slices,
+	})
 }
 
 // NormalizeProgressInput validates every field of in and returns a normalized
