@@ -13,9 +13,10 @@ import (
 // agent will take, or names it now, and makes the handle's mailbox before the
 // agent starts: `amq init --add` runs outside the hook budgets, and the
 // agent's first hook finds the handle registered and its mailbox made
-// (EnsureMailbox's fast path, which takes no lock and runs no amq). A resumed agent's handle is its own; a new
-// agent's is reserved (store.Reservation) under a token its launch carries
-// in ReservationEnv, which its adoption takes the handle with. A mailbox
+// (EnsureMailbox's fast path, which takes no lock and runs no amq). A
+// resumed agent's handle is its own; a new agent's is reserved
+// (store.Reservation) under a token its launch carries in ReservationEnv,
+// which its adoption takes the handle with. A mailbox
 // that cannot be made stops the launch (ErrNotProvisioned). A reservation is
 // given back only when its launch surely did not start its agent; after an
 // ambiguous reply from Rex it stays until it expires, so a pane Rex did start

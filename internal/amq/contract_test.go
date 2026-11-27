@@ -43,7 +43,11 @@ func targets(t *testing.T) []contractTarget {
 	out := []contractTarget{{"fake", f,
 		func(_ context.Context, root, h string) (WakeState, error) { return f.Waker(root, h), nil },
 		func(_ *testing.T, root, h string) { f.Kill(root, h) }}}
-	if bin, err := ResolveBin(); err == nil {
+	bin, err := ResolveBin()
+	if err != nil && os.Getenv("REX_AMQ_REAL") == "1" {
+		t.Fatalf("REX_AMQ_REAL=1 but %v", err)
+	}
+	if err == nil {
 		out = append(out, contractTarget{"amq", CLI{Bin: bin},
 			func(ctx context.Context, root, h string) (WakeState, error) { return WakeCheck(ctx, bin, root, h) },
 			func(t *testing.T, root, h string) {
@@ -81,8 +85,8 @@ func TestQueueContract(t *testing.T) {
 					t.Fatalf("mailbox %s: %v", h, err)
 				}
 			}
-			if got, err := Agents(root); err != nil || strings.Join(got, ",") != "alice,bob" {
-				t.Fatalf("registered agents: %v %v (want alice,bob once each, sorted)", got, err)
+			if got, err := Agents(root); err != nil || strings.Join(got, ",") != "bob,alice" {
+				t.Fatalf("registered agents: %v %v (want bob,alice once each, in the order they came)", got, err)
 			}
 			if !mailboxPresent(root, "alice") || !mailboxPresent(root, "bob") {
 				t.Fatal("mailbox directories missing after EnsureMailbox")
@@ -395,6 +399,9 @@ func TestRosterRetirementContract(t *testing.T) {
 			}
 			if err := q.EnsureMailbox(ctx, root, "carol"); err != nil || !mailboxPresent(root, "carol") {
 				t.Fatalf("making carol's removed mailbox again: %v", err)
+			}
+			if mailboxPresent(root, "alice") {
+				t.Fatal("repairing carol's mailbox brought back alice's")
 			}
 			if ids, err := Unread(root, "bob"); err != nil || len(ids) != 1 {
 				t.Fatalf("bob's mail after the repair: %v %v", ids, err)

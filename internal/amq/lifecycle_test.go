@@ -12,14 +12,11 @@ import (
 )
 
 // TestLifecycleAgainstRealAmq exercises the amq contract the adapter relies
-// on: mailbox registration merges handles, Unread sees a sent message, the
+// on: mailbox registration appends handles in order, Unread sees a sent message, the
 // waker amq starts calls the injector with exactly the target's argv, Ensure
 // keeps a matching live waker, and RetireHandle stops the handle's waker.
 func TestLifecycleAgainstRealAmq(t *testing.T) {
-	amqBin, err := ResolveBin()
-	if err != nil {
-		t.Skip(err)
-	}
+	amqBin := realAmq(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	dir := t.TempDir()
@@ -33,8 +30,8 @@ func TestLifecycleAgainstRealAmq(t *testing.T) {
 	}
 	var cfg struct{ Agents []string }
 	b, _ := os.ReadFile(filepath.Join(root, "meta", "config.json"))
-	if err := json.Unmarshal(b, &cfg); err != nil || strings.Join(cfg.Agents, ",") != "alice,bob" {
-		t.Fatalf("merged agent list: %v %v", cfg.Agents, err)
+	if err := json.Unmarshal(b, &cfg); err != nil || strings.Join(cfg.Agents, ",") != "bob,alice" {
+		t.Fatalf("agent list in the order registered: %v %v", cfg.Agents, err)
 	}
 
 	send := exec.CommandContext(ctx, amqBin, "--no-update-check", "send", "--root", root, "--me", "alice", "--to", "bob", "--subject", "s", "--body", "hello")
