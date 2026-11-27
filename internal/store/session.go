@@ -111,9 +111,10 @@ func (s Store) PutSessionCrew(id string, c SessionCrew) error {
 }
 
 // LockView serialises the read-merge-write of session id's view.json across
-// concurrent refreshes and revives. Callers keep Rex and AMQ reads outside it.
+// concurrent refreshes and revives by locking the existing session directory
+// itself (zero new files on disk). Callers keep Rex and AMQ reads outside it.
 func (s Store) LockView(ctx context.Context, id string) (func(), error) {
-	return fsutil.Flock(ctx, filepath.Join(s.P.Home, "views", fileKey(id)+".lock"))
+	return fsutil.FlockDir(ctx, s.P.SessionDir(id))
 }
 
 // PutView writes session id's view whole: a reader sees the old view or the

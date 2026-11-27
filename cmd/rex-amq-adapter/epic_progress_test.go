@@ -61,6 +61,7 @@ func TestEpicRefreshPreIOValidationAndInputContracts(t *testing.T) {
 		{"progress_null_plan_complete", `{"progress":{"plan_complete":null,"slices":[{"id":"S1","title":"Model","stage":"done"}]}}`, []string{"epic", "refresh", "--input", "-"}, "invalid_input"},
 		{"progress_line_separator", "", []string{"epic", "refresh", "--progress", `{"plan_complete":true,"slices":[{"id":"S1","title":"a\u2028b","stage":"queued"}]}`}, "invalid_input"},
 		{"progress_raw_invalid_utf8", "{\"plan_complete\":true,\"slices\":[{\"id\":\"S1\",\"title\":\"bad\xfftitle\",\"stage\":\"queued\"}]}", []string{"epic", "refresh", "--progress", "-"}, "invalid_input"},
+		{"input_string_progress_raw_invalid_utf8", "{\"progress\":\"{\\\"plan_complete\\\":true,\\\"slices\\\":[{\\\"id\\\":\\\"S1\\\",\\\"title\\\":\\\"bad\xfftitle\\\",\\\"stage\\\":\\\"queued\\\"}]}\"}", []string{"epic", "refresh", "--input", "-"}, "invalid_input"},
 		{"progress_derived_percent", "", []string{"epic", "refresh", "--progress", `{"plan_complete":true,"percent":80,"slices":[]}`}, "invalid_input"},
 		{"progress_unknown_field_input", `{"progress":{"plan_complete":true,"foo":1,"slices":[]}}`, []string{"epic", "refresh", "--input", "-"}, "invalid_input"},
 		{"progress_bad_file", "", []string{"epic", "refresh", "--progress", "@" + badFile}, "invalid_input"},

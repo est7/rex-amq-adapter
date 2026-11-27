@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -73,6 +75,13 @@ func TestRefreshSessionViewProgressLifecycle(t *testing.T) {
 	}
 	if r1.Progress == nil || r1.Progress.Revision != 1 || r1.Progress.Percent != nil || r1.Progress.TotalSlices != 1 || !r1.Progress.UpdatedAt.Equal(now) {
 		t.Fatalf("r1 progress: %+v", r1.Progress)
+	}
+	// Locking view writes must leave zero new files or lock directories on disk.
+	if ents, err := os.ReadDir(e.Paths.SessionDir("session:a")); err != nil || len(ents) != 1 || ents[0].Name() != "view.json" {
+		t.Fatalf("unexpected files in session dir after refresh: %v %v", ents, err)
+	}
+	if _, err := os.Stat(filepath.Join(e.Paths.Home, "views")); err == nil {
+		t.Fatal("refresh created an extra views lock directory on disk")
 	}
 
 	// 2. Idempotent replay at a later time keeps revision and updated_at.

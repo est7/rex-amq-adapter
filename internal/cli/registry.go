@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/est7/rex-amq-adapter/internal/fault"
 	"github.com/est7/rex-amq-adapter/internal/out"
@@ -583,6 +584,9 @@ func ReadJSON(v string, stdin io.Reader) ([]byte, error) {
 // unknown keys and keys also on the command line are usage errors, and the
 // result is checked as the command line is.
 func (c *Command) mergeInput(in Input, raw []byte) (Input, error) {
+	if !utf8.Valid(raw) {
+		return in, fault.New(fault.InvalidInput, "--input is not valid UTF-8")
+	}
 	var obj map[string]json.RawMessage
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	if err := dec.Decode(&obj); err != nil || obj == nil {
