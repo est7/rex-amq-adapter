@@ -7,16 +7,18 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
-	"slices"
 	"strings"
 )
 
 // A handle that will never be resumed (its Epic closed, or it was retired as
-// finished) leaves the root's roster: every `amq init --force` rewrites the
-// roster and fsyncs each listed mailbox's directories, so a roster that only
-// grows makes every new mailbox slower to make. amq stays the single owner of
-// its queue layout and of meta/config.json: the adapter removes a mailbox with
-// `amq cleanup --mailbox` and rewrites the roster with `amq init --force`.
+// finished) loses its mailbox: the adapter removes it with `amq cleanup
+// --mailbox`, and amq stays the single owner of its queue layout and of
+// meta/config.json. The handle's roster entry stays: `amq init --add` checks
+// only the handles it is asked for, so a longer roster costs a new mailbox
+// nothing, and the roster is bounded by the peak number of agents that ran at
+// once because core.NameHandle reuses the lowest free name. A send to such a
+// handle is refused before amq runs (core.CanExchange), since it has no
+// identity.
 
 // MailboxRemoval is what `amq cleanup --mailbox` did with one handle's
 // mailbox. Refusal is amq's reason when it kept a mailbox that holds mail
@@ -55,34 +57,4 @@ func RemoveMailbox(ctx context.Context, amqBin, root, handle string) (MailboxRem
 		return r, fmt.Errorf("amq cleanup --mailbox %s: %w: %s", handle, runErr, strings.TrimSpace(errOut.String()))
 	}
 	return r, nil
-}
-
-// PruneAgents takes the handles of drop out of root's roster, under the
-// registry lock that every roster writer holds, by rewriting it with `amq
-// init --force` and the agents that remain. It returns the handles it took
-// out. A roster that would be left empty is left as it is: amq needs at
-// least one agent, and a roster of only unresumable handles costs nothing.
-func PruneAgents(ctx context.Context, amqBin, root string, drop []string) ([]string, error) {
-	unlock, err := lockRegistry(ctx, root)
-	if err != nil {
-		return nil, err
-	}
-	defer unlock()
-	agents, err := Agents(root)
-	if err != nil {
-		return nil, err
-	}
-	keep := slices.DeleteFunc(slices.Clone(agents), func(a string) bool { return slices.Contains(drop, a) })
-	pruned := slices.DeleteFunc(slices.Clone(agents), func(a string) bool { return !slices.Contains(drop, a) })
-	if len(pruned) == 0 || len(keep) == 0 {
-		return nil, nil
-	}
-	cmd := exec.CommandContext(ctx, amqBin, "--no-update-check", "init", "--root", root, "--agents", strings.Join(keep, ","), "--force")
-	cmd.Env = amqEnv()
-	var out bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &out
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("amq init --force %s: %w: %s", root, err, strings.TrimSpace(out.String()))
-	}
-	return pruned, nil
 }

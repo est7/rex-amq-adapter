@@ -58,11 +58,9 @@ type Terminal interface {
 // implements it. It is to amq what Terminal is to Rex: the seam tests fake.
 type Queue interface {
 	EnsureMailbox(ctx context.Context, root, handle string) error
-	// RemoveMailbox and PruneAgents take a handle that will never be
-	// resumed out of the root: its mailbox (amq keeps one that holds mail),
-	// then its roster entry (roster.go).
+	// RemoveMailbox takes the mailbox of a handle that will never be
+	// resumed out of the root; amq keeps one that holds mail (roster.go).
 	RemoveMailbox(ctx context.Context, root, handle string) (amq.MailboxRemoval, error)
-	PruneAgents(ctx context.Context, root string, drop []string) ([]string, error)
 	Ensure(ctx context.Context, w amq.Waker, logDir string) (amq.WakeState, amq.WakeDecision, error)
 	RetireHandle(ctx context.Context, root, handle string) (bool, error)
 	ConfigureHolds(ctx context.Context, root, handle string, normal, low time.Duration) error

@@ -4,37 +4,36 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
 	"time"
 
-	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/core"
 	"github.com/est7/rex-amq-adapter/internal/fsutil"
 	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
-// A handle whose agent will never be resumed leaves the amq root, so the
-// roster every `amq init --force` rewrites and fsyncs stays the size of the
-// agents that may still run (internal/amq/roster.go). Unresumable is a
+// A handle whose agent will never be resumed loses its mailbox, so a mailbox
+// directory exists only for agents that may still run (internal/amq/roster.go).
+// Its roster entry in meta/config.json stays: amq owns that file, `amq init
+// --add` never reads the entries it was not asked about, and a handle with
+// no identity can be mailed by no one (core.CanExchange). Unresumable is a
 // terminal departure: an Epic closed (`epic revive` never revives a closed
 // Epic) or a peer retired as finished. Each leaves on its event (Epic close,
 // agent retire) and a sweep (agent collect, and the session watchers every
-// rosterSweepEvery) takes whatever is left, the handles of identities
+// rosterSweepEvery) takes whatever is left, the mailboxes of identities
 // collection forgot included. A personal agent's or a free session's
-// departure stays reserved for a resume (ReserveFor), and its roster entry
-// with it, until collection forgets it; the sweep then takes the entry.
+// departure stays reserved for a resume (ReserveFor), and its mailbox with
+// it, until collection forgets it; the sweep then takes the mailbox.
 
 // rosterSweepEvery is how often a session watcher sweeps the roster.
 const rosterSweepEvery = 10 * time.Minute
 
-// rosterChunk bounds the handle locks one step of a retirement holds.
-const rosterChunk = 32
-
 // RosterReport is what a roster retirement did.
 type RosterReport struct {
-	// Pruned left the roster, their mailboxes removed.
+	// Pruned had their mailboxes removed by this retirement.
 	Pruned []core.Handle `json:"pruned"`
 	// Forgotten lost their identity records too.
 	Forgotten []core.Handle `json:"forgotten"`
@@ -50,85 +49,63 @@ func (r *RosterReport) keep(h core.Handle, why string) {
 	r.Kept[h] = why
 }
 
-// retireRoster takes hs out of the amq root: for each, under its handle's
-// lock (which every mailbox maker of an adoption holds), it checks that the
-// handle still may leave (unresumable, departure finished, not reserved),
-// removes its mailbox through amq (which keeps one holding mail), and takes
-// the removed ones out of the roster; then, under the lifecycle lock, it
-// forgets the identity of each removed handle forget selects, if the record
-// is still the one read. A handle with no identity (forgotten already) leaves
-// unless a launch reserved it.
+// retireRoster takes hs out of the amq root one handle at a time: under its
+// handle's lock (which every mailbox maker holds), it checks that the handle
+// still may leave (unresumable, departure finished, not reserved) and
+// removes its mailbox through amq (which keeps one holding mail); once the
+// mailbox is gone it forgets, under the lifecycle lock, the identity forget
+// selects, if the record is still the one read. A handle with no identity
+// (forgotten already) leaves unless a launch reserved it.
 func (e Env) retireRoster(ctx context.Context, hs []core.Handle, forget func(agent) bool) (RosterReport, error) {
 	var rep RosterReport
 	hs = slices.Clone(hs)
 	slices.Sort(hs)
 	hs = slices.Compact(hs)
 	var errs []error
-	for len(hs) > 0 {
-		n := min(rosterChunk, len(hs))
-		errs = append(errs, e.retireChunk(ctx, hs[:n], forget, &rep))
-		hs = hs[n:]
+	for _, h := range hs {
+		if err := e.retireHandle(ctx, h, forget, &rep); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", h, err))
+		}
 	}
+	slices.Sort(rep.Forgotten)
 	return rep, errors.Join(errs...)
 }
 
-func (e Env) retireChunk(ctx context.Context, hs []core.Handle, forget func(agent) bool, rep *RosterReport) error {
-	// Sorted, so two retirements never wait for each other's locks in turn.
-	for _, h := range hs {
-		unlock, err := e.Store.LockHandle(ctx, h)
-		if err != nil {
-			return err
-		}
-		defer unlock()
+func (e Env) retireHandle(ctx context.Context, h core.Handle, forget func(agent) bool, rep *RosterReport) error {
+	unlock, err := e.Store.LockHandle(ctx, h)
+	if err != nil {
+		return err
 	}
+	defer unlock()
 	reserved, err := e.reservedNames()
 	if err != nil {
 		return err
 	}
-	var removed []string
-	cleared := map[core.Handle]bool{} // a mailbox this run removed
-	read := map[core.Handle]agent{}
-	var errs []error
-	for _, h := range hs {
-		rec, ok, err := e.agentOf(h)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", h, err))
-			continue
-		}
-		if why := mayLeave(rec, ok, reserved[h]); why != "" {
-			rep.keep(h, why)
-			continue
-		}
-		r, err := e.AMQ.RemoveMailbox(ctx, e.Paths.Root(), string(h))
-		if err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", h, err))
-			continue
-		}
-		if !r.Gone() {
-			rep.keep(h, r.Refusal)
-			continue
-		}
-		removed = append(removed, string(h))
-		cleared[h] = r.Removed
-		if ok {
-			read[h] = rec
-		}
-	}
-	if len(removed) == 0 {
-		return errors.Join(errs...)
-	}
-	pruned, err := e.AMQ.PruneAgents(ctx, e.Paths.Root(), removed)
+	rec, ok, err := e.agentOf(h)
 	if err != nil {
-		return errors.Join(append(errs, err)...)
+		return err
 	}
-	for _, h := range removed {
-		if cleared[core.Handle(h)] || slices.Contains(pruned, h) {
-			rep.Pruned = append(rep.Pruned, core.Handle(h))
-		}
+	if why := mayLeave(rec, ok, reserved[h]); why != "" {
+		rep.keep(h, why)
+		return nil
 	}
-	gone, err := e.forgetRetired(ctx, read, forget)
+	r, err := e.AMQ.RemoveMailbox(ctx, e.Paths.Root(), string(h))
+	if err != nil {
+		return err
+	}
+	if !r.Gone() {
+		rep.keep(h, r.Refusal)
+		return nil
+	}
+	if r.Removed {
+		rep.Pruned = append(rep.Pruned, h)
+	}
+	if !ok {
+		return nil
+	}
+	gone, err := e.forgetRetired(ctx, map[core.Handle]agent{h: rec}, forget)
 	rep.Forgotten = append(rep.Forgotten, gone...)
-	return errors.Join(append(errs, err)...)
+	return err
 }
 
 // mayLeave is why h, read as rec (ok false: no identity), stays in the
@@ -222,14 +199,14 @@ func (e Env) retireEpicRoster(ctx context.Context, epic core.SessionKey) (Roster
 // SweepRoster takes every handle that will never be resumed out of the root:
 // the records departed for epic_closed (identities forgotten), those retired
 // (identities forgotten once their Epic is closed, kept for its narrator's
-// pulse until then), and roster entries of handles with no identity that the
-// adapter named (core.LooksLikeHandle). Entries of other names are left.
+// pulse until then), and mailboxes of handles with no identity that the
+// adapter named (core.LooksLikeHandle). Mailboxes of other names are left.
 func (e Env) SweepRoster(ctx context.Context) (RosterReport, error) {
 	recs, err := e.agents()
 	if err != nil {
 		return RosterReport{}, err
 	}
-	agents, err := amq.Agents(e.Paths.Root())
+	boxes, err := mailboxDirs(e.Paths.Root())
 	if err != nil {
 		return RosterReport{}, err
 	}
@@ -241,18 +218,39 @@ func (e Env) SweepRoster(ctx context.Context) (RosterReport, error) {
 		if p == nil || !quietDeparture(p.DepartReason) {
 			continue
 		}
-		// One already out of the root (a peer retired from an Epic still
-		// open) is looked at again only to forget it.
-		if slices.Contains(agents, string(r.Handle)) || mailboxExists(e.Paths.Root(), r.Handle) || e.epicOver(r) {
+		// One whose mailbox is gone already (a peer retired from an Epic
+		// still open) is looked at again only to forget it.
+		if mailboxExists(e.Paths.Root(), r.Handle) || e.epicOver(r) {
 			hs = append(hs, r.Handle)
 		}
 	}
-	for _, a := range agents {
-		if h := core.Handle(a); !known[h] && core.LooksLikeHandle(a) {
+	for _, b := range boxes {
+		if h := core.Handle(b); !known[h] && core.LooksLikeHandle(b) {
 			hs = append(hs, h)
 		}
 	}
 	return e.retireRoster(ctx, hs, e.epicOver)
+}
+
+// mailboxDirs lists the names of the mailbox directories under root
+// (agents/<handle>), whatever meta/config.json lists: a mailbox amq made for
+// a handle the roster does not name holds mail all the same. An
+// uninitialised root has none; a symlink is not a mailbox.
+func mailboxDirs(root string) ([]string, error) {
+	entries, err := os.ReadDir(filepath.Join(root, "agents"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			out = append(out, entry.Name())
+		}
+	}
+	return out, nil
 }
 
 // mailboxExists reports whether h has a mailbox directory under root.

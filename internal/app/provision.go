@@ -11,10 +11,9 @@ import (
 
 // A launcher (agent summon, epic open, epic revive) knows the handle its
 // agent will take, or names it now, and makes the handle's mailbox before the
-// agent starts: amq init --force, which rewrites the root's roster and
-// fsyncs every mailbox's directories, then runs outside the hook budgets, and
-// the agent's first hook finds the handle registered and its mailbox made
-// (EnsureMailbox's fast path). A resumed agent's handle is its own; a new
+// agent starts: `amq init --add` runs outside the hook budgets, and the
+// agent's first hook finds the handle registered and its mailbox made
+// (EnsureMailbox's fast path, which takes no lock and runs no amq). A resumed agent's handle is its own; a new
 // agent's is reserved (store.Reservation) under a token its launch carries
 // in ReservationEnv, which its adoption takes the handle with. A mailbox
 // that cannot be made stops the launch (ErrNotProvisioned). A reservation is
@@ -70,9 +69,18 @@ func (e Env) recordReservation(ctx context.Context, token string, kind core.Kind
 // mailbox could not be made first: retrying it is safe.
 var ErrNotProvisioned = errors.New("the agent's mailbox could not be made, so it was not launched; try again")
 
-// provisionMailbox makes h's mailbox before its agent starts; an error is
-// ErrNotProvisioned, and the launch does not happen.
+// provisionMailbox makes h's mailbox before its agent starts, under h's
+// lock, so a roster sweep (which removes a mailbox only under that lock)
+// never removes it halfway through being made; a sweep that runs after it,
+// before the agent's adoption, is repaired by the adoption (provisionHeld).
+// The callers hold no lock. An error is ErrNotProvisioned, and the launch
+// does not happen.
 func (e Env) provisionMailbox(ctx context.Context, h core.Handle) error {
+	unlock, err := e.Store.LockHandle(ctx, h)
+	if err != nil {
+		return fmt.Errorf("%w (%s: %v)", ErrNotProvisioned, h, err)
+	}
+	defer unlock()
 	if err := e.AMQ.EnsureMailbox(ctx, e.Paths.Root(), string(h)); err != nil {
 		return fmt.Errorf("%w (%s: %v)", ErrNotProvisioned, h, err)
 	}

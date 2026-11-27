@@ -165,10 +165,6 @@ func (m watchedQueue) RemoveMailbox(ctx context.Context, root, handle string) (a
 	m.w.note("amq RemoveMailbox")
 	return m.q.RemoveMailbox(ctx, root, handle)
 }
-func (m watchedQueue) PruneAgents(ctx context.Context, root string, drop []string) ([]string, error) {
-	m.w.note("amq PruneAgents")
-	return m.q.PruneAgents(ctx, root, drop)
-}
 func (m watchedQueue) Ensure(ctx context.Context, wk amq.Waker, logDir string) (amq.WakeState, amq.WakeDecision, error) {
 	m.w.note("amq Ensure")
 	return m.q.Ensure(ctx, wk, logDir)

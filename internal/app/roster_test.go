@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -14,13 +16,16 @@ import (
 	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
+// inRoster reports whether h still has its mailbox directory in the amq
+// root: what a roster retirement takes away (its meta/config.json entry
+// stays, amq's to keep).
 func inRoster(t *testing.T, e Env, h core.Handle) bool {
 	t.Helper()
-	agents, err := amq.Agents(e.Paths.Root())
-	if err != nil {
+	_, err := os.Lstat(filepath.Join(e.Paths.Root(), "agents", string(h)))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		t.Fatal(err)
 	}
-	return slices.Contains(agents, string(h))
+	return err == nil
 }
 
 func hasIdentity(e Env, h core.Handle) bool {
@@ -116,9 +121,26 @@ func TestSweepRosterTakesOnlyHandlesNeverToBeResumed(t *testing.T) {
 	if rep.Kept["codex-07"] == "" || !slices.Contains(rep.Pruned, "codex-02") || !slices.Contains(rep.Forgotten, "codex-03") {
 		t.Errorf("report %+v", rep)
 	}
+	// The handles it took keep their roster entries (amq's), but a second
+	// sweep looks at none of them again: it asks amq to remove only the
+	// mailboxes that are still there.
+	if got, _ := amq.Agents(e.Paths.Root()); !slices.Contains(got, "codex-08") {
+		t.Errorf("the roster lost codex-08's entry: %v", got)
+	}
+	var removals []string
+	plain := e.AMQ
+	e.AMQ = hookQueue{Queue: plain, beforeRemoveMailbox: func(_, h string) error {
+		removals = append(removals, h)
+		return nil
+	}}
 	if again, err := e.SweepRoster(ctx); err != nil || len(again.Pruned) != 0 {
 		t.Errorf("a second sweep pruned %v: %v", again.Pruned, err)
 	}
+	slices.Sort(removals)
+	if want := []string{"codex-07"}; !slices.Equal(removals, want) {
+		t.Errorf("the second sweep asked amq to remove %v, want only %v (the one still holding mail)", removals, want)
+	}
+	e.AMQ = plain
 	// An event names handles itself (a retire, an Epic close): one that
 	// runs, or is reserved for a resume, stays all the same.
 	rep, err = e.retireRoster(ctx, []core.Handle{"codex-01", "codex-05"}, func(agent) bool { return true })
@@ -243,5 +265,39 @@ func TestASweepRacingAResumeLeavesTheResumedAgentItsMailbox(t *testing.T) {
 	}
 	if !recordOf(t, e, "codex-01").Live() || !inRoster(t, e, "codex-01") || !mailboxMade(e, "codex-01") {
 		t.Fatalf("the resumed agent: live=%v roster=%v mailbox=%v", recordOf(t, e, "codex-01").Live(), inRoster(t, e, "codex-01"), mailboxMade(e, "codex-01"))
+	}
+}
+
+// A mailbox directory the roster does not list (amq makes one for mail sent
+// to a handle outside meta/config.json) is a mailbox all the same: a new
+// name avoids one holding unread mail, and the sweep finds it and keeps it.
+func TestMailboxesOutsideTheRosterAreSeenAndKept(t *testing.T) {
+	e := realAmqEnv(t, &fakeTerm{state: "idle", windows: map[string]string{}})
+	ctx := context.Background()
+	if err := e.AMQ.EnsureMailbox(ctx, e.Paths.Root(), "helper"); err != nil {
+		t.Fatal(err)
+	}
+	if err := amq.Send(ctx, e.AMQ, e.Paths.Root(), "helper", "codex-01", "s", "x"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := amq.Agents(e.Paths.Root()); slices.Contains(got, "codex-01") {
+		t.Fatalf("setup: roster %v lists codex-01", got)
+	}
+	if ids, err := amq.Unread(e.Paths.Root(), "codex-01"); err != nil || len(ids) != 1 {
+		t.Fatalf("setup: codex-01's unread %v %v", ids, err)
+	}
+	taken, err := e.takenHandles(nil, "")
+	if err != nil || !taken["codex-01"] {
+		t.Fatalf("taken %v (%v): want codex-01, whose unlisted mailbox holds unread mail", taken, err)
+	}
+	if h := core.NameHandle(core.Codex, taken); h != "codex-02" {
+		t.Errorf("a new codex agent is named %s, want codex-02", h)
+	}
+	rep, err := e.SweepRoster(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Kept["codex-01"] == "" || !inRoster(t, e, "codex-01") {
+		t.Errorf("the sweep did not find and keep the unlisted mailbox holding mail: %+v", rep)
 	}
 }
