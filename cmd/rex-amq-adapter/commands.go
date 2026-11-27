@@ -334,12 +334,26 @@ func commands() []*cli.Command {
 			Run:      epicShow,
 		},
 		{
-			Path: path("epic", "refresh"), Summary: "(the narrator) rebuild the view without moving mail, keeping or replacing its narrative",
-			Flags: []cli.Flag{f("summary", cli.KindBody, "the narrator's reading of the session: text or @FILE")},
-			Tier:  cli.TierUndoable, Mutating: true, Idempotent: true, Audience: cli.AudienceAgent, Roles: []string{"narrator"},
-			Result:   "the rebuilt view",
-			Examples: []string{"rex-amq-adapter epic refresh", "rex-amq-adapter epic refresh --summary @summary.md"},
-			Run:      epicRefresh,
+			Path: path("epic", "refresh"), Summary: "(the narrator) rebuild the view without moving mail, updating narrative and optional Slice progress",
+			Flags: []cli.Flag{
+				f("summary", cli.KindBody, "the narrator's reading of the session: text, @FILE, or -"),
+				f("progress", cli.KindJSON, "declarative Slice progress JSON object: inline, @FILE, or - (replaces previous progress)"),
+				b("clear-progress", "clear any recorded Slice progress back to null (mutually exclusive with --progress)"),
+			},
+			Tier: cli.TierUndoable, Mutating: true, Idempotent: true, DryRun: true, Input: true, Fields: true, Audience: cli.AudienceAgent, Roles: []string{"narrator"},
+			Result: "the rebuilt view (or preview with --dry-run); narrow with --fields as_of,progress",
+			Guardrails: []string{
+				"only the session's live narrator writes its view; workers and other roles are refused",
+				"--progress and --clear-progress are mutually exclusive (exit 2); omitting both preserves previous progress",
+				"derived fields (percent, total_slices, done_slices, counts, revision, updated_at) are computed in Go and rejected in input",
+			},
+			Examples: []string{
+				"rex-amq-adapter epic refresh",
+				"rex-amq-adapter epic refresh --summary @summary.md --fields as_of,narrative",
+				"cat <<'EOF' | rex-amq-adapter epic refresh --input - --fields as_of,progress\n{\"summary\":\"S1 implementing\",\"progress\":{\"plan_complete\":true,\"slices\":[{\"id\":\"S1\",\"title\":\"Core model\",\"stage\":\"implementing\"}]}}\nEOF",
+				"rex-amq-adapter epic refresh --clear-progress --fields as_of,progress",
+			},
+			Run: epicRefresh,
 		},
 		{
 			Path: path("epic", "messages"), Summary: "(the narrator) read messages of its session by id, receipt-free",

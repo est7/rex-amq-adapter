@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/est7/rex-amq-adapter/internal/core"
 )
 
 // Kind is the class of an argument's or flag's value. The registry checks
@@ -47,6 +50,7 @@ const (
 	KindFields     Kind = "fields"        // comma-separated field names
 	KindCursor     Kind = "cursor"        // an opaque page cursor
 	KindInput      Kind = "input"         // --input: @FILE, -, or a JSON object
+	KindJSON       Kind = "json"          // @FILE, -, or an inline JSON object
 	KindCommand    Kind = "command"       // a command path or "errors" (schema)
 	KindBool       Kind = "bool"
 )
@@ -95,18 +99,8 @@ func c1(r rune) bool        { return r >= 0x80 && r < 0xa0 }
 // (newlines and ANSI escapes included), bidi controls, and zero-width
 // characters; and invalid UTF-8.
 func lineClean(s string) error {
-	if !utf8.ValidString(s) {
-		return bad("is not valid UTF-8")
-	}
-	for _, r := range s {
-		switch {
-		case r < 0x20 || r == 0x7f || c1(r):
-			return bad("holds a control character (%U)", r)
-		case cfBidi(r):
-			return bad("holds a bidi control (%U)", r)
-		case zeroWidth(r):
-			return bad("holds a zero-width character (%U)", r)
-		}
+	if err := core.LineClean(s); err != nil {
+		return invalid{err.Error()}
 	}
 	return nil
 }
@@ -274,6 +268,21 @@ func (s Value) check(v string) (string, error) {
 			return atPath(p)
 		}
 		return "", bad("is not @FILE, -, or a JSON object")
+	case KindJSON:
+		if v == "-" {
+			return v, nil
+		}
+		if p, ok := strings.CutPrefix(v, "@"); ok {
+			return atPath(p)
+		}
+		trimmed := strings.TrimSpace(v)
+		if len(trimmed) > BodyMax {
+			return "", bad("is %d bytes, over the %d-byte limit", len(trimmed), BodyMax)
+		}
+		if !strings.HasPrefix(trimmed, "{") || !json.Valid([]byte(trimmed)) {
+			return "", bad("is not @FILE, -, or a JSON object")
+		}
+		return trimmed, nil
 	case KindCommand:
 		if v != "errors" && !commandRe.MatchString(v) {
 			return "", bad("%s is not a command word", q(v))

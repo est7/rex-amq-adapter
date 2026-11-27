@@ -12,6 +12,7 @@ import (
 
 	"github.com/est7/rex-amq-adapter/internal/amq"
 	"github.com/est7/rex-amq-adapter/internal/core"
+	"github.com/est7/rex-amq-adapter/internal/fault"
 	"github.com/est7/rex-amq-adapter/internal/store"
 )
 
@@ -43,11 +44,12 @@ const (
 
 // SessionView is view.json.
 type SessionView struct {
-	Schema    int            `json:"schema"`
-	AsOf      ViewCursor     `json:"as_of"`
-	Session   ViewSession    `json:"session"`
-	Narrator  core.Handle    `json:"narrator"`
-	Narrative *ViewNarrative `json:"narrative,omitempty"`
+	Schema    int                 `json:"schema"`
+	AsOf      ViewCursor          `json:"as_of"`
+	Session   ViewSession         `json:"session"`
+	Narrator  core.Handle         `json:"narrator"`
+	Narrative *ViewNarrative      `json:"narrative,omitempty"`
+	Progress  *store.EpicProgress `json:"progress,omitempty"`
 	// HandBack is the orchestrator's latest recorded hand-back, whole: no
 	// excerpt limit applies to it.
 	HandBack *store.HandBack `json:"hand_back,omitempty"`
@@ -286,36 +288,89 @@ func (e Env) withStored(id string, b json.RawMessage) (json.RawMessage, error) {
 	return append(out, '\n'), err
 }
 
-// RefreshSessionView rebuilds the view of the narrator's session in loc and
-// writes it whole. summary, when set, replaces the narrator's narrative;
-// otherwise the last one is kept.
-func (e Env) RefreshSessionView(ctx context.Context, loc Location, summary string) (SessionView, error) {
-	narr, key, err := e.narratorOf(loc)
-	if err != nil {
-		return SessionView{}, err
-	}
-	return e.refreshView(ctx, narr, key, summary)
+// RefreshRequest is what `epic refresh` asks to update in the narrator's view.
+// Summary, when non-empty, replaces Narrative; otherwise the previous one is
+// kept. Progress, when non-nil, declaratively replaces Progress (derived in
+// Go); ClearProgress clears Progress back to nil; neither preserves the
+// previous Progress. DryRun previews without writing view.json.
+type RefreshRequest struct {
+	Summary       string
+	Progress      *store.ProgressInput
+	ClearProgress bool
+	DryRun        bool
 }
 
-// refreshView rebuilds the view of key, narr's session, and writes it
-// whole, keeping the last narrative unless summary replaces it.
-func (e Env) refreshView(ctx context.Context, narr agent, key core.SessionKey, summary string) (SessionView, error) {
+// RefreshResult is the result of RefreshSessionViewWith: the rebuilt view,
+// plus DryRun when previewed without writing view.json.
+type RefreshResult struct {
+	SessionView
+	DryRun bool `json:"dry_run,omitempty"`
+}
+
+// RefreshSessionView rebuilds the view of the narrator's session in loc and
+// writes it whole. summary, when set, replaces the narrator's narrative;
+// otherwise the last one is kept, and any recorded progress is preserved.
+func (e Env) RefreshSessionView(ctx context.Context, loc Location, summary string) (SessionView, error) {
+	res, err := e.RefreshSessionViewWith(ctx, loc, RefreshRequest{Summary: summary})
+	return res.SessionView, err
+}
+
+// RefreshSessionViewWith validates req, verifies the caller is the session's
+// live narrator, rebuilds the view, applies narrative and progress updates,
+// and writes view.json unless req.DryRun is set.
+func (e Env) RefreshSessionViewWith(ctx context.Context, loc Location, req RefreshRequest) (RefreshResult, error) {
+	if req.Progress != nil && req.ClearProgress {
+		return RefreshResult{}, fmt.Errorf("%w: --progress and --clear-progress are mutually exclusive", ErrUsage)
+	}
+	if req.Progress != nil {
+		norm, err := store.NormalizeProgressInput(*req.Progress)
+		if err != nil {
+			return RefreshResult{}, fault.New(fault.InvalidInput, "invalid progress: %v", err)
+		}
+		req.Progress = &norm
+	}
+	narr, key, err := e.narratorOf(loc)
+	if err != nil {
+		return RefreshResult{}, err
+	}
+	return e.refreshView(ctx, narr, key, req)
+}
+
+// refreshView rebuilds the view of key, narr's session, applying req's
+// narrative and progress updates, and writes view.json unless req.DryRun.
+func (e Env) refreshView(ctx context.Context, narr agent, key core.SessionKey, req RefreshRequest) (RefreshResult, error) {
 	v, err := e.buildView(ctx, narr, key)
 	if err != nil {
-		return v, err
+		return RefreshResult{}, err
+	}
+	var prev SessionView
+	if b, ok, err := e.Store.ReadView(key.SessionID); err == nil && ok {
+		_ = json.Unmarshal(b, &prev)
+	}
+	if req.Summary != "" {
+		v.Narrative = &ViewNarrative{Text: req.Summary, At: v.AsOf.At}
+	} else {
+		v.Narrative = prev.Narrative
 	}
 	switch {
-	case summary != "":
-		v.Narrative = &ViewNarrative{Text: summary, At: v.AsOf.At}
-	default:
-		if b, ok, err := e.Store.ReadView(key.SessionID); err == nil && ok {
-			var prev SessionView
-			if json.Unmarshal(b, &prev) == nil {
-				v.Narrative = prev.Narrative
-			}
+	case req.ClearProgress:
+		v.Progress = nil
+	case req.Progress != nil:
+		p, _, err := store.DeriveProgress(*req.Progress, prev.Progress, v.AsOf.At)
+		if err != nil {
+			return RefreshResult{}, fault.New(fault.InvalidInput, "invalid progress: %v", err)
 		}
+		v.Progress = &p
+	default:
+		v.Progress = prev.Progress
 	}
-	return v, e.Store.PutView(key.SessionID, v)
+	if req.DryRun {
+		return RefreshResult{SessionView: v, DryRun: true}, nil
+	}
+	if err := e.Store.PutView(key.SessionID, v); err != nil {
+		return RefreshResult{}, err
+	}
+	return RefreshResult{SessionView: v}, nil
 }
 
 // sessionMembers are the records of key's session other than the stealth

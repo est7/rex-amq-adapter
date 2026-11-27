@@ -208,11 +208,41 @@ func epicShow(c *cli.Ctx, in cli.Input) (cli.Result, error) {
 }
 
 // epicRefresh rebuilds the narrator's view, keeping or replacing its
-// narrative.
+// narrative and optional Slice progress snapshot. Input validation happens
+// strictly before caller resolution or any disk I/O.
 func epicRefresh(c *cli.Ctx, in cli.Input) (cli.Result, error) {
+	stdinCount := 0
+	for _, flag := range []string{"input", "summary", "progress"} {
+		if in.Str(flag) == "-" {
+			stdinCount++
+		}
+	}
+	if stdinCount > 1 {
+		return cli.Result{}, cli.Usage(c.Cmd, "only one of --input, --summary, and --progress may read stdin (-)")
+	}
+	clearProgress := in.Bool("clear-progress")
+	hasProgress := in.Has("progress")
+	if hasProgress && clearProgress {
+		return cli.Result{}, cli.Usage(c.Cmd, "--progress and --clear-progress are mutually exclusive")
+	}
 	summary, err := readText(in.Str("summary"), c.Stdin)
 	if err != nil {
 		return cli.Result{}, err
+	}
+	var progress *store.ProgressInput
+	if hasProgress {
+		raw, err := cli.ReadJSON(in.Str("progress"), c.Stdin)
+		if err != nil {
+			return cli.Result{}, err
+		}
+		parsed, err := store.ParseProgressInput(raw)
+		if err != nil {
+			help := "rex-amq-adapter " + c.Cmd.Name() + " --help"
+			return cli.Result{}, fault.New(fault.InvalidInput, "--progress: %v", err).
+				With("field", "--progress").With("kind", string(cli.KindJSON)).
+				WithHint("run `" + help + "`").WithNext(help)
+		}
+		progress = &parsed
 	}
 	env, loc, err := caller(c)
 	if err != nil {
@@ -220,11 +250,16 @@ func epicRefresh(c *cli.Ctx, in cli.Input) (cli.Result, error) {
 	}
 	ctx, cancel := within(c, 60*time.Second)
 	defer cancel()
-	v, err := env.RefreshSessionView(ctx, loc, strings.TrimSpace(summary))
+	res, err := env.RefreshSessionViewWith(ctx, loc, app.RefreshRequest{
+		Summary:       strings.TrimSpace(summary),
+		Progress:      progress,
+		ClearProgress: clearProgress,
+		DryRun:        in.DryRun(),
+	})
 	if err != nil {
 		return cli.Result{}, err
 	}
-	return cli.Result{Data: v}, nil
+	return cli.Result{Data: res}, nil
 }
 
 // epicMessages reads messages of the narrator's session by id, each body

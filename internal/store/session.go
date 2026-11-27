@@ -16,7 +16,8 @@ import (
 // extension area, which amq cleanup leaves alone:
 //
 //   - sessions/<session_id>/view.json: the session's view, which its narrator
-//     writes and its linked personal agent reads (written whole, atomically).
+//     writes and its linked personal agent reads (written whole, atomically),
+//     including optional derived Slice progress (EpicProgress, progress.go).
 //   - sessions/<session_id>/pulse.json: the pulse the session's watcher last
 //     told the narrator about, and the notice that told it (PulseCursor).
 //   - sessions/<session_id>/crew.json: the crew the session works as
