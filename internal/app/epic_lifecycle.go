@@ -452,20 +452,10 @@ func (e Env) finishClose(ctx context.Context, on Terminal, epic core.SessionKey,
 		closedLinks = mergeLinks(closedLinks, lcExisting.ClosedLinks...)
 	}
 	closedLinks = mergeLinks(closedLinks, links...)
-	// Pre-upgrade close ops recorded EpicClosing without ClosedLinks before
-	// unlinking. For a personal caller, op's verified request hash already
-	// proves that caller held a grant for epic when the close began.
-	if len(closedLinks) == 0 && op != nil && c.personal() {
-		closedLinks = append(closedLinks, core.Link{
-			Hub:               c.me.Hub,
-			Personal:          c.me.Session(),
-			Epic:              epic,
-			PreferredPersonal: c.personalHandle(),
-		})
-	}
-	// Persist the exact grant snapshot durably BEFORE the first DeleteLink so a
-	// crash between unlink and the final closed tombstone never loses the
-	// closer's archive on replay.
+	// Persist the unlink-phase grant snapshot durably BEFORE the first
+	// DeleteLink so a crash between unlink and the final closed tombstone never
+	// loses the closer's archive on replay, while grants revoked before close
+	// reached this unlink phase are never restored.
 	if op != nil && !slices.Equal(closedLinks, op.ClosedLinks) {
 		op.ClosedLinks = slices.Clone(closedLinks)
 		if err := e.Store.PutEpicOp(*op); err != nil {

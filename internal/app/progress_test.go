@@ -739,12 +739,13 @@ func TestCloseEpicOpIDPreservesClosedArchiveAcrossCrashAndReplay(t *testing.T) {
 		t.Errorf("epic list --include-closed missing replayed close archive: %s", raw)
 	}
 
-	// Subcase 2: legacy pre-upgrade EpicClosing op (no ClosedLinks on op) replayed
-	// after links were deleted still records the closing personal agent's grant.
+	// Subcase 2 (S2-4): pre-upgrade / pre-kill EpicClosing op without an
+	// unlink-phase ClosedLinks snapshot cannot prove whether the caller still
+	// held its grant when unlink ran, so replay MUST fail closed (no fabricated grant).
 	eLegacyOp := core.SessionKey{Server: fakeServer, SessionID: "session:e-legacy-op"}
 	if err := e.Store.PutView(eLegacyOp.SessionID, SessionView{
 		Schema: ViewSchema, Session: ViewSession{Server: fakeServer, SessionID: eLegacyOp.SessionID, Epic: "e-legacy-op"},
-		Narrative: &ViewNarrative{Text: "legacy op replay", At: now},
+		Narrative: &ViewNarrative{Text: "legacy op secret", At: now},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -774,7 +775,79 @@ func TestCloseEpicOpIDPreservesClosedArchiveAcrossCrashAndReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(raw2), eLegacyOp.SessionID) || !strings.Contains(string(raw2), "legacy op replay") {
-		t.Errorf("epic list --include-closed missing legacy op replay archive: %s", raw2)
+	if strings.Contains(string(raw2), eLegacyOp.SessionID) {
+		t.Errorf("legacy op without unlink-phase snapshot unexpectedly synthesized grant: %s", raw2)
+	}
+
+	// Subcase 3 (S2-4): operator runs `epic close --hub A --op-id X` while Hub A
+	// and Hub B both hold links, KillSession fails, Hub B explicitly unlinks
+	// while the Epic is still live, and then the operator retries X. Hub B MUST
+	// NOT regain archived access on retry while Hub A MUST see the archived row.
+	hubD, err := resolvedDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hubDKey := core.NewHubKey(fakeServer, hubD)
+	put(t, e, seed{Handle: "pi-d", Kind: core.Pi, Role: core.PersonalRole, BlockID: "block:pd", SessionID: "session:hub-d", Cwd: hubD, AgentPID: 812, AgentSessionID: "s-pd"})
+	if err := e.Store.PutSessionPolicy(store.SessionPolicy{Kind: store.PolicyHub, SessionID: "session:hub-d", Server: fakeServer, HubKey: hubDKey}); err != nil {
+		t.Fatal(err)
+	}
+	eRetry := core.SessionKey{Server: fakeServer, SessionID: "session:e-retry-unlink"}
+	if err := e.Store.PutEpicLifecycle(store.EpicLifecycle{
+		SessionID: eRetry.SessionID, Server: fakeServer, Hub: hubKey, Name: "e-retry-unlink",
+		PersonalHandle: "pi-c", PersonalSessionID: "session:hub-c", State: store.EpicOpened, OpenedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Store.PutView(eRetry.SessionID, SessionView{
+		Schema: ViewSchema, Session: ViewSession{Server: fakeServer, SessionID: eRetry.SessionID, Epic: "e-retry-unlink"},
+		Narrative: &ViewNarrative{Text: "sensitive retry narrative", At: now},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range []core.Link{
+		{Hub: hubKey, Personal: core.SessionKey{Server: fakeServer, SessionID: "session:hub-c"}, PreferredPersonal: "pi-c", Epic: eRetry},
+		{Hub: hubDKey, Personal: core.SessionKey{Server: fakeServer, SessionID: "session:hub-d"}, PreferredPersonal: "pi-d", Epic: eRetry},
+	} {
+		if err := e.Store.PutLink(l); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Attempt 1 fails at KillSession BEFORE entering the unlink phase.
+	term.killErr = errors.New("rex: transient kill failure")
+	req3 := CloseRequest{Session: eRetry.SessionID, Hub: hubDir, Asked: "close e-retry", OpID: "close-retry-s24"}
+	if _, err := e.CloseEpicFor(ctx, Operator{}, req3); err == nil {
+		t.Fatal("first close unexpectedly succeeded with killErr")
+	}
+	// Verify op did NOT snapshot links before KillSession succeeded.
+	if op3, ok, err := e.Store.EpicOp(store.EpicOpClose, req3.OpID); err != nil || !ok || len(op3.ClosedLinks) != 0 {
+		t.Fatalf("op snapshotted grants before unlink phase: ok=%v err=%v closed_links=%+v", ok, err, op3.ClosedLinks)
+	}
+	// Hub D explicitly unlinks while the Epic is still live.
+	if _, _, err := e.Link(ctx, Location{Block: "block:pd"}, eRetry.SessionID, false); err != nil {
+		t.Fatalf("Hub D unlink while live: %v", err)
+	}
+	// Retry succeeds after kill recovers.
+	term.killErr = nil
+	res3, err := e.CloseEpicFor(ctx, Operator{}, req3)
+	if err != nil || !res3.Replayed || res3.LifecycleState != store.EpicClosed {
+		t.Fatalf("retry close after Hub D unlink: %+v %v", res3, err)
+	}
+	// Hub C (whose link was removed by close) sees the archived row.
+	if rawC, err := e.ReadCockpitView(ctx, cockpitEnv(map[string]string{"REX_BLOCK": "block:pc"}), CockpitViewRequest{IncludeClosed: true}); err != nil {
+		t.Fatal(err)
+	} else if !strings.Contains(string(rawC), eRetry.SessionID) || !strings.Contains(string(rawC), "sensitive retry narrative") {
+		t.Errorf("Hub C missing archived row after retry: %s", rawC)
+	}
+	// Revoked Hub D MUST NOT regain archived access (neither personal nor --hub).
+	if rawD, err := e.ReadCockpitView(ctx, cockpitEnv(map[string]string{"REX_BLOCK": "block:pd"}), CockpitViewRequest{IncludeClosed: true}); err != nil {
+		t.Fatal(err)
+	} else if strings.Contains(string(rawD), eRetry.SessionID) || strings.Contains(string(rawD), "sensitive retry narrative") {
+		t.Errorf("revoked Hub D regained archive after close retry: %s", rawD)
+	}
+	if rawDHub, err := e.ReadCockpitView(ctx, cockpitEnv(nil), CockpitViewRequest{Hub: hubD, IncludeClosed: true}); err != nil {
+		t.Fatal(err)
+	} else if strings.Contains(string(rawDHub), eRetry.SessionID) {
+		t.Errorf("outside-Rex --hub D regained archive after close retry: %s", rawDHub)
 	}
 }
