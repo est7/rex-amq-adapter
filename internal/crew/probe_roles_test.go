@@ -181,6 +181,20 @@ func TestCrewSelectionAndLeadRules(t *testing.T) {
 	if !strings.Contains(narr, "--to personal") || strings.Contains(narr, "--to <personal>") {
 		t.Errorf("narrator prompt does not mail the personal role address:\n%s", narr)
 	}
+	for _, want := range []string{
+		"cat <<'EOF' | rex-amq-adapter epic refresh --input - --fields as_of,progress",
+		"--clear-progress",
+		"\"plan_complete\": false",
+		"NEVER clear progress on `hand_back`",
+		"`queued`", "`implementing`", "`review`", "`rework`", "`approved`", "`done`", "`blocked`",
+	} {
+		if !strings.Contains(narr, want) {
+			t.Errorf("narrator prompt lacks progress protocol rule %q:\n%s", want, narr)
+		}
+	}
+	if !strings.Contains(orch, "full Slice roster (`S1..Sn`)") {
+		t.Errorf("orchestrator prompt lacks Slice roster guidance:\n%s", orch)
+	}
 	entries, err := lib.List()
 	if err != nil {
 		t.Fatal(err)

@@ -180,8 +180,8 @@ on stderr. A command whose `schema <command>` says `"supports_dry_run":
 true` takes `--dry-run`, which runs every check and resolves the target,
 then writes, sends, and launches nothing; one whose schema says `"input":
 true` takes `--input @FILE|-|<json>`, its arguments as one JSON object. Not
-every command that changes state has either: `mail drain`, `epic refresh`,
-and `agent title` take neither flag, and refuse it as `usage` (exit 2).
+every command that changes state has either: `mail drain` and `agent title`
+take neither flag, and refuse it as `usage` (exit 2).
 
 The exit status says what kind of failure it was; `error.code` names it:
 
@@ -560,9 +560,12 @@ to overwrite a file you changed since the last materialize unless
 goes to the lead through the narrator and comes back as the next `seq`.
 
 `rex-amq-adapter epic list` is the read-only cockpit of a Hub: its linked
-Epics (lifecycle, hand-back, whether the narrator has written a view), and
-`epic show <session>` one of them (its view, or its lifecycle alone before
-the narrator writes one). Neither moves mail or starts anything. A personal
+Epics (lifecycle, hand-back, goal path, narrative, Slice progress — `null` when
+unrecorded — and whether the narrator has written a view; `--include-closed`
+with optional `--closed-within`, default `24h`, also includes recently closed
+Epics of the Hub), and `epic show <session>` one of them (its view, or its
+lifecycle alone before the narrator writes one). Neither moves mail or starts
+anything. A personal
 agent runs them in its own pane; you run them from outside Rex, with
 `--hub <dir>` or `--personal <handle>` to pick the Hub (default: the default
 Hub). The answer does not depend on how many personal agents are live.
@@ -634,8 +637,8 @@ rex-amq-adapter mail drain --include-body      # take your unread mail, bodies c
 rex-amq-adapter epic link <epic-session>       # (a personal agent) exchange mail with that Epic's narrator
 rex-amq-adapter epic unlink <epic-session>     # revoke it
 rex-amq-adapter epic show <epic-session> --fields lifecycle,hand_back   # an Epic's view (its narrator, lead, or a linked personal agent)
-rex-amq-adapter epic list                      # read-only: the Epics linked to your Hub
-rex-amq-adapter epic refresh --summary "<what changed>"   # (the narrator) rebuild the view; `epic messages --ids …` reads named mail
+rex-amq-adapter epic list [--include-closed] [--closed-within 24h]   # read-only: Epics linked to your Hub (with goal_path, narrative, progress)
+rex-amq-adapter epic refresh [--summary S] [--progress JSON|@FILE|- | --clear-progress] [--input -] [--dry-run] [--fields as_of,progress]   # (the narrator) rebuild the view; `epic messages --ids …` reads named mail
 rex-amq-adapter epic handback @report.md       # (the Epic's lead, last) record its final report; epic show shows it as hand_back
 rex-amq-adapter epic revive <epic-session>     # (you or a personal agent) after a Rex restart, resume the Epic's agents in their own blocks
 rex-amq-adapter hub notify --ref inbox:42 --event-id ev-1 [--hub ~/me] [--summary "…"]   # (an outside producer) ring the Hub's live personal agent
