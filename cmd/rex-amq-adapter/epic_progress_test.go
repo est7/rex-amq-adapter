@@ -282,6 +282,7 @@ func TestEpicListCLIProgressProjectionAndClosedFiltering(t *testing.T) {
 	sClosedRecent := "session:01a1eac4-f222-7d79-9291-9a8a86d39e03"
 	sClosedOld := "session:01a1eac4-f222-7d79-9291-9a8a86d39e04"
 	sClosedOther := "session:01a1eac4-f222-7d79-9291-9a8a86d39e05"
+	sClosedLegacy := "session:01a1eac4-f222-7d79-9291-9a8a86d39e06"
 
 	now := time.Now().UTC()
 	recentAt := now.Add(-2 * time.Hour)
@@ -298,9 +299,10 @@ func TestEpicListCLIProgressProjectionAndClosedFiltering(t *testing.T) {
 	for _, lc := range []store.EpicLifecycle{
 		{SessionID: sLive1, Server: srv, Hub: hubKey, Name: "live-with-progress", Dir: "/repo/a", State: store.EpicOpened, UpdatedAt: now},
 		{SessionID: sLive2, Server: srv, Hub: hubKey, Name: "live-no-progress", Dir: "/repo/b", State: store.EpicOpened, UpdatedAt: now},
-		{SessionID: sClosedRecent, Server: srv, Hub: hubKey, Name: "closed-recent", Dir: "/repo/c", State: store.EpicClosed, ClosedAt: &recentAt, UpdatedAt: recentAt},
-		{SessionID: sClosedOld, Server: srv, Hub: hubKey, Name: "closed-old", Dir: "/repo/d", State: store.EpicClosed, ClosedAt: &oldAt, UpdatedAt: oldAt},
-		{SessionID: sClosedOther, Server: srv, Hub: otherHubKey, Name: "closed-other-hub", Dir: "/repo/e", State: store.EpicClosed, ClosedAt: &recentAt, UpdatedAt: recentAt},
+		{SessionID: sClosedRecent, Server: srv, Hub: hubKey, Name: "closed-recent", Dir: "/repo/c", State: store.EpicClosed, ClosedAt: &recentAt, UpdatedAt: recentAt, ClosedLinks: []core.Link{{Hub: hubKey, Epic: core.SessionKey{Server: srv, SessionID: sClosedRecent}}}},
+		{SessionID: sClosedOld, Server: srv, Hub: hubKey, Name: "closed-old", Dir: "/repo/d", State: store.EpicClosed, ClosedAt: &oldAt, UpdatedAt: oldAt, ClosedLinks: []core.Link{{Hub: hubKey, Epic: core.SessionKey{Server: srv, SessionID: sClosedOld}}}},
+		{SessionID: sClosedOther, Server: srv, Hub: otherHubKey, Name: "closed-other-hub", Dir: "/repo/e", State: store.EpicClosed, ClosedAt: &recentAt, UpdatedAt: recentAt, ClosedLinks: []core.Link{{Hub: otherHubKey, Epic: core.SessionKey{Server: srv, SessionID: sClosedOther}}}},
+		{SessionID: sClosedLegacy, Server: srv, Hub: hubKey, Name: "closed-legacy-no-grant", Dir: "/repo/f", State: store.EpicClosed, ClosedAt: &recentAt, UpdatedAt: recentAt},
 	} {
 		if err := s.PutEpicLifecycle(lc); err != nil {
 			t.Fatal(err)

@@ -249,8 +249,12 @@ func (e Env) closeEpic(ctx context.Context, op Operator, r CloseRequest, settle 
 			if err != nil {
 				return res, err
 			}
+			closeLinks, err := e.closeLinksFor(c, epic)
+			if err != nil {
+				return res, err
+			}
 			now := e.Now().UTC()
-			rec = &store.EpicOpRecord{Kind: store.EpicOpClose, OpID: r.OpID, RequestHash: hash, SessionID: epic.SessionID, Server: epic.Server, HubDirs: hubs,
+			rec = &store.EpicOpRecord{Kind: store.EpicOpClose, OpID: r.OpID, RequestHash: hash, SessionID: epic.SessionID, Server: epic.Server, HubDirs: hubs, ClosedLinks: closeLinks,
 				PersonalHandle: c.personalHandle(), PersonalSessionID: c.personalSession(), State: store.EpicClosing, CreatedAt: now, UpdatedAt: now}
 			if err := e.Store.PutEpicOp(*rec); err != nil {
 				return res, fmt.Errorf("record the close under --op-id %q: %w", r.OpID, err)

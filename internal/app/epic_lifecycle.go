@@ -175,25 +175,25 @@ func (e Env) advanceEpic(seed store.EpicLifecycle, state string, op *store.EpicO
 	fill(&lc.Crew, seed.Crew)
 	fill(&lc.OpenOpID, seed.OpenOpID)
 	fill(&lc.CloseOpID, seed.CloseOpID)
-	if seed.ClosedLinks != nil {
-		if lc.ClosedLinks == nil {
-			cp := slices.Clone(*seed.ClosedLinks)
-			if cp == nil {
-				cp = []core.Link{}
-			}
-			lc.ClosedLinks = &cp
-		} else {
-			for _, l := range *seed.ClosedLinks {
-				if !slices.ContainsFunc(*lc.ClosedLinks, func(e core.Link) bool { return e.SameGrant(l) }) {
-					*lc.ClosedLinks = append(*lc.ClosedLinks, l)
-				}
-			}
-		}
-	}
+	lc.ClosedLinks = mergeLinks(lc.ClosedLinks, seed.ClosedLinks...)
 	if lc.OpenedAt.IsZero() && (state == store.EpicPartialStart || state == store.EpicOpened) {
 		lc.OpenedAt = now
 	}
 	lc.Advance(state, now)
+	if state == store.EpicClosed {
+		// Persist the closed lifecycle tombstone before marking the close op
+		// complete so replayClose never returns early before lifecycle.json is
+		// durable.
+		if err := e.Store.PutEpicLifecycle(lc); err != nil {
+			return lc, err
+		}
+		if op != nil && op.Advance(state, now) {
+			if err := e.Store.PutEpicOp(*op); err != nil {
+				return lc, err
+			}
+		}
+		return lc, nil
+	}
 	if op != nil && op.Advance(state, now) {
 		if err := e.Store.PutEpicOp(*op); err != nil {
 			return lc, err
@@ -436,14 +436,47 @@ func (e Env) finishClose(ctx context.Context, on Terminal, epic core.SessionKey,
 	if res.Parked, err = e.parkClosed(ctx, epic); err != nil {
 		return res, err
 	}
-	var links []core.Link
-	if c.personal() {
-		links, err = e.linksFor(c.me, epic)
-	} else {
-		links, err = e.linksToEpic(epic.SessionID)
-	}
+	links, err := e.closeLinksFor(c, epic)
 	if err != nil {
 		return res, err
+	}
+	lcExisting, hasLC, err := e.Store.EpicLifecycle(epic.SessionID)
+	if err != nil {
+		return res, err
+	}
+	var closedLinks []core.Link
+	if op != nil {
+		closedLinks = mergeLinks(closedLinks, op.ClosedLinks...)
+	}
+	if hasLC {
+		closedLinks = mergeLinks(closedLinks, lcExisting.ClosedLinks...)
+	}
+	closedLinks = mergeLinks(closedLinks, links...)
+	// Pre-upgrade close ops recorded EpicClosing without ClosedLinks before
+	// unlinking. For a personal caller, op's verified request hash already
+	// proves that caller held a grant for epic when the close began.
+	if len(closedLinks) == 0 && op != nil && c.personal() {
+		closedLinks = append(closedLinks, core.Link{
+			Hub:               c.me.Hub,
+			Personal:          c.me.Session(),
+			Epic:              epic,
+			PreferredPersonal: c.personalHandle(),
+		})
+	}
+	// Persist the exact grant snapshot durably BEFORE the first DeleteLink so a
+	// crash between unlink and the final closed tombstone never loses the
+	// closer's archive on replay.
+	if op != nil && !slices.Equal(closedLinks, op.ClosedLinks) {
+		op.ClosedLinks = slices.Clone(closedLinks)
+		if err := e.Store.PutEpicOp(*op); err != nil {
+			return res, fmt.Errorf("record the close under --op-id %q: %w", op.OpID, err)
+		}
+	}
+	if hasLC && !slices.Equal(closedLinks, lcExisting.ClosedLinks) {
+		lcExisting.ClosedLinks = slices.Clone(closedLinks)
+		if err := e.Store.PutEpicLifecycle(lcExisting); err != nil {
+			return res, fmt.Errorf("record the Epic's closed grants: %w", err)
+		}
 	}
 	for _, l := range links {
 		if _, err := e.Store.DeleteLink(l); err != nil {
@@ -451,11 +484,7 @@ func (e Env) finishClose(ctx context.Context, on Terminal, epic core.SessionKey,
 		}
 	}
 	res.Unlinked = true
-	closedLinks := slices.Clone(links)
-	if closedLinks == nil {
-		closedLinks = []core.Link{}
-	}
-	seed := store.EpicLifecycle{SessionID: epic.SessionID, Server: epic.Server, Hub: c.me.Hub, PersonalHandle: c.personalHandle(), PersonalSessionID: c.personalSession(), ClosedLinks: &closedLinks}
+	seed := store.EpicLifecycle{SessionID: epic.SessionID, Server: epic.Server, Hub: c.me.Hub, PersonalHandle: c.personalHandle(), PersonalSessionID: c.personalSession(), ClosedLinks: closedLinks}
 	if op != nil {
 		seed.CloseOpID = op.OpID
 	}
@@ -465,4 +494,21 @@ func (e Env) finishClose(ctx context.Context, on Terminal, epic core.SessionKey,
 	}
 	res.LifecycleState = lc.State
 	return res, nil
+}
+
+func (e Env) closeLinksFor(c closer, epic core.SessionKey) ([]core.Link, error) {
+	if c.personal() {
+		return e.linksFor(c.me, epic)
+	}
+	return e.linksToEpic(epic.SessionID)
+}
+
+func mergeLinks(dst []core.Link, src ...core.Link) []core.Link {
+	out := slices.Clone(dst)
+	for _, l := range src {
+		if !slices.ContainsFunc(out, func(e core.Link) bool { return e.SameGrant(l) }) {
+			out = append(out, l)
+		}
+	}
+	return out
 }

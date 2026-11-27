@@ -102,9 +102,10 @@ type EpicLifecycle struct {
 	HandBacks         []HandBackRef `json:"hand_backs,omitempty"`
 	// ClosedLinks records the grants that were effective and automatically
 	// unlinked when the Epic closed, so `epic list --include-closed` authorizes
-	// archived views from grants effective at close rather than historical
-	// opener metadata. nil only on legacy tombstones predating this field.
-	ClosedLinks *[]core.Link `json:"closed_links,omitempty"`
+	// archived views strictly from grants effective at close rather than
+	// historical opener metadata. Pre-upgrade tombstones lack this field and
+	// remain visible only through surviving links.
+	ClosedLinks []core.Link `json:"closed_links,omitempty"`
 }
 
 // Advance moves the lifecycle to state at, unless it is already as far or
@@ -270,7 +271,11 @@ type EpicOpRecord struct {
 	// HubDirs are the Hubs a close's Epic was of when it was recorded, by
 	// its lifecycle and its links: what a retry's --hub is held to after
 	// the close's unlink removed the links.
-	HubDirs           []string    `json:"hub_dirs,omitempty"`
+	HubDirs []string `json:"hub_dirs,omitempty"`
+	// ClosedLinks are the links that granted the close's caller before the
+	// close unlinked them, persisted before the first DeleteLink so a retry
+	// after a crash still records them on the closed lifecycle tombstone.
+	ClosedLinks       []core.Link `json:"closed_links,omitempty"`
 	PersonalHandle    core.Handle `json:"personal_handle"`
 	PersonalSessionID string      `json:"personal_session_id"`
 	OrchestratorBlock string      `json:"orchestrator_block,omitempty"`
