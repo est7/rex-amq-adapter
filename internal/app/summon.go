@@ -133,11 +133,23 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 	if err != nil {
 		return SummonResult{}, err
 	}
+	// An Epic's lead of a read-only role seats peers of its role one at a
+	// time as well as by --council (core.GuardSummon). In its own directory
+	// it holds its own harness's seat (self), as in a council: that harness
+	// is never started or resumed there beside it.
+	lead, err := e.leadSeats(caller, target, isHandle)
+	if err != nil {
+		return SummonResult{}, err
+	}
+	self := lead && (r.Cwd == "" || sameDir(r.Cwd, caller.Cwd))
 	var live []agent
 	var departed *agent
 	for i, rec := range recs {
 		if rec.Handle == caller.Handle || !matches(rec, target, isHandle) {
 			continue // nobody summons themselves
+		}
+		if self && !rec.Live() && rec.Kind == caller.Kind && sameDir(rec.Cwd, caller.Cwd) {
+			continue // the lead's own seat, which it holds
 		}
 		// An explicit --harness for a role asks for that CLI: a peer of the
 		// role on another one, departed or live and stuck, never stands in
@@ -194,6 +206,9 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 		}
 		live, departed = nil, nil // a second agent of the role, in its own directory or seat
 	}
+	if self && r.Harness == "" {
+		busy = append(busy, caller.Kind)
+	}
 	if len(live) > 1 {
 		names := make([]string, len(live))
 		for i, rec := range live {
@@ -220,6 +235,11 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 		e.summonLog(caller, r, res)
 		return res, nil
 	}
+	if self && departed == nil && r.Harness == string(caller.Kind) {
+		res.Action, res.Reason = "refused", fmt.Sprintf("%s holds the %s seat of %s in %s itself; name another harness with --harness for another seat, or another directory with --cwd", caller.Handle, caller.Kind, target, caller.Cwd)
+		e.summonLog(caller, r, res)
+		return res, nil
+	}
 	if departed != nil {
 		// Its mailbox waits for a resume whatever the guards say.
 		if !r.DryRun {
@@ -238,7 +258,7 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 	}
 	// The guards and the reservation, together under the lifecycle lock:
 	// two summoners racing the cap both see the other's reservation.
-	tokens, err := e.reserve(ctx, caller, s, r.Kind, chain, target, []*agent{departed}, false, r.DryRun)
+	tokens, err := e.reserve(ctx, caller, s, r.Kind, chain, target, []*agent{departed}, lead, r.DryRun)
 	if err != nil {
 		var refusal core.SummonCheck
 		if errors.As(err, &refusal) {
@@ -253,7 +273,17 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 	if departed != nil {
 		return e.resume(ctx, caller, s, r, *departed, res)
 	}
-	return e.start(ctx, caller, s, r, target, busy, res)
+	return e.start(ctx, caller, s, r, target, busy, lead, res)
+}
+
+// leadSeats reports whether caller summons a peer of its own read-only role
+// (core.ReadOnly) as its Epic's lead (sessionLead): a seat beside it, which
+// core.GuardSummon does not count as a cycle.
+func (e Env) leadSeats(caller agent, target string, isHandle bool) (bool, error) {
+	if isHandle || caller.Role != target || !core.ReadOnly(target) {
+		return false, nil
+	}
+	return e.sessionLead(caller)
 }
 
 // guardSummoner refuses a summoner by its role (core.GuardSummoner) and by
@@ -582,7 +612,7 @@ func (e Env) launchLocked(ctx context.Context, caller agent, s Session, split bo
 
 // start launches a new agent for a role (launch), with the message
 // as its brief. A handle that names no agent cannot be started.
-func (e Env) start(ctx context.Context, caller agent, s Session, r SummonRequest, role string, busy []core.Kind, res SummonResult) (SummonResult, error) {
+func (e Env) start(ctx context.Context, caller agent, s Session, r SummonRequest, role string, busy []core.Kind, seat bool, res SummonResult) (SummonResult, error) {
 	refuse := func(reason string) (SummonResult, error) {
 		e.dropToken(res.Token)
 		res.Action, res.Reason = "refused", reason
@@ -608,9 +638,10 @@ func (e Env) start(ctx context.Context, caller agent, s Session, r SummonRequest
 		return refuse(fmt.Sprintf("the routing of role %s cannot be read, so no agent was started: %v", role, err))
 	}
 	// A cross-family role takes the first ready harness of another family than the
-	// caller's, installed even when it is the only one; every other role its
-	// first harness, launched even when this process's PATH lacks it
-	// (pickHarness).
+	// caller's, installed even when it is the only one; a lead's seat of its
+	// own role (seat) the first ready harness of its routing that is free, as
+	// a council seat would; every other role its first harness, launched even
+	// when this process's PATH lacks it (pickHarness).
 	// An explicit --harness is the caller's choice and is never filtered.
 	kinds := route.Harnesses[:1]
 	switch {
@@ -625,6 +656,8 @@ func (e Env) start(ctx context.Context, caller agent, s Session, r SummonRequest
 		if kinds = otherFamilies(route, mine); len(kinds) == 0 {
 			return refuse(fmt.Sprintf("no harness in the routing of %s (%s) runs a model family known to differ from yours (%s %s), so no agent was started; name one with --harness", role, strings.Join(kindNames(route.Harnesses), ", "), caller.Kind, orUnknown(mine)))
 		}
+	case seat:
+		kinds = route.Harnesses
 	}
 	// Seats a read-only role already holds in --cwd (busy) are passed over;
 	// for a role that is not cross-family that leaves its first harness or
@@ -636,7 +669,7 @@ func (e Env) start(ctx context.Context, caller agent, s Session, r SummonRequest
 		}
 		kinds = free
 	}
-	kind, passed, refusal, err := e.pickHarness(ctx, cwd, kinds, r.Harness == "" && core.CrossFamily(role))
+	kind, passed, refusal, err := e.pickHarness(ctx, cwd, kinds, r.Harness == "" && (core.CrossFamily(role) || seat))
 	if err != nil {
 		e.dropToken(res.Token)
 		return res, err
