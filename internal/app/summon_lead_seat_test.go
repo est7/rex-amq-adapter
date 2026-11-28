@@ -1,6 +1,8 @@
 package app
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -126,5 +128,30 @@ func TestSummonPairLeadOwnRoleIsACycle(t *testing.T) {
 		if res.Action != "refused" || !strings.Contains(res.Reason, "cycle") || len(term.launches) != 0 {
 			t.Fatalf("the pair lead, --harness %q: %+v", h, res)
 		}
+	}
+}
+
+// A departed seat of the lead's harness whose record names no directory is
+// judged by the one a resume would use, its transcript's: one in the lead's
+// directory is the lead's own seat, so it is neither mailed nor resumed.
+func TestSummonLeadSeatSkipsADepartedSeatByItsTranscriptDirectory(t *testing.T) {
+	e, term, loc := designLeadWorld(t)
+	dir := workDir(t, e, "app")
+	p := filepath.Join(e.TranscriptHome, ".claude/projects/-work-app/thread-3.jsonl")
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(`{"type":"user","cwd":"`+dir+`","sessionId":"thread-3"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	add(t, e, departed(seed{Handle: "claude-03", Kind: core.Claude, Server: "unix:///fake.sock", BlockID: "block:gone", SessionID: "session:s", Role: architectRole, Parent: "claude-01", Depth: 1, AgentPID: 3, AgentSessionID: "thread-3", AdoptedAt: e.Now()}, e.Now()))
+
+	res := summon(t, e, loc, architectRole, leadSeat("", "claude"))
+	if res.Action != "refused" || !strings.Contains(res.Reason, "claude-01 holds the claude seat") || len(term.launches) != 0 || len(unread(t, e, "claude-03")) != 0 {
+		t.Fatalf("its own harness: %+v", res)
+	}
+	res = summon(t, e, loc, architectRole, leadSeat("", ""))
+	if res.Action != "start" || res.Harness != core.Codex || len(term.launches) != 1 || len(unread(t, e, "claude-03")) != 0 {
+		t.Fatalf("no --harness: %+v", res)
 	}
 }

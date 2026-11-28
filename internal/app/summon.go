@@ -148,8 +148,13 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 		if rec.Handle == caller.Handle || !matches(rec, target, isHandle) {
 			continue // nobody summons themselves
 		}
-		if self && !rec.Live() && rec.Kind == caller.Kind && sameDir(rec.Cwd, caller.Cwd) {
-			continue // the lead's own seat, which it holds
+		if self && !rec.Live() && rec.Kind == caller.Kind {
+			// A resume would run where this seat ran: in the lead's
+			// directory, or nowhere known, it is not resumed for the seat
+			// the lead holds.
+			if d := e.resumeDir(ctx, rec); d == "" || sameDir(d, caller.Cwd) {
+				continue
+			}
 		}
 		// An explicit --harness for a role asks for that CLI: a peer of the
 		// role on another one, departed or live and stuck, never stands in
@@ -524,10 +529,7 @@ type launchPlan struct {
 // directory it ran in, on what it was launched on, past the preflight;
 // refusal says why it cannot, err is a failure to decide.
 func (e Env) planResume(ctx context.Context, caller agent, departed agent) (p launchPlan, refusal string, err error) {
-	cwd := departed.Cwd
-	if cwd == "" {
-		cwd = transcript.Cwd(ctx, e.harnessDirs(), departed.Kind, departed.Session())
-	}
+	cwd := e.resumeDir(ctx, departed)
 	if cwd == "" {
 		return p, fmt.Sprintf("%s cannot be resumed: its working directory is not recorded and its transcript does not name one", departed.Handle), nil
 	}
@@ -544,6 +546,15 @@ func (e Env) planResume(ctx context.Context, caller agent, departed agent) (p la
 		return p, refusal, err
 	}
 	return launchPlan{kind: departed.Kind, role: departed.Role, label: core.PaneLabel(departed.Handle, departed.Role, departed.Task), cwd: cwd, launch: launch, cmd: cmd, departed: &departed}, "", nil
+}
+
+// resumeDir is the directory a resume of departed runs in: the one its
+// record names, else the one its transcript does, else "".
+func (e Env) resumeDir(ctx context.Context, departed agent) string {
+	if departed.Cwd != "" {
+		return departed.Cwd
+	}
+	return transcript.Cwd(ctx, e.harnessDirs(), departed.Kind, departed.Session())
 }
 
 // launchPlanned opens p's pane (launch) under token, once the launch is
