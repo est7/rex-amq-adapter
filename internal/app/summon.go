@@ -362,10 +362,10 @@ func (e Env) chain(recs []agent, rec agent) (chain []core.Peer, complete bool) {
 // pending launches, and on success writes one summon per launch under a
 // fresh token, which reserves a place until adoption consumes it or it
 // expires. Each launch is a resume of the departed agent it names, or a
-// start (nil); either all of them fit the cap or none is reserved. council
-// says the caller is its Epic's lead seating a council of its own role
-// (core.GuardSummon).
-func (e Env) reserve(ctx context.Context, caller agent, s Session, kind string, chain []core.Peer, target string, launches []*agent, council, dry bool) ([]string, error) {
+// start (nil); either all of them fit the cap or none is reserved. lead
+// says the caller is its Epic's lead seating peers of its own read-only
+// role, a council or one seat (leadSeats, core.GuardSummon).
+func (e Env) reserve(ctx context.Context, caller agent, s Session, kind string, chain []core.Peer, target string, launches []*agent, lead, dry bool) ([]string, error) {
 	unlock, err := e.Store.LockLifecycle(ctx)
 	if err != nil {
 		return nil, err
@@ -399,7 +399,7 @@ func (e Env) reserve(ctx context.Context, caller agent, s Session, kind string, 
 	if err != nil {
 		return nil, err
 	}
-	if g := core.GuardSummon(kind, chain, caller.Depth, target, live+pending, council); g.Refused {
+	if g := core.GuardSummon(kind, chain, caller.Depth, target, live+pending, lead); g.Refused {
 		return nil, g
 	}
 	if live+pending+len(launches) > core.SummonCap {
