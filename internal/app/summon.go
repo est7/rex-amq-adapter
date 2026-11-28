@@ -240,16 +240,20 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 		e.summonLog(caller, r, res)
 		return res, nil
 	}
+	var claim *seatClaim
 	if lead {
-		// A seat the lead summoned that is not adopted yet (its startup
-		// timed out, a trust screen waits) still holds its place, but not
-		// as a live seat: a retry would open a second pane for it.
-		n, err := e.Store.PendingSummonsBy(s.id, caller.Handle, target, e.Now())
-		if err != nil {
-			return res, err
+		// Checked here so a refusal mails nobody, and again under the lock
+		// in reserve, where the seat is claimed.
+		claim = &seatClaim{role: target, seen: map[core.Handle]bool{}}
+		for _, rec := range recs {
+			if rec.Live() && s.holds(rec) && rec.Role == target {
+				claim.seen[rec.Handle] = true
+			}
 		}
-		if n > 0 {
-			res.Action, res.Reason = "refused", fmt.Sprintf("%d %s seat(s) you summoned are not adopted yet; wait for the adoption, or close the pane and wait %s for its reservation to lapse, before seating another", n, target, store.PendingSummonFor)
+		if reason, err := e.seatTaken(s, recs, *claim); err != nil {
+			return res, err
+		} else if reason != "" {
+			res.Action, res.Reason = "refused", reason
 			e.summonLog(caller, r, res)
 			return res, nil
 		}
@@ -277,7 +281,7 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 	}
 	// The guards and the reservation, together under the lifecycle lock:
 	// two summoners racing the cap both see the other's reservation.
-	tokens, err := e.reserve(ctx, caller, s, r.Kind, chain, target, []*agent{departed}, lead, r.DryRun)
+	tokens, err := e.reserve(ctx, caller, s, r.Kind, chain, target, []*agent{departed}, lead, claim, r.DryRun)
 	if err != nil {
 		var refusal core.SummonCheck
 		if errors.As(err, &refusal) {
@@ -293,6 +297,34 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 		return e.resume(ctx, caller, s, r, *departed, res)
 	}
 	return e.start(ctx, caller, s, r, target, busy, lead, res)
+}
+
+// seatClaim is a lead's single seat of its own role (leadSeats): the seat
+// was chosen against seen, the live agents of role in the session then.
+type seatClaim struct {
+	role string
+	seen map[core.Handle]bool
+}
+
+// seatTaken is why c can no longer be claimed in s, or "": a launch of the
+// role is pending (a startup that timed out, a trust screen; a resume keeps
+// its own lineage, so any summoner's counts), so a retry would open a
+// second pane for its seat; or an agent of the role was adopted since the
+// seat was chosen.
+func (e Env) seatTaken(s Session, recs []agent, c seatClaim) (string, error) {
+	n, err := e.Store.PendingSummonsFor(s.id, c.role, e.Now())
+	if err != nil {
+		return "", err
+	}
+	if n > 0 {
+		return fmt.Sprintf("%d %s seat(s) are not adopted yet; wait for the adoption, or close the pane and wait %s for its reservation to lapse, before seating another", n, c.role, store.PendingSummonFor), nil
+	}
+	for _, rec := range recs {
+		if rec.Live() && s.holds(rec) && rec.Role == c.role && !c.seen[rec.Handle] {
+			return fmt.Sprintf("%s, a %s on %s, was adopted while this seat was chosen; summon again to seat beside it", rec.Handle, c.role, rec.Kind), nil
+		}
+	}
+	return "", nil
 }
 
 // leadSeats reports whether caller summons a peer of its own read-only role
@@ -383,8 +415,10 @@ func (e Env) chain(recs []agent, rec agent) (chain []core.Peer, complete bool) {
 // expires. Each launch is a resume of the departed agent it names, or a
 // start (nil); either all of them fit the cap or none is reserved. lead
 // says the caller is its Epic's lead seating peers of its own read-only
-// role, a council or one seat (leadSeats, core.GuardSummon).
-func (e Env) reserve(ctx context.Context, caller agent, s Session, kind string, chain []core.Peer, target string, launches []*agent, lead, dry bool) ([]string, error) {
+// role, a council or one seat (leadSeats, core.GuardSummon); claim, for one
+// seat, is checked here, so of two such summons racing only the first to
+// reserve claims it (seatTaken).
+func (e Env) reserve(ctx context.Context, caller agent, s Session, kind string, chain []core.Peer, target string, launches []*agent, lead bool, claim *seatClaim, dry bool) ([]string, error) {
 	unlock, err := e.Store.LockLifecycle(ctx)
 	if err != nil {
 		return nil, err
@@ -420,6 +454,13 @@ func (e Env) reserve(ctx context.Context, caller agent, s Session, kind string, 
 	}
 	if g := core.GuardSummon(kind, chain, caller.Depth, target, live+pending, lead); g.Refused {
 		return nil, g
+	}
+	if claim != nil {
+		if reason, err := e.seatTaken(s, recs, *claim); err != nil {
+			return nil, err
+		} else if reason != "" {
+			return nil, core.SummonCheck{Refused: true, Reason: reason}
+		}
 	}
 	if live+pending+len(launches) > core.SummonCap {
 		return nil, core.SummonCheck{Refused: true, Reason: fmt.Sprintf("%d new agents would take the session past its cap of %d: it already holds %d live agents and pending launches; deliver to the live ones or wait for one to finish", len(launches), core.SummonCap, live+pending)}

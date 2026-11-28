@@ -1,10 +1,13 @@
 package app
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/est7/rex-amq-adapter/internal/core"
 )
@@ -188,5 +191,85 @@ func TestSummonLeadSeatWaitsForAPendingSeat(t *testing.T) {
 	res = summon(t, e, loc, architectRole, leadSeat(dir, "agy"))
 	if res.Action != "start" || res.Harness != core.Agy || len(term.launches) != 2 {
 		t.Fatalf("the next seat once the first is adopted: %+v", res)
+	}
+}
+
+// Two single seats the lead asks for at once meet under the lifecycle
+// lock: the first to reserve claims the seat, and the other is refused,
+// however the two interleave before it, so one pane opens.
+func TestSummonLeadSeatClaimsTheSeatUnderTheLock(t *testing.T) {
+	e, term, loc := designLeadWorld(t)
+	dir := workDir(t, e, "app")
+	unlock, err := e.Store.LockLifecycle(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	results := make(chan SummonResult, 2)
+	errs := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			r := SummonRequest{Target: architectRole, Subject: "s", Body: "b"}
+			leadSeat(dir, "codex")(&r)
+			res, err := e.Summon(context.Background(), loc, r)
+			results <- res
+			errs <- err
+		}()
+	}
+	time.Sleep(300 * time.Millisecond) // both plan and wait at reserve's lock
+	unlock()
+	actions := map[string]int{}
+	for i := 0; i < 2; i++ {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+		res := <-results
+		actions[res.Action]++
+		if res.Action == "refused" && !strings.Contains(res.Reason, "not adopted yet") {
+			t.Errorf("the refusal: %q", res.Reason)
+		}
+	}
+	term.mu.Lock()
+	n := len(term.launches)
+	term.mu.Unlock()
+	if actions["start"] != 1 || actions["refused"] != 1 || n != 1 {
+		t.Fatalf("actions %v launches %d", actions, n)
+	}
+}
+
+// A resumed seat keeps its own lineage (an architect the user started has
+// no parent), yet its pending launch still holds the seat: a serial retry
+// neither mails it again nor resumes it twice.
+func TestSummonLeadSeatWaitsForAPendingResume(t *testing.T) {
+	e, term, loc := designLeadWorld(t)
+	add(t, e, departed(seed{Handle: "codex-03", Kind: core.Codex, Server: "unix:///fake.sock", BlockID: "block:gone", SessionID: "session:s", Role: architectRole, AgentPID: 3, AgentSessionID: "thread-3", AdoptedAt: e.Now(), Cwd: workDir(t, e, "other")}, e.Now()))
+	first := summon(t, e, loc, architectRole, leadSeat("", "codex"))
+	if first.Action != "resume" || len(term.launches) != 1 || len(unread(t, e, "codex-03")) != 1 {
+		t.Fatalf("the first resume: %+v", first)
+	}
+	again := summon(t, e, loc, architectRole, leadSeat("", "codex"))
+	if again.Action != "refused" || !strings.Contains(again.Reason, "not adopted yet") || len(term.launches) != 1 || len(unread(t, e, "codex-03")) != 1 {
+		t.Fatalf("a retry while the resume is pending: %+v", again)
+	}
+}
+
+// An agent of the role adopted after the summon was planned, and so not
+// weighed in choosing the seat, refuses the claim under the lock.
+func TestSummonLeadSeatClaimRefusesASeatAdoptedSincePlanned(t *testing.T) {
+	e, _, loc := designLeadWorld(t)
+	lead, _, _ := e.agentAt(loc.Block)
+	s, err := e.FindSession(context.Background(), loc.Block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim := &seatClaim{role: architectRole, seen: map[core.Handle]bool{lead.Handle: true}}
+	if _, err := e.reserve(context.Background(), lead, s, "brainstorm", []core.Peer{peerOf(lead)}, architectRole, []*agent{nil}, true, claim, true); err != nil {
+		t.Fatalf("nothing adopted since: %v", err)
+	}
+	add(t, e, seed{Handle: "codex-04", Kind: core.Codex, Server: "unix:///fake.sock", BlockID: "block:codex-04", SessionID: "session:s", Role: architectRole, Parent: lead.Handle, Depth: 1, AgentPID: 24, AgentSessionID: "codex-04", AdoptedAt: e.Now(), Cwd: lead.Cwd})
+	s, _ = e.FindSession(context.Background(), loc.Block)
+	_, err = e.reserve(context.Background(), lead, s, "brainstorm", []core.Peer{peerOf(lead)}, architectRole, []*agent{nil}, true, claim, true)
+	var refusal core.SummonCheck
+	if !errors.As(err, &refusal) || !strings.Contains(refusal.Reason, "codex-04") {
+		t.Fatalf("a seat adopted since planned: %v", err)
 	}
 }
