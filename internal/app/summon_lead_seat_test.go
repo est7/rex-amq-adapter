@@ -273,3 +273,60 @@ func TestSummonLeadSeatClaimRefusesASeatAdoptedSincePlanned(t *testing.T) {
 		t.Fatalf("a seat adopted since planned: %v", err)
 	}
 }
+
+// A resume the lead asked for by handle holds the seat too: its pending
+// launch names the handle, not the role, and still counts, so a role
+// summon for the same seat neither mails nor resumes it again.
+func TestSummonLeadSeatWaitsForAResumeAskedByHandle(t *testing.T) {
+	e, term, loc := designLeadWorld(t)
+	add(t, e, departed(seed{Handle: "codex-06", Kind: core.Codex, Server: "unix:///fake.sock", BlockID: "block:gone", SessionID: "session:s", Role: architectRole, Parent: "claude-01", Depth: 1, AgentPID: 6, AgentSessionID: "thread-6", AdoptedAt: e.Now(), Cwd: workDir(t, e, "app")}, e.Now()))
+	first := summon(t, e, loc, "codex-06", leadSeat("", ""))
+	if first.Action != "resume" || len(term.launches) != 1 || len(unread(t, e, "codex-06")) != 1 {
+		t.Fatalf("the resume by handle: %+v", first)
+	}
+	again := summon(t, e, loc, architectRole, leadSeat("", "codex"))
+	if again.Action != "refused" || !strings.Contains(again.Reason, "not adopted yet") || len(term.launches) != 1 || len(unread(t, e, "codex-06")) != 1 {
+		t.Fatalf("a role summon while the resume by handle is pending: %+v", again)
+	}
+}
+
+// The lead's seat is claimed before its mail: of two resumes of one seat
+// racing to reserve, the refused one mails nobody.
+func TestSummonLeadSeatClaimsAResumeBeforeItsMail(t *testing.T) {
+	e, term, loc := designLeadWorld(t)
+	add(t, e, departed(seed{Handle: "codex-03", Kind: core.Codex, Server: "unix:///fake.sock", BlockID: "block:gone", SessionID: "session:s", Role: architectRole, Parent: "claude-01", Depth: 1, AgentPID: 3, AgentSessionID: "thread-3", AdoptedAt: e.Now(), Cwd: workDir(t, e, "other")}, e.Now()))
+	unlock, err := e.Store.LockLifecycle(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	results := make(chan SummonResult, 2)
+	errs := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			r := SummonRequest{Target: architectRole, Subject: "s", Body: "b"}
+			leadSeat("", "codex")(&r)
+			res, err := e.Summon(context.Background(), loc, r)
+			results <- res
+			errs <- err
+		}()
+	}
+	time.Sleep(300 * time.Millisecond) // both plan and wait at reserve's lock
+	unlock()
+	actions := map[string]int{}
+	for i := 0; i < 2; i++ {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+		res := <-results
+		actions[res.Action]++
+		if res.Action == "refused" && (res.Mailed || strings.Contains(res.Reason, "mailbox")) {
+			t.Errorf("the refused resume mailed: %+v", res)
+		}
+	}
+	term.mu.Lock()
+	n := len(term.launches)
+	term.mu.Unlock()
+	if actions["resume"] != 1 || actions["refused"] != 1 || n != 1 || len(unread(t, e, "codex-03")) != 1 {
+		t.Fatalf("actions %v launches %d mails %d", actions, n, len(unread(t, e, "codex-03")))
+	}
+}

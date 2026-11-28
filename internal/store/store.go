@@ -712,10 +712,11 @@ func (s Store) PendingSummons(session string, now time.Time) (int, error) {
 	return s.countPending(session, now, func(sm Summon) bool { return !core.Stealth(sm.For) })
 }
 
-// PendingSummonsFor counts the launches of session for role, a start or
-// a resume, not yet adopted and not yet expired at now.
-func (s Store) PendingSummonsFor(session, role string, now time.Time) (int, error) {
-	return s.countPending(session, now, func(sm Summon) bool { return sm.For == role })
+// PendingSummonsFor counts the launches of session summoned for any of
+// targets (a role, or a handle), a start or a resume, not yet adopted and
+// not yet expired at now.
+func (s Store) PendingSummonsFor(session string, targets map[string]bool, now time.Time) (int, error) {
+	return s.countPending(session, now, func(sm Summon) bool { return targets[sm.For] })
 }
 
 func (s Store) countPending(session string, now time.Time, keep func(Summon) bool) (int, error) {

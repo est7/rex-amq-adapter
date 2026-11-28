@@ -263,16 +263,27 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 		e.summonLog(caller, r, res)
 		return res, nil
 	}
-	if departed != nil {
-		// Its mailbox waits for a resume whatever the guards say.
+	mailDeparted := func() error {
+		if departed == nil {
+			return nil
+		}
 		if !r.DryRun {
 			if err := e.mailAs(ctx, caller.Handle, departed.Handle, r.Kind, r.Subject, r.Body); err != nil {
-				return res, err
+				return err
 			}
 		}
 		res.Mailed = !r.DryRun
 		res.Handles = []core.Handle{departed.Handle}
 		res.AgentSessionID, res.Cwd = departed.Session(), departed.Cwd
+		return nil
+	}
+	// A departed agent's mailbox waits for a resume whatever the guards
+	// say, so it is mailed first; a lead's seat is claimed first (reserve),
+	// so a refused claim mails nobody.
+	if claim == nil {
+		if err := mailDeparted(); err != nil {
+			return res, err
+		}
 	}
 	chain, complete := e.chain(recs, caller)
 	if !complete {
@@ -293,6 +304,12 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 	if !r.DryRun {
 		res.Token = tokens[0]
 	}
+	if claim != nil {
+		if err := mailDeparted(); err != nil {
+			e.dropToken(res.Token)
+			return res, err
+		}
+	}
 	if departed != nil {
 		return e.resume(ctx, caller, s, r, *departed, res)
 	}
@@ -307,12 +324,18 @@ type seatClaim struct {
 }
 
 // seatTaken is why c can no longer be claimed in s, or "": a launch of the
-// role is pending (a startup that timed out, a trust screen; a resume keeps
-// its own lineage, so any summoner's counts), so a retry would open a
-// second pane for its seat; or an agent of the role was adopted since the
-// seat was chosen.
+// role is pending (a startup that timed out, a trust screen; one summoned
+// by the role or by the handle of an agent of it, by anyone, since a resume
+// keeps its own lineage), so a retry would open a second pane for its
+// seat; or an agent of the role was adopted since the seat was chosen.
 func (e Env) seatTaken(s Session, recs []agent, c seatClaim) (string, error) {
-	n, err := e.Store.PendingSummonsFor(s.id, c.role, e.Now())
+	targets := map[string]bool{c.role: true}
+	for _, rec := range recs {
+		if rec.Role == c.role && s.recorded(rec) {
+			targets[string(rec.Handle)] = true
+		}
+	}
+	n, err := e.Store.PendingSummonsFor(s.id, targets, e.Now())
 	if err != nil {
 		return "", err
 	}
@@ -356,7 +379,7 @@ func (e Env) guardSummoner(caller agent) (core.SummonCheck, error) {
 }
 
 func (e Env) refused(caller agent, r SummonRequest, res SummonResult, departed *agent) (SummonResult, error) {
-	if departed != nil && !r.DryRun {
+	if departed != nil && res.Mailed {
 		res.Reason += "; the message waits in " + string(departed.Handle) + "'s mailbox for a resume"
 	}
 	e.summonLog(caller, r, res)
