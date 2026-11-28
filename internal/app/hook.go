@@ -476,7 +476,8 @@ func (e Env) identityParts(ctx context.Context, a Adoption, unread int) core.Sta
 	mates := core.MatesNotice(a.Mates)
 	if core.Stealth(a.Agent.Role) {
 		// A narrator never mails a worker, and a personal agent only a
-		// linked narrator: neither is told to reach its session's agents.
+		// linked narrator or its Hub's personal agents (its role prompt says
+		// how): neither is told to reach its session's agents.
 		mates = ""
 	}
 	// After the briefing, so it reads as the word on whom "the human" means;

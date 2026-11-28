@@ -8,7 +8,7 @@ summary: Find your session-mates, start a peer, confirm it, and retire it when d
 
 ```bash
 rex-amq-adapter agent list                  # agents in this Rex session, including you
-rex-amq-adapter agent list --all            # also departed agents reserved for a resume, the narrator, personal agents
+rex-amq-adapter agent list --all            # also departed agents reserved for a resume, the narrator, personal agents (a personal agent's peers)
 rex-amq-adapter agent list --fields handle,kind,role,tab,agent_session_id,cwd,lifecycle,delivery
 ```
 
