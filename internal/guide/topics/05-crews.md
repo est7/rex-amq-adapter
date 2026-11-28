@@ -64,7 +64,9 @@ brief scopes it.
 - **Council seats.** A read-only role (reviewer, editor, qa, architect) reads a
   Slice worktree without writing it, so up to one seat per harness may share it:
   `agent summon reviewer --council --cwd <worktree>` seats them all at once (see
-  the `review` topic). A second seat on the same harness, and any writer role,
-  is refused.
+  the `review` topic). A design Epic's lead architect may instead seat only the
+  harnesses it wants, one `agent summon architect --harness <h> --cwd <dir>` per
+  seat (see the `summon` topic). A second seat on the same harness, and any
+  writer role, is refused.
 - **Another Epic.** A goal that is a separate Epic gets its own Rex session with
   its own lead, not more panes here. See the `epics` topic.

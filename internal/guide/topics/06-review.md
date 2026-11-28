@@ -50,7 +50,9 @@ with its harness, action, handle, and startup.
 A design Epic's lead architect seats its own council
 (`agent summon architect --council --cwd <its directory>`): it holds its
 harness's seat itself (`action: self`), so the council is the lead and one
-architect on each other harness.
+architect on each other harness. For fewer seats it summons each one alone,
+`agent summon architect --harness codex --cwd <its directory>`, never on its
+own harness there.
 
 Each seat replies `VERDICT: APPROVE | CHANGES`, `SCORE: <n>/10` when asked, and
 `S1 [blocker|should|nit] <file>:<line> <claim>. Fix: <suggestion>`, and builds
