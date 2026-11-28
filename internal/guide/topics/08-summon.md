@@ -70,8 +70,16 @@ other words:
   the brief names it);
 - an agent whose own summoner is no longer recorded may deliver, not start or
   resume: its chain cannot be checked;
-- a design Epic's lead architect may seat its own `--council`, which is the one
-  read-only fan-out inside such a session.
+- the one exception to the cycle guard: an Epic's lead of a read-only role (a
+  design Epic's architect, at depth 0) may seat peers of its own role, every
+  routed harness at once with `--council`, or one seat at a time with
+  `agent summon architect --harness <another>`. In its own directory it holds
+  its own harness's seat: naming that harness there is refused, and with no
+  `--harness` the seat starts on the first ready harness of the routing not
+  seated there yet. While a launch of the role is not adopted yet (a startup
+  that timed out, a resume), its next single seat is refused, so a retry
+  never opens a second pane for it. A seat it summoned (depth 1), its own handle, and a lead of
+  a role that writes (a pair Epic's implementer) are still cycles.
 
 A refusal exits 3 (`permission_denied`), or 5 for `cap_reached`, and says why.
 

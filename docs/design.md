@@ -937,7 +937,22 @@ Only resume and start pass the guards, in this order, and a refusal says why:
 - only a request starts or resumes (`--kind question`, `review_request`,
   `todo`, `brainstorm`); any other kind delivers or refuses;
 - no cycle: a handle or role already in the caller's summon chain (from the
-  user's agent down to the caller) is refused;
+  user's agent down to the caller) is refused. The one exception is an
+  Epic's lead (`sessionLead`, depth 0) summoning a peer of its own
+  read-only role (`leadSeats`; `core.GuardSummon` with `lead`): a council,
+  or one seat at a time with `--harness`. In its own directory it holds its
+  own harness's seat (`self`): naming that harness there is refused, a
+  departed seat of it there is not resumed, and a start with no `--harness`
+  takes the first ready harness of the whole routing not seated there
+  (`busy` plus the lead's own). The seat is claimed in `reserve`, under the
+  lifecycle lock (`seatClaim`, `seatTaken`): it is refused while a launch of
+  the role is pending (`store.PendingSummonsFor`: a start or a resume,
+  summoned by the role or by the handle of an agent of it, by anyone, since
+  a resume keeps its own lineage), so a retry after a startup timeout or a
+  racing second summon opens no second pane, and when an agent of the role
+  was adopted after the seat was chosen. The claim comes before a departed
+  seat's mail, so a refused one mails nobody. Its own handle, a seat at depth 1, and a
+  lead of a role that writes stay cycles;
 - depth 2 at most: the user's agents are 0, what they summon 1;
 - 6 live agents per session at most, counting pending launches; a narrator
   or personal agent takes no place. The count is taken under the lifecycle

@@ -89,14 +89,12 @@ func (e Env) council(ctx context.Context, loc Location, caller agent, r SummonRe
 		return res, err
 	}
 	// The caller of the role, in the council's directory, holds its own
-	// harness's seat; only its Epic's lead may seat a council of its own
-	// role at all (core.GuardSummon), which reserve checks.
+	// harness's seat; only its Epic's lead may seat peers of its own role
+	// at all (leadSeats, core.GuardSummon), which reserve checks.
 	self := caller.Role == role && (r.Cwd == "" || sameDir(r.Cwd, caller.Cwd))
-	lead := false
-	if caller.Role == role {
-		if lead, err = e.sessionLead(caller); err != nil {
-			return res, err
-		}
+	lead, err := e.leadSeats(caller, role, false)
+	if err != nil {
+		return res, err
 	}
 	var selfHandle core.Handle
 	if self {
@@ -169,7 +167,7 @@ func (e Env) council(ctx context.Context, loc Location, caller agent, r SummonRe
 		if !complete {
 			return refuse("your summon chain cannot be checked: an agent that summoned you is no longer recorded, so no seat was mailed or launched")
 		}
-		if tokens, err = e.reserve(ctx, caller, s, r.Kind, chain, role, launches, lead, r.DryRun); err != nil {
+		if tokens, err = e.reserve(ctx, caller, s, r.Kind, chain, role, launches, lead, nil, r.DryRun); err != nil {
 			var refusal core.SummonCheck
 			if errors.As(err, &refusal) {
 				return refuse(refusal.Reason + "; no seat was mailed or launched")
