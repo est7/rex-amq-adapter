@@ -524,8 +524,9 @@ The personal agents of one Hub share its Epics: links, `epic list`,
 `epic show`, `epic close`, and `epic materialize` treat any of them alike. A
 narrator writes to `mail send --to personal`; the adapter delivers to the
 personal agent that opened the Epic when it is live, else to the one you
-spoke to last, and the result names `routed_to` and `rerouted_from`. Mail a
-departing personal agent left unread goes to the next one in the Hub.
+spoke to last, and the result names `routed_to` and `rerouted_from`. A
+narrator's mail a departing personal agent left unread goes to the next one
+in the Hub.
 The personal agents of one Hub also mail each other by handle (`mail send
 --to <handle>`, `mail reply`), in one Rex session or across the Hub's
 sessions (`personal_peer_same_hub`): only an ordinary send or reply passes,

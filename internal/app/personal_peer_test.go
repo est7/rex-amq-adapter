@@ -162,3 +162,43 @@ func onlyReason(q map[string]string, reason string) bool {
 	}
 	return true
 }
+
+// A move publishes the handle's fence before its lease (store.Moved), so a
+// reader between the two writes sees the new session in the fence and the
+// old one in the lease. The sender built from that state is in neither
+// placement: it never takes the old session's Hub along into the new
+// session, so a send to a peer of each is refused whole, with nothing
+// delivered.
+func TestPersonalPeerMailMidMove(t *testing.T) {
+	e, _ := relayWorld(t)
+	ctx := context.Background()
+	old := time.Now().Add(-time.Hour)
+	put(t, e, seed{Handle: "claude-07", Kind: core.Claude, Role: core.PersonalRole, SessionID: "session:z", AdoptedAt: old})
+	putHub(t, e, "session:z", core.NewHubKey(fakeServer, physical(t, t.TempDir())))
+	if err := e.AMQ.EnsureMailbox(ctx, e.Paths.Root(), "claude-07"); err != nil {
+		t.Fatal(err)
+	}
+	id, ok, err := e.Store.IdentityOf("claude-02")
+	if err != nil || !ok {
+		t.Fatalf("identity of claude-02: %v %v", ok, err)
+	}
+	id.Fence.SessionID, id.Fence.Generation, id.Fence.PlacedAt = "session:z", id.Fence.Generation+1, time.Now().UTC()
+	if err := e.Store.PutIdentity(id); err != nil {
+		t.Fatal(err)
+	}
+	if rec := recordNamed(t, e, "claude-02"); rec.SessionID != "session:claude-02" {
+		t.Fatalf("the lease moved too: %s", rec.SessionID)
+	}
+	if _, err := managedSend(t, e, "block:claude-02", "send", "--to", "claude-03,claude-07", "--thread", "hub/move", "--subject", "s", "--body", "mid-move"); !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), core.ReasonPersonalOnly) {
+		t.Fatalf("a send mid-move to the old Hub's peer and the new session's: %v", err)
+	}
+	for _, h := range []string{"claude-03", "claude-07"} {
+		if ids, _ := amq.Unread(e.Paths.Root(), h); len(ids) != 0 {
+			t.Errorf("%s got %v mid-move", h, ids)
+		}
+	}
+	from, err := e.endpointOf("claude-02")
+	if err != nil || from.SessionID != "session:z" || from.Hub != "" {
+		t.Fatalf("claude-02 mid-move is %+v %v, want session:z of no Hub", from, err)
+	}
+}
