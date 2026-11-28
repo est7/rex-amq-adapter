@@ -76,7 +76,9 @@ other words:
   `agent summon architect --harness <another>`. In its own directory it holds
   its own harness's seat: naming that harness there is refused, and with no
   `--harness` the seat starts on the first ready harness of the routing not
-  seated there yet. A seat it summoned (depth 1), its own handle, and a lead of
+  seated there yet. While a seat it summoned is not adopted yet (its startup
+  timed out), its next single seat is refused, so a retry never opens a
+  second pane for it. A seat it summoned (depth 1), its own handle, and a lead of
   a role that writes (a pair Epic's implementer) are still cycles.
 
 A refusal exits 3 (`permission_denied`), or 5 for `cap_reached`, and says why.

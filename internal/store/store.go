@@ -708,6 +708,17 @@ func (s Store) DeleteSummon(token string) error {
 // PendingSummons counts the launches of session not yet adopted and not
 // yet expired at now.
 func (s Store) PendingSummons(session string, now time.Time) (int, error) {
+	// A Stealth launch (a narrator) takes no place a worker would.
+	return s.countPending(session, now, func(sm Summon) bool { return !core.Stealth(sm.For) })
+}
+
+// PendingSummonsBy counts the launches of session for role that parent
+// summoned, not yet adopted and not yet expired at now.
+func (s Store) PendingSummonsBy(session string, parent core.Handle, role string, now time.Time) (int, error) {
+	return s.countPending(session, now, func(sm Summon) bool { return sm.Parent == parent && sm.For == role })
+}
+
+func (s Store) countPending(session string, now time.Time, keep func(Summon) bool) (int, error) {
 	entries, err := os.ReadDir(s.P.summons())
 	if errors.Is(err, fs.ErrNotExist) {
 		return 0, nil
@@ -722,8 +733,7 @@ func (s Store) PendingSummons(session string, now time.Time) (int, error) {
 			continue
 		}
 		var sm Summon
-		// A Stealth launch (a narrator) takes no place a worker would.
-		if json.Unmarshal(b, &sm) == nil && sm.Session == session && now.Sub(sm.At) < PendingSummonFor && !core.Stealth(sm.For) {
+		if json.Unmarshal(b, &sm) == nil && sm.Session == session && now.Sub(sm.At) < PendingSummonFor && keep(sm) {
 			n++
 		}
 	}

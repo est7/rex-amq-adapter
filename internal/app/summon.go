@@ -240,6 +240,20 @@ func (e Env) Summon(ctx context.Context, loc Location, r SummonRequest) (SummonR
 		e.summonLog(caller, r, res)
 		return res, nil
 	}
+	if lead {
+		// A seat the lead summoned that is not adopted yet (its startup
+		// timed out, a trust screen waits) still holds its place, but not
+		// as a live seat: a retry would open a second pane for it.
+		n, err := e.Store.PendingSummonsBy(s.id, caller.Handle, target, e.Now())
+		if err != nil {
+			return res, err
+		}
+		if n > 0 {
+			res.Action, res.Reason = "refused", fmt.Sprintf("%d %s seat(s) you summoned are not adopted yet; wait for the adoption, or close the pane and wait %s for its reservation to lapse, before seating another", n, target, store.PendingSummonFor)
+			e.summonLog(caller, r, res)
+			return res, nil
+		}
+	}
 	if self && departed == nil && r.Harness == string(caller.Kind) {
 		res.Action, res.Reason = "refused", fmt.Sprintf("%s holds the %s seat of %s in %s itself; name another harness with --harness for another seat, or another directory with --cwd", caller.Handle, caller.Kind, target, caller.Cwd)
 		e.summonLog(caller, r, res)

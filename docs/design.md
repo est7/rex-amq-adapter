@@ -944,7 +944,9 @@ Only resume and start pass the guards, in this order, and a refusal says why:
   own harness's seat (`self`): naming that harness there is refused, a
   departed seat of it there is not resumed, and a start with no `--harness`
   takes the first ready harness of the whole routing not seated there
-  (`busy` plus the lead's own). Its own handle, a seat at depth 1, and a
+  (`busy` plus the lead's own). While a launch it summoned for the role is
+  pending (`store.PendingSummonsBy`), its next single seat is refused, so a
+  retry after a startup timeout opens no second pane. Its own handle, a seat at depth 1, and a
   lead of a role that writes stay cycles;
 - depth 2 at most: the user's agents are 0, what they summon 1;
 - 6 live agents per session at most, counting pending launches; a narrator

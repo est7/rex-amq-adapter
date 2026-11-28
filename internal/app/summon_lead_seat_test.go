@@ -93,12 +93,18 @@ func TestSummonLeadSeatWithoutHarnessPassesOverItsOwn(t *testing.T) {
 		return seed{Handle: h, Kind: k, Server: "unix:///fake.sock", BlockID: "block:" + string(h), SessionID: "session:s", Role: architectRole, Parent: "claude-01", Depth: 1, AgentPID: 20 + n, AgentSessionID: string(h), AdoptedAt: e.Now(), Cwd: dir}
 	}
 	add(t, e, seat("codex-04", core.Codex, 4))
+	if err := e.Store.DeleteSummon(tokenOf(term.launches[0])); err != nil { // adoption consumes it
+		t.Fatal(err)
+	}
 
 	res = summon(t, e, loc, architectRole, leadSeat(dir, ""))
 	if res.Action != "start" || res.Harness != core.Agy || len(term.launches) != 2 || launchProgram(term.launches[1])[0] != "agy" {
 		t.Fatalf("no --harness with codex seated: %+v", res)
 	}
 	add(t, e, seat("agy-05", core.Agy, 5))
+	if err := e.Store.DeleteSummon(tokenOf(term.launches[1])); err != nil {
+		t.Fatal(err)
+	}
 
 	res = summon(t, e, loc, architectRole, leadSeat(dir, ""))
 	if res.Action != "refused" || !strings.Contains(res.Reason, "already has a live architect") || len(term.launches) != 2 {
@@ -153,5 +159,34 @@ func TestSummonLeadSeatSkipsADepartedSeatByItsTranscriptDirectory(t *testing.T) 
 	res = summon(t, e, loc, architectRole, leadSeat("", ""))
 	if res.Action != "start" || res.Harness != core.Codex || len(term.launches) != 1 || len(unread(t, e, "claude-03")) != 0 {
 		t.Fatalf("no --harness: %+v", res)
+	}
+}
+
+// A seat the lead summoned that is not adopted yet (a startup that timed
+// out, a trust screen) still holds its place: until it is adopted or its
+// reservation lapses, the lead's next single seat of the role is refused
+// with nothing mailed or launched, whatever harness it names, so a retry
+// never opens a second pane for the same seat. Once adopted, the next seat
+// starts.
+func TestSummonLeadSeatWaitsForAPendingSeat(t *testing.T) {
+	e, term, loc := designLeadWorld(t)
+	dir := workDir(t, e, "app")
+	res := summon(t, e, loc, architectRole, leadSeat(dir, "codex"))
+	if res.Action != "start" || len(term.launches) != 1 {
+		t.Fatalf("the first seat: %+v", res)
+	}
+	for _, h := range []string{"codex", "", "agy"} {
+		again := summon(t, e, loc, architectRole, leadSeat(dir, h))
+		if again.Action != "refused" || !strings.Contains(again.Reason, "not adopted yet") || len(term.launches) != 1 {
+			t.Fatalf("a retry with --harness %q while the seat is pending: %+v", h, again)
+		}
+	}
+	if n, _ := e.Store.PendingSummons("session:s", e.Now()); n != 1 {
+		t.Fatalf("pending %d, want the first seat's alone", n)
+	}
+	adoptLaunch(t, e, term, term.launches[0], core.Codex, "arch-codex")
+	res = summon(t, e, loc, architectRole, leadSeat(dir, "agy"))
+	if res.Action != "start" || res.Harness != core.Agy || len(term.launches) != 2 {
+		t.Fatalf("the next seat once the first is adopted: %+v", res)
 	}
 }
