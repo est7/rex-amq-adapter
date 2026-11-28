@@ -239,3 +239,66 @@ func TestGatewayOperatorRelayRule(t *testing.T) {
 		})
 	}
 }
+
+// Two placed personal agents of one Hub (the same Rex session, or sessions
+// whose policy is the same Hub) exchange ordinary verified mail; nothing
+// else passes between personal agents, and the fence and the unverified
+// rule still come first.
+func TestCanExchangePersonalPeers(t *testing.T) {
+	const srv = "unix:///rex.sock"
+	hub, other := NewHubKey(srv, "/me"), NewHubKey(srv, "/other")
+	at := func(h Handle, session string, k HubKey) Endpoint {
+		return Endpoint{Handle: h, Role: PersonalRole, Server: srv, SessionID: session, Hub: k}
+	}
+	me := at("agy-20", "session:hub", hub)
+	mate := at("agy-15", "session:hub", hub)
+	mateNoHub := at("agy-15", "session:hub", "")
+	meNoHub := at("agy-20", "session:hub", "")
+	away := at("claude-30", "session:hub-2", hub)
+	elsewhere := at("claude-31", "session:other", other)
+	stranger := at("claude-32", "session:loose", "")
+	unplaced := Endpoint{Handle: "agy-15", Role: PersonalRole}
+	unplacedMe := Endpoint{Handle: "agy-20", Role: PersonalRole}
+	narr := Endpoint{Handle: "agy-02", Role: NarratorRole, Server: srv, SessionID: "session:a"}
+	links := []Link{{Hub: hub, Epic: narr.Session()}}
+	send, reply := Operation{Kind: OpSend}, Operation{Kind: OpReply}
+	moved := mate
+	moved.Generation = 1
+	for _, c := range []struct {
+		name     string
+		from, to Endpoint
+		op       Operation
+		allow    bool
+		reason   string
+	}{
+		{"same session send", me, mate, send, true, ReasonPersonalPeer},
+		{"same session reply", mate, me, reply, true, ReasonPersonalPeer},
+		{"same session without a Hub", meNoHub, mateNoHub, send, true, ReasonPersonalPeer},
+		{"same Hub across sessions send", me, away, send, true, ReasonPersonalPeer},
+		{"same Hub across sessions reply", away, me, reply, true, ReasonPersonalPeer},
+		{"another Hub", me, elsewhere, send, false, ReasonPersonalOnly},
+		{"another Hub reply", elsewhere, me, reply, false, ReasonPersonalOnly},
+		{"another session of no Hub", me, stranger, send, false, ReasonPersonalOnly},
+		{"both of no Hub across sessions", meNoHub, stranger, send, false, ReasonPersonalOnly},
+		{"to an unplaced personal", me, unplaced, send, false, ReasonUnplaced},
+		{"from an unplaced personal", unplaced, me, send, false, ReasonUnplaced},
+		{"both unplaced", unplacedMe, unplaced, send, false, ReasonUnplaced},
+		{"unverified raw mail", me, mate, Operation{Kind: OpSend, Unverified: true}, false, ReasonUnverified},
+		{"unverified raw reply", me, mate, Operation{Kind: OpReply, Unverified: true}, false, ReasonUnverified},
+		{"notify to a peer", me, mate, Operation{Kind: OpNotify, System: true}, false, ReasonPersonalOnly},
+		{"notify not marked system to a peer", me, mate, Operation{Kind: OpNotify}, false, ReasonPersonalOnly},
+		{"control to a peer", me, mate, Operation{Kind: OpControl, ControlRequestID: "req-1"}, false, ReasonPersonalOnly},
+		{"operator relay to a peer", me, mate, Operation{Kind: OpOperatorRelay, System: true, Hub: hub}, false, ReasonRelayNotLinked},
+		{"adapter system send to a peer", me, mate, Operation{Kind: OpSend, System: true}, false, ReasonPersonalOnly},
+		{"addressed to the peer's prior placement", me, moved, Operation{Kind: OpSend, Addressed: &mate}, false, ReasonFenced},
+		{"addressed to the peer as placed now", me, mate, Operation{Kind: OpReply, Addressed: &mate}, true, ReasonPersonalPeer},
+		{"a Hub's personal still reaches its linked narrator", me, narr, send, true, ReasonLinked},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			d := CanExchange(c.from, c.to, c.op, links)
+			if d.Allow != c.allow || d.Reason != c.reason {
+				t.Errorf("CanExchange = %+v, want allow=%v reason=%s", d, c.allow, c.reason)
+			}
+		})
+	}
+}

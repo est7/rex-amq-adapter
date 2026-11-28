@@ -10,7 +10,9 @@ import (
 // together and nothing crosses between Epics, except one channel the user
 // opens with link: a Personal agent (its own Rex session) and the Narrator of
 // a linked Epic. The Narrator observes its Epic without being mailed; its one
-// write into the Epic is a user-control directive to the Orchestrator.
+// write into the Epic is a user-control directive to the Orchestrator. The
+// Personal agents of one Hub (one Rex session, or sessions of the same Hub)
+// also mail each other, to hand work over between the user's assistants.
 //
 // A message the adapter has no provenance record of (written with amq
 // directly) names a sender it cannot vouch for, so it never reaches a
@@ -31,9 +33,10 @@ const (
 
 // Stealth reports whether an agent of role stays out of its session's
 // ordinary views: a Narrator observes its Epic and a Personal agent talks
-// only to linked Narrators, so neither is a mate a worker lists, mails,
-// hears join or leave, reports to, or hands a stalled goal to. Explicit
-// admin views (agent list --all, stream events) still show them.
+// only to linked Narrators and its own Hub's Personal agents, so neither is
+// a mate a worker lists, mails, hears join or leave, reports to, or hands a
+// stalled goal to. Explicit admin views (agent list --all, stream events)
+// still show them.
 func Stealth(role string) bool { return role == NarratorRole || role == PersonalRole }
 
 // SessionKey names a Rex session (an Epic, or a Personal agent's session)
@@ -138,6 +141,7 @@ const (
 	ReasonSelf             = "self"
 	ReasonSameEpic         = "same_epic"
 	ReasonLinked           = "personal_narrator_linked"
+	ReasonPersonalPeer     = "personal_peer_same_hub"
 	ReasonSystem           = "adapter_system_mail"
 	ReasonControl          = "narrator_control"
 	ReasonOutside          = "sender_outside_rex"
@@ -189,6 +193,9 @@ func CanExchange(sender, recipient Endpoint, op Operation, links []Link) Decisio
 	if sender.Handle == recipient.Handle {
 		return allow(ReasonSelf)
 	}
+	if sender.Role == PersonalRole && recipient.Role == PersonalRole {
+		return personalPeers(sender, recipient, op)
+	}
 	if sender.Role == PersonalRole || recipient.Role == PersonalRole {
 		return personal(sender, recipient, links)
 	}
@@ -224,8 +231,27 @@ func CanExchange(sender, recipient Endpoint, op Operation, links []Link) Decisio
 	return allow(ReasonSameEpic)
 }
 
-// personal decides an exchange with a Personal agent on either side: only a
-// Narrator of an Epic linked to the Personal agent's session qualifies.
+// personalPeers decides an exchange between two Personal agents: the user's
+// own assistants of one Hub hand each other work, so ordinary mail (a send
+// or a reply, never the adapter's own) passes between two placed ones in the
+// same Rex session or in sessions of the same Hub. Nothing else does: a
+// notify stays self-only, and control is a narrator's.
+func personalPeers(sender, recipient Endpoint, op Operation) Decision {
+	if (op.Kind != OpSend && op.Kind != OpReply) || op.System {
+		return deny(ReasonPersonalOnly)
+	}
+	if !sender.Placed() || !recipient.Placed() {
+		return deny(ReasonUnplaced)
+	}
+	if sender.Session() == recipient.Session() || (sender.Hub != "" && sender.Hub == recipient.Hub) {
+		return allow(ReasonPersonalPeer)
+	}
+	return deny(ReasonPersonalOnly)
+}
+
+// personal decides an exchange between a Personal agent and an agent of
+// another role: only a Narrator of an Epic linked to the Personal agent's
+// Hub or session qualifies.
 func personal(sender, recipient Endpoint, links []Link) Decision {
 	p, other := sender, recipient
 	if recipient.Role == PersonalRole {

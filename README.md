@@ -238,7 +238,7 @@ conventions, shared by every agent of the session, in any tab:
 |---|---|
 | roles `implementer`, `reviewer`, `qa`, `architect`, `writer`, `editor` | work in any session |
 | role `orchestrator` | owns a goal and coordinates the agents that work on it (below) |
-| role `personal` | in a Rex session of its own, starts the user's Epics (an orchestrator and a narrator each) and talks to them through the narrator it links (below) |
+| role `personal` | in a Hub's Rex session, starts the user's Epics (an orchestrator and a narrator each), talks to them through the narrator it links, and hands work to its Hub's other personal agents (below) |
 | crew `pair` | implementer builds, reviewer critiques the working-tree diff (or a Slice branch the brief names), until clean, in the review tiers below |
 | crew `ship` | `pair`, then QA runs the reviewed candidate and reports a verdict with evidence |
 | crew `dev` | an architect decomposes the goal into tasks for an implementer and reviewer |
@@ -524,8 +524,13 @@ The personal agents of one Hub share its Epics: links, `epic list`,
 `epic show`, `epic close`, and `epic materialize` treat any of them alike. A
 narrator writes to `mail send --to personal`; the adapter delivers to the
 personal agent that opened the Epic when it is live, else to the one you
-spoke to last, and the result names `routed_to` and `rerouted_from`. Mail a
-departing personal agent left unread goes to the next one in the Hub.
+spoke to last, and the result names `routed_to` and `rerouted_from`. A
+narrator's mail a departing personal agent left unread goes to the next one
+in the Hub.
+The personal agents of one Hub also mail each other by handle (`mail send
+--to <handle>`, `mail reply`), in one Rex session or across the Hub's
+sessions (`personal_peer_same_hub`): only an ordinary send or reply passes,
+never a notify or a control directive, and the Hub's inbox keeps none of it.
 
 Each Hub keeps an inbox of what its Epics told the Operator, whether or not a
 personal agent was live: every hand-back (`handback`, its `seq` and digest),
@@ -629,7 +634,7 @@ rex-amq-adapter agent retire <handle>   # close a finished peer's pane without a
 Mail through the gateway. One AMQ root holds every Rex session, and the
 adapter keeps sessions apart: members of one session (one Epic) mail each
 other, sessions never do, and a personal agent reaches only the narrator of
-an Epic it linked. The adapter's own mail commands run amq as the caller,
+an Epic linked to its Hub and the other personal agents of its Hub. The adapter's own mail commands run amq as the caller,
 check that policy first, and record where sender and recipients were, so a
 refusal is immediate and names its reason:
 

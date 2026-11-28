@@ -64,6 +64,16 @@ read it from, and `-` reads it from stdin. Send only to a handle
 `rex-amq-adapter agent list` shows (see the `peers` topic). `--dry-run` runs
 every check and sends nothing.
 
+A personal agent mails the narrator of an Epic linked to its Hub, and the
+other personal agents of its Hub: in its Rex session (`agent list --all` lists
+them; this holds in a session of no Hub too) or in another session of the same
+Hub. A peer in another session is the one handle you may mail without
+`agent list` showing it: use the handle you were given and check it with
+`--dry-run` first. Between personal agents only an ordinary send or reply
+passes (`personal_peer_same_hub`); a personal agent of another Hub, or of no
+Hub in another session, is refused with
+`personal_reaches_only_a_linked_narrator`.
+
 A request kind (`question`, `review_request`, `todo`) sent to several
 recipients opens one obligation per recipient: each one owes you an answer.
 Send an FYI as `status` or `decision`. `--refs <id>,...` names related messages

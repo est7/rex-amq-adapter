@@ -39,12 +39,15 @@ func (e Env) endpointOf(h core.Handle) (core.Endpoint, error) {
 //
 // A personal agent with a valid lease in a Hub session is a member of that
 // Hub (Endpoint.Hub), from the session's recorded policy alone: never from
-// an environment variable or a mail header.
+// an environment variable or a mail header. A move publishes the fence (the
+// endpoint's session) before the lease's place (store.Moved); while the two
+// disagree the agent is a member of no Hub, so it never carries the Hub of
+// the session it left into the one it entered.
 func (e Env) gatewayEndpoint(rec agent) (core.Endpoint, error) {
 	ep := rec.Endpoint()
 	if rec.Role == core.PersonalRole {
-		if rec.Live() && placed(rec) {
-			hub, err := e.hubOfSession(rec.SessionID)
+		if rec.Live() && placed(rec) && rec.Server == ep.Server && rec.SessionID == ep.SessionID {
+			hub, err := e.hubOfSession(ep.SessionID)
 			ep.Hub = hub
 			return ep, err
 		}

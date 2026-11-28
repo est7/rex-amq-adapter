@@ -1902,7 +1902,15 @@ One AMQ root holds every Epic (a Rex session) and every Personal agent
 (`core.CanExchange`). Members of one
 Epic mail each other; Epics never do. A `personal` agent and the `narrator` of
 an Epic its session is linked with (`epic link`/`epic unlink`) mail each other, and
-nothing else crosses sessions, except the Operator's relay below. The narrator takes no member mail, only the
+so do two placed `personal` agents of one Hub (the same Rex session, or sessions
+whose policy is the same Hub, `Endpoint.Hub`, which is empty while a move has
+published the handle's fence but not yet its lease): an ordinary verified send or reply
+only (`personal_peer_same_hub`); a notify, a control directive, an operator
+relay, or the adapter's own system mail between them is refused
+(`personal_reaches_only_a_linked_narrator`, or `operator_relay_not_linked` for a
+relay), as is a personal agent of another Hub or, across sessions, of none. The
+Hub's inbox keeps none of it: `mirrorPersonalMail` keeps only a personal agent's
+mail to a narrator. Nothing else crosses sessions, except the Operator's relay below. The narrator takes no member mail, only the
 adapter's own notices (provenance `system`, never a header label or a sender
 named `system`); its one message into the Epic is a control directive to the
 Epic's lead (`Endpoint.Lead`, which the app layer marks with `sessionLead`:
